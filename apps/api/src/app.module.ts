@@ -18,6 +18,7 @@ import { MacroModule } from './modules/macro/macro.module';
 import { MandatesModule } from './modules/mandates/mandates.module';
 import { SuggestionsModule } from './modules/suggestions/suggestions.module';
 import { ProposalGeneratorModule } from './modules/proposal-generator/proposal-generator.module';
+import { FundingModule } from './modules/funding/funding.module';
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { ProposalGeneratorModule } from './modules/proposal-generator/proposal-g
     MandatesModule,
     SuggestionsModule,
     ProposalGeneratorModule,
+    FundingModule,
   ],
 })
 export class AppModule {}
