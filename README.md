@@ -128,8 +128,10 @@ supabase/
 Voir [`docs/DEPLOY.md`](./docs/DEPLOY.md) pour le détail.
 
 - **Front (apps/web)** : Vercel (Next.js) — config : `apps/web/vercel.json`
-- **API (apps/api)** : Fly.io — config : `apps/api/fly.toml`
+- **API (apps/api)** : **Fly.io uniquement** — config : `apps/api/fly.toml`
 - **BDD** : Supabase (projet hébergé)
+
+> ⚠️ L'API NestJS ne doit **pas** être déployée sur Vercel : c'est un serveur long-running, pas une fonction serverless. Voir `docs/DEPLOY.md` pour la procédure Fly.io.
 
 Variables d'environnement requises côté plateforme : voir `.env.example`.
 

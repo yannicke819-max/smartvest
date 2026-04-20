@@ -7,6 +7,13 @@ Guide minimal pour déployer la démo publique.
 - API (`apps/api`) → **Fly.io** (NestJS dans conteneur)
 - BDD → **Supabase** (projet hébergé, Free tier suffisant pour la démo)
 
+> ⚠️ **Ne déployez PAS `apps/api` sur Vercel.** NestJS est un serveur
+> long-running (`app.listen(3001)`), pas une fonction serverless. Vercel
+> cherchera un entrypoint `src/main.ts` / `api/index.ts` export-default et
+> échouera (`No entrypoint found`). La seule cible officielle pour l'API est
+> **Fly.io** via `apps/api/fly.toml`. Le seul projet à créer côté Vercel est
+> celui du front (`apps/web`).
+
 ---
 
 ## 1. Supabase
