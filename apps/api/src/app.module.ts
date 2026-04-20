@@ -13,6 +13,7 @@ import { AlertsModule } from './modules/alerts/alerts.module';
 import { BrokerImportModule } from './modules/broker-import/broker-import.module';
 import { PerformanceModule } from './modules/performance/performance.module';
 import { BrokerSyncModule } from './modules/broker-sync/broker-sync.module';
+import { GoalsModule } from './modules/goals/goals.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { BrokerSyncModule } from './modules/broker-sync/broker-sync.module';
     BrokerImportModule,
     PerformanceModule,
     BrokerSyncModule,
+    GoalsModule,
   ],
 })
 export class AppModule {}

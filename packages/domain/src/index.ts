@@ -16,3 +16,8 @@ export * from './entities/action-proposal';
 export * from './entities/execution-policy';
 export * from './entities/autonomy-audit-event';
 export * from './entities/broker-sync-mode';
+export * from './entities/goal-intent';
+export * from './entities/goal-trigger';
+export * from './entities/feasibility-assessment';
+export * from './entities/objective-scenario';
+export * from './entities/objective-plan';
