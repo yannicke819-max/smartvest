@@ -14,6 +14,7 @@ import { BrokerImportModule } from './modules/broker-import/broker-import.module
 import { PerformanceModule } from './modules/performance/performance.module';
 import { BrokerSyncModule } from './modules/broker-sync/broker-sync.module';
 import { GoalsModule } from './modules/goals/goals.module';
+import { MacroModule } from './modules/macro/macro.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { GoalsModule } from './modules/goals/goals.module';
     PerformanceModule,
     BrokerSyncModule,
     GoalsModule,
+    MacroModule,
   ],
 })
 export class AppModule {}

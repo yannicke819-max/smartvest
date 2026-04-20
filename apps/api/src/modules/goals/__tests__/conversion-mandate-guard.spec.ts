@@ -85,7 +85,7 @@ describe('GoalAuditService — conversion mandate guard', () => {
           (fr: jest.MockResult<{ insert: jest.Mock }>) => fr.value,
         ),
       );
-      const insertCalls = allFromCalls.filter((c: { insert?: jest.Mock }) => c.insert?.mock?.calls?.length > 0);
+      const insertCalls = allFromCalls.filter((c: { insert?: jest.Mock }) => (c.insert?.mock?.calls?.length ?? 0) > 0);
       expect(insertCalls.length).toBeGreaterThan(0);
     });
   });
