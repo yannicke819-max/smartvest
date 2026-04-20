@@ -7,6 +7,7 @@ import { ArrowLeft, RefreshCw, ChevronDown, ChevronUp } from 'lucide-react';
 import { useGoal, useScenarios, useGenerateScenarios, useGeneratePlan, type ScenarioRow } from '@/hooks/use-goals';
 import { Button } from '@/components/ui/button';
 import { SkeletonCard } from '@/components/ui/skeleton';
+import { DisclaimerBanner } from '@/components/disclaimer-banner';
 
 const SCENARIO_COLORS: Record<string, string> = {
   prudent: 'border-blue-200 bg-blue-50',
@@ -148,6 +149,7 @@ export default function ScenariosPage() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 p-6">
+      <DisclaimerBanner />
       <div className="flex items-center gap-3">
         <Link href={`/goals/${id}`}>
           <Button variant="ghost" size="sm">

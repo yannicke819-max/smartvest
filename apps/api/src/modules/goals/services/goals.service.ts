@@ -3,6 +3,7 @@ import { SupabaseService } from '../../supabase/supabase.service';
 import { FeasibilityService } from './feasibility.service';
 import { ScenarioGeneratorService } from './scenario-generator.service';
 import { PlanGeneratorService } from './plan-generator.service';
+import { GoalAuditService } from './goal-audit.service';
 import { v4 as uuid } from 'uuid';
 import type { CreateGoalDto, UpdateGoalDto, CreateTriggerDto, UpdateCheckpointDto } from '../dto/goals.dto';
 import type { FeasibilityAssessment } from '@smartvest/domain';
@@ -14,6 +15,7 @@ export class GoalsService {
     private readonly feasibility: FeasibilityService,
     private readonly scenarioGen: ScenarioGeneratorService,
     private readonly planGen: PlanGeneratorService,
+    private readonly audit: GoalAuditService,
   ) {}
 
   // ── Goals CRUD ──────────────────────────────────────────────────────────────
@@ -386,16 +388,30 @@ export class GoalsService {
 
   // ── Convert to suggestion ─────────────────────────────────────────────────
 
-  async convertToSuggestion(goalId: string, userId: string, scenarioId: string) {
-    await this.getGoal(goalId, userId);
-    // In MANUAL_EXPLICIT mode, this creates a suggestion (not an execution)
-    await this.logEvent(goalId, userId, 'converted_to_suggestion', { scenarioId, mode: 'MANUAL_EXPLICIT' });
+  async convertToSuggestion(
+    goalId: string,
+    userId: string,
+    scenarioId: string,
+    delegationMode = 'MANUAL_EXPLICIT',
+  ) {
+    const goal = await this.getGoal(goalId, userId);
+
+    // Gate: checks active mandate for non-MANUAL modes; always emits hash-chained audit event
+    await this.audit.checkAndAuditConversion({
+      portfolioId: goal.portfolio_id as string,
+      userId,
+      goalId,
+      scenarioId,
+      delegationMode,
+    });
+
+    await this.logEvent(goalId, userId, 'converted_to_suggestion', { scenarioId, delegationMode });
     return {
-      kind: 'simulation' as const,
-      message: 'Le scénario a été converti en suggestion. Aucune action n\'a été exécutée. Veuillez valider explicitement chaque étape.',
+      kind: 'suggestion' as const,
+      message: 'Le scénario a été converti en suggestion. Aucune action n\'a été exécutée. Veuillez valider explicitement chaque étape du plan.',
       scenarioId,
       goalId,
-      delegationMode: 'MANUAL_EXPLICIT',
+      delegationMode,
       requiresUserValidation: true,
     };
   }

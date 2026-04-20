@@ -6,6 +6,7 @@ import { ArrowLeft, CheckCircle, Clock, Circle, MapPin } from 'lucide-react';
 import { usePlan, useGoal } from '@/hooks/use-goals';
 import { Button } from '@/components/ui/button';
 import { SkeletonCard } from '@/components/ui/skeleton';
+import { DisclaimerBanner } from '@/components/disclaimer-banner';
 
 const ACTION_KIND_LABELS: Record<string, string> = {
   contribution_setup: 'Mise en place versement',
@@ -68,6 +69,7 @@ export default function PlanPage() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 p-6">
+      <DisclaimerBanner />
       <div className="flex items-center gap-3">
         <Link href={`/goals/${id}`}>
           <Button variant="ghost" size="sm">

@@ -158,7 +158,8 @@ export class GoalsController {
     @Headers() headers: Record<string, string>,
     @Param('id') id: string,
     @Body('scenarioId') scenarioId: string,
+    @Body('delegationMode') delegationMode?: string,
   ) {
-    return this.goals.convertToSuggestion(id, extractUserId(headers), scenarioId);
+    return this.goals.convertToSuggestion(id, extractUserId(headers), scenarioId, delegationMode);
   }
 }
