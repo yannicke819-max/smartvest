@@ -1,7 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { Lock, Unlock, Check, AlertTriangle } from 'lucide-react';
+import Link from 'next/link';
+import { Lock, Unlock, Check, AlertTriangle, Target, Inbox } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/states/empty-state';
 import { SkeletonCard } from '@/components/ui/skeleton';
@@ -111,10 +112,27 @@ function ReservationRow({ reservation }: { reservation: CashReservationRow }) {
       </span>
       <div className="min-w-0 flex-1">
         <p className="truncate font-medium">{reservation.reason}</p>
-        <p className="text-[11px] text-muted-foreground">
-          {reservation.destination_id.slice(0, 8)}… ·{' '}
-          {new Date(reservation.created_at).toLocaleDateString('fr-FR')}
-        </p>
+        <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+          <span>{reservation.destination_id.slice(0, 8)}… · {new Date(reservation.created_at).toLocaleDateString('fr-FR')}</span>
+          {reservation.goal_id && (
+            <Link
+              href={`/goals/${reservation.goal_id}`}
+              className="flex items-center gap-0.5 text-emerald-700 hover:underline"
+            >
+              <Target className="h-3 w-3" />
+              Objectif
+            </Link>
+          )}
+          {reservation.proposal_id && (
+            <Link
+              href={`/suggestions/${reservation.proposal_id}`}
+              className="flex items-center gap-0.5 text-sky-700 hover:underline"
+            >
+              <Inbox className="h-3 w-3" />
+              Suggestion
+            </Link>
+          )}
+        </div>
       </div>
       <div className="text-right tabular-nums">
         <div className="font-semibold">

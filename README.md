@@ -24,6 +24,7 @@ frictions d'intermédiation rendues visibles, et modèle de **délégation contr
 - ✅ Centre de revue `/suggestions` (approuver/refuser/annuler avec audit)
 - ✅ Générateur automatique de propositions (drift, concentration, goal-trigger, macro-signal, performance)
 - ✅ Dashboard widgets : contexte marché · exposition · suggestions en attente
+- ✅ **Module Funding / Cash** — transferts de fonds, journal de cash, réservations (voir ci-dessous)
 - ⏳ Ingestion automatique RSS / webhooks (reportée — Chantier 5)
 
 **Phase 6 (prévue)** — Mode `AUTONOMOUS_GUARDED` : exécution dans mandat + broker adapter réel.
@@ -45,6 +46,87 @@ docs/screenshots/suggestions.png         — centre de revue
 docs/screenshots/market-context.png      — signaux macro et conclusions
 docs/screenshots/goals.png               — objectifs + plans + feasibility
 ```
+
+---
+
+## Module Funding & Cash
+
+Suivi déclaratif des liquidités apportées sur les comptes broker.
+SmartVest n'exécute aucun ordre bancaire réel — les données sont saisies par l'utilisateur.
+
+### Modèle de données (`migration/0009_funding_module.sql`)
+
+| Table | Rôle |
+|---|---|
+| `funding_sources` | Comptes bancaires sources (IBAN, BIC…) |
+| `funding_destinations` | Comptes broker cibles |
+| `funding_transfers` | Virements déclarés (machine à états 8 statuts) |
+| `funding_transfer_audit` | Journal hash-chaîné append-only des transitions |
+| `cash_balances` | Soldes par compte (settled / pending_in / reserved) |
+| `cash_ledger_entries` | Journal des mouvements de cash (append-only) |
+| `cash_reservations` | Cash soft-lockés pour un objectif ou une suggestion |
+| `funding_allocation_links` | Liens transfert ↔ objectif / plan / suggestion |
+
+### Machine à états des transferts
+
+```
+draft → initiated → pending_settlement → settled
+               ↓              ↓
+           cancelled        partially_settled → settled
+                                 ↓
+                               reversed / failed
+```
+
+### Endpoints API (`/funding` · `/cash`)
+
+**Transferts** (`/funding/transfers`)
+- `GET /funding/transfers` — liste filtrée (status, destinationId)
+- `GET /funding/transfers/:id` — détail
+- `POST /funding/transfers` — créer (draft)
+- `PATCH /funding/transfers/:id` — modifier (draft uniquement)
+- `POST /funding/transfers/:id/initiate` — draft → initiated (bumpe pending_in)
+- `POST /funding/transfers/:id/settle` — → settled / partially_settled (crédite settled, écrit ledger)
+- `POST /funding/transfers/:id/cancel` — → cancelled
+- `POST /funding/transfers/:id/fail` — → failed
+- `POST /funding/transfers/:id/reverse` — → reversed (décrédite settled, écrit ledger)
+- `GET /funding/transfers/:id/audit` — journal hash-chaîné
+
+**Sources / Destinations** (`/funding/sources`, `/funding/destinations`)
+- `GET /funding/sources` · `POST /funding/sources`
+- `GET /funding/destinations` · `POST /funding/destinations`
+
+**Cash** (`/cash`)
+- `GET /cash/balances/summary` — agrégat par devise (available, settled, reserved, pending_in)
+- `GET /cash/balances` — soldes par compte
+- `GET /cash/ledger` — journal append-only (filtrable par type / devise / destinationId)
+- `GET /cash/reservations` — liste des réservations (filtrable par goalId / status)
+- `POST /cash/reservations` — créer une réservation (vérifie la disponibilité)
+- `POST /cash/reservations/:id/release` — libérer (écrit ledger reservation_release)
+- `POST /cash/reservations/:id/consume` — consommer
+
+### Pages UI
+
+| Route | Description |
+|---|---|
+| `/funding` | Liste des transferts avec filtres par statut |
+| `/funding/new` | Formulaire de création |
+| `/funding/:id` | Détail + transitions + journal d'audit |
+| `/cash` | KPIs de liquidités + balances par compte + réservations |
+| `/cash/ledger` | Journal append-only avec filtres type/devise |
+
+### Intégrations contextuelles
+
+- `CashSummaryWidget` (dashboard) — available / settled / reserved / pending_in + liens directs
+- `ReservationsPanel` sur `/cash` — liens vers l'objectif et la suggestion liés à chaque réservation
+- `/goals/:id` — affiche les réservations de cash liées à l'objectif
+- Boutons "Cash" et "Funding" dans la toolbar du dashboard
+
+### Limitations connues
+
+- Aucun ordre bancaire réel : SmartVest est déclaratif uniquement.
+- Les fonds sont sur le compte broker de l'utilisateur, pas chez SmartVest.
+- `settled_amount` peut être partiel (`partially_settled`) — le règlement final crédite le delta.
+- Le journal de cash est append-only (pas de correction directe — passer par `reversal`).
 
 ---
 
@@ -96,7 +178,7 @@ Ouvrir [http://localhost:3000](http://localhost:3000), se connecter avec `demo@s
 npm run typecheck
 npm run lint
 npm run format
-cd apps/api && npx jest --no-coverage    # 150 tests backend
+cd apps/api && npx jest --no-coverage    # 190 tests backend
 ```
 
 ---
@@ -115,7 +197,7 @@ packages/
   brokers/           BrokerAdapter + simulateur
   portfolio-engine/  Profils de risque, templates d'allocation, drift
 supabase/
-  migrations/        Schéma SQL complet (0001 → 0008)
+  migrations/        Schéma SQL complet (0001 → 0009)
   seed.sql           Données démo (markets, brokers, assets, quotes, signaux, + bloc user commenté)
 .claude/
   skills/            Skills SmartVest (PRD, engine, UX, compliance)
