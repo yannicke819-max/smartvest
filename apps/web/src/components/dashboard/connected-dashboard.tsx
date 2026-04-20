@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { Plus, Wallet, BellRing, Shuffle } from 'lucide-react';
+import { Plus, Wallet, BellRing, Shuffle, TrendingUp, UploadCloud } from 'lucide-react';
 import { usePortfolios, useUserProfile } from '@/hooks/use-portfolio';
 import { useRecentTransactions } from '@/hooks/use-dashboard';
 import { useValuation, useAllocation, useAlerts } from '@/hooks/use-valuation';
@@ -106,6 +106,18 @@ export function ConnectedDashboard() {
                   {criticalAlerts + warningAlerts}
                 </span>
               )}
+            </Button>
+          </Link>
+          <Link href={`/portfolio/${portfolioId}/performance`}>
+            <Button variant="outline" size="sm">
+              <TrendingUp className="mr-1.5 h-3.5 w-3.5" />
+              Performance
+            </Button>
+          </Link>
+          <Link href="/imports">
+            <Button variant="outline" size="sm">
+              <UploadCloud className="mr-1.5 h-3.5 w-3.5" />
+              Imports
             </Button>
           </Link>
           <Link href={`/portfolio/${portfolioId}/simulations`}>

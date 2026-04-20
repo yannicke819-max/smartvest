@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { MarketDataService } from './services/market-data.service';
 import { QuoteRefreshService } from './services/quote-refresh.service';
+import { ProviderRegistryService } from './services/provider-registry.service';
 import { SupabaseService } from '../supabase/supabase.service';
 
 @Controller('market-data')
@@ -16,8 +17,16 @@ export class MarketDataController {
   constructor(
     private readonly marketData: MarketDataService,
     private readonly quoteRefresh: QuoteRefreshService,
+    private readonly registry: ProviderRegistryService,
     private readonly supabase: SupabaseService,
   ) {}
+
+  @Get('providers/health')
+  async providerHealth(@Headers('authorization') auth: string) {
+    await this.requireAuth(auth);
+    const data = await this.registry.getHealth();
+    return { ok: true, data };
+  }
 
   @Get('quotes/latest')
   async latestQuotes(

@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../../supabase/supabase.service';
-import { EodProvider } from '../providers/eod/eod.provider';
+import { ProviderRegistryService } from './provider-registry.service';
 import { ProviderAsset } from '../providers/market-data-provider.interface';
 import { InstrumentQuote } from '../dto/instrument-quote.dto';
 import { PriceBar } from '../dto/price-bar.dto';
@@ -11,7 +11,7 @@ export class MarketDataService {
 
   constructor(
     private readonly supabase: SupabaseService,
-    private readonly eodProvider: EodProvider,
+    private readonly registry: ProviderRegistryService,
   ) {}
 
   async getProviderAssets(): Promise<ProviderAsset[]> {
@@ -47,7 +47,7 @@ export class MarketDataService {
     const assets = await this.getProviderAssets();
     if (assets.length === 0) return { succeeded: 0, failed: 0 };
 
-    const quotes = await this.eodProvider.fetchQuotes(assets);
+    const quotes = await this.registry.fetchQuotesWithFailover(assets);
     return this.saveQuotes(quotes, assets.length);
   }
 
@@ -55,7 +55,7 @@ export class MarketDataService {
     const assets = await this.getProviderAssets();
     if (assets.length === 0) return { succeeded: 0, failed: 0 };
 
-    const bars = await this.eodProvider.fetchDailyBars(assets, fromDate, toDate);
+    const bars = await this.registry.fetchDailyBarsWithFailover(assets, fromDate, toDate);
     return this.saveBars(bars, assets.length);
   }
 

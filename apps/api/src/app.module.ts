@@ -10,6 +10,9 @@ import { MarketDataModule } from './modules/market-data/market-data.module';
 import { ValuationModule } from './modules/valuation/valuation.module';
 import { SimulationsModule } from './modules/simulations/simulations.module';
 import { AlertsModule } from './modules/alerts/alerts.module';
+import { BrokerImportModule } from './modules/broker-import/broker-import.module';
+import { PerformanceModule } from './modules/performance/performance.module';
+import { BrokerSyncModule } from './modules/broker-sync/broker-sync.module';
 
 @Module({
   imports: [
@@ -24,6 +27,9 @@ import { AlertsModule } from './modules/alerts/alerts.module';
     ValuationModule,
     SimulationsModule,
     AlertsModule,
+    BrokerImportModule,
+    PerformanceModule,
+    BrokerSyncModule,
   ],
 })
 export class AppModule {}
