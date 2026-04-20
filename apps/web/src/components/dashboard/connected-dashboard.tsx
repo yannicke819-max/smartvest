@@ -12,6 +12,8 @@ import { AllocationDonut } from './allocation-donut';
 import { RecentTransactions } from './recent-transactions';
 import { CostFrictionCard } from './cost-friction-card';
 import { PendingSuggestionsWidget } from '@/components/suggestions/pending-suggestions-widget';
+import { MarketContextWidget } from './market-context-widget';
+import { ExposureWidget } from './exposure-widget';
 import { SkeletonCard } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/states/empty-state';
 import { Button } from '@/components/ui/button';
@@ -207,6 +209,8 @@ export function ConnectedDashboard() {
           />
         </div>
         <div className="space-y-4">
+          <MarketContextWidget />
+          <ExposureWidget portfolioId={portfolioId} allocationByClass={allocationByClass} />
           <PendingSuggestionsWidget />
           <RiskProfileCard
             profile={profileQuery.data?.risk_profile}
