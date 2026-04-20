@@ -1,0 +1,13 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/shared-types" },
+    { "path": "packages/domain" },
+    { "path": "packages/cost-engine" },
+    { "path": "packages/audit" },
+    { "path": "packages/brokers" },
+    { "path": "packages/portfolio-engine" },
+    { "path": "apps/api" },
+    { "path": "apps/web" }
+  ]
+}
