@@ -32,6 +32,13 @@ function buildAudit() {
   return { write: jest.fn().mockResolvedValue('audit-id'), listForTransfer: jest.fn().mockResolvedValue([]) };
 }
 
+function buildLedger() {
+  return {
+    record: jest.fn().mockResolvedValue('ledger-id'),
+    adjustPendingIn: jest.fn().mockResolvedValue(undefined),
+  };
+}
+
 describe('TransfersService', () => {
   describe('create', () => {
     it('creates a draft transfer when destination is valid', async () => {
@@ -45,7 +52,7 @@ describe('TransfersService', () => {
         funding_transfers: transferChain,
       });
       const audit = buildAudit();
-      const svc = new TransfersService(supabase as any, audit as any);
+      const svc = new TransfersService(supabase as any, audit as any, buildLedger() as any);
 
       const result = await svc.create('u1', {
         destinationId: 'dest-1',
@@ -63,7 +70,7 @@ describe('TransfersService', () => {
     it('throws when destination does not belong to user', async () => {
       const destChain = chainMock(null); // destination not found
       const supabase = buildSupabase({ funding_destinations: destChain });
-      const svc = new TransfersService(supabase as any, buildAudit() as any);
+      const svc = new TransfersService(supabase as any, buildAudit() as any, buildLedger() as any);
 
       await expect(
         svc.create('u1', {
@@ -88,7 +95,7 @@ describe('TransfersService', () => {
         funding_allocation_links: linkChain,
       });
       const audit = buildAudit();
-      const svc = new TransfersService(supabase as any, audit as any);
+      const svc = new TransfersService(supabase as any, audit as any, buildLedger() as any);
 
       await svc.create('u1', {
         destinationId: 'dest-1',
@@ -108,7 +115,8 @@ describe('TransfersService', () => {
       const transferChain = chainMock(transferData);
       const supabase = buildSupabase({ funding_transfers: transferChain });
       const audit = buildAudit();
-      return { svc: new TransfersService(supabase as any, audit as any), audit };
+      const ledger = buildLedger();
+      return { svc: new TransfersService(supabase as any, audit as any, ledger as any), audit, ledger };
     }
 
     it('allows draft → initiated', async () => {
@@ -192,7 +200,7 @@ describe('TransfersService', () => {
         id: 't1', status: 'draft', requested_amount: '1000', currency: 'EUR',
       });
       const supabase = buildSupabase({ funding_transfers: transferChain });
-      const svc = new TransfersService(supabase as any, buildAudit() as any);
+      const svc = new TransfersService(supabase as any, buildAudit() as any, buildLedger() as any);
       const result = await svc.update('t1', 'u1', { note: 'corrigé' });
       expect(result.status).toBe('draft');
     });
@@ -200,8 +208,103 @@ describe('TransfersService', () => {
     it('refuses PATCH on a non-draft transfer', async () => {
       const transferChain = chainMock({ id: 't1', status: 'initiated' });
       const supabase = buildSupabase({ funding_transfers: transferChain });
-      const svc = new TransfersService(supabase as any, buildAudit() as any);
+      const svc = new TransfersService(supabase as any, buildAudit() as any, buildLedger() as any);
       await expect(svc.update('t1', 'u1', { note: 'x' })).rejects.toThrow(ConflictException);
+    });
+  });
+
+  describe('cash side-effects', () => {
+    function makeSvcWith(transferData: Record<string, unknown>) {
+      const transferChain = chainMock(transferData);
+      const supabase = buildSupabase({ funding_transfers: transferChain });
+      const audit = buildAudit();
+      const ledger = buildLedger();
+      return { svc: new TransfersService(supabase as any, audit as any, ledger as any), ledger };
+    }
+
+    it('settle credits the ledger for the full amount (settledAmount=requested)', async () => {
+      const { svc, ledger } = makeSvcWith({
+        id: 't1', status: 'pending_settlement', destination_id: 'dest-1',
+        currency: 'EUR', requested_amount: '1000', settled_amount: '0',
+      });
+      await svc.settle('t1', 'u1', { settledAmount: '1000' });
+      expect(ledger.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          movementType: 'settlement_credit',
+          amount: expect.stringMatching(/^1000\.0+$/),
+          transferId: 't1',
+        }),
+      );
+    });
+
+    it('partial settle credits the ledger only by the delta', async () => {
+      const { svc, ledger } = makeSvcWith({
+        id: 't1', status: 'pending_settlement', destination_id: 'dest-1',
+        currency: 'EUR', requested_amount: '1000', settled_amount: '0',
+      });
+      await svc.settle('t1', 'u1', { settledAmount: '400' });
+      expect(ledger.record).toHaveBeenCalledWith(
+        expect.objectContaining({ movementType: 'settlement_credit' }),
+      );
+      // exactly one record call
+      expect(ledger.record).toHaveBeenCalledTimes(1);
+    });
+
+    it('reverse from settled writes a settlement_debit for the settled amount', async () => {
+      const { svc, ledger } = makeSvcWith({
+        id: 't1', status: 'settled', destination_id: 'dest-1',
+        currency: 'EUR', requested_amount: '1000', settled_amount: '1000',
+      });
+      await svc.reverse('t1', 'u1', { reason: 'erreur' });
+      expect(ledger.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          movementType: 'settlement_debit',
+          transferId: 't1',
+        }),
+      );
+      // debit should be negative
+      const args = (ledger.record as jest.Mock).mock.calls[0][0];
+      expect(args.amount.startsWith('-')).toBe(true);
+    });
+
+    it('initiate bumps pending_in by requested_amount', async () => {
+      const { svc, ledger } = makeSvcWith({
+        id: 't1', status: 'draft', destination_id: 'dest-1',
+        currency: 'EUR', requested_amount: '500', settled_amount: '0',
+      });
+      await svc.initiate('t1', 'u1');
+      expect(ledger.adjustPendingIn).toHaveBeenCalledWith('u1', 'dest-1', 'EUR', '500');
+    });
+
+    it('cancel from initiated decrements pending_in', async () => {
+      const { svc, ledger } = makeSvcWith({
+        id: 't1', status: 'initiated', destination_id: 'dest-1',
+        currency: 'EUR', requested_amount: '500', settled_amount: '0',
+      });
+      await svc.cancel('t1', 'u1', { reason: 'abandon' });
+      expect(ledger.adjustPendingIn).toHaveBeenCalledWith('u1', 'dest-1', 'EUR', '-500');
+    });
+
+    it('cancel from draft does NOT touch pending_in (never was in transit)', async () => {
+      const { svc, ledger } = makeSvcWith({
+        id: 't1', status: 'draft', destination_id: 'dest-1',
+        currency: 'EUR', requested_amount: '500', settled_amount: '0',
+      });
+      await svc.cancel('t1', 'u1', {});
+      expect(ledger.adjustPendingIn).not.toHaveBeenCalled();
+      expect(ledger.record).not.toHaveBeenCalled();
+    });
+
+    it('settle from pending_settlement adjusts pending_in down and credits', async () => {
+      const { svc, ledger } = makeSvcWith({
+        id: 't1', status: 'pending_settlement', destination_id: 'dest-1',
+        currency: 'EUR', requested_amount: '750', settled_amount: '0',
+      });
+      await svc.settle('t1', 'u1', { settledAmount: '750' });
+      expect(ledger.adjustPendingIn).toHaveBeenCalledWith('u1', 'dest-1', 'EUR', '-750');
+      expect(ledger.record).toHaveBeenCalledWith(
+        expect.objectContaining({ movementType: 'settlement_credit' }),
+      );
     });
   });
 
@@ -210,7 +313,7 @@ describe('TransfersService', () => {
       const transferChain = chainMock(null);
       transferChain['single'] = jest.fn().mockResolvedValue({ data: null, error: { message: 'not found' } });
       const supabase = buildSupabase({ funding_transfers: transferChain });
-      const svc = new TransfersService(supabase as any, buildAudit() as any);
+      const svc = new TransfersService(supabase as any, buildAudit() as any, buildLedger() as any);
       await expect(svc.get('t1', 'u1')).rejects.toThrow(NotFoundException);
     });
   });

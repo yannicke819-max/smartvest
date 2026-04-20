@@ -6,8 +6,10 @@ import {
   Logger,
 } from '@nestjs/common';
 import { v4 as uuid } from 'uuid';
+import Decimal from 'decimal.js';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { FundingAuditService } from './funding-audit.service';
+import { CashLedgerService } from './cash-ledger.service';
 import type {
   CreateTransferDto,
   UpdateTransferDto,
@@ -45,6 +47,13 @@ function canTransition(from: Status, to: Status): boolean {
   return TRANSITIONS[from].includes(to);
 }
 
+/** States where the money is "in transit" and counts toward pending_in. */
+const IN_TRANSIT: ReadonlySet<Status> = new Set<Status>([
+  'initiated',
+  'pending_settlement',
+  'partially_settled',
+]);
+
 @Injectable()
 export class TransfersService {
   private readonly logger = new Logger(TransfersService.name);
@@ -52,6 +61,7 @@ export class TransfersService {
   constructor(
     private readonly supabase: SupabaseService,
     private readonly audit: FundingAuditService,
+    private readonly ledger: CashLedgerService,
   ) {}
 
   // ------------------------------------------------------------------------
@@ -295,6 +305,9 @@ export class TransfersService {
       .eq('user_id', userId);
     if (error) throw new BadRequestException(error.message);
 
+    // ------- Side-effects on cash balances / ledger -------
+    await this.syncCashSideEffects(userId, current, target, extraPatch);
+
     await this.audit.write({
       userId,
       kind: auditKind,
@@ -308,5 +321,68 @@ export class TransfersService {
 
     this.logger.log(`Transfer ${id}: ${current['status']} → ${target}`);
     return this.get(id, userId);
+  }
+
+  /**
+   * Applies the cash movements implied by a state transition:
+   *  - leaving a non-transit state and entering a transit state → +pending_in
+   *  - leaving a transit state → -pending_in
+   *  - entering (partially_)settled → credit settled by delta (settledAmount − previouslySettled)
+   *  - entering reversed from settled/partially_settled → debit settled by settledAmount
+   */
+  private async syncCashSideEffects(
+    userId: string,
+    current: Record<string, unknown>,
+    target: Status,
+    patch: Record<string, unknown>,
+  ) {
+    const destId = current['destination_id'] as string;
+    const currency = current['currency'] as string;
+    const requested = (current['requested_amount'] as string) ?? '0';
+    const previouslySettled = (current['settled_amount'] as string) ?? '0';
+    const from = current['status'] as Status;
+
+    const wasInTransit = IN_TRANSIT.has(from);
+    const nowInTransit = IN_TRANSIT.has(target);
+
+    // Pending-in tracking: phantom bucket, no ledger entry
+    if (!wasInTransit && nowInTransit) {
+      await this.ledger.adjustPendingIn(userId, destId, currency, requested);
+    } else if (wasInTransit && !nowInTransit) {
+      await this.ledger.adjustPendingIn(userId, destId, currency, `-${requested}`);
+    }
+
+    // Settlement credit when entering a (partially_)settled state
+    if (target === 'settled' || target === 'partially_settled') {
+      const newSettled = (patch['settled_amount'] as string) ?? requested;
+      const delta = new Decimal(newSettled).minus(previouslySettled);
+      if (delta.gt(0)) {
+        await this.ledger.record({
+          userId,
+          destinationId: destId,
+          currency,
+          movementType: 'settlement_credit',
+          amount: delta.toFixed(10),
+          transferId: current['id'] as string,
+          description: `Règlement du transfert ${(current['id'] as string).slice(0, 8)}`,
+        });
+      }
+    }
+
+    // Reversal: debit what was previously credited
+    if (target === 'reversed' && (from === 'settled' || from === 'partially_settled')) {
+      const settledAmt = new Decimal(previouslySettled);
+      if (settledAmt.gt(0)) {
+        await this.ledger.record({
+          userId,
+          destinationId: destId,
+          currency,
+          movementType: 'settlement_debit',
+          amount: settledAmt.negated().toFixed(10),
+          transferId: current['id'] as string,
+          description: `Reversal du transfert ${(current['id'] as string).slice(0, 8)}`,
+        });
+      }
+    }
   }
 }
