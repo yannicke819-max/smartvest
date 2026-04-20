@@ -1,0 +1,20 @@
+{
+  "name": "@smartvest/cost-engine",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@smartvest/shared-types": "*",
+    "@smartvest/domain": "*",
+    "decimal.js": "^10.4.3",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  }
+}

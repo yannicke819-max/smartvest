@@ -1,0 +1,33 @@
+{
+  "root": true,
+  "parser": "@typescript-eslint/parser",
+  "parserOptions": {
+    "ecmaVersion": 2022,
+    "sourceType": "module"
+  },
+  "plugins": ["@typescript-eslint"],
+  "extends": [
+    "eslint:recommended",
+    "plugin:@typescript-eslint/recommended",
+    "prettier"
+  ],
+  "rules": {
+    "@typescript-eslint/no-unused-vars": ["warn", { "argsIgnorePattern": "^_" }],
+    "@typescript-eslint/consistent-type-imports": "warn",
+    "no-restricted-syntax": [
+      "error",
+      {
+        "selector": "Literal[value=/\\b(guaranteed return|profit guaranteed|best investment|you should buy)\\b/i]",
+        "message": "SmartVest wording policy: pas de promesse de rendement ni de recommandation d'achat."
+      }
+    ]
+  },
+  "ignorePatterns": [
+    "node_modules",
+    "dist",
+    ".next",
+    "build",
+    "*.config.js",
+    "*.config.ts"
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "noImplicitAny": true,
+    "noImplicitOverride": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": true,
+    "forceConsistentCasingInFileNames": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "baseUrl": ".",
+    "paths": {
+      "@smartvest/shared-types": ["packages/shared-types/src/index.ts"],
+      "@smartvest/shared-types/*": ["packages/shared-types/src/*"],
+      "@smartvest/domain": ["packages/domain/src/index.ts"],
+      "@smartvest/domain/*": ["packages/domain/src/*"],
+      "@smartvest/cost-engine": ["packages/cost-engine/src/index.ts"],
+      "@smartvest/audit": ["packages/audit/src/index.ts"],
+      "@smartvest/brokers": ["packages/brokers/src/index.ts"],
+      "@smartvest/portfolio-engine": ["packages/portfolio-engine/src/index.ts"]
+    }
+  }
+}
