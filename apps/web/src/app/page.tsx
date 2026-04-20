@@ -1,5 +1,5 @@
-import { DashboardPlaceholder } from '@/components/dashboard-placeholder';
+import { ConnectedDashboard } from '@/components/dashboard/connected-dashboard';
 
 export default function HomePage() {
-  return <DashboardPlaceholder />;
+  return <ConnectedDashboard />;
 }

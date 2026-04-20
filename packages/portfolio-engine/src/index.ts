@@ -1,3 +1,5 @@
+export * from './risk-profile-scorer';
+
 import type { RiskProfileId } from '@smartvest/domain';
 
 export interface AllocationTarget {
@@ -7,8 +9,6 @@ export interface AllocationTarget {
   maxWeight: number;
 }
 
-// Bornes indicatives — à raffiner avec la logique métier définitive.
-// À ce stade: templates pédagogiques, jamais des recommandations personnalisées.
 export const DEFAULT_TEMPLATES: Record<RiskProfileId, AllocationTarget[]> = {
   prudent: [
     { assetClass: 'bond', targetWeight: 0.6, minWeight: 0.5, maxWeight: 0.7 },
