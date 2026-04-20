@@ -83,17 +83,17 @@ const PROFILE_DESCRIPTIONS: Record<RiskProfileId, string> = {
   prudent:
     'Priorité à la préservation du capital. Votre simulation favorisera les actifs à faible volatilité (obligations, liquidités) avec une exposition limitée aux marchés actions.',
   equilibre:
-    'Recherche d'un équilibre entre stabilité et croissance. La simulation combine expositions actions et obligataires avec une gestion prudente de la volatilité.',
+    "Recherche d'un équilibre entre stabilité et croissance. La simulation combine expositions actions et obligataires avec une gestion prudente de la volatilité.",
   dynamique:
     'Exposition significative aux marchés actions pour un potentiel de croissance supérieur, avec une tolérance aux fluctuations importantes sur la durée.',
   offensif:
-    'Orientation forte vers les actifs risqués (actions, ETF, crypto éventuelle). Ce scenario accepte des drawdowns élevés en contrepartie d'un potentiel de croissance long terme.',
+    "Orientation forte vers les actifs risqués (actions, ETF, crypto éventuelle). Ce scenario accepte des drawdowns élevés en contrepartie d'un potentiel de croissance long terme.",
   sur_mesure:
     'Paramètres définis manuellement. Validez chaque hypothèse de la simulation selon vos objectifs spécifiques.',
 };
 
 const HORIZON_LABELS: Record<HorizonOption, string> = {
-  less_1y: 'moins d'1 an',
+  less_1y: "moins d'1 an",
   '1_3y': '1 à 3 ans',
   '3_5y': '3 à 5 ans',
   '5_10y': '5 à 10 ans',
@@ -102,9 +102,9 @@ const HORIZON_LABELS: Record<HorizonOption, string> = {
 
 const TOLERANCE_LABELS: Record<ToleranceOption, string> = {
   no_loss: 'aucune perte acceptable',
-  up_10pct: 'jusqu'à -10 %',
-  up_25pct: 'jusqu'à -25 %',
-  up_50pct: 'jusqu'à -50 %',
+  up_10pct: "jusqu'à -10 %",
+  up_25pct: "jusqu'à -25 %",
+  up_50pct: "jusqu'à -50 %",
   any_loss: 'perte totale possible',
 };
 
