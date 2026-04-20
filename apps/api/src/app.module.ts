@@ -17,6 +17,7 @@ import { GoalsModule } from './modules/goals/goals.module';
 import { MacroModule } from './modules/macro/macro.module';
 import { MandatesModule } from './modules/mandates/mandates.module';
 import { SuggestionsModule } from './modules/suggestions/suggestions.module';
+import { ProposalGeneratorModule } from './modules/proposal-generator/proposal-generator.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { SuggestionsModule } from './modules/suggestions/suggestions.module';
     MacroModule,
     MandatesModule,
     SuggestionsModule,
+    ProposalGeneratorModule,
   ],
 })
 export class AppModule {}
