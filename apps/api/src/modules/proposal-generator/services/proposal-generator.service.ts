@@ -118,15 +118,14 @@ export class ProposalGeneratorService {
   private async isDuplicate(portfolioId: string, proposal: RawProposal): Promise<boolean> {
     const windowDays = this.scorer.dedupWindowDays(proposal.sourceKind);
     const cutoff = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString();
-    let q = this.supabase.getClient()
+    const { count } = await this.supabase.getClient()
       .from('action_proposals')
       .select('id', { count: 'exact', head: true })
       .eq('portfolio_id', portfolioId)
-      .eq('action', proposal.action)
+      .eq('source_kind', proposal.sourceKind)
+      .eq('dedup_key', proposal.dedupKey)
       .in('lifecycle_state', ['presented', 'draft'])
       .gte('created_at', cutoff);
-    if (proposal.ticker) q = q.eq('ticker', proposal.ticker);
-    const { count } = await q;
     return (count ?? 0) > 0;
   }
 
@@ -162,6 +161,8 @@ export class ProposalGeneratorService {
       estimated_fx_markup: frictionEst?.fxMarkup ?? null,
       estimated_total_friction: frictionEst?.total ?? null,
       friction_currency: frictionEst?.currency ?? null,
+      source_kind: raw.sourceKind,
+      dedup_key: raw.dedupKey,
       presented_at: new Date().toISOString(),
       expires_at: expiresAt,
     });
