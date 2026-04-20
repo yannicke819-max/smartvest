@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { Plus, Wallet, BellRing, Shuffle, TrendingUp, UploadCloud, Target, Globe, Shield } from 'lucide-react';
+import { Plus, Wallet, BellRing, Shuffle, TrendingUp, UploadCloud, Target, Globe, Shield, Inbox } from 'lucide-react';
 import { usePortfolios, useUserProfile } from '@/hooks/use-portfolio';
 import { useRecentTransactions } from '@/hooks/use-dashboard';
 import { useValuation, useAllocation, useAlerts } from '@/hooks/use-valuation';
@@ -11,6 +11,7 @@ import { RiskProfileCard } from './risk-profile-card';
 import { AllocationDonut } from './allocation-donut';
 import { RecentTransactions } from './recent-transactions';
 import { CostFrictionCard } from './cost-friction-card';
+import { PendingSuggestionsWidget } from '@/components/suggestions/pending-suggestions-widget';
 import { SkeletonCard } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/states/empty-state';
 import { Button } from '@/components/ui/button';
@@ -126,6 +127,12 @@ export function ConnectedDashboard() {
               Macro
             </Button>
           </Link>
+          <Link href="/suggestions">
+            <Button variant="outline" size="sm">
+              <Inbox className="mr-1.5 h-3.5 w-3.5" />
+              Suggestions
+            </Button>
+          </Link>
           <Link href="/settings/delegation">
             <Button variant="outline" size="sm">
               <Shield className="mr-1.5 h-3.5 w-3.5" />
@@ -200,6 +207,7 @@ export function ConnectedDashboard() {
           />
         </div>
         <div className="space-y-4">
+          <PendingSuggestionsWidget />
           <RiskProfileCard
             profile={profileQuery.data?.risk_profile}
             loading={profileQuery.isLoading}

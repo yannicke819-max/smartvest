@@ -16,6 +16,7 @@ import { BrokerSyncModule } from './modules/broker-sync/broker-sync.module';
 import { GoalsModule } from './modules/goals/goals.module';
 import { MacroModule } from './modules/macro/macro.module';
 import { MandatesModule } from './modules/mandates/mandates.module';
+import { SuggestionsModule } from './modules/suggestions/suggestions.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { MandatesModule } from './modules/mandates/mandates.module';
     GoalsModule,
     MacroModule,
     MandatesModule,
+    SuggestionsModule,
   ],
 })
 export class AppModule {}

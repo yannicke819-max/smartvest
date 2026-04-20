@@ -405,12 +405,36 @@ export class GoalsService {
       delegationMode,
     });
 
-    await this.logEvent(goalId, userId, 'converted_to_suggestion', { scenarioId, delegationMode });
+    // Persist an ActionProposal row so it appears in the /suggestions review centre.
+    // Never creates an execution_intent — only a presentable suggestion.
+    const proposalId = uuid();
+    const expiresAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
+    await this.supabase.getClient().from('action_proposals').insert({
+      id: proposalId,
+      portfolio_id: goal.portfolio_id,
+      user_id: userId,
+      kind: 'suggestion',
+      delegation_mode: delegationMode,
+      lifecycle_state: 'presented',
+      action: 'rebalance',
+      rationale: `Scénario ${scenarioId} issu de l'objectif "${goal.name}" — proposition d'ajustement du plan d'allocation.`,
+      assumptions: JSON.stringify([
+        `Horizon cible : ${goal.horizon_months} mois`,
+        `Versement mensuel : ${goal.monthly_contribution} ${goal.currency}`,
+        'Hypothèses de rendement issues du scénario sélectionné',
+      ]),
+      currency: goal.currency,
+      presented_at: new Date().toISOString(),
+      expires_at: expiresAt,
+    });
+
+    await this.logEvent(goalId, userId, 'converted_to_suggestion', { scenarioId, delegationMode, proposalId });
     return {
       kind: 'suggestion' as const,
       message: 'Le scénario a été converti en suggestion. Aucune action n\'a été exécutée. Veuillez valider explicitement chaque étape du plan.',
       scenarioId,
       goalId,
+      proposalId,
       delegationMode,
       requiresUserValidation: true,
     };
