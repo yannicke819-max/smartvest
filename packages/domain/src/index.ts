@@ -22,3 +22,4 @@ export * from './entities/feasibility-assessment';
 export * from './entities/objective-scenario';
 export * from './entities/objective-plan';
 export * from './entities/macro-signal';
+export * from './entities/funding';
