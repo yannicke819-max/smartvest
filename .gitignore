@@ -10,6 +10,11 @@ build
 .env.*.local
 coverage
 *.tsbuildinfo
+# Build artifacts that packages' composite tsconfig can leak next to sources
+packages/*/src/**/*.js
+packages/*/src/**/*.js.map
+packages/*/src/**/*.d.ts
+packages/*/src/**/*.d.ts.map
 .vercel
 .vscode/*
 !.vscode/extensions.json
