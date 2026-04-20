@@ -206,6 +206,31 @@ export class MandatesService {
     return data;
   }
 
+  async killAll(userId: string, reason?: string) {
+    const { data: active } = await this.supabase.getClient()
+      .from('autonomy_mandates')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .eq('kill_switch_active', false);
+    if (!active || active.length === 0) return { affected: 0 };
+    for (const mandate of active as Array<Record<string, unknown>>) {
+      await this.supabase.getClient()
+        .from('autonomy_mandates')
+        .update({ kill_switch_active: true, updated_at: new Date().toISOString() })
+        .eq('id', mandate['id'] as string)
+        .eq('user_id', userId);
+      await this.writeAuditEvent({
+        portfolioId: mandate['portfolio_id'] as string,
+        userId,
+        mandateId: mandate['id'] as string,
+        kind: 'kill_switch_triggered',
+        reason: reason ?? `Arrêt d'urgence global — kill-switch activé sur "${mandate['label'] as string}"`,
+      });
+    }
+    return { affected: active.length };
+  }
+
   async getAuditEvents(portfolioId: string, userId: string, mandateId?: string) {
     let q = this.supabase.getClient()
       .from('autonomy_audit_events')

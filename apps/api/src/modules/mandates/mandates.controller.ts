@@ -35,6 +35,17 @@ export class MandatesController {
     return this.mandates.createMandate(extractUserId(headers), dto);
   }
 
+  @Post('kill-all')
+  @HttpCode(200)
+  killAll(
+    @Headers() headers: Record<string, string>,
+    @Body('reason') reason?: string,
+  ) {
+    return mandateReason(reason)
+      ? this.mandates.killAll(extractUserId(headers), reason)
+      : this.mandates.killAll(extractUserId(headers));
+  }
+
   @Get('audit')
   getAuditEvents(
     @Headers() headers: Record<string, string>,

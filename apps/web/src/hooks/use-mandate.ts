@@ -164,3 +164,15 @@ export function useKillSwitch() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['mandates'] }),
   });
 }
+
+export function useKillAll() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (reason?: string) =>
+      apiFetch<{ affected: number }>('/mandates/kill-all', {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['mandates'] }),
+  });
+}
