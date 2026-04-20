@@ -83,7 +83,10 @@ export class ValuationService {
     const positionValuations: PositionValuation[] = [];
 
     for (const p of positions) {
-      const asset = p.assets as { id: string; ticker: string; asset_class: string; currency: string } | null;
+      const rawAsset = p.assets as unknown;
+      const asset = Array.isArray(rawAsset)
+        ? (rawAsset[0] as { id: string; ticker: string; asset_class: string; currency: string } | undefined) ?? null
+        : rawAsset as { id: string; ticker: string; asset_class: string; currency: string } | null;
       const qty = new Decimal(p.quantity as string);
       const avgCost = new Decimal(p.average_cost as string);
       const costBasis = qty.mul(avgCost).abs();

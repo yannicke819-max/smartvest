@@ -2,11 +2,11 @@ export interface PriceBar {
   assetId: string;
   provider: string;
   date: string; // YYYY-MM-DD
-  open?: string;
-  high?: string;
-  low?: string;
+  open: string | undefined;
+  high: string | undefined;
+  low: string | undefined;
   close: string;
-  adjustedClose?: string;
-  volume?: number;
+  adjustedClose: string | undefined;
+  volume: number | undefined;
   currency: string;
 }

@@ -3,3 +3,4 @@ export * from './money';
 export * from './api';
 export * from './ids';
 export * from './onboarding';
+export * from './delegation';

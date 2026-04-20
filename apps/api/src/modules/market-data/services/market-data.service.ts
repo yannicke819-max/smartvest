@@ -77,6 +77,7 @@ export class MarketDataService {
       marketState: (row.market_state as InstrumentQuote['marketState']) ?? 'unknown',
       previousClose: row.previous_close ? String(row.previous_close) : undefined,
       changeAbsolute: row.change_absolute ? String(row.change_absolute) : undefined,
+      rawPayload: undefined,
       changePercent: row.change_percent ? String(row.change_percent) : undefined,
     }));
   }
