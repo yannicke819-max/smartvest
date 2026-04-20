@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { Plus, Wallet, BellRing, Shuffle, TrendingUp, UploadCloud, Target, Globe, Shield, Inbox } from 'lucide-react';
+import { Plus, Wallet, BellRing, Shuffle, TrendingUp, UploadCloud, Target, Globe, Shield, Inbox, Coins } from 'lucide-react';
 import { usePortfolios, useUserProfile } from '@/hooks/use-portfolio';
 import { useRecentTransactions } from '@/hooks/use-dashboard';
 import { useValuation, useAllocation, useAlerts } from '@/hooks/use-valuation';
@@ -14,6 +14,7 @@ import { CostFrictionCard } from './cost-friction-card';
 import { PendingSuggestionsWidget } from '@/components/suggestions/pending-suggestions-widget';
 import { MarketContextWidget } from './market-context-widget';
 import { ExposureWidget } from './exposure-widget';
+import { CashSummaryWidget } from './cash-summary-widget';
 import { SkeletonCard } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/states/empty-state';
 import { Button } from '@/components/ui/button';
@@ -135,6 +136,12 @@ export function ConnectedDashboard() {
               Suggestions
             </Button>
           </Link>
+          <Link href="/cash">
+            <Button variant="outline" size="sm">
+              <Coins className="mr-1.5 h-3.5 w-3.5" />
+              Cash
+            </Button>
+          </Link>
           <Link href="/settings/delegation">
             <Button variant="outline" size="sm">
               <Shield className="mr-1.5 h-3.5 w-3.5" />
@@ -209,6 +216,7 @@ export function ConnectedDashboard() {
           />
         </div>
         <div className="space-y-4">
+          <CashSummaryWidget />
           <MarketContextWidget />
           <ExposureWidget portfolioId={portfolioId} allocationByClass={allocationByClass} />
           <PendingSuggestionsWidget />
