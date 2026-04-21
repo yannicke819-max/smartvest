@@ -19,6 +19,7 @@ import { MandatesModule } from './modules/mandates/mandates.module';
 import { SuggestionsModule } from './modules/suggestions/suggestions.module';
 import { ProposalGeneratorModule } from './modules/proposal-generator/proposal-generator.module';
 import { FundingModule } from './modules/funding/funding.module';
+import { HyperTradingModule } from './modules/hyper-trading/hyper-trading.module';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { FundingModule } from './modules/funding/funding.module';
     SuggestionsModule,
     ProposalGeneratorModule,
     FundingModule,
+    HyperTradingModule,
   ],
 })
 export class AppModule {}
