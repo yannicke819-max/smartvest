@@ -25,7 +25,13 @@ import { BrokersModule } from './modules/brokers/brokers.module';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      // `npm run api:dev` CDs into apps/api via workspaces, so .env.local at
+      // the repo root is two levels up. Also check CWD-local paths in case
+      // the API is run from a different location. Order = first wins.
+      envFilePath: ['../../.env.local', '../../.env', '.env.local', '.env'],
+    }),
     ScheduleModule.forRoot(),
     SupabaseModule,
     FeatureFlagsModule,
