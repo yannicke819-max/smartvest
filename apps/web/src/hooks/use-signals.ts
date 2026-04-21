@@ -1,15 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-
-const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
-
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
-    ...init,
-  });
-  if (!res.ok) throw new Error(`API error ${res.status}`);
-  return res.json() as Promise<T>;
-}
+import { apiFetch } from '@/lib/api-client';
 
 export interface SignalRow {
   id: string;

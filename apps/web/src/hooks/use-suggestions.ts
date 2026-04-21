@@ -1,20 +1,7 @@
 'use client';
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-
-const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
-
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
-    ...init,
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(body || `API error ${res.status}`);
-  }
-  return res.json() as Promise<T>;
-}
+import { apiFetch } from '@/lib/api-client';
 
 export type LifecycleState = 'draft' | 'presented' | 'approved' | 'rejected' | 'expired' | 'executed' | 'cancelled';
 export type ProposalKind = 'information' | 'simulation' | 'suggestion' | 'execution_intent' | 'execution';
