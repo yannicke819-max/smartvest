@@ -1,9 +1,13 @@
 'use client';
 
 import type React from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
-import { Plus, Wallet, BellRing, Shuffle, TrendingUp, UploadCloud, Target, Globe, Shield, Inbox, Coins, ArrowUpCircle, Gauge } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { Plus, Wallet, BellRing, Shuffle, TrendingUp, UploadCloud, Target, Globe, Shield, Inbox, Coins, ArrowUpCircle, Gauge, FlaskConical } from 'lucide-react';
 import { usePortfolios, useUserProfile } from '@/hooks/use-portfolio';
+import { createPaperPortfolio } from '@/app/actions/paper-portfolio';
+import { useQueryClient } from '@tanstack/react-query';
 import { useRecentTransactions } from '@/hooks/use-dashboard';
 import { useValuation, useAllocation, useAlerts } from '@/hooks/use-valuation';
 import { DisclaimerBanner } from '@/components/disclaimer-banner';
@@ -24,10 +28,28 @@ import { Button } from '@/components/ui/button';
 import { ErrorState } from '@/components/states/error-state';
 
 export function ConnectedDashboard() {
+  const router = useRouter();
+  const qc = useQueryClient();
   const profileQuery = useUserProfile();
   const portfoliosQuery = usePortfolios();
   const activePortfolio = portfoliosQuery.data?.[0] ?? null;
   const portfolioId = activePortfolio?.id ?? null;
+  const [paperPending, setPaperPending] = useState(false);
+  const [paperError, setPaperError] = useState<string | null>(null);
+
+  async function handleCreatePaperPortfolio() {
+    setPaperPending(true);
+    setPaperError(null);
+    try {
+      await createPaperPortfolio({ initialCapital: 10000, baseCurrency: 'EUR' });
+      await qc.invalidateQueries({ queryKey: ['portfolios'] });
+      router.refresh();
+    } catch (e) {
+      setPaperError((e as Error).message);
+    } finally {
+      setPaperPending(false);
+    }
+  }
 
   const valuationQuery = useValuation(portfolioId);
   const allocationQuery = useAllocation(portfolioId);
@@ -43,19 +65,40 @@ export function ConnectedDashboard() {
 
   if (!isLoading && portfoliosQuery.data?.length === 0) {
     return (
-      <EmptyState
-        icon={<Wallet className="h-10 w-10" />}
-        title="Aucun portefeuille"
-        description="Créez votre premier portefeuille pour commencer à suivre vos investissements."
-        action={
-          <Link href="/onboarding">
-            <Button>
-              <Plus className="mr-2 h-4 w-4" />
-              Créer un portefeuille
-            </Button>
-          </Link>
-        }
-      />
+      <div className="space-y-6">
+        <DisclaimerBanner />
+        <EmptyState
+          icon={<Wallet className="h-10 w-10" />}
+          title="Aucun portefeuille"
+          description="Créez un portefeuille réel à partir de votre situation patrimoniale, ou lancez directement une simulation 100% virtuelle pour tester des stratégies sans engager de capital."
+          action={
+            <div className="flex flex-col items-center gap-3 sm:flex-row">
+              <Link href="/onboarding">
+                <Button>
+                  <Plus className="mr-2 h-4 w-4" />
+                  Créer un portefeuille
+                </Button>
+              </Link>
+              <Button
+                variant="outline"
+                onClick={handleCreatePaperPortfolio}
+                disabled={paperPending}
+              >
+                <FlaskConical className="mr-2 h-4 w-4" />
+                {paperPending ? 'Création…' : 'Simulation 10 000 € virtuels'}
+              </Button>
+            </div>
+          }
+        />
+        {paperError && (
+          <p className="text-center text-sm text-destructive">{paperError}</p>
+        )}
+        <p className="mx-auto max-w-md text-center text-xs text-muted-foreground">
+          La simulation est entièrement virtuelle : aucune connexion broker, aucun
+          ordre réel. Idéale pour observer des stratégies et laisser l'analyste IA
+          proposer des scénarios structurés sans engagement financier.
+        </p>
+      </div>
     );
   }
 
@@ -96,9 +139,17 @@ export function ConnectedDashboard() {
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
-            {activePortfolio?.name ?? 'Tableau de bord'}
-          </h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
+              {activePortfolio?.name ?? 'Tableau de bord'}
+            </h1>
+            {(activePortfolio as { is_simulation?: boolean } | null)?.is_simulation && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
+                <FlaskConical className="h-3 w-3" />
+                Simulation
+              </span>
+            )}
+          </div>
           <p className="mt-1 text-sm text-muted-foreground">
             {activePortfolio ? `Devise de base : ${currency}` : 'Chargement du portefeuille…'}
           </p>

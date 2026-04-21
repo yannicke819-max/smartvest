@@ -11,14 +11,24 @@ import { BackButton } from '@/components/ui/back-button';
 
 const PROVIDERS: Array<{
   value: BrokerProvider; label: string; mode: 'live' | 'csv'; notes: string;
+  website: string; category: 'broker' | 'crypto';
 }> = [
-  { value: 'MANUAL', label: 'Manuel / Autre', mode: 'csv', notes: 'Aucune connexion externe. Utilisez /imports pour charger des CSV.' },
-  { value: 'INTERACTIVE_BROKERS', label: 'Interactive Brokers', mode: 'live', notes: 'Requiert le Client Portal Gateway local. accountId (ex: U1234567) + sessionToken.' },
-  { value: 'SAXO', label: 'Saxo', mode: 'live', notes: 'OAuth2 — créer une app sur developer.saxo/. Fournir access_token + refresh_token + expiresAt.' },
-  { value: 'TRADING212', label: 'Trading 212', mode: 'live', notes: 'Générer une clé API depuis Settings → API (Invest / ISA).' },
-  { value: 'DEGIRO', label: 'DeGiro', mode: 'csv', notes: 'Pas d\'API officielle. Exportez un CSV depuis le portail DeGiro, puis utilisez /imports.' },
-  { value: 'BOURSE_DIRECT', label: 'Bourse Direct', mode: 'csv', notes: 'Pas d\'API publique. Passez par l\'import CSV via /imports.' },
-  { value: 'FORTUNEO', label: 'Fortuneo', mode: 'csv', notes: 'Pas d\'API publique. Passez par l\'import CSV via /imports.' },
+  { value: 'MANUAL', label: 'Manuel / Autre', mode: 'csv', notes: 'Aucune connexion externe. Utilisez /imports pour charger des CSV.', website: '', category: 'broker' },
+  // Actions / ETF / dérivés
+  { value: 'INTERACTIVE_BROKERS', label: 'Interactive Brokers', mode: 'live', notes: 'Requiert le Client Portal Gateway local. accountId (ex: U1234567) + sessionToken.', website: 'https://www.interactivebrokers.com', category: 'broker' },
+  { value: 'SAXO', label: 'Saxo Banque', mode: 'live', notes: 'OAuth2 — créer une app sur developer.saxo/. Fournir access_token + refresh_token + expiresAt.', website: 'https://www.home.saxo', category: 'broker' },
+  { value: 'TRADING212', label: 'Trading 212', mode: 'live', notes: 'Générer une clé API depuis Settings → API (Invest / ISA).', website: 'https://www.trading212.com', category: 'broker' },
+  { value: 'DEGIRO', label: 'DEGIRO', mode: 'csv', notes: 'Pas d\'API officielle. Exportez un CSV depuis le portail DEGIRO, puis utilisez /imports.', website: 'https://www.degiro.com', category: 'broker' },
+  { value: 'TRADE_REPUBLIC', label: 'Trade Republic', mode: 'csv', notes: 'Broker mobile européen. Pas d\'API publique — export des transactions via l\'app, puis /imports.', website: 'https://traderepublic.com', category: 'broker' },
+  { value: 'ETORO', label: 'eToro', mode: 'csv', notes: 'Social trading. Pas d\'API retail publique — export CSV via le portail.', website: 'https://www.etoro.com', category: 'broker' },
+  { value: 'REVOLUT', label: 'Revolut', mode: 'csv', notes: 'Néobanque avec offre trading. Pas d\'API trading publique — export CSV depuis l\'app.', website: 'https://www.revolut.com', category: 'broker' },
+  { value: 'BOURSE_DIRECT', label: 'Bourse Direct', mode: 'csv', notes: 'Broker français (PEA, CTO). Pas d\'API publique — CSV via /imports.', website: 'https://www.boursedirect.fr', category: 'broker' },
+  { value: 'FORTUNEO', label: 'Fortuneo', mode: 'csv', notes: 'Banque en ligne française avec offre bourse. Pas d\'API publique — CSV via /imports.', website: 'https://www.fortuneo.fr', category: 'broker' },
+  // Crypto
+  { value: 'BINANCE', label: 'Binance', mode: 'csv', notes: 'Plus grande plateforme crypto. API REST disponible — adapter live à venir. En attendant, export CSV.', website: 'https://www.binance.com', category: 'crypto' },
+  { value: 'KRAKEN', label: 'Kraken', mode: 'csv', notes: 'Exchange crypto US. API REST disponible — adapter live à venir. En attendant, export CSV.', website: 'https://www.kraken.com', category: 'crypto' },
+  { value: 'COINBASE', label: 'Coinbase', mode: 'csv', notes: 'Exchange crypto coté en bourse. API Advanced Trade — adapter live à venir. En attendant, export CSV.', website: 'https://www.coinbase.com', category: 'crypto' },
+  { value: 'CRYPTO_COM', label: 'Crypto.com', mode: 'csv', notes: 'Exchange crypto + Visa. Pas d\'API retail publique — export CSV.', website: 'https://crypto.com', category: 'crypto' },
 ];
 
 export default function NewBrokerConnectionPage() {
@@ -50,6 +60,13 @@ export default function NewBrokerConnectionPage() {
       case 'DEGIRO':
       case 'BOURSE_DIRECT':
       case 'FORTUNEO':
+      case 'BINANCE':
+      case 'KRAKEN':
+      case 'COINBASE':
+      case 'CRYPTO_COM':
+      case 'TRADE_REPUBLIC':
+      case 'ETORO':
+      case 'REVOLUT':
         payload = {
           provider,
           label: label.trim(),
@@ -146,13 +163,30 @@ export default function NewBrokerConnectionPage() {
             }}
             className="h-9 w-full rounded-md border bg-background px-3 text-sm"
           >
-            {PROVIDERS.map((p) => (
-              <option key={p.value} value={p.value}>
-                {p.label}
-              </option>
-            ))}
+            <option value="MANUAL">Manuel / Autre</option>
+            <optgroup label="Actions, ETF, dérivés">
+              {PROVIDERS.filter((p) => p.category === 'broker' && p.value !== 'MANUAL').map((p) => (
+                <option key={p.value} value={p.value}>{p.label}</option>
+              ))}
+            </optgroup>
+            <optgroup label="Crypto">
+              {PROVIDERS.filter((p) => p.category === 'crypto').map((p) => (
+                <option key={p.value} value={p.value}>{p.label}</option>
+              ))}
+            </optgroup>
           </select>
           <p className="text-[11px] text-muted-foreground">{selected.notes}</p>
+          {selected.website && (
+            <a
+              href={selected.website}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+            >
+              Site officiel {selected.label}
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          )}
         </div>
 
         <div className="space-y-1.5">

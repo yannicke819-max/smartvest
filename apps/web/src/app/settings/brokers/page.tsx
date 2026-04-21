@@ -12,11 +12,18 @@ import { BackButton } from '@/components/ui/back-button';
 
 const PROVIDER_LABEL: Record<BrokerProvider, string> = {
   INTERACTIVE_BROKERS: 'Interactive Brokers',
-  SAXO: 'Saxo',
-  DEGIRO: 'DeGiro (CSV)',
+  SAXO: 'Saxo Banque',
+  DEGIRO: 'DEGIRO (CSV)',
   TRADING212: 'Trading 212',
   BOURSE_DIRECT: 'Bourse Direct (CSV)',
   FORTUNEO: 'Fortuneo (CSV)',
+  TRADE_REPUBLIC: 'Trade Republic (CSV)',
+  ETORO: 'eToro (CSV)',
+  REVOLUT: 'Revolut (CSV)',
+  BINANCE: 'Binance (CSV)',
+  KRAKEN: 'Kraken (CSV)',
+  COINBASE: 'Coinbase (CSV)',
+  CRYPTO_COM: 'Crypto.com (CSV)',
   MANUAL: 'Manuel / CSV',
 };
 

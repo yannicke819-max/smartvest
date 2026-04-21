@@ -12,6 +12,13 @@ export const BrokerProvider = z.enum([
   'TRADING212',
   'BOURSE_DIRECT',
   'FORTUNEO',
+  'BINANCE',
+  'KRAKEN',
+  'COINBASE',
+  'CRYPTO_COM',
+  'TRADE_REPUBLIC',
+  'ETORO',
+  'REVOLUT',
   'MANUAL',
 ]);
 export type BrokerProvider = z.infer<typeof BrokerProvider>;
@@ -76,6 +83,37 @@ export const PROVIDER_CAPABILITIES: Record<BrokerProvider, BrokerCapabilities> =
     supportsRead: false, supportsExecution: false, supportsStreaming: false,
     supportsOptions: false, supportsCrypto: false, supportsCsvImport: true,
   },
+  // Exchanges crypto — APIs existantes mais pas d'adapter SmartVest pour l'instant.
+  // Capabilities = ce que le broker PEUT faire, l'exécution reste gatée par feature flags.
+  BINANCE: {
+    supportsRead: false, supportsExecution: false, supportsStreaming: false,
+    supportsOptions: false, supportsCrypto: true, supportsCsvImport: true,
+  },
+  KRAKEN: {
+    supportsRead: false, supportsExecution: false, supportsStreaming: false,
+    supportsOptions: false, supportsCrypto: true, supportsCsvImport: true,
+  },
+  COINBASE: {
+    supportsRead: false, supportsExecution: false, supportsStreaming: false,
+    supportsOptions: false, supportsCrypto: true, supportsCsvImport: true,
+  },
+  CRYPTO_COM: {
+    supportsRead: false, supportsExecution: false, supportsStreaming: false,
+    supportsOptions: false, supportsCrypto: true, supportsCsvImport: true,
+  },
+  // Brokers retail sans API publique — CSV uniquement.
+  TRADE_REPUBLIC: {
+    supportsRead: false, supportsExecution: false, supportsStreaming: false,
+    supportsOptions: false, supportsCrypto: true, supportsCsvImport: true,
+  },
+  ETORO: {
+    supportsRead: false, supportsExecution: false, supportsStreaming: false,
+    supportsOptions: false, supportsCrypto: true, supportsCsvImport: true,
+  },
+  REVOLUT: {
+    supportsRead: false, supportsExecution: false, supportsStreaming: false,
+    supportsOptions: false, supportsCrypto: true, supportsCsvImport: true,
+  },
   MANUAL: {
     supportsRead: false, supportsExecution: false, supportsStreaming: false,
     supportsOptions: false, supportsCrypto: false, supportsCsvImport: true,
@@ -122,6 +160,35 @@ export const BrokerCredentials = z.discriminatedUnion('provider', [
   }),
   z.object({
     provider: z.literal('FORTUNEO'),
+    note: z.literal('use-csv-import'),
+  }),
+  // Exchanges crypto — pas d'adapter live livré ici, CSV only pour l'instant.
+  z.object({
+    provider: z.literal('BINANCE'),
+    note: z.literal('use-csv-import'),
+  }),
+  z.object({
+    provider: z.literal('KRAKEN'),
+    note: z.literal('use-csv-import'),
+  }),
+  z.object({
+    provider: z.literal('COINBASE'),
+    note: z.literal('use-csv-import'),
+  }),
+  z.object({
+    provider: z.literal('CRYPTO_COM'),
+    note: z.literal('use-csv-import'),
+  }),
+  z.object({
+    provider: z.literal('TRADE_REPUBLIC'),
+    note: z.literal('use-csv-import'),
+  }),
+  z.object({
+    provider: z.literal('ETORO'),
+    note: z.literal('use-csv-import'),
+  }),
+  z.object({
+    provider: z.literal('REVOLUT'),
     note: z.literal('use-csv-import'),
   }),
   z.object({

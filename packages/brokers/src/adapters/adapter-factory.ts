@@ -53,8 +53,20 @@ export function createBrokerAdapter(
       return new Trading212Adapter();
     case 'BOURSE_DIRECT':
     case 'FORTUNEO':
+    case 'TRADE_REPUBLIC':
+    case 'ETORO':
+    case 'REVOLUT':
       throw new NotSupportedError(
-        `${provider} n'expose pas d'API publique — utilisez l'import CSV via /imports.`,
+        `${provider} n'expose pas d'API retail publique — utilisez l'import CSV via /imports.`,
+      );
+    case 'BINANCE':
+    case 'KRAKEN':
+    case 'COINBASE':
+    case 'CRYPTO_COM':
+      // Exchanges crypto : APIs existantes mais adapters live pas livrés ici.
+      // Phase ultérieure — en attendant, import CSV.
+      throw new NotSupportedError(
+        `Adapter ${provider} pas encore livré. Utilisez l'import CSV via /imports en attendant.`,
       );
     default: {
       const _exhaustive: never = provider;

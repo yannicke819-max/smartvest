@@ -5,7 +5,10 @@ import { apiFetch } from '@/lib/api-client';
 
 export type BrokerProvider =
   | 'INTERACTIVE_BROKERS' | 'SAXO' | 'DEGIRO' | 'TRADING212'
-  | 'BOURSE_DIRECT' | 'FORTUNEO' | 'MANUAL';
+  | 'BOURSE_DIRECT' | 'FORTUNEO'
+  | 'BINANCE' | 'KRAKEN' | 'COINBASE' | 'CRYPTO_COM'
+  | 'TRADE_REPUBLIC' | 'ETORO' | 'REVOLUT'
+  | 'MANUAL';
 
 export type ConnectionStatus = 'pending' | 'active' | 'error' | 'revoked' | 'expired';
 
@@ -63,7 +66,14 @@ export type CreateConnectionPayload =
   | { provider: 'TRADING212'; label: string; credentials: { provider: 'TRADING212'; apiKey: string; accountId?: string } }
   | { provider: 'DEGIRO'; label: string; credentials: { provider: 'DEGIRO'; note: 'use-csv-import' } }
   | { provider: 'BOURSE_DIRECT'; label: string; credentials: { provider: 'BOURSE_DIRECT'; note: 'use-csv-import' } }
-  | { provider: 'FORTUNEO'; label: string; credentials: { provider: 'FORTUNEO'; note: 'use-csv-import' } };
+  | { provider: 'FORTUNEO'; label: string; credentials: { provider: 'FORTUNEO'; note: 'use-csv-import' } }
+  | { provider: 'BINANCE'; label: string; credentials: { provider: 'BINANCE'; note: 'use-csv-import' } }
+  | { provider: 'KRAKEN'; label: string; credentials: { provider: 'KRAKEN'; note: 'use-csv-import' } }
+  | { provider: 'COINBASE'; label: string; credentials: { provider: 'COINBASE'; note: 'use-csv-import' } }
+  | { provider: 'CRYPTO_COM'; label: string; credentials: { provider: 'CRYPTO_COM'; note: 'use-csv-import' } }
+  | { provider: 'TRADE_REPUBLIC'; label: string; credentials: { provider: 'TRADE_REPUBLIC'; note: 'use-csv-import' } }
+  | { provider: 'ETORO'; label: string; credentials: { provider: 'ETORO'; note: 'use-csv-import' } }
+  | { provider: 'REVOLUT'; label: string; credentials: { provider: 'REVOLUT'; note: 'use-csv-import' } };
 
 export function useBrokerConnections() {
   return useQuery({
