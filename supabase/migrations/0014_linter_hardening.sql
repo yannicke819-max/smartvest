@@ -102,10 +102,14 @@ create policy "signal_conclusions_service_all"
 -- 5. S'assurer que les GRANTs sont en place (filet de sécurité si 0013 n'a
 --    pas été rejouée sur Railway par le worker de migrations).
 -- ─────────────────────────────────────────────────────────────────────────────
-grant usage on schema public to anon, authenticated;
+grant usage on schema public to anon, authenticated, service_role;
 grant select, insert, update, delete on all tables in schema public to authenticated;
 grant select on all tables in schema public to anon;
-grant usage, select on all sequences in schema public to authenticated;
+-- Filet de sécurité : service_role devrait avoir BYPASSRLS + full grants par
+-- défaut dans Supabase, mais si un REVOKE historique a cassé ça, on réaffirme.
+grant all on all tables in schema public to service_role;
+grant usage, select on all sequences in schema public to authenticated, service_role;
 alter default privileges in schema public grant select, insert, update, delete on tables to authenticated;
 alter default privileges in schema public grant select on tables to anon;
-alter default privileges in schema public grant usage, select on sequences to authenticated;
+alter default privileges in schema public grant all on tables to service_role;
+alter default privileges in schema public grant usage, select on sequences to authenticated, service_role;

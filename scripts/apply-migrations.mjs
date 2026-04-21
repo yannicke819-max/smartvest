@@ -6,7 +6,8 @@
 // Tracking : une table _smartvest_migrations conserve les migrations déjà
 // appliquées. Seules les nouvelles sont rejouées — le script est idempotent.
 
-import { readFileSync, readdirSync, createHash } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 
 const PROJECT_REF = process.env.SUPABASE_PROJECT_REF ?? 'mfuutigfhrawccotinpo';
 const TOKEN = process.env.SUPABASE_ACCESS_TOKEN;
