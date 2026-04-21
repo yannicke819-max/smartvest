@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "build": "nest build",
+    "build": "tsc -b",
     "start": "node dist/main.js",
-    "start:dev": "nest start --watch",
-    "start:debug": "nest start --debug --watch",
+    "start:dev": "ts-node -r tsconfig-paths/register --transpile-only src/main.ts",
+    "start:debug": "node --inspect -r ts-node/register -r tsconfig-paths/register src/main.ts",
     "typecheck": "tsc --noEmit",
     "test": "jest --passWithNoTests",
     "test:watch": "jest --watch"
@@ -49,12 +49,12 @@
     "transform": {"^.+\\.(t|j)s$": "ts-jest"},
     "testEnvironment": "node",
     "moduleNameMapper": {
-      "^@smartvest/shared-types$": "<rootDir>/../../packages/shared-types/src/index.ts",
-      "^@smartvest/domain$": "<rootDir>/../../packages/domain/src/index.ts",
-      "^@smartvest/portfolio-engine$": "<rootDir>/../../packages/portfolio-engine/src/index.ts",
-      "^@smartvest/cost-engine$": "<rootDir>/../../packages/cost-engine/src/index.ts",
-      "^@smartvest/audit$": "<rootDir>/../../packages/audit/src/index.ts",
-      "^@smartvest/brokers$": "<rootDir>/../../packages/brokers/src/index.ts"
+      "^@smartvest/shared-types$": "<rootDir>/../../../packages/shared-types/src/index.ts",
+      "^@smartvest/domain$": "<rootDir>/../../../packages/domain/src/index.ts",
+      "^@smartvest/portfolio-engine$": "<rootDir>/../../../packages/portfolio-engine/src/index.ts",
+      "^@smartvest/cost-engine$": "<rootDir>/../../../packages/cost-engine/src/index.ts",
+      "^@smartvest/audit$": "<rootDir>/../../../packages/audit/src/index.ts",
+      "^@smartvest/brokers$": "<rootDir>/../../../packages/brokers/src/index.ts"
     }
   }
 }

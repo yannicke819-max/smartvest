@@ -56,6 +56,57 @@ export class FeatureFlagsService {
         this.config.get('FEATURE_READ_ONLY_BROKER_SYNC_ENABLED'),
         DEFAULT_FLAGS.READ_ONLY_BROKER_SYNC_ENABLED,
       ),
+      // Hyper-trading personal mode — strictly opt-in, all default off
+      HYPER_TRADING_MODE_ENABLED: this.parseBool(
+        this.config.get('FEATURE_HYPER_TRADING_MODE_ENABLED'),
+        DEFAULT_FLAGS.HYPER_TRADING_MODE_ENABLED,
+      ),
+      HYPER_TRADING_UI_ENABLED: this.parseBool(
+        this.config.get('FEATURE_HYPER_TRADING_UI_ENABLED'),
+        DEFAULT_FLAGS.HYPER_TRADING_UI_ENABLED,
+      ),
+      HYPER_TRADING_RUNTIME_ENABLED: this.parseBool(
+        this.config.get('FEATURE_HYPER_TRADING_RUNTIME_ENABLED'),
+        DEFAULT_FLAGS.HYPER_TRADING_RUNTIME_ENABLED,
+      ),
+      HYPER_TRADING_EXECUTION_ENABLED: this.parseBool(
+        this.config.get('FEATURE_HYPER_TRADING_EXECUTION_ENABLED'),
+        DEFAULT_FLAGS.HYPER_TRADING_EXECUTION_ENABLED,
+      ),
+      // Sniper personal override
+      SNIPER_MODE_ENABLED: this.parseBool(
+        this.config.get('FEATURE_SNIPER_MODE_ENABLED'),
+        DEFAULT_FLAGS.SNIPER_MODE_ENABLED,
+      ),
+      SNIPER_MODE_UI_ENABLED: this.parseBool(
+        this.config.get('FEATURE_SNIPER_MODE_UI_ENABLED'),
+        DEFAULT_FLAGS.SNIPER_MODE_UI_ENABLED,
+      ),
+      // Broker connections
+      BROKER_CONNECTIONS_ENABLED: this.parseBool(
+        this.config.get('FEATURE_BROKER_CONNECTIONS_ENABLED'),
+        DEFAULT_FLAGS.BROKER_CONNECTIONS_ENABLED,
+      ),
+      BROKER_SYNC_READ_ONLY_ENABLED: this.parseBool(
+        this.config.get('FEATURE_BROKER_SYNC_READ_ONLY_ENABLED'),
+        DEFAULT_FLAGS.BROKER_SYNC_READ_ONLY_ENABLED,
+      ),
+      BROKER_ADAPTER_IB_ENABLED: this.parseBool(
+        this.config.get('FEATURE_BROKER_ADAPTER_IB_ENABLED'),
+        DEFAULT_FLAGS.BROKER_ADAPTER_IB_ENABLED,
+      ),
+      BROKER_ADAPTER_SAXO_ENABLED: this.parseBool(
+        this.config.get('FEATURE_BROKER_ADAPTER_SAXO_ENABLED'),
+        DEFAULT_FLAGS.BROKER_ADAPTER_SAXO_ENABLED,
+      ),
+      BROKER_ADAPTER_DEGIRO_ENABLED: this.parseBool(
+        this.config.get('FEATURE_BROKER_ADAPTER_DEGIRO_ENABLED'),
+        DEFAULT_FLAGS.BROKER_ADAPTER_DEGIRO_ENABLED,
+      ),
+      BROKER_ADAPTER_TRADING212_ENABLED: this.parseBool(
+        this.config.get('FEATURE_BROKER_ADAPTER_TRADING212_ENABLED'),
+        DEFAULT_FLAGS.BROKER_ADAPTER_TRADING212_ENABLED,
+      ),
     };
   }
 

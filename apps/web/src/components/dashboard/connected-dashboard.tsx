@@ -1,7 +1,8 @@
 'use client';
 
+import type React from 'react';
 import Link from 'next/link';
-import { Plus, Wallet, BellRing, Shuffle, TrendingUp, UploadCloud, Target, Globe } from 'lucide-react';
+import { Plus, Wallet, BellRing, Shuffle, TrendingUp, UploadCloud, Target, Globe, Shield, Inbox, Coins, ArrowUpCircle, Gauge } from 'lucide-react';
 import { usePortfolios, useUserProfile } from '@/hooks/use-portfolio';
 import { useRecentTransactions } from '@/hooks/use-dashboard';
 import { useValuation, useAllocation, useAlerts } from '@/hooks/use-valuation';
@@ -11,6 +12,12 @@ import { RiskProfileCard } from './risk-profile-card';
 import { AllocationDonut } from './allocation-donut';
 import { RecentTransactions } from './recent-transactions';
 import { CostFrictionCard } from './cost-friction-card';
+import { PendingSuggestionsWidget } from '@/components/suggestions/pending-suggestions-widget';
+import { SniperBadge } from '@/components/dashboard/sniper-badge';
+import { BrokerConnectionsWidget } from '@/components/dashboard/broker-connections-widget';
+import { MarketContextWidget } from './market-context-widget';
+import { ExposureWidget } from './exposure-widget';
+import { CashSummaryWidget } from './cash-summary-widget';
 import { SkeletonCard } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/states/empty-state';
 import { Button } from '@/components/ui/button';
@@ -96,7 +103,8 @@ export function ConnectedDashboard() {
             {activePortfolio ? `Devise de base : ${currency}` : 'Chargement du portefeuille…'}
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
+          <SniperBadge />
           <Link href={`/portfolio/${portfolioId}/alerts`}>
             <Button variant="outline" size="sm">
               <BellRing className="mr-1.5 h-3.5 w-3.5" />
@@ -124,6 +132,36 @@ export function ConnectedDashboard() {
             <Button variant="outline" size="sm">
               <Globe className="mr-1.5 h-3.5 w-3.5" />
               Macro
+            </Button>
+          </Link>
+          <Link href="/suggestions">
+            <Button variant="outline" size="sm">
+              <Inbox className="mr-1.5 h-3.5 w-3.5" />
+              Suggestions
+            </Button>
+          </Link>
+          <Link href="/cash">
+            <Button variant="outline" size="sm">
+              <Coins className="mr-1.5 h-3.5 w-3.5" />
+              Cash
+            </Button>
+          </Link>
+          <Link href="/funding">
+            <Button variant="outline" size="sm">
+              <ArrowUpCircle className="mr-1.5 h-3.5 w-3.5" />
+              Funding
+            </Button>
+          </Link>
+          <Link href="/settings/delegation">
+            <Button variant="outline" size="sm">
+              <Shield className="mr-1.5 h-3.5 w-3.5" />
+              Délégation
+            </Button>
+          </Link>
+          <Link href="/settings/strategy-mode">
+            <Button variant="outline" size="sm">
+              <Gauge className="mr-1.5 h-3.5 w-3.5" />
+              Mode
             </Button>
           </Link>
           <Link href="/imports">
@@ -189,11 +227,16 @@ export function ConnectedDashboard() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <div className="space-y-4 lg:col-span-2">
           <RecentTransactions
-            transactions={txQuery.data ?? []}
+            transactions={(txQuery.data ?? []) as unknown as React.ComponentProps<typeof RecentTransactions>['transactions']}
             loading={txQuery.isLoading}
           />
         </div>
         <div className="space-y-4">
+          <BrokerConnectionsWidget />
+          <CashSummaryWidget />
+          <MarketContextWidget />
+          <ExposureWidget portfolioId={portfolioId} allocationByClass={allocationByClass} />
+          <PendingSuggestionsWidget />
           <RiskProfileCard
             profile={profileQuery.data?.risk_profile}
             loading={profileQuery.isLoading}

@@ -28,7 +28,7 @@ create table if not exists macro_signals (
   affected_sectors text[] not null default '{}',
   affected_currencies text[] not null default '{}',
   affected_asset_classes text[] not null default '{}',
-  references text[] not null default '{}',
+  source_references text[] not null default '{}',
   tags text[] not null default '{}',
   occurred_at timestamptz not null default now(),
   ingested_at timestamptz not null default now(),

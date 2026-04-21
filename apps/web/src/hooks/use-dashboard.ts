@@ -45,7 +45,7 @@ export function usePositions(portfolioId: string | null) {
         .eq('portfolio_accounts.portfolio_id', portfolioId)
         .is('closed_at', null);
       if (error) throw new Error(error.message);
-      return (data ?? []) as PositionWithAsset[];
+      return (data ?? []) as unknown as PositionWithAsset[];
     },
   });
 }

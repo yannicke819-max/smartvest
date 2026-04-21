@@ -192,10 +192,12 @@ create policy "provider_health_read_auth"
   on public.market_data_provider_health for select
   using (auth.role() = 'authenticated');
 
--- ===== Broker sync jobs (read-only connector plumbing, no execution) =====
-create table if not exists public.broker_sync_jobs (
+-- ===== Broker connector jobs (read-only connector plumbing, no execution) =====
+-- Renamed from broker_sync_jobs to free that name for the user-facing
+-- broker-connection layer (migration 0012).
+create table if not exists public.broker_connector_jobs (
   id uuid primary key default uuid_generate_v4(),
-  connection_id uuid references public.broker_connections(id) on delete cascade,
+  link_id uuid references public.broker_sync_links(id) on delete cascade,
   portfolio_id uuid not null references public.portfolios(id) on delete cascade,
   user_id uuid not null references auth.users(id) on delete cascade,
   sync_kind text not null check (sync_kind in ('positions','transactions','balance','full')),
@@ -209,10 +211,10 @@ create table if not exists public.broker_sync_jobs (
   created_at timestamptz not null default now()
 );
 
-create index if not exists broker_sync_jobs_portfolio_idx on public.broker_sync_jobs(portfolio_id, created_at desc);
+create index if not exists broker_connector_jobs_portfolio_idx on public.broker_connector_jobs(portfolio_id, created_at desc);
 
-alter table public.broker_sync_jobs enable row level security;
-create policy "broker_sync_jobs_owner" on public.broker_sync_jobs for all using (auth.uid() = user_id);
+alter table public.broker_connector_jobs enable row level security;
+create policy "broker_connector_jobs_owner" on public.broker_connector_jobs for all using (auth.uid() = user_id);
 
 -- ===== Seed some benchmarks for default wiring =====
 insert into public.benchmarks (ticker, name, description, provider, provider_ticker, currency)

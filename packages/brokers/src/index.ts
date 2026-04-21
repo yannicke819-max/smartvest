@@ -57,3 +57,13 @@ export class SimulatedBrokerAdapter implements BrokerAdapter {
     };
   }
 }
+
+// Personal broker-connection layer (new in 0012_broker_connections.sql).
+// Different from the legacy BrokerAdapter above; lives alongside it.
+export * from './adapters/broker-adapter.interface';
+export * from './adapters/manual.adapter';
+export * from './adapters/interactive-brokers.adapter';
+export * from './adapters/saxo.adapter';
+export * from './adapters/degiro.adapter';
+export * from './adapters/trading212.adapter';
+export * from './adapters/adapter-factory';

@@ -26,7 +26,7 @@ export default function SignInPage() {
       if (authError) throw authError;
       setSent(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Erreur lors de l'envoi du lien.');
+      setError(err instanceof Error ? err.message : 'Erreur lors de l’envoi du lien.');
     } finally {
       setLoading(false);
     }

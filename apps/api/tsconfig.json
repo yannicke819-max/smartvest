@@ -20,5 +20,13 @@
     { "path": "../../packages/brokers" },
     { "path": "../../packages/portfolio-engine" }
   ],
-  "include": ["src/**/*"]
+  "include": ["src/**/*"],
+  "ts-node": {
+    "transpileOnly": true,
+    "require": ["tsconfig-paths/register"],
+    "compilerOptions": {
+      "module": "CommonJS",
+      "moduleResolution": "Node"
+    }
+  }
 }

@@ -23,7 +23,7 @@ export class BrokerSyncService {
     if (!this.supabase.isReady()) return [];
     const { data } = await this.supabase
       .getClient()
-      .from('broker_connections')
+      .from('broker_sync_links')
       .select('*')
       .eq('user_id', userId)
       .eq('portfolio_id', portfolioId);
@@ -34,7 +34,7 @@ export class BrokerSyncService {
     if (!this.supabase.isReady()) return [];
     const { data } = await this.supabase
       .getClient()
-      .from('broker_sync_jobs')
+      .from('broker_connector_jobs')
       .select('*')
       .eq('user_id', userId)
       .eq('portfolio_id', portfolioId)
@@ -63,9 +63,9 @@ export class BrokerSyncService {
     if (this.supabase.isReady()) {
       const { data, error } = await this.supabase
         .getClient()
-        .from('broker_sync_jobs')
+        .from('broker_connector_jobs')
         .insert({
-          connection_id: input.connectionId,
+          link_id: input.connectionId,
           portfolio_id: input.portfolioId,
           user_id: input.userId,
           sync_kind: input.syncKind,
@@ -87,7 +87,7 @@ export class BrokerSyncService {
     if (this.supabase.isReady() && jobId) {
       await this.supabase
         .getClient()
-        .from('broker_sync_jobs')
+        .from('broker_connector_jobs')
         .update({
           status: 'done',
           rows_synced: 0,
@@ -115,7 +115,7 @@ export class BrokerSyncService {
     if (!this.supabase.isReady()) return null;
     const { data } = await this.supabase
       .getClient()
-      .from('broker_connections')
+      .from('broker_sync_links')
       .select('*')
       .eq('id', connectionId)
       .eq('user_id', userId)
@@ -126,7 +126,7 @@ export class BrokerSyncService {
   private toJob(row: Record<string, unknown>): BrokerSyncJob {
     return {
       id: row['id'] as string,
-      connectionId: (row['connection_id'] as string) ?? null,
+      connectionId: (row['link_id'] as string) ?? null,
       portfolioId: row['portfolio_id'] as string,
       userId: row['user_id'] as string,
       syncKind: row['sync_kind'] as SyncKind,

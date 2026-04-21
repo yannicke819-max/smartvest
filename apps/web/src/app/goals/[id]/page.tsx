@@ -2,8 +2,9 @@
 
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, BarChart3, MapPin, AlertCircle, CheckCircle, XCircle } from 'lucide-react';
+import { ArrowLeft, BarChart3, MapPin, AlertCircle, CheckCircle, XCircle, Lock } from 'lucide-react';
 import { useGoal, useAssessFeasibility, useFeasibility } from '@/hooks/use-goals';
+import { useCashReservationsQuery } from '@/hooks/use-cash';
 import { Button } from '@/components/ui/button';
 import { SkeletonCard } from '@/components/ui/skeleton';
 
@@ -34,6 +35,7 @@ export default function GoalDetailPage() {
   const goalQuery = useGoal(id);
   const feasibilityQuery = useFeasibility(id);
   const assessMutation = useAssessFeasibility(id);
+  const reservationsQuery = useCashReservationsQuery({ goalId: id });
 
   const goal = goalQuery.data;
   const feasibility = feasibilityQuery.data;
@@ -159,6 +161,26 @@ export default function GoalDetailPage() {
           <p className="text-[10px] text-muted-foreground">
             Les performances passées ne préjugent pas des performances futures. Hypothèses déterministes — aucune garantie de rendement.
           </p>
+        </div>
+      )}
+
+      {/* Cash reserved for this goal */}
+      {(reservationsQuery.data ?? []).length > 0 && (
+        <div className="rounded-lg border p-4 space-y-2">
+          <h2 className="flex items-center gap-1.5 text-sm font-medium">
+            <Lock className="h-4 w-4 text-muted-foreground" />
+            Cash réservé pour cet objectif
+          </h2>
+          <ul className="divide-y">
+            {(reservationsQuery.data ?? []).map((r) => (
+              <li key={r.id} className="flex items-center justify-between py-1.5 text-sm">
+                <span className="text-muted-foreground">{r.reason}</span>
+                <span className="tabular-nums font-medium">
+                  {parseFloat(r.amount).toFixed(2)} {r.currency}
+                </span>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
     </div>

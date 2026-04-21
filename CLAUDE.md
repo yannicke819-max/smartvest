@@ -183,6 +183,132 @@ Un mandat expiré ou avec `killSwitchActive = true` interdit toute exécution au
 
 ---
 
+## 6 bis. OperatingTempo & mode hyper-trading personnel
+
+`OperatingTempo` est une **dimension orthogonale** au `DelegationMode`. Elle gouverne **la cadence** (à quelle fréquence SmartVest analyse, propose, et le cas échéant exécute), pas **qui agit**. Le `DelegationMode` reste seul responsable de l'autonomie d'action.
+
+### Tempos disponibles
+
+| Tempo | Cadence indicative | Usage |
+|---|---|---|
+| `LONG_HORIZON` (défaut) | analyse quotidienne | buy-and-hold, pilotage long terme |
+| `ACTIVE` | analyse horaire | swing trading personnel |
+| `HYPER_ACTIVE` | analyse toutes les 5 min | mode personnel très intensif, opt-in strict |
+
+### Mode hyper-trading personnel — règles immuables
+
+- **Strictement opt-in.** Aucun profil n'existe par défaut. La configuration crée un profil en statut `draft` ; l'activation est un acte explicite.
+- **Renforce — ne relâche jamais — les garde-fous existants.** À l'évaluation, le runtime prend la valeur la plus stricte entre `MandateGuardrail` et `HyperTradingGuardrail`.
+- **Kill-switch en un clic.** Le bouton kill-switch n'est jamais gaté par un feature flag. Sa réactivation requiert une réactivation explicite.
+- **Expire obligatoirement.** Pas de profil hyper-trading permanent. Le champ `expiresAt` est obligatoire.
+- **Ne crée AUCUNE exécution implicite.** Le `HyperTradingPolicyEngine` retourne `allow | block | require_review | kill_switch` — jamais `execute`. L'exécution réelle reste conditionnée par `AUTONOMOUS_GUARDED` + mandat valide + `BROKER_EXECUTION_ENABLED` + `HYPER_TRADING_EXECUTION_ENABLED`.
+- **Audit hash-chaîné.** Toute transition (`profile_activated`, `profile_paused`, `profile_killed`, `guardrail_updated`, `guardrail_violation_blocked`, `kill_switch_armed`…) écrit un événement `hyper_trading_audit_events`.
+
+### Garde-fous obligatoires (`HyperTradingGuardrail`)
+
+Champs runtime-checkés par le `HyperTradingPolicyEngine` à chaque évaluation :
+
+- `maxTradesPerDay`, `cooldownMinutesBetweenTrades`, `reviewEveryNMinutes`
+- `maxNotionalPerTradePct`, `maxDailyNotionalPct`, `maxExposurePerInstrumentPct`, `maxExposurePerAssetClassPct`, `maxExposurePerSectorPct`
+- `maxOpenPositions`
+- `maxDailyLossPct`, `maxIntradayDrawdownPct`, `mandatoryStopLossPct` (obligatoire), `optionalTakeProfitPct`
+- `maximumAllowedSpreadBps`, `maximumAllowedSlippageBps`, `minimumExpectedLiquidityAbs`, `maxAcceptableVolatilityPct`
+- `allowedAssetClasses` (whitelist), `deniedTickers` (blacklist explicite)
+- `requiredHumanApprovalAboveAbs`
+- `killSwitchOnAbnormalLoss`, `killSwitchOnDataProviderFailure`, `killSwitchOnBrokerSyncMismatch`, `killSwitchOnVolatilityShock`
+
+### Matrice de compatibilité `DelegationMode × HYPER_ACTIVE`
+
+| DelegationMode | + HYPER_ACTIVE | Comportement |
+|---|---|---|
+| `MANUAL_EXPLICIT` | autorisé | Analyse haute fréquence + suggestions denses, aucune action sans clic utilisateur. Cas par défaut. |
+| `HYBRID_SUGGESTIVE` | autorisé | Suggestions très fréquentes, validation utilisateur explicite par action. |
+| `AUTONOMOUS_GUARDED` | autorisé **uniquement avec mandat valide ET garde-fous renforcés**. Tout `kill_switch` se propage immédiatement au mandat sous-jacent. |
+
+### Feature flags
+
+| Flag | Rôle | Défaut |
+|---|---|---|
+| `HYPER_TRADING_MODE_ENABLED` | Master gate (concept exposé côté API) | `false` |
+| `HYPER_TRADING_UI_ENABLED` | Affichage des écrans de configuration | `false` |
+| `HYPER_TRADING_RUNTIME_ENABLED` | Moteur d'évaluation actif | `false` |
+| `HYPER_TRADING_EXECUTION_ENABLED` | Autorise l'exécution réelle, en sus de `BROKER_EXECUTION_ENABLED` + `AUTONOMOUS_GUARDED` + mandat valide | `false` |
+
+Activer `HYPER_TRADING_EXECUTION_ENABLED` ne suffit jamais seul à exécuter — toutes les conditions de garde-fou doivent être réunies.
+
+### Mode sniper — surcouche personnelle minimale
+
+Surcouche indépendante du mode hyper-trading, pensée pour un usage strictement personnel et réversible.
+
+- **Déverrouillage par code local.** `SNIPER_MODE_UNLOCK_CODE` est défini côté serveur uniquement. Sans code configuré, `/sniper/unlock` répond `400`.
+- **TTL obligatoire.** Chaque session expire automatiquement (par défaut 15 min, max 240 min). Pas de session permanente.
+- **Une seule session active à la fois** par utilisateur (contrainte DB).
+- **Désactivation immédiate** jamais gatée par un feature flag — le bouton reste toujours disponible.
+- **`PersonalOverrideMode`** dérivé en lecture seule : `STANDARD` / `SNIPER_LOCKED` / `SNIPER_ACTIVE`.
+- **La table `sniper_sessions` est l'audit.** Chaque déverrouillage insère une ligne ; les terminaisons (`expired`, `revoked`) mettent à jour le statut + timestamps. Aucune table séparée.
+- **Ne contourne JAMAIS** `checkMandatePermission()`, le kill-switch global, ni les garde-fous d'un `AutonomyMandate`. Aucun chemin d'exécution réelle n'est introduit.
+- Les autres modules peuvent lire `SniperService.isActive(userId)` pour ajuster leur cadence (fréquence d'analyse, fraîcheur des suggestions, etc.) — jamais pour contourner une vérification.
+
+| Flag | Rôle | Défaut |
+|---|---|---|
+| `SNIPER_MODE_ENABLED` | Master gate ; sans ce flag `/sniper/unlock` renvoie 403 | `false` |
+| `SNIPER_MODE_UI_ENABLED` | Rend visible l'écran `/settings/sniper` | `false` |
+
+### Wording
+
+- Préférer : « mode opératoire actif », « cadence haute intensité », « garde-fous renforcés », « pause immédiate disponible ».
+- Interdire : « gains rapides », « mode turbo », « booster », « battre le marché », « autopilot profits ».
+
+---
+
+## 6 ter. Broker Connections — connexions personnelles aux brokers
+
+Connexion lecture-seule aux comptes brokers personnels. **Ne change rien** aux règles d'exécution de la Section 2 : un broker connecté n'ouvre aucun droit d'exécution réelle.
+
+### Règles immuables
+
+- **Credentials en Supabase Vault uniquement.** Jamais en ligne DB en clair, jamais en logs (même pas le nom du champ), jamais dans une réponse API. Le row `broker_connections` n'expose que `credentials_vault_ref` (un UUID opaque).
+- **Exposition contrôlée côté API.** `GET /brokers/connections[/:id]` fait un `SELECT` avec liste explicite de colonnes qui **exclut** `credentials_vault_ref`. Aucun endpoint ne retourne les credentials.
+- **Rotation = création d'un nouveau secret + suppression de l'ancien.** L'ancien ref n'est supprimé qu'après commit du nouveau en DB (pas d'atomicité impossible sur un seul RPC).
+- **Révocation toujours accessible.** `DELETE /brokers/connections/:id` n'est **jamais** gaté par un feature flag — safety wins. Supprime le secret du Vault + marque `revoked`.
+- **DeGiro ne scrape pas.** Pas d'API officielle → l'adapter `DegiroAdapter` rejette toute méthode live et pointe vers `/imports` (parser CSV déjà livré). Idem pour Bourse Direct / Fortuneo.
+
+### Chaîne de garde-fous pour l'exécution réelle (à venir)
+
+L'exécution réelle nécessite **toutes** les conditions réunies — aucune à elle seule n'est suffisante :
+
+1. `DELEGATION_AUTONOMOUS_GUARDED=true`
+2. `AutonomyMandate` actif + `checkMandatePermission() === null`
+3. `BROKER_EXECUTION_ENABLED=true`
+4. `BROKER_ADAPTER_<X>_ENABLED=true` pour le provider concerné
+5. `AUTONOMY_KILL_SWITCH=false`
+6. Si profil hyper-trading actif → `HyperTradingGuardrail` respectés, `HYPER_TRADING_EXECUTION_ENABLED=true`
+7. `BrokerSyncService` ne trouve pas de conflit avec le kill-switch global
+
+Dans ce commit, la méthode `placeOrder()` de chaque adapter **refuse toujours** (throw `NotSupportedError`), même si tous les flags ci-dessus sont on. L'exécution réelle sera ajoutée dans un commit dédié avec tests sur credentials live.
+
+### Kill-switch et mandat propagent sur la sync
+
+- `AUTONOMY_KILL_SWITCH=true` → toute nouvelle sync est immédiatement annulée (`sync_cancelled_by_kill_switch`), audit écrit.
+- Mandat invalide en cours de sync : vérifié au démarrage du job uniquement dans ce commit. Annulation mid-run = future improvement (streaming nécessaire).
+- `broker_sync_audit_events.kind` comprend `sync_cancelled_by_kill_switch` et `sync_cancelled_by_mandate` pour tracer ces cas.
+
+### Provider capabilities (matrice)
+
+| Provider | read | execution | streaming | options | crypto | csv |
+|---|---|---|---|---|---|---|
+| `INTERACTIVE_BROKERS` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `SAXO` | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
+| `TRADING212` | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ |
+| `DEGIRO` | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| `BOURSE_DIRECT` | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| `FORTUNEO` | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| `MANUAL` | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+
+Les flags `supports_*` sur la ligne `broker_connections` sont dérivés de `PROVIDER_CAPABILITIES` à la création. Ils décrivent ce que le provider **peut** faire, pas ce qui est **activé** (feature flags orthogonaux).
+
+---
+
 ## 7. Frictions d'intermédiation — à rendre visibles
 
 Le moteur de coût (`@smartvest/cost-engine`) ventile chaque transaction :

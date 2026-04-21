@@ -128,10 +128,10 @@ export default function SignalDetailPage() {
         ))}
       </div>
 
-      {signal.summary && (
+      {Boolean(signal.summary) && (
         <div className="rounded-lg border p-4">
           <p className="text-xs font-medium mb-1 text-muted-foreground">Synthèse</p>
-          <p className="text-sm">{signal.summary}</p>
+          <p className="text-sm">{signal.summary as string}</p>
         </div>
       )}
 
@@ -172,7 +172,7 @@ export default function SignalDetailPage() {
       )}
 
       {/* Analogs result */}
-      {analogsMutation.isSuccess && analogsMutation.data && (
+      {analogsMutation.isSuccess && Boolean(analogsMutation.data) && (
         <div className="rounded-lg border p-4 space-y-3">
           <p className="text-sm font-medium">Analogues historiques</p>
           {(analogsMutation.data as { analogs: { episodeTitle: string; similarityScore: number; contextDescription: string; resolution: string | null }[] }).analogs.map((a) => (

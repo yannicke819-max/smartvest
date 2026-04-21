@@ -15,10 +15,23 @@ import { PerformanceModule } from './modules/performance/performance.module';
 import { BrokerSyncModule } from './modules/broker-sync/broker-sync.module';
 import { GoalsModule } from './modules/goals/goals.module';
 import { MacroModule } from './modules/macro/macro.module';
+import { MandatesModule } from './modules/mandates/mandates.module';
+import { SuggestionsModule } from './modules/suggestions/suggestions.module';
+import { ProposalGeneratorModule } from './modules/proposal-generator/proposal-generator.module';
+import { FundingModule } from './modules/funding/funding.module';
+import { HyperTradingModule } from './modules/hyper-trading/hyper-trading.module';
+import { SniperModule } from './modules/sniper/sniper.module';
+import { BrokersModule } from './modules/brokers/brokers.module';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      // `npm run api:dev` CDs into apps/api via workspaces, so .env.local at
+      // the repo root is two levels up. Also check CWD-local paths in case
+      // the API is run from a different location. Order = first wins.
+      envFilePath: ['../../.env.local', '../../.env', '.env.local', '.env'],
+    }),
     ScheduleModule.forRoot(),
     SupabaseModule,
     FeatureFlagsModule,
@@ -34,6 +47,13 @@ import { MacroModule } from './modules/macro/macro.module';
     BrokerSyncModule,
     GoalsModule,
     MacroModule,
+    MandatesModule,
+    SuggestionsModule,
+    ProposalGeneratorModule,
+    FundingModule,
+    HyperTradingModule,
+    SniperModule,
+    BrokersModule,
   ],
 })
 export class AppModule {}
