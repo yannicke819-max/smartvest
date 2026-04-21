@@ -94,7 +94,7 @@ export function ConnectedDashboard() {
     <div className="space-y-6">
       <DisclaimerBanner />
 
-      <div className="flex items-start justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
             {activePortfolio?.name ?? 'Tableau de bord'}
@@ -103,25 +103,29 @@ export function ConnectedDashboard() {
             {activePortfolio ? `Devise de base : ${currency}` : 'Chargement du portefeuille…'}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <SniperBadge />
-          <Link href={`/portfolio/${portfolioId}/alerts`}>
-            <Button variant="outline" size="sm">
-              <BellRing className="mr-1.5 h-3.5 w-3.5" />
-              Alertes
-              {(criticalAlerts > 0 || warningAlerts > 0) && (
-                <span className="ml-1.5 rounded-full bg-destructive px-1.5 py-0.5 text-[10px] font-medium text-destructive-foreground">
-                  {criticalAlerts + warningAlerts}
-                </span>
-              )}
-            </Button>
-          </Link>
-          <Link href={`/portfolio/${portfolioId}/performance`}>
-            <Button variant="outline" size="sm">
-              <TrendingUp className="mr-1.5 h-3.5 w-3.5" />
-              Performance
-            </Button>
-          </Link>
+          {portfolioId && (
+            <Link href={`/portfolio/${portfolioId}/alerts`}>
+              <Button variant="outline" size="sm">
+                <BellRing className="mr-1.5 h-3.5 w-3.5" />
+                Alertes
+                {(criticalAlerts > 0 || warningAlerts > 0) && (
+                  <span className="ml-1.5 rounded-full bg-destructive px-1.5 py-0.5 text-[10px] font-medium text-destructive-foreground">
+                    {criticalAlerts + warningAlerts}
+                  </span>
+                )}
+              </Button>
+            </Link>
+          )}
+          {portfolioId && (
+            <Link href={`/portfolio/${portfolioId}/performance`}>
+              <Button variant="outline" size="sm">
+                <TrendingUp className="mr-1.5 h-3.5 w-3.5" />
+                Performance
+              </Button>
+            </Link>
+          )}
           <Link href="/goals">
             <Button variant="outline" size="sm">
               <Target className="mr-1.5 h-3.5 w-3.5" />
@@ -170,12 +174,14 @@ export function ConnectedDashboard() {
               Imports
             </Button>
           </Link>
-          <Link href={`/portfolio/${portfolioId}/simulations`}>
-            <Button variant="outline" size="sm">
-              <Shuffle className="mr-1.5 h-3.5 w-3.5" />
-              Simuler
-            </Button>
-          </Link>
+          {portfolioId && (
+            <Link href={`/portfolio/${portfolioId}/simulations`}>
+              <Button variant="outline" size="sm">
+                <Shuffle className="mr-1.5 h-3.5 w-3.5" />
+                Simuler
+              </Button>
+            </Link>
+          )}
           <Link href="/accounts/new">
             <Button variant="outline" size="sm">
               <Plus className="mr-1.5 h-3.5 w-3.5" />
