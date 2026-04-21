@@ -11,8 +11,8 @@ import { readFileSync, readdirSync, createHash } from 'node:fs';
 const PROJECT_REF = process.env.SUPABASE_PROJECT_REF ?? 'mfuutigfhrawccotinpo';
 const TOKEN = process.env.SUPABASE_ACCESS_TOKEN;
 if (!TOKEN) {
-  console.error('SUPABASE_ACCESS_TOKEN manquant.');
-  process.exit(1);
+  console.warn('SUPABASE_ACCESS_TOKEN absent — migrations ignorées (set la variable pour les appliquer).');
+  process.exit(0);
 }
 
 const API = `https://api.supabase.com/v1/projects/${PROJECT_REF}/database/query`;

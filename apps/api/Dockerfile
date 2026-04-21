@@ -8,7 +8,7 @@
 # node_modules is slightly less aggressive, but for personal use builds
 # are infrequent enough that correctness wins.
 
-# cache-bust: 1 — force full rebuild (packages tsconfig now emit CommonJS)
+# cache-bust: 2 — migrations intégrées dans CMD (preDeployCommand Railway non fiable sur Dockerfile builder)
 FROM node:20-alpine AS builder
 WORKDIR /repo
 
@@ -37,4 +37,7 @@ COPY --from=builder /repo/supabase/migrations ./supabase/migrations
 
 WORKDIR /app/apps/api
 EXPOSE 3001
-CMD ["node", "dist/main.js"]
+# Run migrations first, then start the API. The migration script exits 0
+# when SUPABASE_ACCESS_TOKEN is absent (warn only), so the container always
+# starts. Exit 1 on real migration failures to block a bad deploy.
+CMD ["sh", "-c", "node /app/scripts/apply-migrations.mjs && node dist/main.js"]
