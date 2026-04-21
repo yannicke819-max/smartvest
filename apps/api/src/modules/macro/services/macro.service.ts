@@ -43,7 +43,7 @@ export class MacroService {
         affected_sectors: normalized.affectedSectors,
         affected_currencies: normalized.affectedCurrencies,
         affected_asset_classes: normalized.affectedAssetClasses,
-        references: normalized.references,
+        source_references: normalized.references,
         tags: normalized.tags,
         occurred_at: normalized.occurredAt,
         ingested_at: normalized.ingestedAt,

@@ -190,8 +190,11 @@ create policy "autonomy_audit_events_readable_by_owner"
   on public.autonomy_audit_events for select
   using (auth.uid() = user_id);
 
--- ===== Broker connections =====
-create table if not exists public.broker_connections (
+-- ===== Broker sync links (legacy MVP) =====
+-- Renamed from broker_connections to free that name for the user-facing
+-- broker-connection layer (migration 0012). Conserve cette table pour le
+-- module broker-sync historique qui traite la synchro comptes↔broker legacy.
+create table if not exists public.broker_sync_links (
   id uuid primary key default uuid_generate_v4(),
   account_id uuid not null references public.portfolio_accounts(id) on delete cascade,
   portfolio_id uuid not null references public.portfolios(id) on delete cascade,
@@ -214,7 +217,7 @@ create table if not exists public.broker_connections (
   updated_at timestamptz not null default now()
 );
 
-alter table public.broker_connections enable row level security;
-create policy "broker_connections_owner"
-  on public.broker_connections for all
+alter table public.broker_sync_links enable row level security;
+create policy "broker_sync_links_owner"
+  on public.broker_sync_links for all
   using (auth.uid() = user_id);
