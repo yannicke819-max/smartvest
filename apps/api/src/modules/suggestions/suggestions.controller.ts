@@ -1,4 +1,5 @@
 import { Controller, Get, Post, Param, Body, Query, Headers, HttpCode, BadRequestException } from '@nestjs/common';
+import { UnauthorizedException } from '@nestjs/common';
 import { SuggestionsService } from './services/suggestions.service';
 import {
   ApproveProposalSchema,
@@ -8,7 +9,9 @@ import {
 } from './dto/suggestions.dto';
 
 function extractUserId(headers: Record<string, string>): string {
-  return headers['x-user-id'] ?? 'demo-user';
+  const id = headers['x-user-id'];
+  if (!id) throw new UnauthorizedException('x-user-id header manquant');
+  return id;
 }
 
 @Controller('action-proposals')

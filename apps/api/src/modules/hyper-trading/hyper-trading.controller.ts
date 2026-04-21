@@ -1,6 +1,7 @@
 import {
   Controller, Get, Post, Patch, Param, Body, Query, Headers, BadRequestException, ForbiddenException,
 } from '@nestjs/common';
+import { UnauthorizedException } from '@nestjs/common';
 import { HyperTradingProfileService } from './services/hyper-trading-profile.service';
 import { HyperTradingAuditService } from './services/hyper-trading-audit.service';
 import { FeatureFlagsService } from '../feature-flags/feature-flags.service';
@@ -17,7 +18,9 @@ import {
 import { TEMPO_REVIEW_INTERVAL_MINUTES, TEMPO_RISK_LEVEL } from '@smartvest/shared-types';
 
 function extractUserId(headers: Record<string, string>): string {
-  return headers['x-user-id'] ?? 'demo-user';
+  const id = headers['x-user-id'];
+  if (!id) throw new UnauthorizedException('x-user-id header manquant');
+  return id;
 }
 
 function parse<T>(

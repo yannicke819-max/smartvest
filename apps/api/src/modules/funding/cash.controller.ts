@@ -9,6 +9,7 @@ import {
   HttpCode,
   BadRequestException,
 } from '@nestjs/common';
+import { UnauthorizedException } from '@nestjs/common';
 import { CashBalancesService } from './services/cash-balances.service';
 import { CashReservationsService } from './services/cash-reservations.service';
 import {
@@ -18,7 +19,9 @@ import {
 } from './dto/cash.dto';
 
 function extractUserId(headers: Record<string, string>): string {
-  return headers['x-user-id'] ?? 'demo-user';
+  const id = headers['x-user-id'];
+  if (!id) throw new UnauthorizedException('x-user-id header manquant');
+  return id;
 }
 
 function parse<T>(

@@ -10,6 +10,7 @@ import {
   HttpCode,
   BadRequestException,
 } from '@nestjs/common';
+import { UnauthorizedException } from '@nestjs/common';
 import { TransfersService } from './services/transfers.service';
 import { FundingAccountsService } from './services/funding-accounts.service';
 import {
@@ -25,7 +26,9 @@ import {
 } from './dto/funding.dto';
 
 function extractUserId(headers: Record<string, string>): string {
-  return headers['x-user-id'] ?? 'demo-user';
+  const id = headers['x-user-id'];
+  if (!id) throw new UnauthorizedException('x-user-id header manquant');
+  return id;
 }
 
 function parse<T>(schema: { safeParse: (x: unknown) => { success: boolean; data?: T; error?: { issues: unknown[] } } }, body: unknown): T {

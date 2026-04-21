@@ -1,8 +1,11 @@
 import { Controller, Post, Get, Query, Headers, HttpCode, BadRequestException } from '@nestjs/common';
+import { UnauthorizedException } from '@nestjs/common';
 import { ProposalGeneratorService } from './services/proposal-generator.service';
 
 function extractUserId(headers: Record<string, string>): string {
-  return headers['x-user-id'] ?? 'demo-user';
+  const id = headers['x-user-id'];
+  if (!id) throw new UnauthorizedException('x-user-id header manquant');
+  return id;
 }
 
 @Controller('proposal-generator')

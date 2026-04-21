@@ -1,11 +1,14 @@
 import {
   Controller, Get, Post, Patch, Param, Body, Query, Headers, HttpCode,
 } from '@nestjs/common';
+import { UnauthorizedException } from '@nestjs/common';
 import { MandatesService } from './services/mandates.service';
 import { MandateGuardrailService } from './services/mandate-guardrail.service';
 
 function extractUserId(headers: Record<string, string>): string {
-  return headers['x-user-id'] ?? 'demo-user';
+  const id = headers['x-user-id'];
+  if (!id) throw new UnauthorizedException('x-user-id header manquant');
+  return id;
 }
 
 @Controller('mandates')

@@ -1,11 +1,14 @@
 import {
   Controller, Get, Post, Patch, Param, Body, Query, Headers, HttpCode,
 } from '@nestjs/common';
+import { UnauthorizedException } from '@nestjs/common';
 import { GoalsService } from './services/goals.service';
 import type { CreateGoalDto, UpdateGoalDto, CreateTriggerDto, UpdateCheckpointDto } from './dto/goals.dto';
 
 function extractUserId(headers: Record<string, string>): string {
-  return headers['x-user-id'] ?? 'demo-user';
+  const id = headers['x-user-id'];
+  if (!id) throw new UnauthorizedException('x-user-id header manquant');
+  return id;
 }
 
 @Controller('goals')

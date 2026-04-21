@@ -1,12 +1,15 @@
 import {
   Controller, Get, Post, Patch, Delete, Param, Body, Headers, BadRequestException,
 } from '@nestjs/common';
+import { UnauthorizedException } from '@nestjs/common';
 import { BrokersService } from './services/brokers.service';
 import { BrokerSyncService } from './services/broker-sync.service';
 import { CreateConnectionSchema, UpdateConnectionSchema } from './dto/brokers.dto';
 
 function extractUserId(headers: Record<string, string>): string {
-  return headers['x-user-id'] ?? 'demo-user';
+  const id = headers['x-user-id'];
+  if (!id) throw new UnauthorizedException('x-user-id header manquant');
+  return id;
 }
 
 function parse<T>(
