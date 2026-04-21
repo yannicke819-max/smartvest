@@ -23,9 +23,11 @@ export function extractUserId(headers: Record<string, string>): string {
     try {
       const parts = auth.slice(7).split('.');
       if (parts.length === 3) {
-        const payload = JSON.parse(
-          Buffer.from(parts[1], 'base64url').toString('utf8'),
+        // base64url → base64 (add padding, swap URL-safe chars)
+        const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/').padEnd(
+          parts[1].length + (4 - (parts[1].length % 4)) % 4, '=',
         );
+        const payload = JSON.parse(Buffer.from(b64, 'base64').toString('utf8'));
         if (payload?.sub) return payload.sub as string;
       }
     } catch {

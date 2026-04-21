@@ -4,17 +4,13 @@ import { createSupabaseBrowserClient } from './supabase/client';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
-/**
- * Shared API client for calls to the NestJS backend.
- *
- * Sends the authenticated Supabase user's ID as `x-user-id`, which the
- * backend controllers read via `extractUserId(headers)`. Without this, the
- * backend falls back to the literal string "demo-user", which PostgreSQL
- * rejects because `user_id` columns are typed as UUID.
- *
- * Also forwards the Supabase access token as Bearer for future JWT-based
- * validation on the backend (currently unused — kept for forward-compat).
- */
+// Module-level cache so every apiFetch call reuses the same client.
+let _client: ReturnType<typeof createSupabaseBrowserClient> | null = null;
+function getClient() {
+  if (!_client) _client = createSupabaseBrowserClient();
+  return _client;
+}
+
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -22,13 +18,26 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   };
 
   try {
-    const supabase = createSupabaseBrowserClient();
-    const { data: { session } } = await supabase.auth.getSession();
+    const supabase = getClient();
+
+    // getSession() reads from local storage / cookies — fast but may be null
+    // on first render before the client is hydrated.
+    let session = (await supabase.auth.getSession()).data.session;
+
+    // Fallback: getUser() makes a network call to Supabase auth — always
+    // returns the real current user if the token is in cookies/storage.
+    if (!session) {
+      const { data } = await supabase.auth.getUser();
+      if (data?.user) {
+        // Refresh session now that we know the user is authenticated.
+        session = (await supabase.auth.getSession()).data.session;
+      }
+    }
+
     if (session?.user?.id) headers['x-user-id'] = session.user.id;
     if (session?.access_token) headers['authorization'] = `Bearer ${session.access_token}`;
   } catch {
-    // Supabase not configured — proceed anonymously; backend will fallback
-    // to "demo-user" and likely reject on UUID columns.
+    // Supabase not configured — proceed without auth headers.
   }
 
   const res = await fetch(`${API}${path}`, { ...init, headers });
