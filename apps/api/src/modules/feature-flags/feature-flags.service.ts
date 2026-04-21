@@ -56,6 +56,23 @@ export class FeatureFlagsService {
         this.config.get('FEATURE_READ_ONLY_BROKER_SYNC_ENABLED'),
         DEFAULT_FLAGS.READ_ONLY_BROKER_SYNC_ENABLED,
       ),
+      // Hyper-trading personal mode — strictly opt-in, all default off
+      HYPER_TRADING_MODE_ENABLED: this.parseBool(
+        this.config.get('FEATURE_HYPER_TRADING_MODE_ENABLED'),
+        DEFAULT_FLAGS.HYPER_TRADING_MODE_ENABLED,
+      ),
+      HYPER_TRADING_UI_ENABLED: this.parseBool(
+        this.config.get('FEATURE_HYPER_TRADING_UI_ENABLED'),
+        DEFAULT_FLAGS.HYPER_TRADING_UI_ENABLED,
+      ),
+      HYPER_TRADING_RUNTIME_ENABLED: this.parseBool(
+        this.config.get('FEATURE_HYPER_TRADING_RUNTIME_ENABLED'),
+        DEFAULT_FLAGS.HYPER_TRADING_RUNTIME_ENABLED,
+      ),
+      HYPER_TRADING_EXECUTION_ENABLED: this.parseBool(
+        this.config.get('FEATURE_HYPER_TRADING_EXECUTION_ENABLED'),
+        DEFAULT_FLAGS.HYPER_TRADING_EXECUTION_ENABLED,
+      ),
     };
   }
 

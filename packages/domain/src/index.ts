@@ -23,3 +23,7 @@ export * from './entities/objective-scenario';
 export * from './entities/objective-plan';
 export * from './entities/macro-signal';
 export * from './entities/funding';
+export * from './entities/hyper-trading-guardrail';
+export * from './entities/hyper-trading-profile';
+export * from './entities/hyper-trading-session';
+export * from './entities/hyper-trading-audit-event';
