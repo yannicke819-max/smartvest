@@ -82,6 +82,31 @@ export class FeatureFlagsService {
         this.config.get('FEATURE_SNIPER_MODE_UI_ENABLED'),
         DEFAULT_FLAGS.SNIPER_MODE_UI_ENABLED,
       ),
+      // Broker connections
+      BROKER_CONNECTIONS_ENABLED: this.parseBool(
+        this.config.get('FEATURE_BROKER_CONNECTIONS_ENABLED'),
+        DEFAULT_FLAGS.BROKER_CONNECTIONS_ENABLED,
+      ),
+      BROKER_SYNC_READ_ONLY_ENABLED: this.parseBool(
+        this.config.get('FEATURE_BROKER_SYNC_READ_ONLY_ENABLED'),
+        DEFAULT_FLAGS.BROKER_SYNC_READ_ONLY_ENABLED,
+      ),
+      BROKER_ADAPTER_IB_ENABLED: this.parseBool(
+        this.config.get('FEATURE_BROKER_ADAPTER_IB_ENABLED'),
+        DEFAULT_FLAGS.BROKER_ADAPTER_IB_ENABLED,
+      ),
+      BROKER_ADAPTER_SAXO_ENABLED: this.parseBool(
+        this.config.get('FEATURE_BROKER_ADAPTER_SAXO_ENABLED'),
+        DEFAULT_FLAGS.BROKER_ADAPTER_SAXO_ENABLED,
+      ),
+      BROKER_ADAPTER_DEGIRO_ENABLED: this.parseBool(
+        this.config.get('FEATURE_BROKER_ADAPTER_DEGIRO_ENABLED'),
+        DEFAULT_FLAGS.BROKER_ADAPTER_DEGIRO_ENABLED,
+      ),
+      BROKER_ADAPTER_TRADING212_ENABLED: this.parseBool(
+        this.config.get('FEATURE_BROKER_ADAPTER_TRADING212_ENABLED'),
+        DEFAULT_FLAGS.BROKER_ADAPTER_TRADING212_ENABLED,
+      ),
     };
   }
 

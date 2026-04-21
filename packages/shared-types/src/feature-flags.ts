@@ -23,6 +23,13 @@ export const FeatureFlagKey = z.enum([
   // Sniper personal override (opt-in, unlock-by-code)
   'SNIPER_MODE_ENABLED',            // Master gate — without this, /sniper endpoints return 403
   'SNIPER_MODE_UI_ENABLED',         // Renders the sniper unlock UI
+  // Broker connections layer
+  'BROKER_CONNECTIONS_ENABLED',     // Master gate for the /brokers module (on by default)
+  'BROKER_SYNC_READ_ONLY_ENABLED',  // Read-only sync allowed (on by default)
+  'BROKER_ADAPTER_IB_ENABLED',
+  'BROKER_ADAPTER_SAXO_ENABLED',
+  'BROKER_ADAPTER_DEGIRO_ENABLED',
+  'BROKER_ADAPTER_TRADING212_ENABLED',
 ]);
 export type FeatureFlagKey = z.infer<typeof FeatureFlagKey>;
 
@@ -48,6 +55,13 @@ export const FeatureFlags = z.object({
   // Sniper personal override
   SNIPER_MODE_ENABLED: z.boolean(),
   SNIPER_MODE_UI_ENABLED: z.boolean(),
+  // Broker connections
+  BROKER_CONNECTIONS_ENABLED: z.boolean(),
+  BROKER_SYNC_READ_ONLY_ENABLED: z.boolean(),
+  BROKER_ADAPTER_IB_ENABLED: z.boolean(),
+  BROKER_ADAPTER_SAXO_ENABLED: z.boolean(),
+  BROKER_ADAPTER_DEGIRO_ENABLED: z.boolean(),
+  BROKER_ADAPTER_TRADING212_ENABLED: z.boolean(),
 });
 export type FeatureFlags = z.infer<typeof FeatureFlags>;
 
@@ -79,4 +93,12 @@ export const DEFAULT_FLAGS: FeatureFlags = {
   // SNIPER_MODE_UNLOCK_CODE env var — flag alone is not sufficient.
   SNIPER_MODE_ENABLED: false,
   SNIPER_MODE_UI_ENABLED: false,
+  // Broker connections layer — read/config on by default (useful out of the
+  // box for personal use); every live adapter + execution stays off.
+  BROKER_CONNECTIONS_ENABLED: true,
+  BROKER_SYNC_READ_ONLY_ENABLED: true,
+  BROKER_ADAPTER_IB_ENABLED: false,
+  BROKER_ADAPTER_SAXO_ENABLED: false,
+  BROKER_ADAPTER_DEGIRO_ENABLED: false,
+  BROKER_ADAPTER_TRADING212_ENABLED: false,
 };

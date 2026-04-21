@@ -18,19 +18,19 @@ export const BrokerSyncMode = z.enum([
 export type BrokerSyncMode = z.infer<typeof BrokerSyncMode>;
 
 /**
- * BrokerConnection represents an authorized link between a portfolio account
+ * BrokerSyncLink represents an authorized link between a portfolio account
  * and a broker API, with its current sync mode and health state.
  */
-export const BrokerConnectionStatus = z.enum([
+export const BrokerSyncLinkStatus = z.enum([
   'connected',
   'disconnected',
   'error',
   'pending_auth',
   'suspended', // Suspended by kill-switch or policy
 ]);
-export type BrokerConnectionStatus = z.infer<typeof BrokerConnectionStatus>;
+export type BrokerSyncLinkStatus = z.infer<typeof BrokerSyncLinkStatus>;
 
-export const BrokerConnection = z.object({
+export const BrokerSyncLink = z.object({
   id: Uuid,
   accountId: Uuid,
   portfolioId: Uuid,
@@ -38,7 +38,7 @@ export const BrokerConnection = z.object({
   brokerId: Uuid,
 
   syncMode: BrokerSyncMode,
-  status: BrokerConnectionStatus,
+  status: BrokerSyncLinkStatus,
 
   // The last successful sync of each data type
   lastPositionsSyncAt: z.string().datetime().nullable(),
@@ -52,4 +52,4 @@ export const BrokerConnection = z.object({
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });
-export type BrokerConnection = z.infer<typeof BrokerConnection>;
+export type BrokerSyncLink = z.infer<typeof BrokerSyncLink>;
