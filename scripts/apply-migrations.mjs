@@ -40,6 +40,18 @@ async function runSql(sql) {
   return { ok: false, status: 0, body: 'exhausted' };
 }
 
+// PostgreSQL error messages that indicate the object already exists.
+// The Supabase Management API surfaces these in the response body.
+function isAlreadyExistsError(body) {
+  const s = String(body).toLowerCase();
+  return (
+    s.includes('already exists') ||
+    s.includes('duplicate key') ||
+    s.includes('42p07') || // duplicate_table
+    s.includes('42710')    // duplicate_object (index, constraint, etc.)
+  );
+}
+
 // Ensure tracking table exists (idempotent DDL).
 const INIT_TRACKER = `
   create table if not exists _smartvest_migrations (
@@ -92,15 +104,20 @@ for (const f of files) {
 
   process.stdout.write(`  ${f.padEnd(45)} `);
   const r = await runSql(sql);
-  if (r.ok) {
-    // Record as applied.
+
+  // "already exists" errors mean the migration ran before the tracker existed.
+  // Treat as already applied — record and move on.
+  const alreadyExists = !r.ok && isAlreadyExistsError(r.body);
+
+  if (r.ok || alreadyExists) {
+    const label = alreadyExists ? 'ALREADY APPLIED (bootstrap)' : 'OK';
     const record = await runSql(
       `insert into _smartvest_migrations (filename, sha256) values ('${f.replace(/'/g, "''")}', '${sha256}') on conflict (filename) do nothing;`
     );
     if (!record.ok) {
-      console.log(`OK (warn: tracking write failed — ${String(record.body).slice(0, 120)})`);
+      console.log(`${label} (warn: tracking write failed — ${String(record.body).slice(0, 120)})`);
     } else {
-      console.log('OK');
+      console.log(label);
     }
     successes++;
   } else {
