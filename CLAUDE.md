@@ -261,6 +261,54 @@ Surcouche indépendante du mode hyper-trading, pensée pour un usage strictement
 
 ---
 
+## 6 ter. Broker Connections — connexions personnelles aux brokers
+
+Connexion lecture-seule aux comptes brokers personnels. **Ne change rien** aux règles d'exécution de la Section 2 : un broker connecté n'ouvre aucun droit d'exécution réelle.
+
+### Règles immuables
+
+- **Credentials en Supabase Vault uniquement.** Jamais en ligne DB en clair, jamais en logs (même pas le nom du champ), jamais dans une réponse API. Le row `broker_connections` n'expose que `credentials_vault_ref` (un UUID opaque).
+- **Exposition contrôlée côté API.** `GET /brokers/connections[/:id]` fait un `SELECT` avec liste explicite de colonnes qui **exclut** `credentials_vault_ref`. Aucun endpoint ne retourne les credentials.
+- **Rotation = création d'un nouveau secret + suppression de l'ancien.** L'ancien ref n'est supprimé qu'après commit du nouveau en DB (pas d'atomicité impossible sur un seul RPC).
+- **Révocation toujours accessible.** `DELETE /brokers/connections/:id` n'est **jamais** gaté par un feature flag — safety wins. Supprime le secret du Vault + marque `revoked`.
+- **DeGiro ne scrape pas.** Pas d'API officielle → l'adapter `DegiroAdapter` rejette toute méthode live et pointe vers `/imports` (parser CSV déjà livré). Idem pour Bourse Direct / Fortuneo.
+
+### Chaîne de garde-fous pour l'exécution réelle (à venir)
+
+L'exécution réelle nécessite **toutes** les conditions réunies — aucune à elle seule n'est suffisante :
+
+1. `DELEGATION_AUTONOMOUS_GUARDED=true`
+2. `AutonomyMandate` actif + `checkMandatePermission() === null`
+3. `BROKER_EXECUTION_ENABLED=true`
+4. `BROKER_ADAPTER_<X>_ENABLED=true` pour le provider concerné
+5. `AUTONOMY_KILL_SWITCH=false`
+6. Si profil hyper-trading actif → `HyperTradingGuardrail` respectés, `HYPER_TRADING_EXECUTION_ENABLED=true`
+7. `BrokerSyncService` ne trouve pas de conflit avec le kill-switch global
+
+Dans ce commit, la méthode `placeOrder()` de chaque adapter **refuse toujours** (throw `NotSupportedError`), même si tous les flags ci-dessus sont on. L'exécution réelle sera ajoutée dans un commit dédié avec tests sur credentials live.
+
+### Kill-switch et mandat propagent sur la sync
+
+- `AUTONOMY_KILL_SWITCH=true` → toute nouvelle sync est immédiatement annulée (`sync_cancelled_by_kill_switch`), audit écrit.
+- Mandat invalide en cours de sync : vérifié au démarrage du job uniquement dans ce commit. Annulation mid-run = future improvement (streaming nécessaire).
+- `broker_sync_audit_events.kind` comprend `sync_cancelled_by_kill_switch` et `sync_cancelled_by_mandate` pour tracer ces cas.
+
+### Provider capabilities (matrice)
+
+| Provider | read | execution | streaming | options | crypto | csv |
+|---|---|---|---|---|---|---|
+| `INTERACTIVE_BROKERS` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `SAXO` | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
+| `TRADING212` | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ |
+| `DEGIRO` | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| `BOURSE_DIRECT` | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| `FORTUNEO` | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| `MANUAL` | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+
+Les flags `supports_*` sur la ligne `broker_connections` sont dérivés de `PROVIDER_CAPABILITIES` à la création. Ils décrivent ce que le provider **peut** faire, pas ce qui est **activé** (feature flags orthogonaux).
+
+---
+
 ## 7. Frictions d'intermédiation — à rendre visibles
 
 Le moteur de coût (`@smartvest/cost-engine`) ventile chaque transaction :
