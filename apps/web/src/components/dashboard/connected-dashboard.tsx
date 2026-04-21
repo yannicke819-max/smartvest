@@ -13,6 +13,7 @@ import { RecentTransactions } from './recent-transactions';
 import { CostFrictionCard } from './cost-friction-card';
 import { PendingSuggestionsWidget } from '@/components/suggestions/pending-suggestions-widget';
 import { SniperBadge } from '@/components/dashboard/sniper-badge';
+import { BrokerConnectionsWidget } from '@/components/dashboard/broker-connections-widget';
 import { MarketContextWidget } from './market-context-widget';
 import { ExposureWidget } from './exposure-widget';
 import { CashSummaryWidget } from './cash-summary-widget';
@@ -230,6 +231,7 @@ export function ConnectedDashboard() {
           />
         </div>
         <div className="space-y-4">
+          <BrokerConnectionsWidget />
           <CashSummaryWidget />
           <MarketContextWidget />
           <ExposureWidget portfolioId={portfolioId} allocationByClass={allocationByClass} />
