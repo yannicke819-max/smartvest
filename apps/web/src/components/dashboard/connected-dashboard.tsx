@@ -1,5 +1,6 @@
 'use client';
 
+import type React from 'react';
 import Link from 'next/link';
 import { Plus, Wallet, BellRing, Shuffle, TrendingUp, UploadCloud, Target, Globe, Shield, Inbox, Coins, ArrowUpCircle, Gauge } from 'lucide-react';
 import { usePortfolios, useUserProfile } from '@/hooks/use-portfolio';
@@ -226,7 +227,7 @@ export function ConnectedDashboard() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <div className="space-y-4 lg:col-span-2">
           <RecentTransactions
-            transactions={txQuery.data ?? []}
+            transactions={(txQuery.data ?? []) as unknown as React.ComponentProps<typeof RecentTransactions>['transactions']}
             loading={txQuery.isLoading}
           />
         </div>

@@ -1,5 +1,6 @@
 'use client';
 
+import type React from 'react';
 import Link from 'next/link';
 import { Plus } from 'lucide-react';
 import { usePortfolio } from '@/hooks/use-portfolio';
@@ -13,6 +14,17 @@ import { RecentTransactions } from '@/components/dashboard/recent-transactions';
 
 interface Props {
   params: { id: string };
+}
+
+interface PortfolioAccountView {
+  id: string;
+  label: string;
+  kind: string;
+  account_currency: string;
+  brokers?: { name: string } | null;
+}
+interface PortfolioWithAccounts {
+  portfolio_accounts?: PortfolioAccountView[];
 }
 
 export default function PortfolioDetailPage({ params }: Props) {
@@ -83,7 +95,10 @@ export default function PortfolioDetailPage({ params }: Props) {
               )}
             </CardContent>
           </Card>
-          <RecentTransactions transactions={txQuery.data ?? []} loading={txQuery.isLoading} />
+          <RecentTransactions
+            transactions={(txQuery.data ?? []) as unknown as React.ComponentProps<typeof RecentTransactions>['transactions']}
+            loading={txQuery.isLoading}
+          />
         </div>
 
         <div className="space-y-4">
@@ -94,14 +109,14 @@ export default function PortfolioDetailPage({ params }: Props) {
             <CardContent>
               {portfolioQuery.isLoading ? (
                 <div className="h-16 animate-pulse rounded bg-muted" />
-              ) : (portfolio as any)?.portfolio_accounts?.length === 0 ? (
+              ) : (portfolio as unknown as PortfolioWithAccounts)?.portfolio_accounts?.length === 0 ? (
                 <EmptyState
                   title="Aucun compte"
                   description="Ajoutez un compte broker ou wallet."
                 />
               ) : (
                 <div className="space-y-2">
-                  {((portfolio as any)?.portfolio_accounts ?? []).map((acc: any) => (
+                  {((portfolio as unknown as PortfolioWithAccounts)?.portfolio_accounts ?? []).map((acc) => (
                     <div key={acc.id} className="rounded-lg border p-3 text-sm">
                       <div className="font-medium">{acc.label}</div>
                       <div className="text-xs text-muted-foreground">

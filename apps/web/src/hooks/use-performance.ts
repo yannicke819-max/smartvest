@@ -5,7 +5,7 @@ import { createSupabaseBrowserClient } from '@/lib/supabase/client';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
-async function authHeaders() {
+async function authHeaders(): Promise<Record<string, string>> {
   const s = createSupabaseBrowserClient();
   const { data: { session } } = await s.auth.getSession();
   return session?.access_token ? { authorization: `Bearer ${session.access_token}` } : {};

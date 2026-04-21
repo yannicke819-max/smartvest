@@ -61,7 +61,7 @@ export function MarketContextWidget() {
           return (
             <li key={s.id}>
               <Link
-                href={`/market-context/${s.id}`}
+                href={`/signals/${s.id}`}
                 className="block rounded-md border bg-muted/20 px-3 py-2 text-xs transition-colors hover:bg-muted/40"
               >
                 <div className="flex items-center gap-1.5">

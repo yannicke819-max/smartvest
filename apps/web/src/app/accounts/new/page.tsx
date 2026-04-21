@@ -1,7 +1,7 @@
 'use client';
 
 import { useSearchParams, useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
 import { usePortfolios } from '@/hooks/use-portfolio';
 import { createAccount } from '@/app/actions/portfolio';
 import { Button } from '@/components/ui/button';
@@ -20,6 +20,14 @@ const ACCOUNT_KINDS = [
 const CURRENCIES = ['EUR', 'USD', 'GBP', 'CHF', 'BTC', 'ETH'];
 
 export default function AddAccountPage() {
+  return (
+    <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Chargement…</div>}>
+      <AddAccountPageInner />
+    </Suspense>
+  );
+}
+
+function AddAccountPageInner() {
   const params = useSearchParams();
   const router = useRouter();
   const portfoliosQuery = usePortfolios();

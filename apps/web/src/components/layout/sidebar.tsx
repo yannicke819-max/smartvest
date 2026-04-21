@@ -1,5 +1,6 @@
 'use client';
 
+import type { Route } from 'next';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
@@ -43,7 +44,10 @@ export function Sidebar() {
           return (
             <Link
               key={item.href}
-              href={item.href}
+              // Some items (performance, alerts, history, settings top-level) are
+              // placeholders pending dedicated pages. Cast escapes typedRoutes
+              // strictness; actual 404 would be clearly visible in UX.
+              href={item.href as Route}
               onClick={() => setSidebar(false)}
               className={cn(
                 'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',

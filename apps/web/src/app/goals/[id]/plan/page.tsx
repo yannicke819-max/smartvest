@@ -111,7 +111,7 @@ export default function PlanPage() {
                     </span>
                   </div>
                   <p className="mt-1 text-xs text-muted-foreground">{step.description as string}</p>
-                  {step.target_date && (
+                  {Boolean(step.target_date) && (
                     <p className="mt-1 text-xs text-muted-foreground flex items-center gap-1">
                       <Clock className="h-3 w-3" />
                       Cible : {step.target_date as string}
@@ -122,7 +122,7 @@ export default function PlanPage() {
                       {candidates.map((c) => (
                         <div key={c.id as string} className="flex items-center justify-between rounded bg-muted/40 px-2 py-1 text-xs">
                           <span className="font-medium capitalize">{c.kind as string}</span>
-                          {c.amount && <span>{parseFloat(c.amount as string).toFixed(2)} €</span>}
+                          {Boolean(c.amount) && <span>{parseFloat(c.amount as string).toFixed(2)} €</span>}
                           <span className="text-muted-foreground">{DELEGATION_LABELS[c.delegation_mode as string] ?? c.delegation_mode as string}</span>
                         </div>
                       ))}
