@@ -12,7 +12,7 @@ interface OptionItem<T> {
 }
 
 const HORIZONS: OptionItem<HorizonOption>[] = [
-  { value: 'less_1y', label: 'Moins d'1 an', hint: 'Liquidité prioritaire' },
+  { value: 'less_1y', label: 'Moins d’un an', hint: 'Liquidité prioritaire' },
   { value: '1_3y', label: '1 à 3 ans', hint: 'Court terme' },
   { value: '3_5y', label: '3 à 5 ans', hint: 'Moyen terme' },
   { value: '5_10y', label: '5 à 10 ans', hint: 'Long terme' },
@@ -20,7 +20,7 @@ const HORIZONS: OptionItem<HorizonOption>[] = [
 ];
 
 const EXPERIENCE_ITEMS: OptionItem<ExperienceLevel>[] = [
-  { value: 'none', label: 'Aucune', hint: 'Je n'ai jamais investi' },
+  { value: 'none', label: 'Aucune', hint: 'Je n’ai jamais investi' },
   { value: 'basic', label: 'Basique', hint: 'Livret, assurance-vie fonds euros' },
   { value: 'moderate', label: 'Modérée', hint: 'ETF, quelques actions' },
   { value: 'advanced', label: 'Avancée', hint: 'Options, crypto, marchés étrangers' },

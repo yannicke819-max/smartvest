@@ -19,19 +19,19 @@ const OPTIONS: Array<{
   },
   {
     value: 'up_10pct',
-    label: 'Jusqu'à −10 %',
+    label: 'Jusqu’à −10 %',
     hint: 'Quelques baisses passagères sont acceptables.',
     color: 'text-primary',
   },
   {
     value: 'up_25pct',
-    label: 'Jusqu'à −25 %',
+    label: 'Jusqu’à −25 %',
     hint: 'Je peux traverser des corrections significatives.',
     color: 'text-warning',
   },
   {
     value: 'up_50pct',
-    label: 'Jusqu'à −50 %',
+    label: 'Jusqu’à −50 %',
     hint: 'Je tolère de fortes baisses si le potentiel de rebond est élevé.',
     color: 'text-orange-500',
   },
