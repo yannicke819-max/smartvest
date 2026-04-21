@@ -21,6 +21,7 @@ import { ProposalGeneratorModule } from './modules/proposal-generator/proposal-g
 import { FundingModule } from './modules/funding/funding.module';
 import { HyperTradingModule } from './modules/hyper-trading/hyper-trading.module';
 import { SniperModule } from './modules/sniper/sniper.module';
+import { BrokersModule } from './modules/brokers/brokers.module';
 
 @Module({
   imports: [
@@ -46,6 +47,7 @@ import { SniperModule } from './modules/sniper/sniper.module';
     FundingModule,
     HyperTradingModule,
     SniperModule,
+    BrokersModule,
   ],
 })
 export class AppModule {}
