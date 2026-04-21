@@ -183,6 +183,66 @@ Un mandat expiré ou avec `killSwitchActive = true` interdit toute exécution au
 
 ---
 
+## 6 bis. OperatingTempo & mode hyper-trading personnel
+
+`OperatingTempo` est une **dimension orthogonale** au `DelegationMode`. Elle gouverne **la cadence** (à quelle fréquence SmartVest analyse, propose, et le cas échéant exécute), pas **qui agit**. Le `DelegationMode` reste seul responsable de l'autonomie d'action.
+
+### Tempos disponibles
+
+| Tempo | Cadence indicative | Usage |
+|---|---|---|
+| `LONG_HORIZON` (défaut) | analyse quotidienne | buy-and-hold, pilotage long terme |
+| `ACTIVE` | analyse horaire | swing trading personnel |
+| `HYPER_ACTIVE` | analyse toutes les 5 min | mode personnel très intensif, opt-in strict |
+
+### Mode hyper-trading personnel — règles immuables
+
+- **Strictement opt-in.** Aucun profil n'existe par défaut. La configuration crée un profil en statut `draft` ; l'activation est un acte explicite.
+- **Renforce — ne relâche jamais — les garde-fous existants.** À l'évaluation, le runtime prend la valeur la plus stricte entre `MandateGuardrail` et `HyperTradingGuardrail`.
+- **Kill-switch en un clic.** Le bouton kill-switch n'est jamais gaté par un feature flag. Sa réactivation requiert une réactivation explicite.
+- **Expire obligatoirement.** Pas de profil hyper-trading permanent. Le champ `expiresAt` est obligatoire.
+- **Ne crée AUCUNE exécution implicite.** Le `HyperTradingPolicyEngine` retourne `allow | block | require_review | kill_switch` — jamais `execute`. L'exécution réelle reste conditionnée par `AUTONOMOUS_GUARDED` + mandat valide + `BROKER_EXECUTION_ENABLED` + `HYPER_TRADING_EXECUTION_ENABLED`.
+- **Audit hash-chaîné.** Toute transition (`profile_activated`, `profile_paused`, `profile_killed`, `guardrail_updated`, `guardrail_violation_blocked`, `kill_switch_armed`…) écrit un événement `hyper_trading_audit_events`.
+
+### Garde-fous obligatoires (`HyperTradingGuardrail`)
+
+Champs runtime-checkés par le `HyperTradingPolicyEngine` à chaque évaluation :
+
+- `maxTradesPerDay`, `cooldownMinutesBetweenTrades`, `reviewEveryNMinutes`
+- `maxNotionalPerTradePct`, `maxDailyNotionalPct`, `maxExposurePerInstrumentPct`, `maxExposurePerAssetClassPct`, `maxExposurePerSectorPct`
+- `maxOpenPositions`
+- `maxDailyLossPct`, `maxIntradayDrawdownPct`, `mandatoryStopLossPct` (obligatoire), `optionalTakeProfitPct`
+- `maximumAllowedSpreadBps`, `maximumAllowedSlippageBps`, `minimumExpectedLiquidityAbs`, `maxAcceptableVolatilityPct`
+- `allowedAssetClasses` (whitelist), `deniedTickers` (blacklist explicite)
+- `requiredHumanApprovalAboveAbs`
+- `killSwitchOnAbnormalLoss`, `killSwitchOnDataProviderFailure`, `killSwitchOnBrokerSyncMismatch`, `killSwitchOnVolatilityShock`
+
+### Matrice de compatibilité `DelegationMode × HYPER_ACTIVE`
+
+| DelegationMode | + HYPER_ACTIVE | Comportement |
+|---|---|---|
+| `MANUAL_EXPLICIT` | autorisé | Analyse haute fréquence + suggestions denses, aucune action sans clic utilisateur. Cas par défaut. |
+| `HYBRID_SUGGESTIVE` | autorisé | Suggestions très fréquentes, validation utilisateur explicite par action. |
+| `AUTONOMOUS_GUARDED` | autorisé **uniquement avec mandat valide ET garde-fous renforcés**. Tout `kill_switch` se propage immédiatement au mandat sous-jacent. |
+
+### Feature flags
+
+| Flag | Rôle | Défaut |
+|---|---|---|
+| `HYPER_TRADING_MODE_ENABLED` | Master gate (concept exposé côté API) | `false` |
+| `HYPER_TRADING_UI_ENABLED` | Affichage des écrans de configuration | `false` |
+| `HYPER_TRADING_RUNTIME_ENABLED` | Moteur d'évaluation actif | `false` |
+| `HYPER_TRADING_EXECUTION_ENABLED` | Autorise l'exécution réelle, en sus de `BROKER_EXECUTION_ENABLED` + `AUTONOMOUS_GUARDED` + mandat valide | `false` |
+
+Activer `HYPER_TRADING_EXECUTION_ENABLED` ne suffit jamais seul à exécuter — toutes les conditions de garde-fou doivent être réunies.
+
+### Wording
+
+- Préférer : « mode opératoire actif », « cadence haute intensité », « garde-fous renforcés », « pause immédiate disponible ».
+- Interdire : « gains rapides », « mode turbo », « booster », « battre le marché », « autopilot profits ».
+
+---
+
 ## 7. Frictions d'intermédiation — à rendre visibles
 
 Le moteur de coût (`@smartvest/cost-engine`) ventile chaque transaction :
