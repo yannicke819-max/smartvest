@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "build": "tsc -b",
-    "start": "node dist/main.js",
+    "start": "node ../../scripts/apply-migrations.mjs && node dist/main.js",
     "start:dev": "ts-node -r tsconfig-paths/register --transpile-only src/main.ts",
     "start:debug": "node --inspect -r ts-node/register -r tsconfig-paths/register src/main.ts",
     "typecheck": "tsc --noEmit",

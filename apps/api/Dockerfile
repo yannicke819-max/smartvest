@@ -8,7 +8,7 @@
 # node_modules is slightly less aggressive, but for personal use builds
 # are infrequent enough that correctness wins.
 
-# cache-bust: 3 — ajout scripts/ et supabase/ dans le builder (absents causaient silent-fail)
+# cache-bust: 5 — force rebuild complet, apps/api/package.json modifié pour embarquer les migrations dans npm start
 FROM node:20-alpine AS builder
 WORKDIR /repo
 
