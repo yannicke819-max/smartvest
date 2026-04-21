@@ -8,13 +8,15 @@
 # node_modules is slightly less aggressive, but for personal use builds
 # are infrequent enough that correctness wins.
 
-# cache-bust: 2 — migrations intégrées dans CMD (preDeployCommand Railway non fiable sur Dockerfile builder)
+# cache-bust: 3 — ajout scripts/ et supabase/ dans le builder (absents causaient silent-fail)
 FROM node:20-alpine AS builder
 WORKDIR /repo
 
 COPY package.json package-lock.json tsconfig.base.json ./
 COPY packages packages
 COPY apps apps
+COPY scripts scripts
+COPY supabase supabase
 
 RUN npm install --include=dev
 RUN npm run -w @smartvest/api build
