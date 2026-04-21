@@ -16,6 +16,9 @@ dockerfilePath = "apps/api/Dockerfile"
 [deploy]
 # CMD in the Dockerfile is `node dist/main.js`. Leaving startCommand empty
 # lets Docker honor the CMD verbatim — avoids a second layer of ambiguity.
+# Pre-deploy runs apply-migrations.mjs via absolute path because the
+# container WORKDIR is /app/apps/api — npm -w wouldn't find the workspace root.
+preDeployCommand = "node /app/scripts/apply-migrations.mjs"
 healthcheckPath = "/health"
 healthcheckTimeout = 30
 restartPolicyType = "ON_FAILURE"
