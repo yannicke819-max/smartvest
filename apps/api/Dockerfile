@@ -32,6 +32,8 @@ COPY --from=builder /repo/node_modules ./node_modules
 COPY --from=builder /repo/packages ./packages
 COPY --from=builder /repo/apps/api/package.json ./apps/api/package.json
 COPY --from=builder /repo/apps/api/dist ./apps/api/dist
+COPY --from=builder /repo/scripts ./scripts
+COPY --from=builder /repo/supabase/migrations ./supabase/migrations
 
 WORKDIR /app/apps/api
 EXPOSE 3001

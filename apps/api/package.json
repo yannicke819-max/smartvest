@@ -9,7 +9,8 @@
     "start:debug": "node --inspect -r ts-node/register -r tsconfig-paths/register src/main.ts",
     "typecheck": "tsc --noEmit",
     "test": "jest --passWithNoTests",
-    "test:watch": "jest --watch"
+    "test:watch": "jest --watch",
+    "migrate": "node ../../scripts/apply-migrations.mjs"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.4",
