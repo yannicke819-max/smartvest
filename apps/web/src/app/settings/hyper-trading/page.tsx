@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { SkeletonCard } from '@/components/ui/skeleton';
 import { ErrorState } from '@/components/states/error-state';
 import { DisclaimerBanner } from '@/components/disclaimer-banner';
+import { BackButton } from '@/components/ui/back-button';
 import {
   useHyperTradingConfig,
   useHyperTradingAudit,
@@ -227,12 +228,7 @@ export default function HyperTradingPage() {
 function Header() {
   return (
     <div className="flex items-center gap-3">
-      <Link href="/settings/strategy-mode">
-        <Button variant="ghost" size="sm">
-          <ArrowLeft className="mr-1.5 h-4 w-4" />
-          Retour
-        </Button>
-      </Link>
+      <BackButton />
       <div>
         <h1 className="flex items-center gap-2 text-xl font-semibold">
           <Zap className="h-5 w-5 text-amber-600" />

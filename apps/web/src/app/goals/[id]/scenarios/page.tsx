@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { ArrowLeft, RefreshCw, ChevronDown, ChevronUp } from 'lucide-react';
+import { BackButton } from '@/components/ui/back-button';
 import { useGoal, useScenarios, useGenerateScenarios, useGeneratePlan, type ScenarioRow } from '@/hooks/use-goals';
 import { Button } from '@/components/ui/button';
 import { SkeletonCard } from '@/components/ui/skeleton';
@@ -151,12 +152,7 @@ export default function ScenariosPage() {
     <div className="mx-auto max-w-3xl space-y-6 p-6">
       <DisclaimerBanner />
       <div className="flex items-center gap-3">
-        <Link href={`/goals/${id}`}>
-          <Button variant="ghost" size="sm">
-            <ArrowLeft className="mr-1.5 h-4 w-4" />
-            Retour
-          </Button>
-        </Link>
+        <BackButton />
         <div>
           <h1 className="text-xl font-semibold">Scénarios — {goal?.name ?? '…'}</h1>
           <p className="text-sm text-muted-foreground">

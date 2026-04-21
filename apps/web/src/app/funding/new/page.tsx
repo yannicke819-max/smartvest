@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { ArrowLeft, ArrowUpCircle, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { DisclaimerBanner } from '@/components/disclaimer-banner';
+import { BackButton } from '@/components/ui/back-button';
 import {
   useFundingSources,
   useFundingDestinations,
@@ -73,12 +74,7 @@ export default function NewFundingTransferPage() {
   return (
     <div className="mx-auto max-w-xl space-y-6 p-6">
       <div className="flex items-center gap-3">
-        <Link href="/funding">
-          <Button variant="ghost" size="sm">
-            <ArrowLeft className="mr-1.5 h-4 w-4" />
-            Retour
-          </Button>
-        </Link>
+        <BackButton />
         <div>
           <h1 className="flex items-center gap-2 text-xl font-semibold">
             <ArrowUpCircle className="h-5 w-5 text-muted-foreground" />

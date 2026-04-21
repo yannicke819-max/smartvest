@@ -7,6 +7,7 @@ import { ArrowLeft, Shuffle, TrendingUp, Loader2 } from 'lucide-react';
 import { createSupabaseBrowserClient } from '@/lib/supabase/client';
 import { Button } from '@/components/ui/button';
 import { DisclaimerBanner } from '@/components/disclaimer-banner';
+import { BackButton } from '@/components/ui/back-button';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
@@ -110,12 +111,7 @@ export default function SimulationsPage() {
       <DisclaimerBanner />
 
       <div className="flex items-center gap-3">
-        <Link href="/">
-          <Button variant="ghost" size="sm">
-            <ArrowLeft className="mr-1.5 h-4 w-4" />
-            Retour
-          </Button>
-        </Link>
+        <BackButton />
         <div>
           <h1 className="text-xl font-semibold">Simulations</h1>
           <p className="text-sm text-muted-foreground">

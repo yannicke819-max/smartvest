@@ -10,6 +10,7 @@ import { ErrorState } from '@/components/states/error-state';
 import { DisclaimerBanner } from '@/components/disclaimer-banner';
 import { LedgerEntryBadge } from '@/components/cash/ledger-entry-badge';
 import { useCashLedgerQuery, type MovementType } from '@/hooks/use-cash';
+import { BackButton } from '@/components/ui/back-button';
 
 const MOVEMENT_OPTIONS: Array<{ value: MovementType | 'all'; label: string }> = [
   { value: 'all', label: 'Tous' },
@@ -55,12 +56,7 @@ export default function CashLedgerPage() {
   return (
     <div className="mx-auto max-w-5xl space-y-6 p-6">
       <div className="flex items-center gap-3">
-        <Link href="/cash">
-          <Button variant="ghost" size="sm">
-            <ArrowLeft className="mr-1.5 h-4 w-4" />
-            Retour
-          </Button>
-        </Link>
+        <BackButton />
         <div className="flex-1">
           <h1 className="flex items-center gap-2 text-xl font-semibold">
             <ScrollText className="h-5 w-5 text-muted-foreground" />

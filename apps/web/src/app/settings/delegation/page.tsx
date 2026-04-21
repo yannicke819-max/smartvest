@@ -6,6 +6,7 @@ import { ArrowLeft, Shield, ShieldOff, ShieldCheck, ShieldAlert, Plus, Zap, ZapO
 import { Button } from '@/components/ui/button';
 import { SkeletonCard } from '@/components/ui/skeleton';
 import { usePortfolios } from '@/hooks/use-portfolio';
+import { BackButton } from '@/components/ui/back-button';
 import {
   useMandates,
   useCreateMandate,
@@ -138,12 +139,7 @@ export default function DelegationPage() {
   return (
     <div className="mx-auto max-w-3xl space-y-6 p-6">
       <div className="flex items-center gap-3">
-        <Link href="/">
-          <Button variant="ghost" size="sm">
-            <ArrowLeft className="mr-1.5 h-4 w-4" />
-            Retour
-          </Button>
-        </Link>
+        <BackButton />
         <div>
           <h1 className="text-xl font-semibold">Délégation — Mandats d'autonomie</h1>
           <p className="text-sm text-muted-foreground">

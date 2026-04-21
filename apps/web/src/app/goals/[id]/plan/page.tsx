@@ -3,6 +3,7 @@
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { ArrowLeft, CheckCircle, Clock, Circle, MapPin } from 'lucide-react';
+import { BackButton } from '@/components/ui/back-button';
 import { usePlan, useGoal } from '@/hooks/use-goals';
 import { Button } from '@/components/ui/button';
 import { SkeletonCard } from '@/components/ui/skeleton';
@@ -45,12 +46,7 @@ export default function PlanPage() {
     return (
       <div className="mx-auto max-w-3xl space-y-4 p-6">
         <div className="flex items-center gap-3">
-          <Link href={`/goals/${id}`}>
-            <Button variant="ghost" size="sm">
-              <ArrowLeft className="mr-1.5 h-4 w-4" />
-              Retour
-            </Button>
-          </Link>
+          <BackButton />
           <h1 className="text-xl font-semibold">Plan d'action</h1>
         </div>
         <div className="rounded-lg border border-dashed p-10 text-center text-sm text-muted-foreground">

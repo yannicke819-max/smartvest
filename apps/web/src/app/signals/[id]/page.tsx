@@ -9,6 +9,7 @@ import { usePortfolios } from '@/hooks/use-portfolio';
 import { DisclaimerBanner } from '@/components/disclaimer-banner';
 import { Button } from '@/components/ui/button';
 import { SkeletonCard } from '@/components/ui/skeleton';
+import { BackButton } from '@/components/ui/back-button';
 
 const OUTPUT_MODE_LABELS: Record<string, string> = {
   information: 'Information',
@@ -99,12 +100,7 @@ export default function SignalDetailPage() {
       <DisclaimerBanner />
 
       <div className="flex items-center gap-3">
-        <Link href="/signals">
-          <Button variant="ghost" size="sm">
-            <ArrowLeft className="mr-1.5 h-4 w-4" />
-            Retour
-          </Button>
-        </Link>
+        <BackButton />
         <div>
           <h1 className="text-xl font-semibold leading-tight">{signal.title}</h1>
           <p className="text-sm text-muted-foreground capitalize">

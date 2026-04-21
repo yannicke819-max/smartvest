@@ -7,6 +7,7 @@ import { ArrowLeft, UploadCloud, Loader2, CheckCircle2, AlertCircle } from 'luci
 import { usePortfolios } from '@/hooks/use-portfolio';
 import { useImportFormats, useImportPreview, useImportCommit, type ImportPreview } from '@/hooks/use-imports';
 import { Button } from '@/components/ui/button';
+import { BackButton } from '@/components/ui/back-button';
 
 export default function NewImportPage() {
   const router = useRouter();
@@ -73,12 +74,7 @@ export default function NewImportPage() {
   return (
     <div className="mx-auto max-w-4xl space-y-6 p-6">
       <div className="flex items-center gap-3">
-        <Link href="/imports">
-          <Button variant="ghost" size="sm">
-            <ArrowLeft className="mr-1.5 h-4 w-4" />
-            Retour
-          </Button>
-        </Link>
+        <BackButton />
         <div>
           <h1 className="text-xl font-semibold">Nouvel import CSV</h1>
           <p className="text-sm text-muted-foreground">

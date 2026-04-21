@@ -10,6 +10,7 @@ import { ErrorState } from '@/components/states/error-state';
 import { DisclaimerBanner } from '@/components/disclaimer-banner';
 import { CashBalancesTable } from '@/components/cash/cash-balances-table';
 import { ReservationsPanel } from '@/components/cash/reservations-panel';
+import { BackButton } from '@/components/ui/back-button';
 import {
   useCashBalancesQuery,
   useCashSummaryQuery,
@@ -41,12 +42,7 @@ export default function CashBalancesPage() {
   return (
     <div className="mx-auto max-w-5xl space-y-6 p-6">
       <div className="flex items-center gap-3">
-        <Link href="/">
-          <Button variant="ghost" size="sm">
-            <ArrowLeft className="mr-1.5 h-4 w-4" />
-            Retour
-          </Button>
-        </Link>
+        <BackButton />
         <div className="flex-1">
           <h1 className="flex items-center gap-2 text-xl font-semibold">
             <Wallet className="h-5 w-5 text-muted-foreground" />

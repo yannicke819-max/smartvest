@@ -7,6 +7,7 @@ import { ArrowLeft } from 'lucide-react';
 import { useCreateGoal } from '@/hooks/use-goals';
 import { usePortfolios } from '@/hooks/use-portfolio';
 import { Button } from '@/components/ui/button';
+import { BackButton } from '@/components/ui/back-button';
 
 const GOAL_TYPES = [
   { value: 'retirement', label: 'Retraite' },
@@ -62,12 +63,7 @@ export default function NewGoalPage() {
   return (
     <div className="mx-auto max-w-xl space-y-6 p-6">
       <div className="flex items-center gap-3">
-        <Link href="/goals">
-          <Button variant="ghost" size="sm">
-            <ArrowLeft className="mr-1.5 h-4 w-4" />
-            Retour
-          </Button>
-        </Link>
+        <BackButton />
         <div>
           <h1 className="text-xl font-semibold">Nouvel objectif</h1>
           <p className="text-sm text-muted-foreground">

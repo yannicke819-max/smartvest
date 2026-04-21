@@ -7,6 +7,7 @@ import { useAlerts, type PortfolioAlert } from '@/hooks/use-valuation';
 import { Button } from '@/components/ui/button';
 import { SkeletonCard } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/states/empty-state';
+import { BackButton } from '@/components/ui/back-button';
 
 function severityIcon(severity: PortfolioAlert['severity']) {
   if (severity === 'critical') return <XCircle className="h-5 w-5 flex-shrink-0 text-destructive" />;
@@ -32,12 +33,7 @@ export default function AlertsPage() {
   return (
     <div className="mx-auto max-w-2xl space-y-6 p-6">
       <div className="flex items-center gap-3">
-        <Link href="/">
-          <Button variant="ghost" size="sm">
-            <ArrowLeft className="mr-1.5 h-4 w-4" />
-            Retour
-          </Button>
-        </Link>
+        <BackButton />
         <div>
           <h1 className="text-xl font-semibold">Alertes portefeuille</h1>
           <p className="text-sm text-muted-foreground">

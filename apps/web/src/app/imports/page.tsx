@@ -7,6 +7,7 @@ import { useImportHistory } from '@/hooks/use-imports';
 import { Button } from '@/components/ui/button';
 import { SkeletonCard } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/states/empty-state';
+import { BackButton } from '@/components/ui/back-button';
 
 export default function ImportsPage() {
   const portfoliosQuery = usePortfolios();
@@ -23,12 +24,7 @@ export default function ImportsPage() {
     <div className="mx-auto max-w-4xl space-y-6 p-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Link href="/">
-            <Button variant="ghost" size="sm">
-              <ArrowLeft className="mr-1.5 h-4 w-4" />
-              Retour
-            </Button>
-          </Link>
+          <BackButton />
           <div>
             <h1 className="text-xl font-semibold">Imports de transactions</h1>
             <p className="text-sm text-muted-foreground">

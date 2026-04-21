@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button';
 import { SkeletonCard } from '@/components/ui/skeleton';
 import { ErrorState } from '@/components/states/error-state';
 import { DisclaimerBanner } from '@/components/disclaimer-banner';
+import { BackButton } from '@/components/ui/back-button';
 import {
   useProposal,
   useProposalAudit,
@@ -83,12 +84,7 @@ export default function SuggestionDetailPage() {
   return (
     <div className="mx-auto max-w-3xl space-y-5 p-6">
       <div className="flex items-center gap-3">
-        <Link href="/suggestions">
-          <Button variant="ghost" size="sm">
-            <ArrowLeft className="mr-1.5 h-4 w-4" />
-            Centre de revue
-          </Button>
-        </Link>
+        <BackButton />
       </div>
 
       <DisclaimerBanner />

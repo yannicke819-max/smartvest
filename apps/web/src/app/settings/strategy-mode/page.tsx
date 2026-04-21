@@ -5,6 +5,7 @@ import { ArrowLeft, Gauge, Clock, ShieldAlert, ExternalLink } from 'lucide-react
 import { Button } from '@/components/ui/button';
 import { SkeletonCard } from '@/components/ui/skeleton';
 import { DisclaimerBanner } from '@/components/disclaimer-banner';
+import { BackButton } from '@/components/ui/back-button';
 import {
   useStrategyModes,
   useCurrentStrategyMode,
@@ -56,12 +57,7 @@ export default function StrategyModePage() {
   return (
     <div className="mx-auto max-w-4xl space-y-6 p-6">
       <div className="flex items-center gap-3">
-        <Link href="/">
-          <Button variant="ghost" size="sm">
-            <ArrowLeft className="mr-1.5 h-4 w-4" />
-            Retour
-          </Button>
-        </Link>
+        <BackButton />
         <div>
           <h1 className="flex items-center gap-2 text-xl font-semibold">
             <Gauge className="h-5 w-5 text-muted-foreground" />

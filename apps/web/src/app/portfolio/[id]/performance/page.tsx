@@ -6,6 +6,7 @@ import { ArrowLeft, TrendingUp, TrendingDown, Activity, BarChart3 } from 'lucide
 import { useHistory, usePerformanceMetrics, useBenchmark } from '@/hooks/use-performance';
 import { Button } from '@/components/ui/button';
 import { SkeletonCard } from '@/components/ui/skeleton';
+import { BackButton } from '@/components/ui/back-button';
 
 function formatPct(value: string | null | undefined, digits = 2): string {
   if (value === null || value === undefined) return '—';
@@ -23,12 +24,7 @@ export default function PerformancePage() {
   return (
     <div className="mx-auto max-w-4xl space-y-6 p-6">
       <div className="flex items-center gap-3">
-        <Link href="/">
-          <Button variant="ghost" size="sm">
-            <ArrowLeft className="mr-1.5 h-4 w-4" />
-            Retour
-          </Button>
-        </Link>
+        <BackButton />
         <div>
           <h1 className="text-xl font-semibold">Performances</h1>
           <p className="text-sm text-muted-foreground">
