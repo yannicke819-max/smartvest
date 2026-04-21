@@ -20,3 +20,7 @@ packages/*/src/**/*.d.ts.map
 !.vscode/extensions.json
 .idea
 tmp
+
+# Supabase CLI local cache
+supabase/.temp/
+supabase/.branches/
