@@ -23,11 +23,15 @@ FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 
+# Runner layout mirrors the monorepo so both `npm start -w @smartvest/api`
+# (Railway default) and `node dist/main.js` from /app/apps/api work
+# without surprises. node_modules at /app/ keeps workspace symlinks valid.
 COPY --from=builder /repo/package.json /repo/package-lock.json ./
 COPY --from=builder /repo/node_modules ./node_modules
 COPY --from=builder /repo/packages ./packages
-COPY --from=builder /repo/apps/api/dist ./dist
 COPY --from=builder /repo/apps/api/package.json ./apps/api/package.json
+COPY --from=builder /repo/apps/api/dist ./apps/api/dist
 
+WORKDIR /app/apps/api
 EXPOSE 3001
 CMD ["node", "dist/main.js"]
