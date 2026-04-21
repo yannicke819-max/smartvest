@@ -27,3 +27,4 @@ export * from './entities/hyper-trading-guardrail';
 export * from './entities/hyper-trading-profile';
 export * from './entities/hyper-trading-session';
 export * from './entities/hyper-trading-audit-event';
+export * from './entities/sniper-session';

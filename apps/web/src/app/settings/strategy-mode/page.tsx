@@ -133,6 +133,21 @@ export default function StrategyModePage() {
         )}
       </section>
 
+      {/* Personal override — sniper */}
+      <section className="rounded-lg border p-4">
+        <h2 className="text-sm font-medium">Surcouche personnelle</h2>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Mode sniper — cadence renforcée temporaire, déverrouillable par code, TTL borné. Ne
+          contourne ni mandat ni kill-switch.
+        </p>
+        <Link
+          href="/settings/sniper"
+          className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+        >
+          Configurer le mode sniper →
+        </Link>
+      </section>
+
       {/* Doctrine reminder */}
       <section className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-xs text-amber-900">
         <div className="flex items-start gap-2">

@@ -236,6 +236,24 @@ Champs runtime-checkés par le `HyperTradingPolicyEngine` à chaque évaluation 
 
 Activer `HYPER_TRADING_EXECUTION_ENABLED` ne suffit jamais seul à exécuter — toutes les conditions de garde-fou doivent être réunies.
 
+### Mode sniper — surcouche personnelle minimale
+
+Surcouche indépendante du mode hyper-trading, pensée pour un usage strictement personnel et réversible.
+
+- **Déverrouillage par code local.** `SNIPER_MODE_UNLOCK_CODE` est défini côté serveur uniquement. Sans code configuré, `/sniper/unlock` répond `400`.
+- **TTL obligatoire.** Chaque session expire automatiquement (par défaut 15 min, max 240 min). Pas de session permanente.
+- **Une seule session active à la fois** par utilisateur (contrainte DB).
+- **Désactivation immédiate** jamais gatée par un feature flag — le bouton reste toujours disponible.
+- **`PersonalOverrideMode`** dérivé en lecture seule : `STANDARD` / `SNIPER_LOCKED` / `SNIPER_ACTIVE`.
+- **La table `sniper_sessions` est l'audit.** Chaque déverrouillage insère une ligne ; les terminaisons (`expired`, `revoked`) mettent à jour le statut + timestamps. Aucune table séparée.
+- **Ne contourne JAMAIS** `checkMandatePermission()`, le kill-switch global, ni les garde-fous d'un `AutonomyMandate`. Aucun chemin d'exécution réelle n'est introduit.
+- Les autres modules peuvent lire `SniperService.isActive(userId)` pour ajuster leur cadence (fréquence d'analyse, fraîcheur des suggestions, etc.) — jamais pour contourner une vérification.
+
+| Flag | Rôle | Défaut |
+|---|---|---|
+| `SNIPER_MODE_ENABLED` | Master gate ; sans ce flag `/sniper/unlock` renvoie 403 | `false` |
+| `SNIPER_MODE_UI_ENABLED` | Rend visible l'écran `/settings/sniper` | `false` |
+
 ### Wording
 
 - Préférer : « mode opératoire actif », « cadence haute intensité », « garde-fous renforcés », « pause immédiate disponible ».

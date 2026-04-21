@@ -20,6 +20,9 @@ export const FeatureFlagKey = z.enum([
   'HYPER_TRADING_UI_ENABLED',       // Renders the configuration / status UI
   'HYPER_TRADING_RUNTIME_ENABLED',  // Runtime policy engine evaluates intents at runtime
   'HYPER_TRADING_EXECUTION_ENABLED',// Even with the above, real execution stays off unless this is true
+  // Sniper personal override (opt-in, unlock-by-code)
+  'SNIPER_MODE_ENABLED',            // Master gate — without this, /sniper endpoints return 403
+  'SNIPER_MODE_UI_ENABLED',         // Renders the sniper unlock UI
 ]);
 export type FeatureFlagKey = z.infer<typeof FeatureFlagKey>;
 
@@ -42,6 +45,9 @@ export const FeatureFlags = z.object({
   HYPER_TRADING_UI_ENABLED: z.boolean(),
   HYPER_TRADING_RUNTIME_ENABLED: z.boolean(),
   HYPER_TRADING_EXECUTION_ENABLED: z.boolean(),
+  // Sniper personal override
+  SNIPER_MODE_ENABLED: z.boolean(),
+  SNIPER_MODE_UI_ENABLED: z.boolean(),
 });
 export type FeatureFlags = z.infer<typeof FeatureFlags>;
 
@@ -69,4 +75,8 @@ export const DEFAULT_FLAGS: FeatureFlags = {
   HYPER_TRADING_UI_ENABLED: false,
   HYPER_TRADING_RUNTIME_ENABLED: false,
   HYPER_TRADING_EXECUTION_ENABLED: false,
+  // Sniper is strictly opt-in. Unlock code must also be set via
+  // SNIPER_MODE_UNLOCK_CODE env var — flag alone is not sufficient.
+  SNIPER_MODE_ENABLED: false,
+  SNIPER_MODE_UI_ENABLED: false,
 };

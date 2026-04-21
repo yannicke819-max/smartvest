@@ -9,6 +9,8 @@ const publicSchema = z.object({
   NEXT_PUBLIC_FEATURE_REGULATED_MODE: z.string().default('false'),
   // Hyper-trading UI gate — front-end only. Runtime/exec flags are server-side.
   NEXT_PUBLIC_FEATURE_HYPER_TRADING_UI_ENABLED: z.string().default('false'),
+  // Sniper UI gate — same split; unlock code never leaves the server.
+  NEXT_PUBLIC_FEATURE_SNIPER_MODE_UI_ENABLED: z.string().default('false'),
 });
 
 export const publicEnv = publicSchema.parse({
@@ -19,4 +21,5 @@ export const publicEnv = publicSchema.parse({
   NEXT_PUBLIC_FEATURE_SAFE_PUBLIC_MODE: process.env.NEXT_PUBLIC_FEATURE_SAFE_PUBLIC_MODE,
   NEXT_PUBLIC_FEATURE_REGULATED_MODE: process.env.NEXT_PUBLIC_FEATURE_REGULATED_MODE,
   NEXT_PUBLIC_FEATURE_HYPER_TRADING_UI_ENABLED: process.env.NEXT_PUBLIC_FEATURE_HYPER_TRADING_UI_ENABLED,
+  NEXT_PUBLIC_FEATURE_SNIPER_MODE_UI_ENABLED: process.env.NEXT_PUBLIC_FEATURE_SNIPER_MODE_UI_ENABLED,
 });

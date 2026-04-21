@@ -73,6 +73,15 @@ export class FeatureFlagsService {
         this.config.get('FEATURE_HYPER_TRADING_EXECUTION_ENABLED'),
         DEFAULT_FLAGS.HYPER_TRADING_EXECUTION_ENABLED,
       ),
+      // Sniper personal override
+      SNIPER_MODE_ENABLED: this.parseBool(
+        this.config.get('FEATURE_SNIPER_MODE_ENABLED'),
+        DEFAULT_FLAGS.SNIPER_MODE_ENABLED,
+      ),
+      SNIPER_MODE_UI_ENABLED: this.parseBool(
+        this.config.get('FEATURE_SNIPER_MODE_UI_ENABLED'),
+        DEFAULT_FLAGS.SNIPER_MODE_UI_ENABLED,
+      ),
     };
   }
 

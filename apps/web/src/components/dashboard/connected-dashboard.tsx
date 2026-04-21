@@ -12,6 +12,7 @@ import { AllocationDonut } from './allocation-donut';
 import { RecentTransactions } from './recent-transactions';
 import { CostFrictionCard } from './cost-friction-card';
 import { PendingSuggestionsWidget } from '@/components/suggestions/pending-suggestions-widget';
+import { SniperBadge } from '@/components/dashboard/sniper-badge';
 import { MarketContextWidget } from './market-context-widget';
 import { ExposureWidget } from './exposure-widget';
 import { CashSummaryWidget } from './cash-summary-widget';
@@ -100,7 +101,8 @@ export function ConnectedDashboard() {
             {activePortfolio ? `Devise de base : ${currency}` : 'Chargement du portefeuille…'}
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
+          <SniperBadge />
           <Link href={`/portfolio/${portfolioId}/alerts`}>
             <Button variant="outline" size="sm">
               <BellRing className="mr-1.5 h-3.5 w-3.5" />
