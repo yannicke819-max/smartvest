@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { SignalNormalizerService, type RawSignalInput } from './signal-normalizer.service';
 import { ImpactMapperService } from './impact-mapper.service';
@@ -69,7 +69,7 @@ export class MacroService {
     if (filters?.severity) q = q.eq('severity', filters.severity);
 
     const { data, error } = await q;
-    if (error) throw new Error(error.message);
+    if (error) throw new BadRequestException(error.message);
     return data ?? [];
   }
 

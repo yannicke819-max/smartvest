@@ -12,16 +12,29 @@ export async function GET(request: NextRequest) {
 
   // PKCE flow (OAuth / newer OTP)
   if (code) {
-    const { error } = await supabase.auth.exchangeCodeForSession(code);
+    const { data, error } = await supabase.auth.exchangeCodeForSession(code);
     if (!error) {
+      // Auto-create minimal user_profiles row for new OAuth users (upsert = no-op if exists).
+      if (data?.user) {
+        await supabase.from('user_profiles').upsert(
+          { id: data.user.id, updated_at: new Date().toISOString() },
+          { onConflict: 'id', ignoreDuplicates: true },
+        );
+      }
       return NextResponse.redirect(`${origin}${next}`);
     }
   }
 
   // OTP token_hash flow (magic link email)
   if (tokenHash && type) {
-    const { error } = await supabase.auth.verifyOtp({ token_hash: tokenHash, type });
+    const { data: otpData, error } = await supabase.auth.verifyOtp({ token_hash: tokenHash, type });
     if (!error) {
+      if (otpData?.user) {
+        await supabase.from('user_profiles').upsert(
+          { id: otpData.user.id, updated_at: new Date().toISOString() },
+          { onConflict: 'id', ignoreDuplicates: true },
+        );
+      }
       return NextResponse.redirect(`${origin}${next}`);
     }
   }

@@ -48,7 +48,7 @@ export function useUserProfile() {
         .from('user_profiles')
         .select('*')
         .eq('id', user.id)
-        .single();
+        .maybeSingle();
       return data ?? null;
     },
   });

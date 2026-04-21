@@ -10,7 +10,9 @@ export class SupabaseService implements OnModuleInit {
   constructor(private readonly config: ConfigService) {}
 
   onModuleInit() {
-    const url = this.config.get<string>('NEXT_PUBLIC_SUPABASE_URL');
+    // Accept both SUPABASE_URL (Railway/standard) and NEXT_PUBLIC_SUPABASE_URL (shared .env)
+    const url = this.config.get<string>('SUPABASE_URL')
+      ?? this.config.get<string>('NEXT_PUBLIC_SUPABASE_URL');
     const serviceKey = this.config.get<string>('SUPABASE_SERVICE_ROLE_KEY');
     if (!url || !serviceKey) {
       this.logger.warn('Supabase non configuré (URL ou service role manquant).');
