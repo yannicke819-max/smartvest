@@ -1,26 +1,21 @@
 # Multi-stage build for the SmartVest API (NestJS, npm workspaces monorepo).
-# Build context = repo root. The API depends on several @smartvest/* workspaces,
-# so we copy the whole workspace tree for the install + build phase.
+# Build context = repo root.
 #
-# COPY paths are explicit (no `COPY apps/api/ apps/api/` wildcard) to sidestep
-# a BuildKit edge case where a directory-as-source fails with "not found"
-# when combined with .dockerignore rules that use negations.
+# Pattern: only directory-level COPYs (apps/, packages/). No sub-path COPY
+# and no file COPY mixed with directory COPYs in the same parent — this
+# avoids a BuildKit "not found" cache computation error that Railway trips
+# on (observed on commit 5c4ad0a and 00a9b5b). Layer caching for
+# node_modules is slightly less aggressive, but for personal use builds
+# are infrequent enough that correctness wins.
 
 FROM node:20-alpine AS builder
 WORKDIR /repo
 
-# Install-layer inputs — changes here invalidate the npm cache.
-COPY package.json package-lock.json ./
-COPY tsconfig.base.json ./
-COPY apps/api/package.json apps/api/package.json
+COPY package.json package-lock.json tsconfig.base.json ./
 COPY packages packages
+COPY apps apps
 
 RUN npm install --include=dev
-
-# Build-layer inputs — copied after install so code edits don't re-install.
-COPY apps/api/src apps/api/src
-COPY apps/api/tsconfig.json apps/api/tsconfig.json
-
 RUN npm run -w @smartvest/api build
 
 # =========================================================================
