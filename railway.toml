@@ -14,11 +14,10 @@ builder = "DOCKERFILE"
 dockerfilePath = "apps/api/Dockerfile"
 
 [deploy]
-# CMD in the Dockerfile is `node dist/main.js`. Leaving startCommand empty
-# lets Docker honor the CMD verbatim — avoids a second layer of ambiguity.
-# Pre-deploy runs apply-migrations.mjs via absolute path because the
-# container WORKDIR is /app/apps/api — npm -w wouldn't find the workspace root.
-preDeployCommand = "node /app/scripts/apply-migrations.mjs"
+# Railway ignores the Dockerfile CMD when it detects a Node project and falls
+# back to `npm start`. Explicitly setting startCommand overrides that behaviour
+# so migrations always run before the API starts.
+startCommand = "node /app/scripts/apply-migrations.mjs && node dist/main.js"
 healthcheckPath = "/health"
 healthcheckTimeout = 30
 restartPolicyType = "ON_FAILURE"
