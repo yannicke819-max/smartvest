@@ -45,12 +45,20 @@ export default function SignInPage() {
   }
 
   async function handleGoogle() {
+    setError(null);
     try {
       const supabase = createSupabaseBrowserClient();
-      await supabase.auth.signInWithOAuth({
+      const { error: authError } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: { redirectTo: `${window.location.origin}/auth/callback` },
       });
+      if (authError) {
+        if (authError.message.toLowerCase().includes('provider') || authError.message.includes('not enabled')) {
+          setError('Google OAuth non configuré dans Supabase. Utilise email + mot de passe en attendant.');
+        } else {
+          setError(authError.message);
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erreur Google OAuth.');
     }
