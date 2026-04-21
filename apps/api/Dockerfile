@@ -8,6 +8,7 @@
 # node_modules is slightly less aggressive, but for personal use builds
 # are infrequent enough that correctness wins.
 
+# cache-bust: 1 — force full rebuild (packages tsconfig now emit CommonJS)
 FROM node:20-alpine AS builder
 WORKDIR /repo
 
