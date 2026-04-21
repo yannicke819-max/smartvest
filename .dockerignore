@@ -1,0 +1,47 @@
+# Keep the Docker build context lean. With context = repo root, we must
+# avoid copying local node_modules, .next, dist output, IDE files, or any
+# secret-leaking env file into the build image.
+
+**/node_modules
+**/.next
+**/dist
+**/.turbo
+**/coverage
+**/.vercel
+**/.railway
+**/.fly
+
+# TS incremental build artifacts
+**/*.tsbuildinfo
+# Build artifacts that composite tsconfigs leak next to sources
+packages/*/src/**/*.js
+packages/*/src/**/*.js.map
+packages/*/src/**/*.d.ts
+packages/*/src/**/*.d.ts.map
+
+# Env files — NEVER baked into images
+.env
+.env.*
+!.env.example
+
+# Git / IDE / OS noise
+.git
+.github
+.gitignore
+.dockerignore
+.idea
+.vscode
+.DS_Store
+*.log
+tmp
+
+# Supabase CLI cache
+supabase/.temp
+supabase/.branches
+
+# Docs & scripts that aren't needed at runtime
+docs
+scripts
+README.md
+*.md
+!packages/*/README.md

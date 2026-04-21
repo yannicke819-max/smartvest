@@ -145,7 +145,10 @@ export class HyperTradingProfileService {
     if (profile.status === 'archived') {
       throw new BadRequestException('Profil archivé — impossible de modifier les garde-fous');
     }
-    const updates = snake(dto);
+    // Zod .partial() emits explicit `| undefined` on each field, which trips
+    // exactOptionalPropertyTypes against snake()'s `Partial<HyperTradingGuardrail>`.
+    // The snake() helper already spreads conditionally, so undefined values are ignored.
+    const updates = snake(dto as Partial<HyperTradingGuardrail>);
     if (Object.keys(updates).length === 0) {
       throw new BadRequestException('Aucun champ valide à mettre à jour');
     }
