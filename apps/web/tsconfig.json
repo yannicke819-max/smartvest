@@ -19,12 +19,14 @@
     "paths": {
       "@/*": ["src/*"],
       "@smartvest/shared-types": ["../../packages/shared-types/src/index.ts"],
-      "@smartvest/domain": ["../../packages/domain/src/index.ts"]
+      "@smartvest/domain": ["../../packages/domain/src/index.ts"],
+      "@smartvest/portfolio-engine": ["../../packages/portfolio-engine/src/index.ts"]
     }
   },
   "references": [
     { "path": "../../packages/shared-types" },
-    { "path": "../../packages/domain" }
+    { "path": "../../packages/domain" },
+    { "path": "../../packages/portfolio-engine" }
   ],
   "include": ["next-env.d.ts", "src/**/*.ts", "src/**/*.tsx", ".next/types/**/*.ts"],
   "exclude": ["node_modules"]
