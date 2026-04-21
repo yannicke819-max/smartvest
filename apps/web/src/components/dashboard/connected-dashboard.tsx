@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { Plus, Wallet, BellRing, Shuffle, TrendingUp, UploadCloud, Target, Globe, Shield, Inbox, Coins, ArrowUpCircle } from 'lucide-react';
+import { Plus, Wallet, BellRing, Shuffle, TrendingUp, UploadCloud, Target, Globe, Shield, Inbox, Coins, ArrowUpCircle, Gauge } from 'lucide-react';
 import { usePortfolios, useUserProfile } from '@/hooks/use-portfolio';
 import { useRecentTransactions } from '@/hooks/use-dashboard';
 import { useValuation, useAllocation, useAlerts } from '@/hooks/use-valuation';
@@ -152,6 +152,12 @@ export function ConnectedDashboard() {
             <Button variant="outline" size="sm">
               <Shield className="mr-1.5 h-3.5 w-3.5" />
               Délégation
+            </Button>
+          </Link>
+          <Link href="/settings/strategy-mode">
+            <Button variant="outline" size="sm">
+              <Gauge className="mr-1.5 h-3.5 w-3.5" />
+              Mode
             </Button>
           </Link>
           <Link href="/imports">
