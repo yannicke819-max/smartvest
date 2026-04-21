@@ -9,7 +9,7 @@ import {
   HttpCode,
   BadRequestException,
 } from '@nestjs/common';
-import { UnauthorizedException } from '@nestjs/common';
+import { extractUserId } from '../../common/extract-user-id';
 import { CashBalancesService } from './services/cash-balances.service';
 import { CashReservationsService } from './services/cash-reservations.service';
 import {
@@ -18,11 +18,6 @@ import {
   ListReservationsQuerySchema,
 } from './dto/cash.dto';
 
-function extractUserId(headers: Record<string, string>): string {
-  const id = headers['x-user-id'];
-  if (!id) throw new UnauthorizedException('x-user-id header manquant');
-  return id;
-}
 
 function parse<T>(
   schema: { safeParse: (x: unknown) => { success: boolean; data?: T; error?: { issues: unknown[] } } },
