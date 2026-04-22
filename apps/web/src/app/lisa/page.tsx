@@ -18,6 +18,9 @@ import { Button } from '@/components/ui/button';
 import { SkeletonCard } from '@/components/ui/skeleton';
 import { LisaProposalCard } from '@/components/lisa/proposal-card';
 import { LisaPortfolioSummary } from '@/components/lisa/portfolio-summary';
+import { LisaPortfolioChart } from '@/components/lisa/portfolio-chart';
+import { LisaPositionsTable } from '@/components/lisa/positions-table';
+import { LisaDecisionLog } from '@/components/lisa/decision-log';
 
 const PROFILE_LABELS: Record<SessionProfile, { label: string; description: string }> = {
   long_term_investor: {
@@ -160,10 +163,16 @@ export default function LisaPage() {
         </div>
       )}
 
-      {/* Portfolio summary + chart preview */}
+      {/* Portfolio summary */}
       {selectedPortfolioId && (
         <LisaPortfolioSummary portfolioId={selectedPortfolioId} snapshot={snapshotQuery.data ?? null} />
       )}
+
+      {/* Chart 1d/1w/1m/1y */}
+      {selectedPortfolioId && <LisaPortfolioChart portfolioId={selectedPortfolioId} />}
+
+      {/* Positions */}
+      {selectedPortfolioId && <LisaPositionsTable portfolioId={selectedPortfolioId} />}
 
       {/* Config card */}
       <div className="rounded-lg border p-5 space-y-4">
@@ -293,6 +302,9 @@ export default function LisaPage() {
           <LisaProposalCard key={p.id} proposal={p} portfolioId={selectedPortfolioId ?? ''} />
         ))}
       </div>
+
+      {/* Decision log */}
+      {selectedPortfolioId && <LisaDecisionLog portfolioId={selectedPortfolioId} />}
 
       {/* Kill switch */}
       <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-5 space-y-3">
