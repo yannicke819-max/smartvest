@@ -17,7 +17,6 @@ import { SkeletonCard } from '@/components/ui/skeleton';
 
 type ChartPoint = {
   t: number;
-  tLabel: string;
   tFull: string;
   value: number;
   realized: number;
@@ -88,12 +87,6 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
   const chartData = useMemo(() => {
     return data.map((s) => ({
       t: new Date(s.timestamp).getTime(),
-      tLabel: new Date(s.timestamp).toLocaleString('fr-FR', {
-        month: 'short',
-        day: 'numeric',
-        hour: window === '1d' ? '2-digit' : undefined,
-        minute: window === '1d' ? '2-digit' : undefined,
-      }),
       tFull: new Date(s.timestamp).toLocaleString('fr-FR', {
         day: '2-digit',
         month: 'short',
@@ -105,7 +98,7 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
       returnPct: s.return_from_inception_pct,
       drawdown: s.drawdown_from_peak_pct,
     }));
-  }, [data, window]);
+  }, [data]);
 
   const hasData = chartData.length > 1;
   const firstValue = chartData[0]?.value ?? 0;
@@ -185,10 +178,21 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
             <LineChart data={chartData} margin={{ top: 8, right: 12, bottom: 8, left: 8 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="currentColor" opacity={0.1} />
               <XAxis
-                dataKey="tLabel"
+                dataKey="t"
+                type="number"
+                scale="time"
+                domain={['dataMin', 'dataMax']}
                 tick={{ fontSize: 10, fill: 'currentColor' }}
                 tickLine={false}
                 axisLine={{ stroke: 'currentColor', opacity: 0.2 }}
+                tickFormatter={(t: number) => new Date(t).toLocaleString('fr-FR',
+                  window === '1d'
+                    ? { hour: '2-digit', minute: '2-digit' }
+                    : window === '1y'
+                      ? { month: 'short', year: '2-digit' }
+                      : { day: '2-digit', month: 'short' },
+                )}
+                minTickGap={30}
               />
               <YAxis
                 tick={{ fontSize: 10, fill: 'currentColor' }}
