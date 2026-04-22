@@ -5,7 +5,7 @@ FROM node:20-alpine AS builder
 
 # ARG CACHEBUST invalide le cache Docker dès qu'on change sa valeur
 # (doit être passé via --build-arg CACHEBUST=X ou buildArgs dans railway.toml).
-ARG CACHEBUST=10
+ARG CACHEBUST=11
 RUN echo "cachebust=$CACHEBUST"
 
 WORKDIR /repo
