@@ -216,28 +216,62 @@ défini, sans markdown, sans explications hors JSON.
 
   /**
    * Extrait le JSON d'un texte Claude (qui peut avoir du préambule ou
-   * être entouré de fences ```json...```).
+   * être entouré de fences ```json...```). Tolérant aux imperfections
+   * fréquentes : trailing commas, commentaires //, fences mal placées.
    */
   private extractAndParseJson(text: string): unknown {
     // Strip markdown code fences if present
-    const cleaned = text
+    let cleaned = text
       .replace(/^```(?:json)?\s*/m, '')
       .replace(/\s*```\s*$/m, '')
       .trim();
 
-    // Try direct parse
-    try {
-      return JSON.parse(cleaned);
-    } catch {
-      // Fall back: find first { ... last }
-      const firstBrace = cleaned.indexOf('{');
-      const lastBrace = cleaned.lastIndexOf('}');
-      if (firstBrace === -1 || lastBrace === -1) {
-        throw new Error('No JSON object found in Claude output');
-      }
-      const candidate = cleaned.slice(firstBrace, lastBrace + 1);
-      return JSON.parse(candidate);
+    const tryParse = (s: string): unknown | null => {
+      try { return JSON.parse(s); } catch { return null; }
+    };
+
+    // 1. Direct parse
+    let parsed = tryParse(cleaned);
+    if (parsed !== null) return parsed;
+
+    // 2. Slice to first { ... last }
+    const firstBrace = cleaned.indexOf('{');
+    const lastBrace = cleaned.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1) {
+      cleaned = cleaned.slice(firstBrace, lastBrace + 1);
     }
+    parsed = tryParse(cleaned);
+    if (parsed !== null) return parsed;
+
+    // 3. Strip single-line comments and /* ... */ blocks
+    const stripComments = (s: string): string =>
+      s.replace(/\/\/[^\n\r]*/g, '')
+       .replace(/\/\*[\s\S]*?\*\//g, '');
+    cleaned = stripComments(cleaned);
+    parsed = tryParse(cleaned);
+    if (parsed !== null) return parsed;
+
+    // 4. Strip trailing commas before } or ]
+    cleaned = cleaned.replace(/,(\s*[}\]])/g, '$1');
+    parsed = tryParse(cleaned);
+    if (parsed !== null) return parsed;
+
+    // 5. Last resort — detailed error with context around first failure
+    try {
+      JSON.parse(cleaned);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const match = msg.match(/position (\d+)/);
+      if (match) {
+        const pos = parseInt(match[1], 10);
+        const start = Math.max(0, pos - 120);
+        const end = Math.min(cleaned.length, pos + 120);
+        const ctx = cleaned.slice(start, end).replace(/\n/g, '\\n');
+        throw new Error(`JSON parse failed at pos ${pos}: ${msg}. Context: …${ctx}…`);
+      }
+      throw e;
+    }
+    throw new Error('Unreachable : JSON parse should have thrown before.');
   }
 
   /**
