@@ -18,7 +18,8 @@
     { "path": "../../packages/cost-engine" },
     { "path": "../../packages/audit" },
     { "path": "../../packages/brokers" },
-    { "path": "../../packages/portfolio-engine" }
+    { "path": "../../packages/portfolio-engine" },
+    { "path": "../../packages/ai-analyst" }
   ],
   "include": ["src/**/*"],
   "ts-node": {

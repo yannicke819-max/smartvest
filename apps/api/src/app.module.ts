@@ -22,6 +22,7 @@ import { FundingModule } from './modules/funding/funding.module';
 import { HyperTradingModule } from './modules/hyper-trading/hyper-trading.module';
 import { SniperModule } from './modules/sniper/sniper.module';
 import { BrokersModule } from './modules/brokers/brokers.module';
+import { LisaModule } from './modules/lisa/lisa.module';
 
 @Module({
   imports: [
@@ -54,6 +55,7 @@ import { BrokersModule } from './modules/brokers/brokers.module';
     HyperTradingModule,
     SniperModule,
     BrokersModule,
+    LisaModule,
   ],
 })
 export class AppModule {}
