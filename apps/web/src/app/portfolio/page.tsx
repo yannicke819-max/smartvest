@@ -1,8 +1,11 @@
 'use client';
 
+import { useState } from 'react';
 import Link from 'next/link';
-import { Plus, Wallet } from 'lucide-react';
+import { Plus, Wallet, Trash2 } from 'lucide-react';
 import { usePortfolios } from '@/hooks/use-portfolio';
+import { deletePortfolio } from '@/app/actions/portfolio';
+import { useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { SkeletonCard } from '@/components/ui/skeleton';
@@ -11,6 +14,21 @@ import { ErrorState } from '@/components/states/error-state';
 
 export default function PortfolioPage() {
   const { data: portfolios, isLoading, error, refetch } = usePortfolios();
+  const qc = useQueryClient();
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  async function handleDelete(id: string, name: string) {
+    if (!confirm(`Supprimer "${name}" ? Cette action est irréversible.`)) return;
+    setDeletingId(id);
+    try {
+      await deletePortfolio(id);
+      await qc.invalidateQueries({ queryKey: ['portfolios'] });
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setDeletingId(null);
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -73,6 +91,15 @@ export default function PortfolioPage() {
                       Compte
                     </Button>
                   </Link>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="ml-auto text-destructive hover:text-destructive"
+                    disabled={deletingId === p.id}
+                    onClick={() => void handleDelete(p.id, p.name)}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
                 </div>
               </CardContent>
             </Card>

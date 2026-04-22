@@ -22,6 +22,23 @@ export async function createPortfolio(input: CreatePortfolioInput) {
   return data;
 }
 
+export async function deletePortfolio(portfolioId: string) {
+  const supabase = createSupabaseServerClient();
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+  if (authError || !user) throw new Error('Non authentifié.');
+
+  const { data: portfolio } = await supabase
+    .from('portfolios')
+    .select('id, user_id')
+    .eq('id', portfolioId)
+    .eq('user_id', user.id)
+    .single();
+  if (!portfolio) throw new Error('Portefeuille non trouvé.');
+
+  const { error } = await supabase.from('portfolios').delete().eq('id', portfolioId).eq('user_id', user.id);
+  if (error) throw new Error(error.message);
+}
+
 export interface CreateAccountInput {
   portfolioId: string;
   label: string;

@@ -27,6 +27,16 @@ export async function createPaperPortfolio(
   const baseCurrency = payload.baseCurrency ?? 'EUR';
   const initialCapital = payload.initialCapital ?? 10000;
 
+  // Refuse si un portefeuille de simulation existe déjà.
+  const { data: existing } = await supabase
+    .from('portfolios')
+    .select('id')
+    .eq('user_id', user.id)
+    .eq('is_simulation', true)
+    .limit(1)
+    .single();
+  if (existing) throw new Error('Un portefeuille de simulation existe déjà. Supprime-le avant d\'en créer un nouveau.');
+
   // S'assurer qu'un user_profile existe (cas Google OAuth récent).
   await supabase.from('user_profiles').upsert(
     { id: user.id, updated_at: new Date().toISOString() },
