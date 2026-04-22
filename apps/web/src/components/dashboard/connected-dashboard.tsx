@@ -4,7 +4,7 @@ import type React from 'react';
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Plus, Wallet, BellRing, Shuffle, TrendingUp, UploadCloud, Target, Globe, Shield, Inbox, Coins, ArrowUpCircle, Gauge, FlaskConical } from 'lucide-react';
+import { Plus, Wallet, BellRing, Shuffle, TrendingUp, UploadCloud, Target, Globe, Shield, Inbox, Coins, ArrowUpCircle, Gauge, FlaskConical, Sparkles } from 'lucide-react';
 import { usePortfolios, useUserProfile } from '@/hooks/use-portfolio';
 import { createPaperPortfolio } from '@/app/actions/paper-portfolio';
 import { useQueryClient } from '@tanstack/react-query';
@@ -233,6 +233,12 @@ export function ConnectedDashboard() {
               </Button>
             </Link>
           )}
+          <Link href="/lisa">
+            <Button variant="outline" size="sm">
+              <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+              Lisa
+            </Button>
+          </Link>
           <Link href="/accounts/new">
             <Button variant="outline" size="sm">
               <Plus className="mr-1.5 h-3.5 w-3.5" />
