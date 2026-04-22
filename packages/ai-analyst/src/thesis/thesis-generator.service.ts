@@ -12,6 +12,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import JSON5 from 'json5';
 import { z } from 'zod';
 import type { LisaClaudeClient } from '../claude/client';
 import type { CorpusQueryService } from '../corpus/corpus-query.service';
@@ -361,7 +362,14 @@ thèse initiale tient toujours (respect du plan, pas de panic-sell).`;
     parsed = tryParse(cleaned);
     if (parsed !== null) return parsed;
 
-    // 6. Last resort — detailed error with context around first failure
+    // 6. JSON5 — parser lenient qui accepte commentaires, trailing commas,
+    //    keys non-quotés, strings single-quoted, échappements plus permissifs.
+    //    Last chance avant l'erreur.
+    try {
+      return JSON5.parse(cleaned);
+    } catch { /* continue to detailed error */ }
+
+    // 7. Last resort — detailed error with context around first failure
     try {
       JSON.parse(cleaned);
     } catch (e) {

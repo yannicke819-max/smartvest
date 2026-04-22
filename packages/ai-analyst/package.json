@@ -16,6 +16,7 @@
     "@smartvest/shared-types": "*",
     "@supabase/supabase-js": "^2.45.4",
     "decimal.js": "^10.4.3",
+    "json5": "^2.2.3",
     "zod": "^3.23.8"
   },
   "devDependencies": {
