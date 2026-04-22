@@ -423,7 +423,8 @@ export class LisaService {
     capitalUsd: string,
     livePrice: string,
   ): Promise<{ externalOrderId: string | null; status: string } | null> {
-    const apiKey = this.config.get<string>('BINANCE_API_KEY');
+    // Nom de variable choisi par l'utilisateur sur Railway
+    const apiKey = this.config.get<string>('smartvest-lisa') ?? this.config.get<string>('BINANCE_API_KEY');
     const secretKey = this.config.get<string>('BINANCE_SECRET_KEY');
     const execEnabled = this.config.get<string>('BINANCE_EXECUTION_ENABLED') === 'true';
 
