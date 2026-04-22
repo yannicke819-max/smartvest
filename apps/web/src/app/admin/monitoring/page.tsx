@@ -45,7 +45,7 @@ function CheckRow({ check }: { check: Check }) {
 
 export default function MonitoringPage() {
   const [checks, setChecks] = useState<Record<string, Check>>({
-    api: { label: 'API Railway', status: 'loading' },
+    api: { label: 'API Fly', status: 'loading' },
     supabase: { label: 'Supabase DB', status: 'loading' },
     claude: { label: 'Claude (ANTHROPIC_API_KEY)', status: 'unknown', detail: 'vérification indirecte' },
     eodhd: { label: 'EODHD prix live', status: 'unknown', detail: 'vérification via snapshot Lisa' },
@@ -53,6 +53,15 @@ export default function MonitoringPage() {
     lisa_positions: { label: 'Positions simulées ouvertes', status: 'loading' },
     lisa_autopilot: { label: 'Portfolios en autopilot', status: 'loading' },
     kill_switch: { label: 'Kill-switch global', status: 'loading' },
+  });
+  const [usage, setUsage] = useState<{
+    claude24h: { requests: number; inputTokens: number; outputTokens: number; costUsd: number };
+    claudeAll: { requests: number; inputTokens: number; outputTokens: number; costUsd: number };
+    eodhdEstimated24h: number;
+  }>({
+    claude24h: { requests: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 },
+    claudeAll: { requests: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 },
+    eodhdEstimated24h: 0,
   });
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -69,7 +78,7 @@ export default function MonitoringPage() {
       setChecks((c) => ({
         ...c,
         api: {
-          label: 'API Railway',
+          label: 'API Fly',
           status: res.ok ? 'ok' : 'error',
           detail: res.ok ? String(body.status ?? 'up') : `HTTP ${res.status}`,
           latencyMs,
@@ -78,7 +87,7 @@ export default function MonitoringPage() {
     } catch {
       setChecks((c) => ({
         ...c,
-        api: { label: 'API Railway', status: 'error', detail: 'timeout ou réseau', latencyMs: Date.now() - apiStart },
+        api: { label: 'API Fly', status: 'error', detail: 'timeout ou réseau', latencyMs: Date.now() - apiStart },
       }));
     }
 
@@ -218,6 +227,45 @@ export default function MonitoringPage() {
       // keep unknown
     }
 
+    // 8. Claude quotas — agrégation lisa_proposals
+    try {
+      const since24h = new Date(Date.now() - 86_400_000).toISOString();
+      const [p24h, pAll, openedCount] = await Promise.all([
+        supabase
+          .from('lisa_proposals')
+          .select('claude_input_tokens, claude_output_tokens, claude_cost_usd')
+          .gte('generated_at', since24h),
+        supabase
+          .from('lisa_proposals')
+          .select('claude_input_tokens, claude_output_tokens, claude_cost_usd'),
+        supabase
+          .from('lisa_positions')
+          .select('id', { count: 'exact', head: true })
+          .gte('entry_timestamp', since24h),
+      ]);
+
+      const agg = (rows: Array<{ claude_input_tokens: number | null; claude_output_tokens: number | null; claude_cost_usd: number | null }> | null) => {
+        const list = rows ?? [];
+        return {
+          requests: list.length,
+          inputTokens: list.reduce((s, r) => s + (Number(r.claude_input_tokens) || 0), 0),
+          outputTokens: list.reduce((s, r) => s + (Number(r.claude_output_tokens) || 0), 0),
+          costUsd: list.reduce((s, r) => s + (Number(r.claude_cost_usd) || 0), 0),
+        };
+      };
+
+      const claude24h = agg(p24h.data as never);
+      const claudeAll = agg(pAll.data as never);
+      // Estimation EODHD : chaque proposition fait ~2 appels (fetchMarketSnapshot),
+      // chaque ouverture de position 1 appel live price, chaque snapshot portfolio
+      // 1 appel par position ouverte. Approximation volontairement simple.
+      const eodhdEstimated24h = claude24h.requests * 2 + (openedCount.count ?? 0) * 1;
+
+      setUsage({ claude24h, claudeAll, eodhdEstimated24h });
+    } catch {
+      // keep defaults (zeros)
+    }
+
     setLastRefresh(new Date());
     setRefreshing(false);
   }, []);
@@ -293,6 +341,64 @@ export default function MonitoringPage() {
         <div className="px-4">
           <CheckRow check={checks.claude} />
           <CheckRow check={checks.eodhd} />
+        </div>
+      </div>
+
+      {/* Quotas & usage */}
+      <div className="rounded-lg border">
+        <div className="flex items-center gap-2 border-b px-4 py-2.5 bg-muted/30">
+          <Activity className="h-4 w-4 text-muted-foreground" />
+          <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Quotas & usage</span>
+        </div>
+        <div className="divide-y">
+          <div className="px-4 py-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium">Claude API</span>
+              <span className="text-[10px] font-mono text-muted-foreground">sonnet/opus via Anthropic</span>
+            </div>
+            <div className="grid grid-cols-4 gap-2 text-xs">
+              <div className="rounded-md bg-muted/30 p-2">
+                <p className="text-[10px] text-muted-foreground">Requêtes 24h</p>
+                <p className="font-mono font-medium tabular-nums">{usage.claude24h.requests}</p>
+                <p className="text-[10px] text-muted-foreground">total : {usage.claudeAll.requests}</p>
+              </div>
+              <div className="rounded-md bg-muted/30 p-2">
+                <p className="text-[10px] text-muted-foreground">Input tokens 24h</p>
+                <p className="font-mono font-medium tabular-nums">{usage.claude24h.inputTokens.toLocaleString('fr-FR')}</p>
+                <p className="text-[10px] text-muted-foreground">total : {usage.claudeAll.inputTokens.toLocaleString('fr-FR')}</p>
+              </div>
+              <div className="rounded-md bg-muted/30 p-2">
+                <p className="text-[10px] text-muted-foreground">Output tokens 24h</p>
+                <p className="font-mono font-medium tabular-nums">{usage.claude24h.outputTokens.toLocaleString('fr-FR')}</p>
+                <p className="text-[10px] text-muted-foreground">total : {usage.claudeAll.outputTokens.toLocaleString('fr-FR')}</p>
+              </div>
+              <div className="rounded-md bg-muted/30 p-2">
+                <p className="text-[10px] text-muted-foreground">Coût 24h</p>
+                <p className="font-mono font-medium tabular-nums">${usage.claude24h.costUsd.toFixed(4)}</p>
+                <p className="text-[10px] text-muted-foreground">total : ${usage.claudeAll.costUsd.toFixed(2)}</p>
+              </div>
+            </div>
+          </div>
+          <div className="px-4 py-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium">EODHD (prix live)</span>
+              <span className="text-[10px] font-mono text-muted-foreground">estimation indirecte</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className="rounded-md bg-muted/30 p-2">
+                <p className="text-[10px] text-muted-foreground">Appels estimés 24h</p>
+                <p className="font-mono font-medium tabular-nums">~{usage.eodhdEstimated24h}</p>
+              </div>
+              <div className="rounded-md bg-muted/30 p-2">
+                <p className="text-[10px] text-muted-foreground">Plan standard EODHD</p>
+                <p className="font-mono font-medium tabular-nums">100 000 / jour</p>
+              </div>
+            </div>
+            <p className="text-[10px] text-muted-foreground italic">
+              Approximation = 2 × propositions + ouvertures de positions 24h. Le compteur réel
+              est visible sur le dashboard EODHD (pas d'API de quota exposée).
+            </p>
+          </div>
         </div>
       </div>
 
