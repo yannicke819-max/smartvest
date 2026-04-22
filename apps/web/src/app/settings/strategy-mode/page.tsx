@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { Gauge, Clock, ShieldAlert, ExternalLink } from 'lucide-react';
 import { SkeletonCard } from '@/components/ui/skeleton';
+import { BackButton } from '@/components/ui/back-button';
 import { DisclaimerBanner } from '@/components/disclaimer-banner';
 import {
   useStrategyModes,

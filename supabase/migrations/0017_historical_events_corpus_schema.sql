@@ -111,7 +111,7 @@ create table if not exists public.historical_events_corpus (
 
   -- Références bibliographiques / sources
   -- ex: [{"type":"paper","title":"This Time Is Different","authors":"Reinhart & Rogoff","year":2009}]
-  references jsonb not null default '[]'::jsonb,
+  source_references jsonb not null default '[]'::jsonb,
 
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()

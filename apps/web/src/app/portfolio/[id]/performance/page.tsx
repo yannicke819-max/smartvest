@@ -1,4 +1,5 @@
 'use client';
+import { BackButton } from '@/components/ui/back-button';
 
 import { useParams } from 'next/navigation';
 import { TrendingUp, TrendingDown, Activity, BarChart3 } from 'lucide-react';

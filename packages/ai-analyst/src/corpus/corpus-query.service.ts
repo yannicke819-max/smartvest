@@ -194,7 +194,7 @@ Tags: [${e.tags.join(', ')}]
       similarSetupsTags: (row.similar_setups_tags as string[] | null) ?? [],
       severityAtPeak: row.severity_at_peak as HistoricalEvent['severityAtPeak'],
       dataQuality: row.data_quality as HistoricalEvent['dataQuality'],
-      references: (row.references as Array<Record<string, unknown>> | null) ?? [],
+      references: (row.source_references as Array<Record<string, unknown>> | null) ?? [],
     };
   }
 }

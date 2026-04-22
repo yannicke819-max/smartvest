@@ -30,7 +30,7 @@ insert into public.historical_events_corpus (
   similar_setups_tags,
   severity_at_peak,
   data_quality,
-  references
+  source_references
 ) values (
   'lehman_2008_collapse',
   'Lehman Brothers Bankruptcy & Global Financial Crisis Acute Phase',
@@ -235,5 +235,5 @@ on conflict (slug) do update set
   similar_setups_tags = excluded.similar_setups_tags,
   severity_at_peak = excluded.severity_at_peak,
   data_quality = excluded.data_quality,
-  references = excluded.references,
+  references = excluded.source_references,
   updated_at = now();

@@ -1,4 +1,5 @@
 'use client';
+import { BackButton } from '@/components/ui/back-button';
 
 import { useParams } from 'next/navigation';
 import { AlertTriangle, Info, XCircle, BellRing } from 'lucide-react';
