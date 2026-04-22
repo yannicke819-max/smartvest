@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Sparkles, Target, ShieldAlert, TrendingUp, Activity } from 'lucide-react';
+import { Sparkles, Target, ShieldAlert, TrendingUp, Activity, ChevronDown, ChevronUp } from 'lucide-react';
 import { usePortfolios } from '@/hooks/use-portfolio';
 import { deduplicateSimulationPortfolios } from '@/app/actions/paper-portfolio';
 import { useQueryClient } from '@tanstack/react-query';
@@ -79,6 +79,8 @@ export default function LisaPage() {
   const [autopilotEnabled, setAutopilotEnabled] = useState(false);
   const [autopilotCycleMin, setAutopilotCycleMin] = useState(15);
   const [localConfigSaved, setLocalConfigSaved] = useState(false);
+  const [selectedScenarios, setSelectedScenarios] = useState<Set<string>>(new Set());
+  const [scenariosExpanded, setScenariosExpanded] = useState(true);
 
   const config = configQuery.data;
   const canGenerate = !!(config ?? localConfigSaved);
@@ -296,43 +298,139 @@ export default function LisaPage() {
           <h2 className="text-sm font-medium">Générer une proposition Lisa</h2>
         </div>
 
-        {/* Scénarios prédéfinis */}
-        <div className="space-y-1.5">
-          <p className="text-xs font-medium text-muted-foreground">Scénarios rapides</p>
-          <div className="flex flex-wrap gap-2">
-            {[
-              { label: '⚡ Breakout crypto', value: 'anomalies intraday BTC ETH, breakout technique, momentum haussier crypto' },
-              { label: '🎯 Sniper indices', value: 'niveaux clés SPY QQQ, rebond technique, entrée précise sur pullback' },
-              { label: '🔄 Rotation sectorielle', value: 'rotation énergie vers tech, arbitrage sectoriel, momentum relatif' },
-              { label: '🛡️ Défensif macro', value: 'refuge or GLD, obligations courte durée, couverture dollar fort' },
-              { label: '📈 Momentum US', value: 'actions US momentum fort, earnings surprise positif, flux institutionnels' },
-              { label: '🌍 Macro émergents', value: 'anomalie sur émergents, divergence DXY, opportunité de change' },
-              { label: '⚠️ Anti-consensus', value: 'position contrariante maximale, actifs sur-vendus, panique de marché' },
-              { label: '🔮 Volatilité VIX', value: 'exploitation pic VIX, vente de volatilité, mean reversion rapide' },
-              { label: '🪙 Altcoins', value: 'altcoins sous-valorisés vs BTC, rotation crypto, momentum altseason' },
-              { label: '🏭 Matières premières', value: 'pétrole Brent, cuivre, anomalie commodities, cycle inflationniste' },
-            ].map(({ label, value }) => (
-              <button
-                key={label}
-                onClick={() => setUserFocus(value)}
-                className={`rounded-full border px-3 py-1 text-xs transition-colors hover:bg-primary/10 hover:border-primary/50 ${
-                  userFocus === value ? 'border-primary bg-primary/10 font-medium' : 'border-border'
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
+        {/* Scénarios multi-sélectables */}
+        {(() => {
+          const SCENARIO_GROUPS = [
+            {
+              label: 'Crypto',
+              scenarios: [
+                { id: 'btc_eth_breakout', label: '⚡ BTC/ETH breakout', value: 'breakout technique BTC ETH, momentum haussier, volume en hausse' },
+                { id: 'altseason', label: '🪙 Altseason', value: 'rotation altcoins vs BTC, altseason signaux, momentum altcoins sous-valorisés' },
+                { id: 'btc_dominance', label: '📊 BTC dominance', value: 'shift BTC dominance, arbitrage crypto, réallocation capital crypto' },
+                { id: 'crypto_fear', label: '😱 Capitulation crypto', value: 'fear & greed extrême, capitulation crypto, position contrariante sur sur-vente' },
+                { id: 'defi', label: '🔗 DeFi/L2', value: 'narratif DeFi Layer 2, tokens sous-valorisés, momentum protocoles émergents' },
+              ],
+            },
+            {
+              label: 'Indices & Actions',
+              scenarios: [
+                { id: 'spy_qqq_sniper', label: '🎯 SPY/QQQ sniper', value: 'niveaux clés SPY QQQ, rebond technique sur support, entrée précise sur pullback' },
+                { id: 'us_momentum', label: '📈 Momentum US', value: 'actions US momentum fort, earnings surprise positif, flux institutionnels haussiers' },
+                { id: 'short_squeeze', label: '🚀 Short squeeze', value: 'short interest élevé, catalyseur potentiel, squeeze candidats small cap' },
+                { id: 'sector_rotation', label: '🔄 Rotation sectorielle', value: 'rotation énergie vers tech ou vice versa, arbitrage sectoriel, momentum relatif' },
+                { id: 'small_cap', label: '🔬 Small cap breakout', value: 'small cap momentum, rupture technique, faible couverture analystes' },
+              ],
+            },
+            {
+              label: 'Macro & FX',
+              scenarios: [
+                { id: 'dxy_divergence', label: '💱 DXY divergence', value: 'divergence DXY, opportunité FX EURUSD USDJPY, impact dollar sur actifs' },
+                { id: 'defensive', label: '🛡️ Défensif', value: 'refuge or GLD, obligations courte durée, couverture dollar fort, actifs défensifs' },
+                { id: 'emerging', label: '🌍 Émergents', value: 'anomalie marchés émergents, divergence devise locale vs dollar, flux entrants' },
+                { id: 'inflation_hedge', label: '🔥 Inflation hedge', value: 'couverture inflation, TIPS, or, matières premières, real assets' },
+                { id: 'yield_curve', label: '📉 Courbe taux', value: 'exploitation courbe taux inversée, arbitrage obligations, duration play' },
+              ],
+            },
+            {
+              label: 'Matières premières',
+              scenarios: [
+                { id: 'oil_brent', label: '🛢️ Pétrole Brent', value: 'anomalie pétrole Brent WTI, cycle énergie, géopolitique impact offre' },
+                { id: 'gold_silver', label: '🥇 Or/Argent', value: 'momentum or argent, ratio gold/silver, refuge valeur réelle' },
+                { id: 'copper', label: '🏭 Cuivre/Industriels', value: 'cuivre cycle industriel, matières premières industrielles, signal croissance globale' },
+                { id: 'agri', label: '🌾 Agriculture', value: 'anomalie prix agricoles, blé maïs soja, supply disruption saisonnière' },
+              ],
+            },
+            {
+              label: 'Volatilité & Spécial',
+              scenarios: [
+                { id: 'vix_spike', label: '🔮 Pic VIX', value: 'exploitation pic VIX, vente de volatilité post-panic, mean reversion rapide' },
+                { id: 'anti_consensus', label: '⚠️ Anti-consensus max', value: 'position contrariante maximale, actifs sur-vendus extrêmes, panique de marché injustifiée' },
+                { id: 'risk_on', label: '🟢 Risk-on global', value: 'rally généralisé risk-on, corrélation positive multi-asset, momentum toutes classes' },
+                { id: 'risk_off', label: '🔴 Risk-off rotation', value: 'rotation risk-off, fuite vers qualité, vendre indices acheter défensif' },
+                { id: 'event_driven', label: '📅 Event-driven', value: 'catalyseur événementiel imminent, earnings FOMC données macro, positionnement pre-event' },
+              ],
+            },
+          ];
+
+          const toggleScenario = (id: string) => {
+            setSelectedScenarios((prev) => {
+              const next = new Set(prev);
+              if (next.has(id)) next.delete(id);
+              else next.add(id);
+              // Met à jour le focus avec la combinaison
+              const all = SCENARIO_GROUPS.flatMap((g) => g.scenarios);
+              const combined = all
+                .filter((s) => next.has(s.id))
+                .map((s) => s.value)
+                .join(' | ');
+              setUserFocus(combined);
+              return next;
+            });
+          };
+
+          const selectAll = () => {
+            const all = SCENARIO_GROUPS.flatMap((g) => g.scenarios);
+            setSelectedScenarios(new Set(all.map((s) => s.id)));
+            setUserFocus(all.map((s) => s.value).join(' | '));
+          };
+
+          const clearAll = () => {
+            setSelectedScenarios(new Set());
+            setUserFocus('');
+          };
+
+          return (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <button
+                  onClick={() => setScenariosExpanded((v) => !v)}
+                  className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
+                >
+                  {scenariosExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                  Scénarios ({selectedScenarios.size} sélectionné{selectedScenarios.size > 1 ? 's' : ''})
+                </button>
+                <div className="flex gap-2">
+                  <button onClick={selectAll} className="text-[11px] text-primary hover:underline">Tout sélectionner</button>
+                  <button onClick={clearAll} className="text-[11px] text-muted-foreground hover:underline">Effacer</button>
+                </div>
+              </div>
+
+              {scenariosExpanded && (
+                <div className="space-y-2.5">
+                  {SCENARIO_GROUPS.map((group) => (
+                    <div key={group.label}>
+                      <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{group.label}</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {group.scenarios.map((s) => (
+                          <button
+                            key={s.id}
+                            onClick={() => toggleScenario(s.id)}
+                            className={`rounded-full border px-2.5 py-0.5 text-xs transition-colors ${
+                              selectedScenarios.has(s.id)
+                                ? 'border-primary bg-primary/10 font-medium text-primary'
+                                : 'border-border hover:border-primary/50 hover:bg-muted'
+                            }`}
+                          >
+                            {s.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* Champ libre */}
         <div className="space-y-1.5">
-          <label className="block text-xs font-medium">Focus libre (optionnel)</label>
+          <label className="block text-xs font-medium text-muted-foreground">Focus combiné (éditable)</label>
           <textarea
             value={userFocus}
             onChange={(e) => setUserFocus(e.target.value)}
-            rows={2}
-            placeholder="Décris ton focus ou utilise un scénario ci-dessus…"
+            rows={3}
+            placeholder="Sélectionne des scénarios ci-dessus ou écris ton focus librement…"
             className="w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"
           />
         </div>
@@ -345,10 +443,8 @@ export default function LisaPage() {
             <Sparkles className="mr-1.5 h-4 w-4" />
             {generateProposal.isPending ? 'Lisa analyse le marché…' : 'Générer propositions'}
           </Button>
-          {userFocus && (
-            <button onClick={() => setUserFocus('')} className="text-xs text-muted-foreground hover:text-foreground">
-              Effacer
-            </button>
+          {selectedScenarios.size > 0 && (
+            <span className="text-xs text-muted-foreground">{selectedScenarios.size} scénario{selectedScenarios.size > 1 ? 's' : ''} combiné{selectedScenarios.size > 1 ? 's' : ''}</span>
           )}
         </div>
 
