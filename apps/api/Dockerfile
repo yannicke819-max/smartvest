@@ -8,7 +8,7 @@
 # node_modules is slightly less aggressive, but for personal use builds
 # are infrequent enough that correctness wins.
 
-# cache-bust: 5 — force rebuild complet, apps/api/package.json modifié pour embarquer les migrations dans npm start
+# cache-bust: 6 — force rebuild complet avec LisaModule + BinanceAdapter + EODHD
 FROM node:20-alpine AS builder
 WORKDIR /repo
 
