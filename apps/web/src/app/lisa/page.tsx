@@ -1,8 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Sparkles, Target, ShieldAlert, TrendingUp, Activity } from 'lucide-react';
 import { usePortfolios } from '@/hooks/use-portfolio';
+import { deduplicateSimulationPortfolios } from '@/app/actions/paper-portfolio';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   useLisaConfig,
   useUpsertLisaConfig,
@@ -43,6 +45,7 @@ const PROFILE_LABELS: Record<SessionProfile, { label: string; description: strin
 
 export default function LisaPage() {
   const portfoliosQuery = usePortfolios();
+  const qc = useQueryClient();
   const simulationPortfolios = (portfoliosQuery.data ?? []).filter(
     (p) => (p as { is_simulation?: boolean }).is_simulation,
   );
@@ -50,6 +53,16 @@ export default function LisaPage() {
   const [selectedPortfolioId, setSelectedPortfolioId] = useState<string | null>(
     simulationPortfolios[0]?.id ?? null,
   );
+
+  // Déduplique silencieusement les portefeuilles de simulation au montage.
+  useEffect(() => {
+    if (simulationPortfolios.length > 1) {
+      deduplicateSimulationPortfolios()
+        .then((n) => { if (n > 0) qc.invalidateQueries({ queryKey: ['portfolios'] }); })
+        .catch(() => {});
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [simulationPortfolios.length]);
   const [userFocus, setUserFocus] = useState('');
   const [killReason, setKillReason] = useState('');
 

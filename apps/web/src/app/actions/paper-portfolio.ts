@@ -8,14 +8,6 @@ interface CreatePaperPortfolioPayload {
   initialCapital?: number;
 }
 
-/**
- * Crée un portefeuille de simulation 100% virtuel — aucune connexion broker,
- * aucun ordre réel, données marquées explicitement `is_simulation = true`.
- *
- * Cas d'usage : tester des stratégies d'investissement, laisser l'analyste IA
- * proposer des scénarios, observer la performance sur un corpus de règles
- * empiriques — sans engager le moindre capital réel.
- */
 export async function createPaperPortfolio(
   payload: CreatePaperPortfolioPayload = {},
 ): Promise<{ portfolioId: string }> {
@@ -27,7 +19,6 @@ export async function createPaperPortfolio(
   const baseCurrency = payload.baseCurrency ?? 'EUR';
   const initialCapital = payload.initialCapital ?? 10000;
 
-  // Refuse si un portefeuille de simulation existe déjà.
   const { data: existing } = await supabase
     .from('portfolios')
     .select('id')
@@ -35,15 +26,13 @@ export async function createPaperPortfolio(
     .eq('is_simulation', true)
     .limit(1)
     .single();
-  if (existing) throw new Error('Un portefeuille de simulation existe déjà. Supprime-le avant d\'en créer un nouveau.');
+  if (existing) throw new Error('Un portefeuille de simulation existe déjà.');
 
-  // S'assurer qu'un user_profile existe (cas Google OAuth récent).
   await supabase.from('user_profiles').upsert(
     { id: user.id, updated_at: new Date().toISOString() },
     { onConflict: 'id', ignoreDuplicates: true },
   );
 
-  // 1. Portefeuille virtuel
   const { data: portfolio, error: pErr } = await supabase
     .from('portfolios')
     .insert({
@@ -58,7 +47,6 @@ export async function createPaperPortfolio(
     .single();
   if (pErr || !portfolio) throw new Error(`Portefeuille: ${pErr?.message}`);
 
-  // 2. Compte cash associé (pour tracker la balance virtuelle)
   const { error: aErr } = await supabase
     .from('portfolio_accounts')
     .insert({
@@ -70,4 +58,24 @@ export async function createPaperPortfolio(
   if (aErr) throw new Error(`Compte: ${aErr.message}`);
 
   return { portfolioId: portfolio.id };
+}
+
+/** Garde uniquement le portefeuille de simulation le plus récent, supprime les doublons. */
+export async function deduplicateSimulationPortfolios(): Promise<number> {
+  const supabase = createSupabaseServerClient();
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+  if (authError || !user) throw new Error('Utilisateur non authentifié.');
+
+  const { data: sims } = await supabase
+    .from('portfolios')
+    .select('id, created_at')
+    .eq('user_id', user.id)
+    .eq('is_simulation', true)
+    .order('created_at', { ascending: false });
+
+  if (!sims || sims.length <= 1) return 0;
+
+  const toDelete = sims.slice(1).map((p) => p.id);
+  await supabase.from('portfolios').delete().in('id', toDelete).eq('user_id', user.id);
+  return toDelete.length;
 }
