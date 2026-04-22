@@ -91,6 +91,9 @@ export default function LisaPage() {
   const [selectedScenarios, setSelectedScenarios] = useState<Set<string>>(new Set());
   const [scenariosExpanded, setScenariosExpanded] = useState(true);
 
+  const config = configQuery.data;
+  const canGenerate = !!(config ?? localConfigSaved);
+
   // Sync l'état local une seule fois quand la config arrive — ensuite l'UI
   // pilote elle-même les states (sinon checked={config?.X ?? local} override
   // les clics utilisateur).
@@ -106,9 +109,6 @@ export default function LisaPage() {
       setConfigSynced(true);
     }
   }, [config, configSynced]);
-
-  const config = configQuery.data;
-  const canGenerate = !!(config ?? localConfigSaved);
 
   async function handleSaveConfig() {
     if (!selectedPortfolioId) return;
