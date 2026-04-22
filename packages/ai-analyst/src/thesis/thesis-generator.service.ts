@@ -98,14 +98,37 @@ export class ThesisGeneratorService {
     // 2. Compose user message
     const userMessage = this.composeUserMessage(req, corpusBlock);
 
-    // 3. Call Claude
-    const claudeResult = await this.claudeClient.call({
-      profile: req.config.profile,
-      userMessage,
-    });
+    // 3. Call Claude avec retry unique sur erreur de parse JSON (cas fréquent
+    //    sur outputs longs où Claude oublie une virgule ou une accolade).
+    //    Au 2e essai on ajoute une instruction stricte de format.
+    let claudeResult: Awaited<ReturnType<LisaClaudeClient['call']>>;
+    let parsed: unknown;
+    try {
+      claudeResult = await this.claudeClient.call({
+        profile: req.config.profile,
+        userMessage,
+      });
+      parsed = this.extractAndParseJson(claudeResult.rawText);
+    } catch (firstErr) {
+      const msg = firstErr instanceof Error ? firstErr.message : String(firstErr);
+      if (!msg.includes('JSON parse failed') && !msg.includes('Unexpected')) throw firstErr;
 
-    // 4. Parse JSON
-    const parsed = this.extractAndParseJson(claudeResult.rawText);
+      const retryMessage = userMessage + `
+
+# RETRY — STRICT JSON ONLY
+Ton output précédent contenait une erreur de syntaxe JSON. Cette fois :
+- Aucun commentaire (// ou /* */)
+- Chaque élément d'array / chaque paire clé-valeur séparée par une virgule
+- Pas de virgule traînante avant } ou ]
+- Pas de markdown, pas de prose avant/après le JSON
+- Échapper correctement les guillemets à l'intérieur des strings (\\")
+`;
+      claudeResult = await this.claudeClient.call({
+        profile: req.config.profile,
+        userMessage: retryMessage,
+      });
+      parsed = this.extractAndParseJson(claudeResult.rawText);
+    }
 
     // 5. Validate + normalize into AllocationProposal
     const proposal = this.normalizeProposal(parsed, req.config, claudeResult);
@@ -256,7 +279,13 @@ défini, sans markdown, sans explications hors JSON.
     parsed = tryParse(cleaned);
     if (parsed !== null) return parsed;
 
-    // 5. Last resort — detailed error with context around first failure
+    // 5. Insert missing commas between adjacent objects/arrays (Claude oubli
+    //    fréquent en output long). Ne touche PAS l'intérieur des strings JSON.
+    cleaned = this.insertMissingCommas(cleaned);
+    parsed = tryParse(cleaned);
+    if (parsed !== null) return parsed;
+
+    // 6. Last resort — detailed error with context around first failure
     try {
       JSON.parse(cleaned);
     } catch (e) {
@@ -272,6 +301,43 @@ défini, sans markdown, sans explications hors JSON.
       throw e;
     }
     throw new Error('Unreachable : JSON parse should have thrown before.');
+  }
+
+  /**
+   * Insère les virgules manquantes entre deux tokens frères : }{ , ][ , }[ , ]{
+   * (cas classique des gros outputs Claude qui oublient un séparateur).
+   *
+   * On parcourt le texte en tenant compte des strings (entre guillemets) et
+   * des échappements pour ne pas modifier l'intérieur d'une valeur string.
+   */
+  private insertMissingCommas(s: string): string {
+    const out: string[] = [];
+    let inString = false;
+    let escaped = false;
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      out.push(c);
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (c === '\\') escaped = true;
+        else if (c === '"') inString = false;
+        continue;
+      }
+      if (c === '"') { inString = true; continue; }
+
+      if (c === '}' || c === ']') {
+        // Scan forward through whitespace to find next non-space char
+        let j = i + 1;
+        while (j < s.length && /\s/.test(s[j])) j++;
+        if (j < s.length && (s[j] === '{' || s[j] === '[' || s[j] === '"')) {
+          // Only insert comma if we're NOT at the very end of an object/array
+          // (i.e. a closing brace doesn't follow). Heuristic : if the next
+          // non-space-non-brace char suggests a sibling, insert.
+          out.push(',');
+        }
+      }
+    }
+    return out.join('');
   }
 
   /**
