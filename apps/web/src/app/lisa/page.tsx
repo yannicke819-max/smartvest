@@ -54,6 +54,15 @@ export default function LisaPage() {
     simulationPortfolios[0]?.id ?? null,
   );
 
+  // Bug fix critique : useState(...initial) ne réévalue PAS quand portfoliosQuery.data
+  // arrive après le 1er render. Sans cet effet, selectedPortfolioId reste null,
+  // handleSaveConfig fait return silencieux, et le bouton "Sauvegarder" semble inerte.
+  useEffect(() => {
+    if (!selectedPortfolioId && simulationPortfolios[0]?.id) {
+      setSelectedPortfolioId(simulationPortfolios[0].id);
+    }
+  }, [simulationPortfolios, selectedPortfolioId]);
+
   // Déduplique silencieusement les portefeuilles de simulation au montage.
   useEffect(() => {
     if (simulationPortfolios.length > 1) {
