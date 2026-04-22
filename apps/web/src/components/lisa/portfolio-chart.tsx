@@ -46,6 +46,12 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
         hour: window === '1d' ? '2-digit' : undefined,
         minute: window === '1d' ? '2-digit' : undefined,
       }),
+      tFull: new Date(s.timestamp).toLocaleString('fr-FR', {
+        day: '2-digit',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
       value: parseFloat(s.total_value_usd),
       realized: parseFloat(s.realized_pnl_cumulative_usd),
       returnPct: s.return_from_inception_pct,
@@ -57,6 +63,28 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
   const firstValue = chartData[0]?.value ?? 0;
   const latestValue = chartData[chartData.length - 1]?.value ?? 0;
   const periodReturn = firstValue > 0 ? ((latestValue - firstValue) / firstValue) * 100 : 0;
+
+  // Y-axis : range auto mais on garde au moins 2% de padding pour ne pas
+  // écraser visuellement les petites variations (cas typique après peu de
+  // mouvements sur un portefeuille 10k).
+  const yDomain = useMemo((): [number | 'auto', number | 'auto'] => {
+    if (chartData.length === 0) return ['auto', 'auto'];
+    const values = chartData.map((d) => d.value);
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const range = max - min;
+    const padding = Math.max(range * 0.15, max * 0.002);
+    return [Math.max(0, min - padding), max + padding];
+  }, [chartData]);
+
+  // Tick formatter qui adapte la précision selon l'amplitude des valeurs.
+  const tickFormatter = (v: number): string => {
+    const abs = Math.abs(v);
+    if (abs >= 1_000_000) return `${(v / 1_000_000).toFixed(2)}M`;
+    if (abs >= 10_000) return `${(v / 1000).toFixed(2)}k`;
+    if (abs >= 1000) return `${(v / 1000).toFixed(3)}k`;
+    return v.toFixed(0);
+  };
 
   return (
     <div className="rounded-lg border p-5 space-y-4">
@@ -118,17 +146,51 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
                 tick={{ fontSize: 10, fill: 'currentColor' }}
                 tickLine={false}
                 axisLine={{ stroke: 'currentColor', opacity: 0.2 }}
-                domain={['auto', 'auto']}
-                tickFormatter={(v: number) => `${(v / 1000).toFixed(1)}k`}
+                domain={yDomain}
+                tickFormatter={tickFormatter}
               />
               <Tooltip
-                contentStyle={{
-                  background: 'hsl(var(--card))',
-                  border: '1px solid hsl(var(--border))',
-                  borderRadius: 6,
-                  fontSize: 11,
+                cursor={{ stroke: 'currentColor', strokeWidth: 1, opacity: 0.2 }}
+                content={({ active, payload }) => {
+                  if (!active || !payload || payload.length === 0) return null;
+                  const point = payload[0].payload as {
+                    tFull: string;
+                    value: number;
+                    realized: number;
+                    returnPct: number;
+                    drawdown: number;
+                  };
+                  return (
+                    <div
+                      className="rounded-md border bg-card p-2 text-[11px] shadow-sm"
+                      style={{ minWidth: 160 }}
+                    >
+                      <div className="font-mono text-muted-foreground mb-1">
+                        {point.tFull}
+                      </div>
+                      <div className="flex justify-between gap-3">
+                        <span className="text-muted-foreground">Valeur</span>
+                        <span className="font-mono font-medium tabular-nums">
+                          {point.value.toFixed(2)} USD
+                        </span>
+                      </div>
+                      <div className="flex justify-between gap-3">
+                        <span className="text-muted-foreground">Return</span>
+                        <span className={`font-mono tabular-nums ${point.returnPct >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                          {point.returnPct >= 0 ? '+' : ''}{point.returnPct.toFixed(2)}%
+                        </span>
+                      </div>
+                      {point.drawdown < 0 && (
+                        <div className="flex justify-between gap-3">
+                          <span className="text-muted-foreground">Drawdown</span>
+                          <span className="font-mono tabular-nums text-red-500">
+                            {point.drawdown.toFixed(2)}%
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  );
                 }}
-                formatter={(v) => `${Number(v ?? 0).toFixed(2)} USD`}
               />
               <ReferenceLine
                 y={firstValue}

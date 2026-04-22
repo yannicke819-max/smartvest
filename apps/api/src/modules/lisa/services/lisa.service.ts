@@ -585,22 +585,30 @@ hors contraintes n'est acceptable, même en mode chasse.
   private async fetchLivePrice(symbol: string): Promise<{ symbol: string; price: string; asOf: string; source: string }> {
     const eodhKey = this.config.get<string>('EODHD_API_KEY');
     const now = new Date().toISOString();
+    let eodhdTicker: string | null = null;
 
     // 1. Try EODHD real-time endpoint
     if (eodhKey && eodhKey !== 'demo') {
+      const tStart = Date.now();
       try {
-        const ticker = this.toEodhdTicker(symbol);
-        const url = `https://eodhd.com/api/real-time/${encodeURIComponent(ticker)}?api_token=${eodhKey}&fmt=json`;
+        eodhdTicker = this.toEodhdTicker(symbol);
+        const url = `https://eodhd.com/api/real-time/${encodeURIComponent(eodhdTicker)}?api_token=${eodhKey}&fmt=json`;
         const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+        const latencyMs = Date.now() - tStart;
         if (res.ok) {
           const data = await res.json() as Record<string, unknown>;
           const price = data['close'] ?? data['previousClose'] ?? data['open'];
           if (price && Number(price) > 0) {
+            this.logEodhdCall({ ticker: symbol, eodhdTicker, source: 'eodhd', success: true, statusCode: res.status, latencyMs, priceUsd: Number(price), calledBy: 'live_price' });
             return { symbol, price: String(price), asOf: now, source: 'eodhd' };
           }
+          this.logEodhdCall({ ticker: symbol, eodhdTicker, source: 'eodhd', success: false, statusCode: res.status, latencyMs, calledBy: 'live_price', errorMessage: 'empty_price_field' });
+        } else {
+          this.logEodhdCall({ ticker: symbol, eodhdTicker, source: 'eodhd', success: false, statusCode: res.status, latencyMs, calledBy: 'live_price', errorMessage: `HTTP_${res.status}` });
         }
       } catch (e) {
         this.logger.warn(`EODHD price fetch failed for ${symbol}: ${String(e)}`);
+        this.logEodhdCall({ ticker: symbol, eodhdTicker, source: 'eodhd', success: false, latencyMs: Date.now() - tStart, calledBy: 'live_price', errorMessage: String(e).slice(0, 200) });
       }
     }
 
@@ -614,12 +622,48 @@ hors contraintes n'est acceptable, même en mode chasse.
       .maybeSingle();
 
     if (quote) {
+      this.logEodhdCall({ ticker: symbol, eodhdTicker, source: 'supabase_quotes', success: true, priceUsd: Number(quote.price), calledBy: 'live_price' });
       return { symbol, price: String(quote.price), asOf: quote.as_of as string, source: 'supabase_quotes' };
     }
 
     // 3. Static fallback (simulation still works without live data)
     this.logger.warn(`No quote found for ${symbol}, returning fallback price`);
-    return { symbol, price: this.getFallbackPrice(symbol), asOf: now, source: 'fallback' };
+    const fallback = this.getFallbackPrice(symbol);
+    this.logEodhdCall({ ticker: symbol, eodhdTicker, source: 'fallback', success: true, priceUsd: Number(fallback), calledBy: 'live_price' });
+    return { symbol, price: fallback, asOf: now, source: 'fallback' };
+  }
+
+  /**
+   * Log fire-and-forget d'un appel EODHD (ou équivalent). Ne JAMAIS bloquer
+   * le chemin live-price — on swallow les erreurs et on n'attend pas la promesse.
+   */
+  private logEodhdCall(row: {
+    ticker: string;
+    eodhdTicker: string | null;
+    source: 'eodhd' | 'fallback' | 'supabase_quotes';
+    success: boolean;
+    statusCode?: number;
+    latencyMs?: number;
+    priceUsd?: number;
+    calledBy: 'live_price' | 'market_snapshot';
+    errorMessage?: string;
+  }): void {
+    (async () => {
+      try {
+        const { error } = await this.supabase.getClient().from('eodhd_request_log').insert({
+          ticker: row.ticker,
+          eodhd_ticker: row.eodhdTicker,
+          source: row.source,
+          success: row.success,
+          status_code: row.statusCode ?? null,
+          latency_ms: row.latencyMs ?? null,
+          price_usd: row.priceUsd ?? null,
+          called_by: row.calledBy,
+          error_message: row.errorMessage ?? null,
+        });
+        if (error) this.logger.warn(`eodhd_request_log insert failed: ${error.message}`);
+      } catch { /* swallow — log is fire-and-forget */ }
+    })();
   }
 
   /**
@@ -700,14 +744,28 @@ hors contraintes n'est acceptable, même en mode chasse.
     if (!eodhKey || eodhKey === 'demo') return fallback;
 
     const fetchNum = async (ticker: string): Promise<number | null> => {
+      const tStart = Date.now();
       try {
         const url = `https://eodhd.com/api/real-time/${encodeURIComponent(ticker)}?api_token=${eodhKey}&fmt=json`;
         const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-        if (!res.ok) return null;
+        const latencyMs = Date.now() - tStart;
+        if (!res.ok) {
+          this.logEodhdCall({ ticker, eodhdTicker: ticker, source: 'eodhd', success: false, statusCode: res.status, latencyMs, calledBy: 'market_snapshot', errorMessage: `HTTP_${res.status}` });
+          return null;
+        }
         const d = await res.json() as Record<string, unknown>;
         const v = Number(d['close'] ?? d['previousClose'] ?? d['open'] ?? d['last']);
-        return isFinite(v) && v > 0 ? v : null;
-      } catch { return null; }
+        const ok = isFinite(v) && v > 0;
+        if (ok) {
+          this.logEodhdCall({ ticker, eodhdTicker: ticker, source: 'eodhd', success: true, statusCode: res.status, latencyMs, priceUsd: v, calledBy: 'market_snapshot' });
+        } else {
+          this.logEodhdCall({ ticker, eodhdTicker: ticker, source: 'eodhd', success: false, statusCode: res.status, latencyMs, calledBy: 'market_snapshot', errorMessage: 'empty_price_field' });
+        }
+        return ok ? v : null;
+      } catch (e) {
+        this.logEodhdCall({ ticker, eodhdTicker: ticker, source: 'eodhd', success: false, latencyMs: Date.now() - tStart, calledBy: 'market_snapshot', errorMessage: String(e).slice(0, 200) });
+        return null;
+      }
     };
 
     const [vix, dxy, us10y, us2y, brent, btc, eth, gold, spy, qqq, eurusd, usdjpy] =

@@ -57,11 +57,13 @@ export default function MonitoringPage() {
   const [usage, setUsage] = useState<{
     claude24h: { requests: number; inputTokens: number; outputTokens: number; costUsd: number };
     claudeAll: { requests: number; inputTokens: number; outputTokens: number; costUsd: number };
-    eodhdEstimated24h: number;
+    eodhd24h: { total: number; success: number; failures: number; fallbacks: number; avgLatencyMs: number };
+    eodhdAll: { total: number; success: number };
   }>({
     claude24h: { requests: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 },
     claudeAll: { requests: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 },
-    eodhdEstimated24h: 0,
+    eodhd24h: { total: 0, success: 0, failures: 0, fallbacks: 0, avgLatencyMs: 0 },
+    eodhdAll: { total: 0, success: 0 },
   });
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -228,9 +230,10 @@ export default function MonitoringPage() {
     }
 
     // 8. Claude quotas — agrégation lisa_proposals
+    // 9. EODHD quotas — agrégation eodhd_request_log (précis)
     try {
       const since24h = new Date(Date.now() - 86_400_000).toISOString();
-      const [p24h, pAll, openedCount] = await Promise.all([
+      const [p24h, pAll, eodhd24hRows, eodhdAllCount, eodhdAllSuccessCount] = await Promise.all([
         supabase
           .from('lisa_proposals')
           .select('claude_input_tokens, claude_output_tokens, claude_cost_usd')
@@ -239,12 +242,19 @@ export default function MonitoringPage() {
           .from('lisa_proposals')
           .select('claude_input_tokens, claude_output_tokens, claude_cost_usd'),
         supabase
-          .from('lisa_positions')
-          .select('id', { count: 'exact', head: true })
-          .gte('entry_timestamp', since24h),
+          .from('eodhd_request_log')
+          .select('source, success, latency_ms')
+          .gte('timestamp', since24h),
+        supabase
+          .from('eodhd_request_log')
+          .select('*', { count: 'exact', head: true }),
+        supabase
+          .from('eodhd_request_log')
+          .select('*', { count: 'exact', head: true })
+          .eq('success', true),
       ]);
 
-      const agg = (rows: Array<{ claude_input_tokens: number | null; claude_output_tokens: number | null; claude_cost_usd: number | null }> | null) => {
+      const aggClaude = (rows: Array<{ claude_input_tokens: number | null; claude_output_tokens: number | null; claude_cost_usd: number | null }> | null) => {
         const list = rows ?? [];
         return {
           requests: list.length,
@@ -254,14 +264,25 @@ export default function MonitoringPage() {
         };
       };
 
-      const claude24h = agg(p24h.data as never);
-      const claudeAll = agg(pAll.data as never);
-      // Estimation EODHD : chaque proposition fait ~2 appels (fetchMarketSnapshot),
-      // chaque ouverture de position 1 appel live price, chaque snapshot portfolio
-      // 1 appel par position ouverte. Approximation volontairement simple.
-      const eodhdEstimated24h = claude24h.requests * 2 + (openedCount.count ?? 0) * 1;
+      const claude24h = aggClaude(p24h.data as never);
+      const claudeAll = aggClaude(pAll.data as never);
 
-      setUsage({ claude24h, claudeAll, eodhdEstimated24h });
+      const eodhdRows = (eodhd24hRows.data ?? []) as Array<{ source: string; success: boolean; latency_ms: number | null }>;
+      const eodhdReal = eodhdRows.filter((r) => r.source === 'eodhd');
+      const latencies = eodhdReal.map((r) => r.latency_ms).filter((n): n is number => typeof n === 'number' && n > 0);
+      const eodhd24h = {
+        total: eodhdReal.length,
+        success: eodhdReal.filter((r) => r.success).length,
+        failures: eodhdReal.filter((r) => !r.success).length,
+        fallbacks: eodhdRows.filter((r) => r.source !== 'eodhd').length,
+        avgLatencyMs: latencies.length > 0 ? Math.round(latencies.reduce((s, n) => s + n, 0) / latencies.length) : 0,
+      };
+      const eodhdAll = {
+        total: eodhdAllCount.count ?? 0,
+        success: eodhdAllSuccessCount.count ?? 0,
+      };
+
+      setUsage({ claude24h, claudeAll, eodhd24h, eodhdAll });
     } catch {
       // keep defaults (zeros)
     }
@@ -382,21 +403,41 @@ export default function MonitoringPage() {
           <div className="px-4 py-3 space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-sm font-medium">EODHD (prix live)</span>
-              <span className="text-[10px] font-mono text-muted-foreground">estimation indirecte</span>
+              <span className="text-[10px] font-mono text-muted-foreground">
+                {usage.eodhd24h.total > 0
+                  ? `${Math.round((usage.eodhd24h.success / usage.eodhd24h.total) * 100)}% success`
+                  : 'aucun appel 24h'}
+              </span>
             </div>
-            <div className="grid grid-cols-2 gap-2 text-xs">
+            <div className="grid grid-cols-4 gap-2 text-xs">
               <div className="rounded-md bg-muted/30 p-2">
-                <p className="text-[10px] text-muted-foreground">Appels estimés 24h</p>
-                <p className="font-mono font-medium tabular-nums">~{usage.eodhdEstimated24h}</p>
+                <p className="text-[10px] text-muted-foreground">Appels 24h</p>
+                <p className="font-mono font-medium tabular-nums">{usage.eodhd24h.total}</p>
+                <p className="text-[10px] text-muted-foreground">total : {usage.eodhdAll.total}</p>
               </div>
               <div className="rounded-md bg-muted/30 p-2">
-                <p className="text-[10px] text-muted-foreground">Plan standard EODHD</p>
-                <p className="font-mono font-medium tabular-nums">100 000 / jour</p>
+                <p className="text-[10px] text-muted-foreground">Succès 24h</p>
+                <p className="font-mono font-medium tabular-nums text-emerald-600">{usage.eodhd24h.success}</p>
+                <p className="text-[10px] text-muted-foreground">total : {usage.eodhdAll.success}</p>
+              </div>
+              <div className="rounded-md bg-muted/30 p-2">
+                <p className="text-[10px] text-muted-foreground">Échecs 24h</p>
+                <p className={`font-mono font-medium tabular-nums ${usage.eodhd24h.failures > 0 ? 'text-red-500' : ''}`}>
+                  {usage.eodhd24h.failures}
+                </p>
+                <p className="text-[10px] text-muted-foreground">fallback : {usage.eodhd24h.fallbacks}</p>
+              </div>
+              <div className="rounded-md bg-muted/30 p-2">
+                <p className="text-[10px] text-muted-foreground">Latence moy.</p>
+                <p className={`font-mono font-medium tabular-nums ${usage.eodhd24h.avgLatencyMs > 1000 ? 'text-amber-500' : ''}`}>
+                  {usage.eodhd24h.avgLatencyMs} ms
+                </p>
+                <p className="text-[10px] text-muted-foreground">quota : 100k/j</p>
               </div>
             </div>
             <p className="text-[10px] text-muted-foreground italic">
-              Approximation = 2 × propositions + ouvertures de positions 24h. Le compteur réel
-              est visible sur le dashboard EODHD (pas d'API de quota exposée).
+              Compteur précis depuis la table <code className="rounded bg-muted px-1">eodhd_request_log</code> (1 ligne par appel).
+              Les fallbacks (cache Supabase ou prix statique) ne consomment pas le quota EODHD.
             </p>
           </div>
         </div>
