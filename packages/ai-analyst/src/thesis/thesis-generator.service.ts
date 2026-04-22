@@ -60,6 +60,20 @@ export interface MarketSnapshot {
   }>;
 }
 
+export interface OpenPositionSummary {
+  positionId: string;
+  symbol: string;
+  assetClass: string;
+  direction: string;
+  entryPrice: string;
+  currentPrice: string;
+  quantity: string;
+  entryNotionalUsd: string;
+  unrealizedPnlPct: number;
+  ageDays: number;
+  horizonDays: number | null;
+}
+
 export interface GenerateThesesRequest {
   config: LisaSessionConfig;
   marketSnapshot: MarketSnapshot;
@@ -70,6 +84,11 @@ export interface GenerateThesesRequest {
   /** Include ALL corpus (25 events) dans le prompt ? (défaut false, seulement
    *  les analogs filtrés par tags) */
   includeFullCorpus?: boolean;
+  /** Positions actuellement ouvertes — permet à Claude de recommander leur
+   *  fermeture (gestion active vs accumulation passive). */
+  openPositions?: OpenPositionSummary[];
+  /** Cash disponible en USD après fermeture des positions recommandées. */
+  availableCashUsd?: string;
 }
 
 export interface GenerateThesesResponse {
@@ -78,6 +97,8 @@ export interface GenerateThesesResponse {
   cacheHitRatio: number | null;
   rawClaudeText: string;
   warnings: string[];
+  /** Positions que Lisa recommande de fermer à l'approbation. */
+  closeRecommendations: Array<{ positionId: string; reason: string }>;
 }
 
 export class ThesisGeneratorService {
@@ -133,6 +154,18 @@ Ton output précédent contenait une erreur de syntaxe JSON. Cette fois :
     // 5. Validate + normalize into AllocationProposal
     const proposal = this.normalizeProposal(parsed, req.config, claudeResult);
 
+    // 5b. Extract closeRecommendations si présent (nouvelle feature —
+    //     gestion active des positions existantes).
+    const rawRoot = parsed as Record<string, unknown>;
+    const closeRecsRaw = (rawRoot.closeRecommendations as Array<Record<string, unknown>> | undefined) ?? [];
+    const openPositionIds = new Set((req.openPositions ?? []).map((p) => p.positionId));
+    const closeRecommendations = closeRecsRaw
+      .map((r) => ({
+        positionId: String(r.positionId ?? ''),
+        reason: String(r.reason ?? '').slice(0, 500),
+      }))
+      .filter((r) => r.positionId.length > 0 && openPositionIds.has(r.positionId));
+
     // 6. Compute metadata
     const costUsd = (this.claudeClient.constructor as typeof LisaClaudeClient)
       .estimateCostUsd(claudeResult.usage);
@@ -151,6 +184,7 @@ Ton output précédent contenait une erreur de syntaxe JSON. Cette fois :
       cacheHitRatio,
       rawClaudeText: claudeResult.rawText,
       warnings: proposal.warnings,
+      closeRecommendations,
     };
   }
 
@@ -200,6 +234,9 @@ ${upcomingEventsBlock || '- (no upcoming events provided)'}
 # HISTORICAL CORPUS (analogs à disposition)
 ${corpusBlock || '(no corpus events loaded for this query)'}
 
+# POSITIONS ACTUELLEMENT OUVERTES
+${this.formatOpenPositionsBlock(req.openPositions, req.availableCashUsd)}
+
 # SESSION CONFIG
 - Profile: ${config.profile}
 - Capital available: ${config.capitalUsd} ${config.baseCurrency}
@@ -235,6 +272,45 @@ ${req.userFocus ? `\n# USER FOCUS\n${req.userFocus}\n` : ''}
 Applique TA méthode Lisa complète. Renvoie UNIQUEMENT le JSON au format
 défini, sans markdown, sans explications hors JSON.
 `.trim();
+  }
+
+  /**
+   * Format le bloc "positions ouvertes" pour que Claude puisse recommander
+   * des fermetures. Chaque ligne est auto-suffisante : Lisa voit le P&L
+   * latent, l'âge et le temps restant avant horizon.
+   */
+  private formatOpenPositionsBlock(
+    positions: OpenPositionSummary[] | undefined,
+    availableCash: string | undefined,
+  ): string {
+    if (!positions || positions.length === 0) {
+      return '(aucune position ouverte — marge de manœuvre maximale pour ouvrir)';
+    }
+    const lines = positions.map((p) => {
+      const pnlSign = p.unrealizedPnlPct >= 0 ? '+' : '';
+      const horizonHint = p.horizonDays !== null
+        ? ` horizon=${Math.max(0, p.horizonDays - p.ageDays)}j restants`
+        : '';
+      return `- id=${p.positionId} ${p.direction.toUpperCase()} ${p.symbol} (${p.assetClass}) qty=${p.quantity} entry=${p.entryPrice} now=${p.currentPrice} pnl=${pnlSign}${p.unrealizedPnlPct.toFixed(2)}% age=${p.ageDays}j${horizonHint} notional=${p.entryNotionalUsd}$`;
+    });
+    const cashLine = availableCash
+      ? `\nCash disponible : ${availableCash} USD (après fermetures que tu recommandes)`
+      : '';
+    return lines.join('\n') + cashLine + `
+
+À partir de cette liste, retourne dans ton JSON output un champ
+"closeRecommendations" (array, peut être vide) listant les positions à
+fermer MAINTENANT, chacune au format :
+  { "positionId": "<id copié exact>", "reason": "rationale courte" }
+
+Critères de fermeture typiques :
+- P&L latent < -3% ET le scénario d'entrée ne tient plus
+- Horizon déjà dépassé ou presque (< 1j restant) sans catalyseur matérialisé
+- La thèse sous-jacente est invalidée par un news/macro récent
+- Meilleure opportunité à coût d'opportunité élevé (cash bloqué pour rien)
+
+Ne ferme PAS une position juste parce qu'elle est en légère perte si la
+thèse initiale tient toujours (respect du plan, pas de panic-sell).`;
   }
 
   /**

@@ -221,6 +221,40 @@ hors contraintes n'est acceptable, même en mode chasse.
 
     const mergedFocus = [aggressivePersona, userFocus].filter((s) => s && s.trim().length > 0).join('\n\n');
 
+    // Récupère les positions ouvertes + cash pour gestion active
+    const currentSnapshot = await this.paperBroker.computeSnapshot(portfolioId);
+    const openPositionsRaw = await this.paperBroker.getPositions(portfolioId, true);
+    const openPositions = await Promise.all(openPositionsRaw.map(async (pos) => {
+      let currentPrice = pos.entryPrice;
+      try {
+        const q = await this.fetchLivePrice(pos.symbol);
+        currentPrice = q.price;
+      } catch { /* fallback entryPrice */ }
+      const entryPx = new Decimal(pos.entryPrice);
+      const livePx = new Decimal(currentPrice);
+      const sign = pos.direction === 'long' || pos.direction === 'long_call' || pos.direction === 'long_put' ? 1 : -1;
+      const unrealizedPnlPct = entryPx.isZero()
+        ? 0
+        : livePx.minus(entryPx).dividedBy(entryPx).mul(sign).mul(100).toNumber();
+      const ageDays = Math.floor((Date.now() - new Date(pos.entryTimestamp).getTime()) / 86_400_000);
+      const horizonDays = pos.horizonTargetDate
+        ? Math.ceil((new Date(pos.horizonTargetDate).getTime() - new Date(pos.entryTimestamp).getTime()) / 86_400_000)
+        : null;
+      return {
+        positionId: pos.id,
+        symbol: pos.symbol,
+        assetClass: pos.assetClass,
+        direction: pos.direction,
+        entryPrice: pos.entryPrice,
+        currentPrice,
+        quantity: pos.quantity,
+        entryNotionalUsd: pos.entryNotionalUsd,
+        unrealizedPnlPct,
+        ageDays,
+        horizonDays,
+      };
+    }));
+
     let result: Awaited<ReturnType<ThesisGeneratorService['generateTheses']>>;
     try {
       result = await this.thesisGenerator.generateTheses({
@@ -228,6 +262,8 @@ hors contraintes n'est acceptable, même en mode chasse.
         marketSnapshot,
         ...(mergedFocus ? { userFocus: mergedFocus } : {}),
         includeFullCorpus: true,
+        openPositions,
+        availableCashUsd: currentSnapshot.cashUsd,
       });
     } catch (e) {
       // Parse failure ou erreur Claude : on log dans le decision log et on
@@ -274,6 +310,7 @@ hors contraintes n'est acceptable, même en mode chasse.
       claude_cost_usd: result.costUsd,
       generated_at: finalProposal.generatedAt,
       expires_at: new Date(Date.now() + 3600_000).toISOString(), // 1h validity
+      close_recommendations: result.closeRecommendations ?? [],
     });
 
     // Decision log
@@ -287,7 +324,7 @@ hors contraintes n'est acceptable, même en mode chasse.
     return finalProposal;
   }
 
-  async approveProposal(userId: string, proposalId: string): Promise<{ openedPositions: PaperPosition[] }> {
+  async approveProposal(userId: string, proposalId: string): Promise<{ openedPositions: PaperPosition[]; skipped: number; closedRecommended: number }> {
     const { data: proposal, error } = await this.supabase.getClient()
       .from('lisa_proposals')
       .select('*')
@@ -299,10 +336,49 @@ hors contraintes n'est acceptable, même en mode chasse.
       throw new BadRequestException(`Proposal status = ${proposal.status}, cannot approve`);
     }
 
+    const portfolioId = proposal.portfolio_id as string;
     const theses = proposal.theses as Array<Record<string, unknown>>;
     const allocations = proposal.allocations as Array<{ thesisId: string; pctCapital: number; amountUsd: string }>;
+    const closeRecommendations = (proposal.close_recommendations as Array<{ positionId: string; reason: string }> | null) ?? [];
+
+    // 1. D'abord on exécute les fermetures recommandées par Lisa — libère du
+    //    cash avant d'ouvrir les nouvelles positions.
+    let closedRecommended = 0;
+    const openPositions = await this.paperBroker.getPositions(portfolioId, true);
+    for (const rec of closeRecommendations) {
+      const pos = openPositions.find((p) => p.id === rec.positionId);
+      if (!pos) {
+        this.logger.warn(`Close rec skipped — position ${rec.positionId} non trouvée ou déjà fermée`);
+        continue;
+      }
+      try {
+        const quote = await this.fetchLivePrice(pos.symbol);
+        await this.paperBroker.closePosition({
+          positionId: pos.id,
+          reason: 'closed_invalidated',
+          livePrice: quote.price,
+          rationale: `Lisa recommendation: ${rec.reason}`.slice(0, 500),
+        });
+        closedRecommended++;
+        await this.logDecision(portfolioId, 'position_closed_by_lisa', {
+          summary: `Lisa closed ${pos.symbol} (${pos.id.slice(0, 8)}): ${rec.reason}`.slice(0, 200),
+          rationale: rec.reason,
+          payload: { positionId: pos.id, symbol: pos.symbol },
+          triggeredBy: 'user_manual',
+        });
+      } catch (e) {
+        this.logger.warn(`Close recommendation failed for ${pos.symbol}: ${String(e)}`);
+      }
+    }
+
+    // 2. Récupère le cash disponible avant d'ouvrir des nouvelles positions.
+    //    Gate STRICT : pas de leverage implicite, pas de cash négatif.
+    const snapshot = await this.paperBroker.computeSnapshot(portfolioId);
+    let availableCash = new Decimal(snapshot.cashUsd);
+    const CASH_BUFFER_USD = new Decimal('50'); // marge de sécurité (slippage + frais)
 
     const opened: PaperPosition[] = [];
+    let skipped = 0;
 
     for (const alloc of allocations) {
       const thesis = theses.find((t) => t.id === alloc.thesisId);
@@ -313,36 +389,62 @@ hors contraintes n'est acceptable, même en mode chasse.
       const expression = expressions[preferredIdx];
       if (!expression) continue;
 
+      const allocAmount = new Decimal(alloc.amountUsd);
+      if (availableCash.minus(allocAmount).lt(CASH_BUFFER_USD)) {
+        this.logger.warn(
+          `Skip ${String(expression.symbol)}: cash ${availableCash.toFixed(2)} insuffisant pour ${allocAmount.toFixed(2)}`,
+        );
+        skipped++;
+        await this.logDecision(portfolioId, 'position_skipped_insufficient_cash', {
+          summary: `Skip ${String(expression.symbol)} (${alloc.amountUsd} USD) — cash dispo ${availableCash.toFixed(2)} USD`,
+          rationale: `Respect du cap anti-leverage : cash + buffer ${CASH_BUFFER_USD} requis`,
+          payload: { thesisId: alloc.thesisId, allocAmount: alloc.amountUsd, cashAvailable: availableCash.toFixed(2) },
+          triggeredBy: 'user_manual',
+        });
+        continue;
+      }
+
       try {
         const quote = await this.fetchLivePrice(expression.symbol as string);
-        const riskReward = thesis.riskReward as { horizonDays: number };
+        const riskReward = thesis.riskReward as { horizonDays: number; adverseScenarioReturnPct?: number };
         const assetClass = String(expression.assetClass ?? '');
         const isCrypto = assetClass.startsWith('crypto_');
 
-        // Route to Binance live execution if all conditions are met
+        // Stop-loss OBLIGATOIRE : -5% par défaut, ou le scénario adverse de la
+        // thèse si plus strict. Permet à la risk_monitor de fermer les perdantes.
+        const direction = expression.direction as string;
+        const livePx = new Decimal(quote.price);
+        const adversePct = Math.abs(riskReward.adverseScenarioReturnPct ?? -5);
+        const stopPct = Math.max(adversePct, 3) / 100; // floor 3%, plafond = adverse
+        const stopLossPrice = direction === 'long' || direction === 'long_call' || direction === 'long_put'
+          ? livePx.mul(new Decimal(1).minus(new Decimal(stopPct))).toFixed(8)
+          : livePx.mul(new Decimal(1).plus(new Decimal(stopPct))).toFixed(8);
+
         const binanceResult = isCrypto
           ? await this.tryBinanceExecution(expression.symbol as string, alloc.amountUsd, quote.price)
           : null;
 
         const pos = await this.paperBroker.openPosition({
-          portfolioId: proposal.portfolio_id as string,
+          portfolioId,
           proposalId,
           thesisId: alloc.thesisId,
           expressionIndex: preferredIdx,
           capitalAllocationUsd: alloc.amountUsd,
           livePrice: quote.price,
-          stopLossPrice: null,
+          stopLossPrice,
           takeProfitPrice: null,
           horizonDays: riskReward.horizonDays ?? 30,
         });
         opened.push(pos);
+        availableCash = availableCash.minus(allocAmount);
 
-        await this.logDecision(proposal.portfolio_id as string, 'position_opened', {
-          summary: `Opened ${expression.symbol}: ${alloc.pctCapital}% (${alloc.amountUsd} USD) at ${quote.price}`,
+        await this.logDecision(portfolioId, 'position_opened', {
+          summary: `Opened ${expression.symbol}: ${alloc.pctCapital}% (${alloc.amountUsd} USD) at ${quote.price} stop=${stopLossPrice}`,
           rationale: String(thesis.summary),
           payload: {
             positionId: pos.id,
             thesisId: alloc.thesisId,
+            stopLossPrice,
             binanceOrderId: binanceResult?.externalOrderId ?? null,
             executionRoute: binanceResult ? 'binance_live' : 'paper',
           },
@@ -359,7 +461,7 @@ hors contraintes n'est acceptable, même en mode chasse.
       .update({ status: 'executed', executed_at: new Date().toISOString() })
       .eq('id', proposalId);
 
-    return { openedPositions: opened };
+    return { openedPositions: opened, skipped, closedRecommended };
   }
 
   async rejectProposal(userId: string, proposalId: string, reason: string): Promise<void> {
