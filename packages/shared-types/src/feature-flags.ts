@@ -30,6 +30,7 @@ export const FeatureFlagKey = z.enum([
   'BROKER_ADAPTER_SAXO_ENABLED',
   'BROKER_ADAPTER_DEGIRO_ENABLED',
   'BROKER_ADAPTER_TRADING212_ENABLED',
+  'BROKER_ADAPTER_BINANCE_ENABLED',
 ]);
 export type FeatureFlagKey = z.infer<typeof FeatureFlagKey>;
 
@@ -62,6 +63,7 @@ export const FeatureFlags = z.object({
   BROKER_ADAPTER_SAXO_ENABLED: z.boolean(),
   BROKER_ADAPTER_DEGIRO_ENABLED: z.boolean(),
   BROKER_ADAPTER_TRADING212_ENABLED: z.boolean(),
+  BROKER_ADAPTER_BINANCE_ENABLED: z.boolean(),
 });
 export type FeatureFlags = z.infer<typeof FeatureFlags>;
 
@@ -101,4 +103,5 @@ export const DEFAULT_FLAGS: FeatureFlags = {
   BROKER_ADAPTER_SAXO_ENABLED: false,
   BROKER_ADAPTER_DEGIRO_ENABLED: false,
   BROKER_ADAPTER_TRADING212_ENABLED: false,
+  BROKER_ADAPTER_BINANCE_ENABLED: false,
 };

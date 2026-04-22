@@ -83,10 +83,9 @@ export const PROVIDER_CAPABILITIES: Record<BrokerProvider, BrokerCapabilities> =
     supportsRead: false, supportsExecution: false, supportsStreaming: false,
     supportsOptions: false, supportsCrypto: false, supportsCsvImport: true,
   },
-  // Exchanges crypto — APIs existantes mais pas d'adapter SmartVest pour l'instant.
-  // Capabilities = ce que le broker PEUT faire, l'exécution reste gatée par feature flags.
+  // Binance — adapter live livré, spot uniquement, HMAC-SHA256 signed.
   BINANCE: {
-    supportsRead: false, supportsExecution: false, supportsStreaming: false,
+    supportsRead: true, supportsExecution: true, supportsStreaming: false,
     supportsOptions: false, supportsCrypto: true, supportsCsvImport: true,
   },
   KRAKEN: {
@@ -162,10 +161,13 @@ export const BrokerCredentials = z.discriminatedUnion('provider', [
     provider: z.literal('FORTUNEO'),
     note: z.literal('use-csv-import'),
   }),
-  // Exchanges crypto — pas d'adapter live livré ici, CSV only pour l'instant.
+  // Binance — adapter live avec HMAC-SHA256. apiKey + secretKey requis.
   z.object({
     provider: z.literal('BINANCE'),
-    note: z.literal('use-csv-import'),
+    apiKey: z.string().min(10),
+    secretKey: z.string().min(10),
+    /** Si true, une restriction IP a été configurée côté Binance (audit seulement). */
+    ipRestricted: z.boolean().optional(),
   }),
   z.object({
     provider: z.literal('KRAKEN'),

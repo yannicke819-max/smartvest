@@ -107,6 +107,10 @@ export class FeatureFlagsService {
         this.config.get('FEATURE_BROKER_ADAPTER_TRADING212_ENABLED'),
         DEFAULT_FLAGS.BROKER_ADAPTER_TRADING212_ENABLED,
       ),
+      BROKER_ADAPTER_BINANCE_ENABLED: this.parseBool(
+        this.config.get('FEATURE_BROKER_ADAPTER_BINANCE_ENABLED'),
+        DEFAULT_FLAGS.BROKER_ADAPTER_BINANCE_ENABLED,
+      ),
     };
   }
 

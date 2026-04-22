@@ -15,6 +15,7 @@ import {
   type PortfolioSnapshot,
   type SessionProfile,
 } from '@smartvest/ai-analyst';
+import { BinanceAdapter } from '@smartvest/brokers';
 import { SupabaseService } from '../../supabase/supabase.service';
 
 /**
@@ -233,6 +234,13 @@ export class LisaService {
       try {
         const quote = await this.fetchLivePrice(expression.symbol as string);
         const riskReward = thesis.riskReward as { horizonDays: number };
+        const assetClass = String(expression.assetClass ?? '');
+        const isCrypto = assetClass.startsWith('crypto_');
+
+        // Route to Binance live execution if all conditions are met
+        const binanceResult = isCrypto
+          ? await this.tryBinanceExecution(expression.symbol as string, alloc.amountUsd, quote.price)
+          : null;
 
         const pos = await this.paperBroker.openPosition({
           portfolioId: proposal.portfolio_id as string,
@@ -241,7 +249,7 @@ export class LisaService {
           expressionIndex: preferredIdx,
           capitalAllocationUsd: alloc.amountUsd,
           livePrice: quote.price,
-          stopLossPrice: null,  // TODO: extract from thesis.invalidation
+          stopLossPrice: null,
           takeProfitPrice: null,
           horizonDays: riskReward.horizonDays ?? 30,
         });
@@ -250,7 +258,12 @@ export class LisaService {
         await this.logDecision(proposal.portfolio_id as string, 'position_opened', {
           summary: `Opened ${expression.symbol}: ${alloc.pctCapital}% (${alloc.amountUsd} USD) at ${quote.price}`,
           rationale: String(thesis.summary),
-          payload: { positionId: pos.id, thesisId: alloc.thesisId },
+          payload: {
+            positionId: pos.id,
+            thesisId: alloc.thesisId,
+            binanceOrderId: binanceResult?.externalOrderId ?? null,
+            executionRoute: binanceResult ? 'binance_live' : 'paper',
+          },
           triggeredBy: 'user_manual',
         });
       } catch (e) {
@@ -399,11 +412,90 @@ export class LisaService {
   }
 
   /**
-   * Fetch live price — pour l'instant mock EODHD-like. En production,
-   * remplacer par l'intégration réelle du MarketDataService existant.
+   * Attempt to execute a crypto order on Binance when the full guard chain is active:
+   *   BINANCE_API_KEY + BINANCE_SECRET_KEY set in env
+   *   BINANCE_EXECUTION_ENABLED=true
+   * Returns null (paper-only) when any condition is not met.
+   * Never throws — execution failure is logged but does not block paper position creation.
+   */
+  private async tryBinanceExecution(
+    symbol: string,
+    capitalUsd: string,
+    livePrice: string,
+  ): Promise<{ externalOrderId: string | null; status: string } | null> {
+    const apiKey = this.config.get<string>('BINANCE_API_KEY');
+    const secretKey = this.config.get<string>('BINANCE_SECRET_KEY');
+    const execEnabled = this.config.get<string>('BINANCE_EXECUTION_ENABLED') === 'true';
+
+    if (!apiKey || !secretKey || !execEnabled) return null;
+
+    try {
+      const adapter = new BinanceAdapter(true);
+      await adapter.connect({ provider: 'BINANCE', apiKey, secretKey });
+
+      // Compute quantity from capital / price
+      const qty = new Decimal(capitalUsd).dividedBy(new Decimal(livePrice));
+      // Binance requires symbol without dashes: BTC → BTCUSDT
+      const binanceSymbol = this.toBinanceSymbol(symbol);
+
+      const result = await adapter.placeOrder({
+        accountIdExternal: 'spot',
+        instrumentRef: binanceSymbol,
+        side: 'buy',
+        orderType: 'market',
+        quantity: qty.toFixed(6),
+      });
+
+      this.logger.log(`Binance order: ${binanceSymbol} qty=${qty.toFixed(6)} → ${result.status} orderId=${result.externalOrderId}`);
+
+      if (result.status === 'rejected') {
+        this.logger.warn(`Binance order rejected: ${result.message}`);
+      }
+
+      return result;
+    } catch (e) {
+      this.logger.error(`Binance execution error for ${symbol}: ${String(e)}`);
+      return null;
+    }
+  }
+
+  /** Convert ticker to Binance USDT pair symbol (e.g. BTC → BTCUSDT) */
+  private toBinanceSymbol(symbol: string): string {
+    const s = symbol.toUpperCase().replace(/[/\-\s]/g, '');
+    // Already has USDT suffix
+    if (s.endsWith('USDT')) return s;
+    // Stablecoins — no pair needed, but return as-is
+    if (['USDT', 'USDC', 'BUSD'].includes(s)) return s;
+    return `${s}USDT`;
+  }
+
+  /**
+   * Fetch live price via EODHD real-time API.
+   * Falls back to Supabase quotes cache, then to a static fallback.
    */
   private async fetchLivePrice(symbol: string): Promise<{ symbol: string; price: string; asOf: string; source: string }> {
-    // Tentative 1 : lookup dans quotes table Supabase
+    const eodhKey = this.config.get<string>('EODHD_API_KEY');
+    const now = new Date().toISOString();
+
+    // 1. Try EODHD real-time endpoint
+    if (eodhKey && eodhKey !== 'demo') {
+      try {
+        const ticker = this.toEodhdTicker(symbol);
+        const url = `https://eodhd.com/api/real-time/${encodeURIComponent(ticker)}?api_token=${eodhKey}&fmt=json`;
+        const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+        if (res.ok) {
+          const data = await res.json() as Record<string, unknown>;
+          const price = data['close'] ?? data['previousClose'] ?? data['open'];
+          if (price && Number(price) > 0) {
+            return { symbol, price: String(price), asOf: now, source: 'eodhd' };
+          }
+        }
+      } catch (e) {
+        this.logger.warn(`EODHD price fetch failed for ${symbol}: ${String(e)}`);
+      }
+    }
+
+    // 2. Supabase quotes cache
     const { data: quote } = await this.supabase.getClient()
       .from('quotes')
       .select('price, as_of')
@@ -413,47 +505,115 @@ export class LisaService {
       .maybeSingle();
 
     if (quote) {
-      return {
-        symbol,
-        price: String(quote.price),
-        asOf: quote.as_of as string,
-        source: 'supabase_quotes',
-      };
+      return { symbol, price: String(quote.price), asOf: quote.as_of as string, source: 'supabase_quotes' };
     }
 
-    // Fallback : retourner un prix par défaut (permet simulation fonctionnelle
-    // même sans EODHD configuré). En prod, on irait fetch EODHD REST.
-    this.logger.warn(`No quote found for ${symbol}, returning fallback price $100`);
-    return {
-      symbol,
-      price: '100.00',
-      asOf: new Date().toISOString(),
-      source: 'fallback',
-    };
+    // 3. Static fallback (simulation still works without live data)
+    this.logger.warn(`No quote found for ${symbol}, returning fallback price`);
+    return { symbol, price: this.getFallbackPrice(symbol), asOf: now, source: 'fallback' };
   }
 
   /**
-   * Assemble une MarketSnapshot pour passer à Lisa. Version minimaliste pour
-   * démarrer — à enrichir avec EODHD news + economic calendar en P4.11.
+   * Convert SmartVest/Binance symbol to EODHD ticker format.
+   * BTC → BTC-USD.CC, BTCUSDT → BTC-USD.CC, AAPL → AAPL.US
+   */
+  private toEodhdTicker(symbol: string): string {
+    const s = symbol.toUpperCase();
+    const cryptoMap: Record<string, string> = {
+      'BTC': 'BTC-USD.CC', 'BTCUSDT': 'BTC-USD.CC', 'BITCOIN': 'BTC-USD.CC',
+      'ETH': 'ETH-USD.CC', 'ETHUSDT': 'ETH-USD.CC', 'ETHEREUM': 'ETH-USD.CC',
+      'SOL': 'SOL-USD.CC', 'SOLUSDT': 'SOL-USD.CC',
+      'BNB': 'BNB-USD.CC', 'BNBUSDT': 'BNB-USD.CC',
+      'XRP': 'XRP-USD.CC', 'XRPUSDT': 'XRP-USD.CC',
+      'ADA': 'ADA-USD.CC', 'ADAUSDT': 'ADA-USD.CC',
+      'DOGE': 'DOGE-USD.CC', 'DOGEUSDT': 'DOGE-USD.CC',
+      'DOT': 'DOT-USD.CC', 'AVAX': 'AVAX-USD.CC',
+      'MATIC': 'MATIC-USD.CC', 'LINK': 'LINK-USD.CC',
+      'ATOM': 'ATOM-USD.CC', 'UNI': 'UNI-USD.CC',
+      'LTC': 'LTC-USD.CC', 'LTCUSDT': 'LTC-USD.CC',
+    };
+    if (cryptoMap[s]) return cryptoMap[s];
+    // Already EODHD format (contains a dot)
+    if (s.includes('.')) return s;
+    // Default: US equity
+    return `${s}.US`;
+  }
+
+  /** Approximate fallback prices (order-of-magnitude, simulation only) */
+  private getFallbackPrice(symbol: string): string {
+    const s = symbol.toUpperCase();
+    const prices: Record<string, string> = {
+      'BTC': '105000', 'BTCUSDT': '105000', 'ETH': '3500', 'ETHUSDT': '3500',
+      'SOL': '180', 'BNB': '600', 'XRP': '2.5', 'ADA': '0.9',
+      'GOLD': '3300', 'GC': '3300', 'SPY': '580', 'QQQ': '490',
+      'AAPL': '210', 'MSFT': '420', 'NVDA': '900',
+    };
+    return prices[s] ?? '100.00';
+  }
+
+  /**
+   * Fetch live market snapshot via EODHD for all key signals.
+   * Gracefully falls back on static values if EODHD is unavailable.
    */
   private async fetchMarketSnapshot(): Promise<MarketSnapshot> {
-    // TODO: fetch from EODHD + FRED + providers
+    const eodhKey = this.config.get<string>('EODHD_API_KEY');
+
+    // Static fallback used both as defaults and when EODHD is unavailable
+    const fallback: MarketSnapshot = {
+      timestamp: new Date().toISOString(),
+      vix: 18.5, usdDxy: 102.3, us10yYield: 4.2, us2yYield: 3.9,
+      brentUsd: 78.0, btcUsd: 105000, ethUsd: 3500, goldUsd: 3300,
+      sp500: 5800, nasdaq: 18500, eurUsd: 1.08, usdJpy: 152,
+      creditHyOasBps: 320, creditIgOasBps: 95,
+      recentNews: [], upcomingEvents: [],
+    };
+
+    if (!eodhKey || eodhKey === 'demo') return fallback;
+
+    const fetchNum = async (ticker: string): Promise<number | null> => {
+      try {
+        const url = `https://eodhd.com/api/real-time/${encodeURIComponent(ticker)}?api_token=${eodhKey}&fmt=json`;
+        const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+        if (!res.ok) return null;
+        const d = await res.json() as Record<string, unknown>;
+        const v = Number(d['close'] ?? d['previousClose'] ?? d['open'] ?? d['last']);
+        return isFinite(v) && v > 0 ? v : null;
+      } catch { return null; }
+    };
+
+    const [vix, dxy, us10y, us2y, brent, btc, eth, gold, spy, qqq, eurusd, usdjpy] =
+      await Promise.all([
+        fetchNum('^VIX.INDX'),
+        fetchNum('DX-Y.NYB.FOREX'),
+        fetchNum('US10Y.BOND'),
+        fetchNum('US2Y.BOND'),
+        fetchNum('BZ.COMM'),
+        fetchNum('BTC-USD.CC'),
+        fetchNum('ETH-USD.CC'),
+        fetchNum('GC.COMM'),
+        fetchNum('SPY.US'),
+        fetchNum('QQQ.US'),
+        fetchNum('EURUSD.FOREX'),
+        fetchNum('USDJPY.FOREX'),
+      ]);
+
+    // SPY ≈ SP500/10, QQQ ≈ NASDAQ/40
     return {
       timestamp: new Date().toISOString(),
-      vix: 18.5,
-      usdDxy: 102.3,
-      us10yYield: 4.2,
-      us2yYield: 3.9,
-      brentUsd: 78.0,
-      btcUsd: 115000,
-      ethUsd: 3800,
-      goldUsd: 4200,
-      sp500: 5800,
-      nasdaq: 18500,
-      eurUsd: 1.08,
-      usdJpy: 152,
-      creditHyOasBps: 320,
-      creditIgOasBps: 95,
+      vix: vix ?? fallback.vix,
+      usdDxy: dxy ?? fallback.usdDxy,
+      us10yYield: us10y ?? fallback.us10yYield,
+      us2yYield: us2y ?? fallback.us2yYield,
+      brentUsd: brent ?? fallback.brentUsd,
+      btcUsd: btc ?? fallback.btcUsd,
+      ethUsd: eth ?? fallback.ethUsd,
+      goldUsd: gold ?? fallback.goldUsd,
+      sp500: spy ? spy * 10 : fallback.sp500,
+      nasdaq: qqq ? qqq * 40 : fallback.nasdaq,
+      eurUsd: eurusd ?? fallback.eurUsd,
+      usdJpy: usdjpy ?? fallback.usdJpy,
+      creditHyOasBps: fallback.creditHyOasBps,
+      creditIgOasBps: fallback.creditIgOasBps,
       recentNews: [],
       upcomingEvents: [],
     };

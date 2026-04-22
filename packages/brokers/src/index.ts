@@ -66,4 +66,5 @@ export * from './adapters/interactive-brokers.adapter';
 export * from './adapters/saxo.adapter';
 export * from './adapters/degiro.adapter';
 export * from './adapters/trading212.adapter';
+export * from './adapters/binance.adapter';
 export * from './adapters/adapter-factory';

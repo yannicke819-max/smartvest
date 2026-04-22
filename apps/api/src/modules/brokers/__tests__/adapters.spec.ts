@@ -16,6 +16,8 @@ const allFlagsOn: AdapterFactoryFlags = {
   BROKER_ADAPTER_SAXO_ENABLED: true,
   BROKER_ADAPTER_DEGIRO_ENABLED: true,
   BROKER_ADAPTER_TRADING212_ENABLED: true,
+  BROKER_ADAPTER_BINANCE_ENABLED: true,
+  BROKER_EXECUTION_ENABLED: false,
 };
 
 describe('ManualAdapter', () => {

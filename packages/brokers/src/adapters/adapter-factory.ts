@@ -5,6 +5,7 @@ import { InteractiveBrokersAdapter } from './interactive-brokers.adapter';
 import { SaxoAdapter } from './saxo.adapter';
 import { DegiroAdapter } from './degiro.adapter';
 import { Trading212Adapter } from './trading212.adapter';
+import { BinanceAdapter } from './binance.adapter';
 
 /**
  * Minimal set of feature flags the factory reads. Runs a per-provider check
@@ -19,6 +20,10 @@ export interface AdapterFactoryFlags {
   BROKER_ADAPTER_SAXO_ENABLED: boolean;
   BROKER_ADAPTER_DEGIRO_ENABLED: boolean;
   BROKER_ADAPTER_TRADING212_ENABLED: boolean;
+  /** Binance spot adapter — requires BINANCE_API_KEY + BINANCE_SECRET_KEY in env */
+  BROKER_ADAPTER_BINANCE_ENABLED: boolean;
+  /** Set true only when full guard chain is verified: execution + mandate + kill-switch */
+  BROKER_EXECUTION_ENABLED: boolean;
 }
 
 export function createBrokerAdapter(
@@ -43,14 +48,17 @@ export function createBrokerAdapter(
       }
       return new SaxoAdapter();
     case 'DEGIRO':
-      // DeGiro adapter is intentionally a stub that redirects to CSV import.
-      // We instantiate it regardless of the flag so the error message is friendly.
       return new DegiroAdapter();
     case 'TRADING212':
       if (!flags.BROKER_ADAPTER_TRADING212_ENABLED) {
         throw new NotSupportedError('Adapter T212 désactivé');
       }
       return new Trading212Adapter();
+    case 'BINANCE':
+      if (!flags.BROKER_ADAPTER_BINANCE_ENABLED) {
+        throw new NotSupportedError('Adapter Binance désactivé (BROKER_ADAPTER_BINANCE_ENABLED=false)');
+      }
+      return new BinanceAdapter(flags.BROKER_EXECUTION_ENABLED);
     case 'BOURSE_DIRECT':
     case 'FORTUNEO':
     case 'TRADE_REPUBLIC':
@@ -59,12 +67,9 @@ export function createBrokerAdapter(
       throw new NotSupportedError(
         `${provider} n'expose pas d'API retail publique — utilisez l'import CSV via /imports.`,
       );
-    case 'BINANCE':
     case 'KRAKEN':
     case 'COINBASE':
     case 'CRYPTO_COM':
-      // Exchanges crypto : APIs existantes mais adapters live pas livrés ici.
-      // Phase ultérieure — en attendant, import CSV.
       throw new NotSupportedError(
         `Adapter ${provider} pas encore livré. Utilisez l'import CSV via /imports en attendant.`,
       );
