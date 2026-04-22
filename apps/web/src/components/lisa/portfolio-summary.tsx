@@ -19,13 +19,14 @@ export function LisaPortfolioSummary({
     );
   }
 
-  const totalValue = parseFloat(snapshot.total_value_usd);
-  const cash = parseFloat(snapshot.cash_usd);
-  const openValue = parseFloat(snapshot.open_positions_value_usd);
-  const realized = parseFloat(snapshot.realized_pnl_cumulative_usd);
-  const unrealized = parseFloat(snapshot.unrealized_pnl_usd);
-  const retPct = snapshot.return_from_inception_pct;
-  const drawdown = snapshot.drawdown_from_peak_pct;
+  const totalValue = parseFloat(snapshot.total_value_usd ?? '0') || 0;
+  const cash = parseFloat(snapshot.cash_usd ?? '0') || 0;
+  const openValue = parseFloat(snapshot.open_positions_value_usd ?? '0') || 0;
+  const realized = parseFloat(snapshot.realized_pnl_cumulative_usd ?? '0') || 0;
+  const unrealized = parseFloat(snapshot.unrealized_pnl_usd ?? '0') || 0;
+  const retPct = Number(snapshot.return_from_inception_pct ?? 0) || 0;
+  const drawdown = Number(snapshot.drawdown_from_peak_pct ?? 0) || 0;
+  const openCount = snapshot.open_positions_count ?? 0;
 
   const retSign = retPct >= 0 ? '+' : '';
   const retColor =
@@ -53,7 +54,7 @@ export function LisaPortfolioSummary({
       <KpiCard
         label="Drawdown peak"
         value={<span className={drawdown <= -5 ? 'text-red-500' : 'text-muted-foreground'}>{drawdown.toFixed(2)}%</span>}
-        hint={dd2dWarning ? '⚠️ Proche kill limit -10%' : `${snapshot.open_positions_count} position(s) ouverte(s)`}
+        hint={dd2dWarning ? '⚠️ Proche kill limit -10%' : `${openCount} position(s) ouverte(s)`}
       />
     </div>
   );
