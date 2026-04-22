@@ -1,4 +1,5 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import WebSocket from 'ws';
 
 /**
  * RealtimePriceService — cache unifié de prix en mémoire.
@@ -13,6 +14,9 @@ import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
  *   1. Éviter les appels EODHD à chaque fetchLivePrice (économie quota).
  *   2. Fournir des prix "quasi temps réel" au fast risk monitor pour
  *      déclencher stop/target avec un délai < 1 seconde côté crypto.
+ *
+ * Utilise le package `ws` (Node.js) car le WebSocket global natif n'est
+ * disponible qu'à partir de Node 22 — le runtime prod tourne sur Node 20.
  */
 @Injectable()
 export class RealtimePriceService implements OnModuleDestroy {
@@ -126,33 +130,32 @@ export class RealtimePriceService implements OnModuleDestroy {
       this.subscribedStreams = new Set(this.activeCryptoSymbols);
       this.logger.log(`Binance WS connecting : ${this.activeCryptoSymbols.size} symbol(s) [${Array.from(this.activeCryptoSymbols).join(', ')}]`);
 
-      this.ws.onopen = () => {
+      this.ws.on('open', () => {
         this.reconnectAttempts = 0;
         this.logger.log('Binance WS connected');
-      };
+      });
 
-      this.ws.onmessage = (ev) => {
+      this.ws.on('message', (data: WebSocket.RawData) => {
         try {
-          const raw = typeof ev.data === 'string' ? ev.data : String(ev.data);
+          const raw = data.toString('utf8');
           const msg = JSON.parse(raw);
-          // Combined stream format: { stream: 'btcusdt@ticker', data: { s: 'BTCUSDT', c: '79123.45', ... } }
-          const data = msg.data ?? msg;
-          if (data && typeof data.s === 'string' && typeof data.c === 'string') {
-            this.setCached(data.s, data.c, 'binance_ws');
+          const payload = msg.data ?? msg;
+          if (payload && typeof payload.s === 'string' && typeof payload.c === 'string') {
+            this.setCached(payload.s, payload.c, 'binance_ws');
           }
         } catch (e) {
           this.logger.debug(`WS parse error: ${String(e).slice(0, 80)}`);
         }
-      };
+      });
 
-      this.ws.onerror = (e) => {
-        this.logger.warn(`Binance WS error: ${String(e).slice(0, 100)}`);
-      };
+      this.ws.on('error', (e: Error) => {
+        this.logger.warn(`Binance WS error: ${e.message.slice(0, 100)}`);
+      });
 
-      this.ws.onclose = () => {
+      this.ws.on('close', () => {
         this.logger.warn('Binance WS closed — retry soon');
         this.scheduleReconnect();
-      };
+      });
     } catch (e) {
       this.logger.error(`Binance WS init failed: ${String(e)}`);
       this.scheduleReconnect();
@@ -185,8 +188,8 @@ export class RealtimePriceService implements OnModuleDestroy {
     return this.activeCryptoSymbols.size;
   }
 
-  /** État connecté ? */
+  /** État connecté ? (WebSocket.OPEN === 1) */
   isConnected(): boolean {
-    return this.ws?.readyState === 1;
+    return this.ws?.readyState === WebSocket.OPEN;
   }
 }
