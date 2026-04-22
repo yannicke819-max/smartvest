@@ -8,7 +8,7 @@ app = "smartvest-api"
 primary_region = "cdg"
 
 [build]
-  dockerfile = "apps/api/Dockerfile"
+  dockerfile = "Dockerfile"
 
 [env]
   NODE_ENV = "production"
