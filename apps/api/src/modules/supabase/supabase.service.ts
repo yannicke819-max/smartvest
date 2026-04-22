@@ -1,15 +1,18 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 @Injectable()
-export class SupabaseService implements OnModuleInit {
+export class SupabaseService {
   private readonly logger = new Logger(SupabaseService.name);
   private client: SupabaseClient | null = null;
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(private readonly config: ConfigService) {
+    // Init synchrone dans le constructeur pour que les autres services qui
+    // appellent getClient() dans LEUR constructeur (ex. LisaService) trouvent
+    // le client déjà prêt — onModuleInit() tourne trop tard dans le cycle
+    // de vie NestJS (après tous les constructeurs).
 
-  onModuleInit() {
     // Accept both SUPABASE_URL (Railway/standard) and NEXT_PUBLIC_SUPABASE_URL (shared .env)
     const url = this.config.get<string>('SUPABASE_URL')
       ?? this.config.get<string>('NEXT_PUBLIC_SUPABASE_URL');
