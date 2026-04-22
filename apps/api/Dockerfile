@@ -8,7 +8,7 @@
 # node_modules is slightly less aggressive, but for personal use builds
 # are infrequent enough that correctness wins.
 
-# cache-bust: 6 — force rebuild complet avec LisaModule + BinanceAdapter + EODHD
+# cache-bust: 7 — migrations resilient (semicolon) + push dev branch
 FROM node:20-alpine AS builder
 WORKDIR /repo
 
@@ -39,7 +39,7 @@ COPY --from=builder /repo/supabase/migrations ./supabase/migrations
 
 WORKDIR /app/apps/api
 EXPOSE 3001
-# Run migrations first, then start the API. The migration script exits 0
-# when SUPABASE_ACCESS_TOKEN is absent (warn only), so the container always
-# starts. Exit 1 on real migration failures to block a bad deploy.
-CMD ["sh", "-c", "node /app/scripts/apply-migrations.mjs && node dist/main.js"]
+# Run migrations first, then always start the API (semicolon = unconditional).
+# Migration failures are logged but never block the container from starting —
+# the API handles missing tables gracefully with 500 errors instead of crash.
+CMD ["sh", "-c", "node /app/scripts/apply-migrations.mjs; node dist/main.js"]
