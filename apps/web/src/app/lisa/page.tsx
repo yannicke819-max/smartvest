@@ -91,6 +91,22 @@ export default function LisaPage() {
   const [selectedScenarios, setSelectedScenarios] = useState<Set<string>>(new Set());
   const [scenariosExpanded, setScenariosExpanded] = useState(true);
 
+  // Sync l'état local une seule fois quand la config arrive — ensuite l'UI
+  // pilote elle-même les states (sinon checked={config?.X ?? local} override
+  // les clics utilisateur).
+  const [configSynced, setConfigSynced] = useState(false);
+  useEffect(() => {
+    if (config && !configSynced) {
+      if (config.profile) setProfile(config.profile as SessionProfile);
+      if (config.capital_usd) setCapital(String(config.capital_usd));
+      if (typeof config.anti_consensus_strength === 'number') setAntiConsensus(config.anti_consensus_strength);
+      if (typeof config.enable_crypto === 'boolean') setEnableCrypto(config.enable_crypto);
+      if (typeof config.autopilot_enabled === 'boolean') setAutopilotEnabled(config.autopilot_enabled);
+      if (typeof config.autopilot_cycle_minutes === 'number') setAutopilotCycleMin(config.autopilot_cycle_minutes);
+      setConfigSynced(true);
+    }
+  }, [config, configSynced]);
+
   const config = configQuery.data;
   const canGenerate = !!(config ?? localConfigSaved);
 
@@ -215,7 +231,7 @@ export default function LisaPage() {
           <div className="space-y-1.5">
             <label className="block text-xs font-medium">Profile</label>
             <select
-              value={config?.profile ?? profile}
+              value={profile}
               onChange={(e) => setProfile(e.target.value as SessionProfile)}
               className="h-9 w-full rounded-md border bg-background px-3 text-sm"
             >
@@ -224,7 +240,7 @@ export default function LisaPage() {
               ))}
             </select>
             <p className="text-[11px] text-muted-foreground">
-              {PROFILE_LABELS[(config?.profile ?? profile) as SessionProfile].description}
+              {PROFILE_LABELS[profile].description}
             </p>
           </div>
 
@@ -232,7 +248,7 @@ export default function LisaPage() {
             <label className="block text-xs font-medium">Capital simulation (USD)</label>
             <input
               type="number"
-              value={config?.capital_usd ?? capital}
+              value={capital}
               onChange={(e) => setCapital(e.target.value)}
               min="100"
               step="100"
@@ -242,13 +258,13 @@ export default function LisaPage() {
 
           <div className="space-y-1.5">
             <label className="block text-xs font-medium">
-              Anti-consensus strength : {config?.anti_consensus_strength ?? antiConsensus} / 10
+              Anti-consensus strength : {antiConsensus} / 10
             </label>
             <input
               type="range"
               min="0"
               max="10"
-              value={config?.anti_consensus_strength ?? antiConsensus}
+              value={antiConsensus}
               onChange={(e) => setAntiConsensus(parseInt(e.target.value, 10))}
               className="w-full"
             />
@@ -261,7 +277,7 @@ export default function LisaPage() {
             <label className="flex items-center gap-2 text-xs font-medium">
               <input
                 type="checkbox"
-                checked={config?.enable_crypto ?? enableCrypto}
+                checked={enableCrypto}
                 onChange={(e) => setEnableCrypto(e.target.checked)}
               />
               Autoriser crypto (BTC, ETH, altcoins)
@@ -273,19 +289,19 @@ export default function LisaPage() {
           <label className="flex items-center gap-2 text-xs font-medium">
             <input
               type="checkbox"
-              checked={config?.autopilot_enabled ?? autopilotEnabled}
+              checked={autopilotEnabled}
               onChange={(e) => setAutopilotEnabled(e.target.checked)}
             />
             Autopilot (génération automatique toutes les N minutes)
           </label>
-          {(config?.autopilot_enabled ?? autopilotEnabled) && (
+          {autopilotEnabled && (
             <div className="flex items-center gap-2 text-xs text-muted-foreground pl-6">
               <span>Fréquence :</span>
               <input
                 type="number"
                 min="5"
                 max="1440"
-                value={config?.autopilot_cycle_minutes ?? autopilotCycleMin}
+                value={autopilotCycleMin}
                 onChange={(e) => setAutopilotCycleMin(parseInt(e.target.value, 10))}
                 className="h-7 w-20 rounded-md border bg-background px-2 text-xs"
               />
