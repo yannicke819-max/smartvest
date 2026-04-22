@@ -2,8 +2,7 @@
 
 import { useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import Link from 'next/link';
-import { ArrowLeft, RefreshCw, ChevronDown, ChevronUp } from 'lucide-react';
+import { RefreshCw, ChevronDown, ChevronUp } from 'lucide-react';
 import { BackButton } from '@/components/ui/back-button';
 import { useGoal, useScenarios, useGenerateScenarios, useGeneratePlan, type ScenarioRow } from '@/hooks/use-goals';
 import { Button } from '@/components/ui/button';

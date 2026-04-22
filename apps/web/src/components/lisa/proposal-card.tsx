@@ -180,7 +180,7 @@ export function LisaProposalCard({
           <div>
             <p className="text-xs font-medium mb-2">Thèses proposées</p>
             <div className="space-y-3">
-              {thesesToShow.map((t, tIdx) => {
+              {thesesToShow.map((t, _tIdx) => {
                 const alloc = proposal.allocations.find((a) => a.thesisId === t.id);
                 const expr = t.expressions[t.preferredExpressionIndex];
                 const rr = t.riskReward.centralScenarioReturnPct;

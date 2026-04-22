@@ -2,8 +2,6 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import Link from 'next/link';
-import { ArrowLeft } from 'lucide-react';
 import { useCreateGoal } from '@/hooks/use-goals';
 import { usePortfolios } from '@/hooks/use-portfolio';
 import { Button } from '@/components/ui/button';

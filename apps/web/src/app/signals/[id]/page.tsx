@@ -2,8 +2,7 @@
 
 import { useState } from 'react';
 import { useParams } from 'next/navigation';
-import Link from 'next/link';
-import { ArrowLeft, Cpu, BookOpen, FileText } from 'lucide-react';
+import { Cpu, BookOpen, FileText } from 'lucide-react';
 import { useSignal, useAssessImpact, useFindAnalogs, useGenerateConclusion, type SignalConclusion } from '@/hooks/use-signals';
 import { usePortfolios } from '@/hooks/use-portfolio';
 import { DisclaimerBanner } from '@/components/disclaimer-banner';

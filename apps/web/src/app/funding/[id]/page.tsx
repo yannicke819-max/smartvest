@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import {
-  ArrowLeft, ArrowUpCircle, History, AlertTriangle, CheckCircle2, XCircle,
+  ArrowUpCircle, History, AlertTriangle, CheckCircle2, XCircle,
   RefreshCw, Loader2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';

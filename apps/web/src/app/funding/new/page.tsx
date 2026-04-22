@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, ArrowUpCircle, AlertTriangle } from 'lucide-react';
+import { ArrowUpCircle, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { DisclaimerBanner } from '@/components/disclaimer-banner';
 import { BackButton } from '@/components/ui/back-button';

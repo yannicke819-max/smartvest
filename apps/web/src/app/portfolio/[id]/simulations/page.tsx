@@ -2,8 +2,7 @@
 
 import { useState } from 'react';
 import { useParams } from 'next/navigation';
-import Link from 'next/link';
-import { ArrowLeft, Shuffle, TrendingUp, Loader2 } from 'lucide-react';
+import { Shuffle, TrendingUp, Loader2 } from 'lucide-react';
 import { createSupabaseBrowserClient } from '@/lib/supabase/client';
 import { Button } from '@/components/ui/button';
 import { DisclaimerBanner } from '@/components/disclaimer-banner';

@@ -2,13 +2,11 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, CheckCircle2, Inbox, XCircle, Clock, Ban, Filter } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { CheckCircle2, Inbox, XCircle, Clock, Ban, Filter } from 'lucide-react';
 import { SkeletonCard } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/states/empty-state';
 import { ErrorState } from '@/components/states/error-state';
 import { DisclaimerBanner } from '@/components/disclaimer-banner';
-import { BackButton } from '@/components/ui/back-button';
 import {
   useProposals,
   type LifecycleState,

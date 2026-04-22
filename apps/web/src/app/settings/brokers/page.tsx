@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { ArrowLeft, Plug, Plus, CheckCircle2, AlertTriangle, Ban, Clock } from 'lucide-react';
+import { Plug, Plus, CheckCircle2, AlertTriangle, Ban, Clock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { SkeletonCard } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/states/empty-state';

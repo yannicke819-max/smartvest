@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { ArrowLeft, Wallet, ScrollText, RefreshCw } from 'lucide-react';
+import { Wallet, ScrollText, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { KpiCard } from '@/components/kpi-card';
 import { SkeletonCard } from '@/components/ui/skeleton';

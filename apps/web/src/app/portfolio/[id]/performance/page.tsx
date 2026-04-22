@@ -1,12 +1,9 @@
 'use client';
 
 import { useParams } from 'next/navigation';
-import Link from 'next/link';
-import { ArrowLeft, TrendingUp, TrendingDown, Activity, BarChart3 } from 'lucide-react';
+import { TrendingUp, TrendingDown, Activity, BarChart3 } from 'lucide-react';
 import { useHistory, usePerformanceMetrics, useBenchmark } from '@/hooks/use-performance';
-import { Button } from '@/components/ui/button';
 import { SkeletonCard } from '@/components/ui/skeleton';
-import { BackButton } from '@/components/ui/back-button';
 
 function formatPct(value: string | null | undefined, digits = 2): string {
   if (value === null || value === undefined) return '—';

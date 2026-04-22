@@ -1,11 +1,9 @@
 'use client';
 
 import Link from 'next/link';
-import { ArrowLeft, Gauge, Clock, ShieldAlert, ExternalLink } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { Gauge, Clock, ShieldAlert, ExternalLink } from 'lucide-react';
 import { SkeletonCard } from '@/components/ui/skeleton';
 import { DisclaimerBanner } from '@/components/disclaimer-banner';
-import { BackButton } from '@/components/ui/back-button';
 import {
   useStrategyModes,
   useCurrentStrategyMode,

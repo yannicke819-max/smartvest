@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, Plug, AlertTriangle, Lock, ExternalLink } from 'lucide-react';
+import { Plug, AlertTriangle, Lock, ExternalLink } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { DisclaimerBanner } from '@/components/disclaimer-banner';
 import { useCreateBrokerConnection, type BrokerProvider, type CreateConnectionPayload } from '@/hooks/use-brokers';

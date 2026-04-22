@@ -2,9 +2,8 @@
 
 import { useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import Link from 'next/link';
 import {
-  ArrowLeft, Plug, RefreshCw, AlertTriangle, CheckCircle2, Ban,
+  Plug, RefreshCw, AlertTriangle, CheckCircle2, Ban,
   History, Trash2, Loader2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';

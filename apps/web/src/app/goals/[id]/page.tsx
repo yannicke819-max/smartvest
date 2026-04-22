@@ -2,7 +2,7 @@
 
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, BarChart3, MapPin, AlertCircle, CheckCircle, XCircle, Lock } from 'lucide-react';
+import { BarChart3, MapPin, AlertCircle, CheckCircle, XCircle, Lock } from 'lucide-react';
 import { useGoal, useAssessFeasibility, useFeasibility } from '@/hooks/use-goals';
 import { useCashReservationsQuery } from '@/hooks/use-cash';
 import { Button } from '@/components/ui/button';

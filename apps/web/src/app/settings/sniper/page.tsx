@@ -1,9 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
 import {
-  ArrowLeft, Target, Lock, Unlock, ShieldAlert, AlertTriangle, Timer, History,
+  Target, Lock, Unlock, ShieldAlert, AlertTriangle, Timer, History,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { SkeletonCard } from '@/components/ui/skeleton';

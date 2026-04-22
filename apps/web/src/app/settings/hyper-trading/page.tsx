@@ -1,9 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
 import {
-  ArrowLeft, Zap, ShieldAlert, AlertTriangle, Pause, Play, Power,
+  Zap, ShieldAlert, AlertTriangle, Pause, Play, Power,
   History, CheckCircle2, Loader2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';

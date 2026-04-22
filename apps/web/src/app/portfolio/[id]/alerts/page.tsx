@@ -1,13 +1,10 @@
 'use client';
 
 import { useParams } from 'next/navigation';
-import Link from 'next/link';
-import { ArrowLeft, AlertTriangle, Info, XCircle, BellRing } from 'lucide-react';
+import { AlertTriangle, Info, XCircle, BellRing } from 'lucide-react';
 import { useAlerts, type PortfolioAlert } from '@/hooks/use-valuation';
-import { Button } from '@/components/ui/button';
 import { SkeletonCard } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/states/empty-state';
-import { BackButton } from '@/components/ui/back-button';
 
 function severityIcon(severity: PortfolioAlert['severity']) {
   if (severity === 'critical') return <XCircle className="h-5 w-5 flex-shrink-0 text-destructive" />;

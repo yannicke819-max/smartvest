@@ -1,10 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
-import Link from 'next/link';
 import {
-  ArrowLeft, CheckCircle2, XCircle, Clock, ShieldCheck, AlertTriangle, History,
+  CheckCircle2, XCircle, Clock, ShieldCheck, AlertTriangle, History,
   Ban, Info, TrendingUp,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -33,7 +31,6 @@ const LIFECYCLE_LABEL: Record<LifecycleState, string> = {
 
 export default function SuggestionDetailPage() {
   const { id } = useParams<{ id: string }>();
-  const router = useRouter();
   const proposalQuery = useProposal(id ?? null);
   const auditQuery = useProposalAudit(id ?? null);
   const approve = useApproveProposal();

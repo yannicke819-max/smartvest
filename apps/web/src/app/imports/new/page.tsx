@@ -1,9 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, UploadCloud, Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
+import { UploadCloud, Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
 import { usePortfolios } from '@/hooks/use-portfolio';
 import { useImportFormats, useImportPreview, useImportCommit, type ImportPreview } from '@/hooks/use-imports';
 import { Button } from '@/components/ui/button';

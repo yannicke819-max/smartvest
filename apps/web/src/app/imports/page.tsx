@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { ArrowLeft, Plus, FileText, CheckCircle2, XCircle, Clock } from 'lucide-react';
+import { Plus, FileText, CheckCircle2, XCircle, Clock } from 'lucide-react';
 import { usePortfolios } from '@/hooks/use-portfolio';
 import { useImportHistory } from '@/hooks/use-imports';
 import { Button } from '@/components/ui/button';

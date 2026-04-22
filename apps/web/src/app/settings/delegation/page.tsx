@@ -1,8 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
-import { ArrowLeft, Shield, ShieldOff, ShieldCheck, ShieldAlert, Plus, Zap, ZapOff } from 'lucide-react';
+import { Shield, ShieldOff, ShieldCheck, ShieldAlert, Plus, Zap, ZapOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { SkeletonCard } from '@/components/ui/skeleton';
 import { usePortfolios } from '@/hooks/use-portfolio';

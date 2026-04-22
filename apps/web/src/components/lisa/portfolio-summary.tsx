@@ -1,6 +1,6 @@
 'use client';
 
-import { Activity, TrendingUp, TrendingDown, Percent, ShieldCheck, Coins } from 'lucide-react';
+
 import type { LisaSnapshot } from '@/hooks/use-lisa';
 import { KpiCard } from '@/components/kpi-card';
 
