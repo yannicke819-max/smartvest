@@ -315,9 +315,23 @@ export class LisaService {
     return this.paperBroker.getPositions(portfolioId, openOnly);
   }
 
-  async getCurrentSnapshot(userId: string, portfolioId: string): Promise<PortfolioSnapshot> {
+  async getCurrentSnapshot(userId: string, portfolioId: string) {
     await this.assertPortfolioOwner(userId, portfolioId);
-    return this.paperBroker.computeSnapshot(portfolioId);
+    const snap = await this.paperBroker.computeSnapshot(portfolioId);
+    // Transform camelCase PortfolioSnapshot → snake_case to match LisaSnapshot frontend type
+    return {
+      id: snap.id,
+      portfolio_id: snap.portfolioId,
+      timestamp: snap.timestamp,
+      cash_usd: snap.cashUsd,
+      open_positions_value_usd: snap.openPositionsValueUsd,
+      total_value_usd: snap.totalValueUsd,
+      realized_pnl_cumulative_usd: snap.realizedPnlCumulativeUsd,
+      unrealized_pnl_usd: snap.unrealizedPnlUsd,
+      return_from_inception_pct: snap.returnFromInceptionPct,
+      open_positions_count: snap.openPositionsCount,
+      drawdown_from_peak_pct: snap.drawdownFromPeakPct,
+    };
   }
 
   async getSnapshotHistory(userId: string, portfolioId: string, windowDays: number) {
@@ -516,13 +530,15 @@ export class LisaService {
 
   /**
    * Convert SmartVest/Binance symbol to EODHD ticker format.
-   * BTC → BTC-USD.CC, BTCUSDT → BTC-USD.CC, AAPL → AAPL.US
+   * BTC → BTC-USD.CC, USDJPY → USDJPY.FOREX, AAPL → AAPL.US
    */
   private toEodhdTicker(symbol: string): string {
     const s = symbol.toUpperCase();
     const cryptoMap: Record<string, string> = {
       'BTC': 'BTC-USD.CC', 'BTCUSDT': 'BTC-USD.CC', 'BITCOIN': 'BTC-USD.CC',
+      'BTC-SPOT': 'BTC-USD.CC', 'BTC-USD': 'BTC-USD.CC',
       'ETH': 'ETH-USD.CC', 'ETHUSDT': 'ETH-USD.CC', 'ETHEREUM': 'ETH-USD.CC',
+      'ETH-SPOT': 'ETH-USD.CC', 'ETH-USD': 'ETH-USD.CC',
       'SOL': 'SOL-USD.CC', 'SOLUSDT': 'SOL-USD.CC',
       'BNB': 'BNB-USD.CC', 'BNBUSDT': 'BNB-USD.CC',
       'XRP': 'XRP-USD.CC', 'XRPUSDT': 'XRP-USD.CC',
@@ -536,18 +552,36 @@ export class LisaService {
     if (cryptoMap[s]) return cryptoMap[s];
     // Already EODHD format (contains a dot)
     if (s.includes('.')) return s;
-    // Default: US equity
+    // FX pairs: USDJPY → USDJPY.FOREX, EUR-USD → EURUSD.FOREX
+    const cleanFx = s.replace('-', '');
+    const fxPairs = new Set([
+      'USDJPY', 'EURUSD', 'GBPUSD', 'AUDUSD', 'USDCHF', 'USDCAD',
+      'NZDUSD', 'EURGBP', 'EURJPY', 'GBPJPY', 'USDMXN', 'USDINR',
+      'USDCNH', 'USDBRL', 'USDTRY', 'USDZAR', 'EURCAD', 'EURCHF',
+    ]);
+    if (fxPairs.has(cleanFx)) return `${cleanFx}.FOREX`;
+    // VIX / volatility products
+    if (s === 'VXX' || s === 'UVXY' || s === 'SVXY') return `${s}.US`;
+    // Default: US equity/ETF
     return `${s}.US`;
   }
 
   /** Approximate fallback prices (order-of-magnitude, simulation only) */
   private getFallbackPrice(symbol: string): string {
-    const s = symbol.toUpperCase();
+    const s = symbol.toUpperCase().replace('-', '');
     const prices: Record<string, string> = {
-      'BTC': '105000', 'BTCUSDT': '105000', 'ETH': '3500', 'ETHUSDT': '3500',
-      'SOL': '180', 'BNB': '600', 'XRP': '2.5', 'ADA': '0.9',
-      'GOLD': '3300', 'GC': '3300', 'SPY': '580', 'QQQ': '490',
-      'AAPL': '210', 'MSFT': '420', 'NVDA': '900',
+      'BTC': '79000', 'BTCUSDT': '79000', 'BTCSPOT': '79000', 'BTCUSD': '79000',
+      'ETH': '1800', 'ETHUSDT': '1800', 'ETHSPOT': '1800',
+      'SOL': '130', 'BNB': '550', 'XRP': '2.1', 'ADA': '0.7',
+      'GOLD': '3300', 'GC': '3300', 'GLD': '310', 'IAU': '50',
+      'SILVER': '33', 'SLV': '31', 'SI': '33',
+      'SPY': '545', 'QQQ': '455', 'IWM': '195',
+      'AAPL': '195', 'MSFT': '405', 'NVDA': '870', 'AMZN': '195',
+      'USDJPY': '155', 'EURUSD': '1.08', 'GBPUSD': '1.27',
+      'USDCHF': '0.90', 'AUDUSD': '0.64', 'USDCAD': '1.38',
+      'VXX': '18', 'UVXY': '8',
+      'TLT': '90', 'IEF': '95', 'HYG': '76', 'LQD': '108',
+      'USO': '75', 'BRENT': '78', 'CL': '78',
     };
     return prices[s] ?? '100.00';
   }
