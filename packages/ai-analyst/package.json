@@ -1,0 +1,25 @@
+{
+  "name": "@smartvest/ai-analyst",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lisa — multi-asset agnostic AI analyst. Cross-asset thesis generation, anti-consensus filter, historical analog matching, risk-constrained allocation proposals. Simulation-first.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit",
+    "test": "jest --passWithNoTests"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
+    "@smartvest/domain": "*",
+    "@smartvest/shared-types": "*",
+    "@supabase/supabase-js": "^2.45.4",
+    "decimal.js": "^10.4.3",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.15",
+    "typescript": "^5.5.4"
+  }
+}
