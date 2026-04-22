@@ -129,7 +129,29 @@ export class LisaService {
       enable_leverage: pick('enable_leverage', 'enableLeverage', existing?.enable_leverage ?? false),
       autopilot_enabled: pick('autopilot_enabled', 'autopilotEnabled', existing?.autopilot_enabled ?? false),
       autopilot_cycle_minutes: pick('autopilot_cycle_minutes', 'autopilotCycleMinutes', existing?.autopilot_cycle_minutes ?? 15),
+      autopilot_auto_approve: pick('autopilot_auto_approve', 'autopilotAutoApprove', existing?.autopilot_auto_approve ?? false),
+      autopilot_expires_at: pick('autopilot_expires_at', 'autopilotExpiresAt', existing?.autopilot_expires_at ?? null),
+      autopilot_aggressive: pick('autopilot_aggressive', 'autopilotAggressive', existing?.autopilot_aggressive ?? false),
     };
+
+    // Validation : auto_approve nécessite une expiration valide dans le futur
+    // ET un portefeuille de simulation (déjà vérifié plus haut).
+    if (merged.autopilot_auto_approve === true) {
+      const expiresAt = merged.autopilot_expires_at as string | null;
+      if (!expiresAt) {
+        throw new BadRequestException(
+          'autopilot_auto_approve=true requiert autopilot_expires_at (obligatoire, max 24h).',
+        );
+      }
+      const expiresMs = new Date(expiresAt).getTime();
+      if (isNaN(expiresMs) || expiresMs <= Date.now()) {
+        throw new BadRequestException('autopilot_expires_at doit être une date future.');
+      }
+      const maxHorizonMs = Date.now() + 24 * 60 * 60 * 1000;
+      if (expiresMs > maxHorizonMs) {
+        throw new BadRequestException('autopilot_expires_at max autorisé : 24h dans le futur.');
+      }
+    }
 
     const { data, error } = await this.supabase.getClient()
       .from('lisa_session_configs')
@@ -176,10 +198,35 @@ export class LisaService {
 
     const marketSnapshot = await this.fetchMarketSnapshot();
 
+    // Persona "chasseur EV+" injectée en amont du user focus si le flag est actif.
+    // N'ajoute AUCUN droit d'exécution réelle — elle modifie juste le cadrage de
+    // l'analyse produite par Claude (plus de turnover, sizing plus agressif dans
+    // les limites toujours imposées par le risk_enforcer).
+    const aggressivePersona = (config.autopilot_aggressive === true)
+      ? `\n# PERSONA OVERRIDE — CHASSEUSE EV+ (simulation uniquement)
+Tu opères aujourd'hui en mode chasse agressive. Objectifs :
+- Scanner TOUTES les opportunités à espérance de gain positive, même micro.
+- Fort turnover, entrées par paliers, renforcement agressif si le setup confirme.
+- ZÉRO pitié pour les positions défavorables — coupure sèche dès que le risque
+  devient asymétrique.
+- Stop-loss OBLIGATOIRE pour chaque nouvelle position (champ invalidation.conditions).
+- Drawdown intraday > ${((config.risk_constraints as Record<string, unknown> | null)?.maxDrawdown2DaysPct ?? 10)}% :
+  tu privilégies la réduction d'exposition et l'attente au lieu d'ouvrir du neuf.
+- Tu assumes par défaut qu'il y a une opportunité quelque part. Si aucune ne
+  respecte les contraintes, tu l'expliques dans warnings et retournes cashReservePct
+  élevé — mais tu ne te censures pas préventivement.
+
+Les HARD LIMITS de la section "Risk constraints" priment sur TOUT. Aucun trade
+hors contraintes n'est acceptable, même en mode chasse.
+`
+      : '';
+
+    const mergedFocus = [aggressivePersona, userFocus].filter((s) => s && s.trim().length > 0).join('\n\n');
+
     const result = await this.thesisGenerator.generateTheses({
       config: sessionConfig,
       marketSnapshot,
-      ...(userFocus !== undefined ? { userFocus } : {}),
+      ...(mergedFocus ? { userFocus: mergedFocus } : {}),
       includeFullCorpus: true,
     });
 

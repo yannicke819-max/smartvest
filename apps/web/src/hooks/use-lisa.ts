@@ -41,6 +41,9 @@ export interface LisaSessionConfigRow {
   enable_leverage: boolean;
   autopilot_enabled: boolean;
   autopilot_cycle_minutes: number | null;
+  autopilot_auto_approve?: boolean;
+  autopilot_expires_at?: string | null;
+  autopilot_aggressive?: boolean;
   kill_switch_active: boolean;
   created_at: string;
   updated_at: string;

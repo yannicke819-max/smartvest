@@ -89,6 +89,9 @@ export default function LisaPage() {
   const [enableCrypto, setEnableCrypto] = useState(true);
   const [autopilotEnabled, setAutopilotEnabled] = useState(false);
   const [autopilotCycleMin, setAutopilotCycleMin] = useState(15);
+  const [autopilotAutoApprove, setAutopilotAutoApprove] = useState(false);
+  const [autopilotExpiresAt, setAutopilotExpiresAt] = useState<string | null>(null);
+  const [autopilotAggressive, setAutopilotAggressive] = useState(false);
   // Risk constraints — exposés dans l'UI (section avancée)
   const [targetDeploymentPct, setTargetDeploymentPct] = useState(60);
   const [maxPositionSizePct, setMaxPositionSizePct] = useState(25);
@@ -114,6 +117,9 @@ export default function LisaPage() {
       if (typeof config.enable_crypto === 'boolean') setEnableCrypto(config.enable_crypto);
       if (typeof config.autopilot_enabled === 'boolean') setAutopilotEnabled(config.autopilot_enabled);
       if (typeof config.autopilot_cycle_minutes === 'number') setAutopilotCycleMin(config.autopilot_cycle_minutes);
+      if (typeof config.autopilot_auto_approve === 'boolean') setAutopilotAutoApprove(config.autopilot_auto_approve);
+      if (config.autopilot_expires_at) setAutopilotExpiresAt(config.autopilot_expires_at);
+      if (typeof config.autopilot_aggressive === 'boolean') setAutopilotAggressive(config.autopilot_aggressive);
       const rc = config.risk_constraints ?? {};
       if (typeof rc.targetDeploymentPct === 'number') setTargetDeploymentPct(rc.targetDeploymentPct);
       if (typeof rc.maxPositionSizePct === 'number') setMaxPositionSizePct(rc.maxPositionSizePct);
@@ -165,6 +171,55 @@ export default function LisaPage() {
       + 'propositions, snapshots et décision log. Action irréversible.',
     )) return;
     await resetSim.mutateAsync();
+  }
+
+  async function handleActivateAutonomousHunter() {
+    if (!selectedPortfolioId) return;
+    const hoursStr = prompt(
+      'Durée du mode chasse autonome (1-24 heures). Expire automatiquement. '
+      + 'SIMULATION uniquement — ouvre des positions paper sans confirmation à chaque cycle.',
+      '4',
+    );
+    if (!hoursStr) return;
+    const hours = parseFloat(hoursStr);
+    if (!Number.isFinite(hours) || hours <= 0 || hours > 24) {
+      alert('Durée invalide. Max 24 h.');
+      return;
+    }
+    if (!confirm(
+      `Activer le mode chasse autonome pendant ${hours}h ?\n\n`
+      + `• Lisa scanne le marché toutes les ${autopilotCycleMin || 15} min\n`
+      + `• Elle OUVRE automatiquement les positions qu'elle juge EV+\n`
+      + `• Elle COUPE sèchement les positions défavorables\n`
+      + `• Simulation paper uniquement — aucune exécution réelle\n`
+      + `• Kill-switch reste accessible à tout instant\n`
+      + `• Expire automatiquement dans ${hours}h`,
+    )) return;
+
+    const expiresAt = new Date(Date.now() + hours * 3600_000).toISOString();
+    await upsertConfig.mutateAsync({
+      autopilot_enabled: true,
+      autopilot_cycle_minutes: autopilotCycleMin || 15,
+      autopilot_auto_approve: true,
+      autopilot_expires_at: expiresAt,
+      autopilot_aggressive: true,
+    });
+    setAutopilotEnabled(true);
+    setAutopilotAutoApprove(true);
+    setAutopilotExpiresAt(expiresAt);
+    setAutopilotAggressive(true);
+  }
+
+  async function handleDisableAutonomousHunter() {
+    if (!selectedPortfolioId) return;
+    await upsertConfig.mutateAsync({
+      autopilot_auto_approve: false,
+      autopilot_expires_at: null,
+      autopilot_aggressive: false,
+    });
+    setAutopilotAutoApprove(false);
+    setAutopilotExpiresAt(null);
+    setAutopilotAggressive(false);
   }
 
   // ── No simulation portfolio case ────────────────────────────────────────────
@@ -612,6 +667,48 @@ export default function LisaPage() {
 
       {/* Decision log */}
       {selectedPortfolioId && <LisaDecisionLog portfolioId={selectedPortfolioId} />}
+
+      {/* Mode chasse autonome (simulation uniquement) */}
+      <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-5 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-amber-600 dark:text-amber-500">
+            <Activity className="h-4 w-4" />
+            <h2 className="text-sm font-medium">Mode chasse autonome (simulation)</h2>
+          </div>
+          {autopilotAutoApprove && autopilotExpiresAt && (
+            <span className="text-[10px] font-mono rounded-md bg-amber-500/20 px-2 py-0.5">
+              ACTIF · expire {new Date(autopilotExpiresAt).toLocaleString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+            </span>
+          )}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Lisa scanne en continu les opportunités EV+, ouvre et ferme automatiquement
+          les positions du portefeuille simulé sans ta confirmation. Turnover élevé,
+          coupure sèche des perdants. Respect absolu des contraintes de risque.
+          <strong className="text-foreground"> Simulation paper uniquement — aucune exécution réelle.</strong>
+        </p>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          {!autopilotAutoApprove ? (
+            <Button
+              variant="default"
+              size="sm"
+              onClick={handleActivateAutonomousHunter}
+              disabled={upsertConfig.isPending}
+            >
+              Activer le mode chasse autonome
+            </Button>
+          ) : (
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={handleDisableAutonomousHunter}
+              disabled={upsertConfig.isPending}
+            >
+              Désactiver immédiatement
+            </Button>
+          )}
+        </div>
+      </div>
 
       {/* Kill switch */}
       <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-5 space-y-3">

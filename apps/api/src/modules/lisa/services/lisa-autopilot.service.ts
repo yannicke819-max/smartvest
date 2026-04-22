@@ -33,7 +33,7 @@ export class LisaAutopilotService {
   async runAutopilotCycle() {
     const { data: configs, error } = await this.supabase.getClient()
       .from('lisa_session_configs')
-      .select('user_id, portfolio_id, profile, autopilot_cycle_minutes, kill_switch_active, updated_at')
+      .select('user_id, portfolio_id, profile, autopilot_cycle_minutes, autopilot_auto_approve, autopilot_expires_at, kill_switch_active, updated_at')
       .eq('autopilot_enabled', true)
       .eq('kill_switch_active', false);
 
@@ -48,10 +48,32 @@ export class LisaAutopilotService {
 
     for (const cfg of configs) {
       try {
+        // Auto-expire le mode auto_approve si deadline dépassée
+        const autoApprove = cfg.autopilot_auto_approve === true;
+        const expiresAt = cfg.autopilot_expires_at as string | null;
+        const expired = autoApprove && !!expiresAt && new Date(expiresAt).getTime() <= Date.now();
+        if (expired) {
+          this.logger.log(`Portfolio ${String(cfg.portfolio_id)}: auto_approve EXPIRÉ — désactivation`);
+          await this.supabase.getClient()
+            .from('lisa_session_configs')
+            .update({ autopilot_auto_approve: false, autopilot_expires_at: null })
+            .eq('portfolio_id', cfg.portfolio_id as string);
+          await this.supabase.getClient().from('lisa_decision_log').insert({
+            portfolio_id: cfg.portfolio_id,
+            kind: 'autopilot_auto_approve_expired',
+            summary: 'Mode auto-approve expiré — désactivation automatique',
+            rationale: `Deadline ${expiresAt} dépassée`,
+            payload: {},
+            triggered_by: 'autopilot_cron',
+            hash_chain_current: Math.random().toString(36).slice(2, 18),
+          });
+        }
+
         await this.runPortfolioCycle(
           cfg.user_id as string,
           cfg.portfolio_id as string,
           (cfg.autopilot_cycle_minutes as number) ?? 60,
+          autoApprove && !expired,
         );
       } catch (e) {
         this.logger.error(
@@ -65,6 +87,7 @@ export class LisaAutopilotService {
     userId: string,
     portfolioId: string,
     cycleMinutes: number,
+    autoApprove: boolean = false,
   ): Promise<void> {
     // 1. Check when was last autopilot cycle (from decision log)
     const { data: lastCycle } = await this.supabase.getClient()
@@ -122,25 +145,53 @@ export class LisaAutopilotService {
       return;
     }
 
-    // 6. OK path : generate new proposal (auto-proposed, user still approves
-    //    or the mandate autonomy handles it — to evolve in P4.12)
+    // 6. OK path : generate new proposal + optionally auto-approve (simulation only)
     try {
       const proposal = await this.lisa.generateProposal(
         userId,
         portfolioId,
-        'Autopilot cycle — scan pour opportunities intraday multi-asset',
+        autoApprove
+          ? 'Autopilot agressif (simulation) — scan EV+ multi-asset, turnover élevé, coupure sèche des positions défavorables'
+          : 'Autopilot cycle — scan pour opportunities intraday multi-asset',
       );
+
+      let autoApproveResult: { openedPositions: number } | null = null;
+      if (autoApprove && proposal.theses.length > 0) {
+        // Safety net : un dernier check que le portfolio est bien is_simulation
+        // (le LisaService a déjà vérifié mais on ne laisse rien passer).
+        const { data: portfolio } = await this.supabase.getClient()
+          .from('portfolios')
+          .select('is_simulation')
+          .eq('id', portfolioId)
+          .maybeSingle();
+
+        if (portfolio?.is_simulation !== true) {
+          this.logger.error(`Portfolio ${portfolioId} n'est PAS is_simulation — auto_approve REFUSÉ`);
+        } else {
+          try {
+            const result = await this.lisa.approveProposal(userId, proposal.id);
+            autoApproveResult = { openedPositions: result.openedPositions.length };
+            this.logger.log(`Autopilot auto-approved proposal ${proposal.id}: ${result.openedPositions.length} position(s) opened`);
+          } catch (e) {
+            this.logger.error(`Auto-approve failed for ${proposal.id}: ${String(e)}`);
+          }
+        }
+      }
 
       await this.supabase.getClient().from('lisa_decision_log').insert({
         portfolio_id: portfolioId,
         kind: 'autopilot_cycle_completed',
-        summary: `Cycle completed: proposal generated (${proposal.theses.length} theses)`,
+        summary: autoApproveResult
+          ? `Cycle completed: ${proposal.theses.length} theses, ${autoApproveResult.openedPositions} positions auto-ouvertes`
+          : `Cycle completed: proposal generated (${proposal.theses.length} theses)`,
         rationale: proposal.regimeSummary,
         payload: {
           proposalId: proposal.id,
           regime: proposal.detectedRegime,
           thesesCount: proposal.theses.length,
           riskStatus: riskResult.status,
+          autoApproved: autoApproveResult !== null,
+          openedPositions: autoApproveResult?.openedPositions ?? 0,
         },
         triggered_by: 'autopilot_cron',
         hash_chain_current: Math.random().toString(36).slice(2, 18),
