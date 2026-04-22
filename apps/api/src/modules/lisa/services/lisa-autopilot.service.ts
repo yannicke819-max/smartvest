@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { LisaService } from './lisa.service';
+import { DecisionLogService } from './decision-log.service';
 
 /**
  * LisaAutopilotService — Cron scheduler for portfolios with autopilot enabled.
@@ -25,6 +26,7 @@ export class LisaAutopilotService {
   constructor(
     private readonly supabase: SupabaseService,
     private readonly lisa: LisaService,
+    private readonly decisionLog: DecisionLogService,
   ) {}
 
   /** Tourne toutes les 5 minutes. Les portfolios configurés pour plus
@@ -58,15 +60,14 @@ export class LisaAutopilotService {
             .from('lisa_session_configs')
             .update({ autopilot_auto_approve: false, autopilot_expires_at: null })
             .eq('portfolio_id', cfg.portfolio_id as string);
-          await this.supabase.getClient().from('lisa_decision_log').insert({
-            portfolio_id: cfg.portfolio_id,
+          await this.decisionLog.append({
+            portfolioId: cfg.portfolio_id as string,
             kind: 'autopilot_auto_approve_expired',
             summary: 'Mode auto-approve expiré — désactivation automatique',
             rationale: `Deadline ${expiresAt} dépassée`,
             payload: {},
-            triggered_by: 'autopilot_cron',
-            hash_chain_current: Math.random().toString(36).slice(2, 18),
-          });
+            triggeredBy: 'autopilot_cron',
+          }).catch((e) => this.logger.warn(`log append failed: ${String(e)}`));
         }
 
         await this.runPortfolioCycle(
@@ -106,15 +107,14 @@ export class LisaAutopilotService {
     }
 
     // 2. Log cycle start
-    await this.supabase.getClient().from('lisa_decision_log').insert({
-      portfolio_id: portfolioId,
+    await this.decisionLog.append({
+      portfolioId,
       kind: 'autopilot_cycle_started',
       summary: 'Autopilot cycle started',
       rationale: `Interval ${cycleMinutes}min elapsed since last cycle`,
       payload: {},
-      triggered_by: 'autopilot_cron',
-      hash_chain_current: Math.random().toString(36).slice(2, 18),
-    });
+      triggeredBy: 'autopilot_cron',
+    }).catch((e) => this.logger.warn(`log append failed: ${String(e)}`));
 
     // 3. Run risk check (hard kill if drawdown breached, close stops/targets)
     const riskResult = await this.lisa.runRiskCheck(userId, portfolioId).catch((e) => {
@@ -133,15 +133,14 @@ export class LisaAutopilotService {
     // 5. If critical drawdown, pause new proposals (user review forced)
     if (riskResult.status === 'critical') {
       this.logger.warn(`Portfolio ${portfolioId}: critical drawdown — pausing new proposals`);
-      await this.supabase.getClient().from('lisa_decision_log').insert({
-        portfolio_id: portfolioId,
+      await this.decisionLog.append({
+        portfolioId,
         kind: 'autopilot_cycle_completed',
         summary: 'Cycle completed (new proposals paused — critical drawdown)',
         rationale: riskResult.violations.map((v) => v.message).join(' | '),
         payload: { riskStatus: riskResult.status },
-        triggered_by: 'autopilot_cron',
-        hash_chain_current: Math.random().toString(36).slice(2, 18),
-      });
+        triggeredBy: 'autopilot_cron',
+      }).catch((e) => this.logger.warn(`log append failed: ${String(e)}`));
       return;
     }
 
@@ -178,8 +177,8 @@ export class LisaAutopilotService {
         }
       }
 
-      await this.supabase.getClient().from('lisa_decision_log').insert({
-        portfolio_id: portfolioId,
+      await this.decisionLog.append({
+        portfolioId,
         kind: 'autopilot_cycle_completed',
         summary: autoApproveResult
           ? `Cycle completed: ${proposal.theses.length} theses, ${autoApproveResult.openedPositions} positions auto-ouvertes`
@@ -193,20 +192,18 @@ export class LisaAutopilotService {
           autoApproved: autoApproveResult !== null,
           openedPositions: autoApproveResult?.openedPositions ?? 0,
         },
-        triggered_by: 'autopilot_cron',
-        hash_chain_current: Math.random().toString(36).slice(2, 18),
-      });
+        triggeredBy: 'autopilot_cron',
+      }).catch((e) => this.logger.warn(`log append failed: ${String(e)}`));
     } catch (e) {
       this.logger.error(`Proposal generation in autopilot failed: ${String(e)}`);
-      await this.supabase.getClient().from('lisa_decision_log').insert({
-        portfolio_id: portfolioId,
+      await this.decisionLog.append({
+        portfolioId,
         kind: 'autopilot_cycle_completed',
         summary: 'Cycle completed with error',
-        rationale: String(e),
+        rationale: String(e).slice(0, 2000),
         payload: {},
-        triggered_by: 'autopilot_cron',
-        hash_chain_current: Math.random().toString(36).slice(2, 18),
-      });
+        triggeredBy: 'autopilot_cron',
+      }).catch((err) => this.logger.warn(`log append failed: ${String(err)}`));
     }
   }
 }

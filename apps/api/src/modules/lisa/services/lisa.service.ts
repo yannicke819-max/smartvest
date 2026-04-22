@@ -17,6 +17,7 @@ import {
 } from '@smartvest/ai-analyst';
 import { BinanceAdapter } from '@smartvest/brokers';
 import { SupabaseService } from '../../supabase/supabase.service';
+import { DecisionLogService } from './decision-log.service';
 
 /**
  * LisaService — orchestrateur principal du module AI analyst.
@@ -41,6 +42,7 @@ export class LisaService {
   constructor(
     private readonly config: ConfigService,
     private readonly supabase: SupabaseService,
+    private readonly decisionLog: DecisionLogService,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
     this.claudeClient = anthropicKey
@@ -811,22 +813,18 @@ hors contraintes n'est acceptable, même en mode chasse.
     kind: string,
     entry: { summary: string; rationale: string; payload: Record<string, unknown>; triggeredBy: string },
   ): Promise<void> {
-    const { error } = await this.supabase.getClient().from('lisa_decision_log').insert({
-      portfolio_id: portfolioId,
-      kind,
-      summary: entry.summary,
-      rationale: entry.rationale,
-      payload: entry.payload,
-      triggered_by: entry.triggeredBy,
-      hash_chain_current: await this.computeHash(kind, entry.summary),
-    });
-    if (error) this.logger.warn(`Decision log insert failed: ${error.message}`);
-  }
-
-  private async computeHash(kind: string, summary: string): Promise<string> {
-    // Simple hash pour MVP — à remplacer par chaîne cryptographique en P4.12
-    const { createHash } = await import('node:crypto');
-    return createHash('sha256').update(`${kind}|${summary}|${Date.now()}`).digest('hex').slice(0, 16);
+    try {
+      await this.decisionLog.append({
+        portfolioId,
+        kind,
+        summary: entry.summary,
+        rationale: entry.rationale,
+        payload: entry.payload,
+        triggeredBy: entry.triggeredBy as 'user_manual' | 'autopilot_cron' | 'risk_monitor' | 'corpus_trigger' | 'market_event',
+      });
+    } catch (e) {
+      this.logger.warn(`Decision log append failed: ${String(e)}`);
+    }
   }
 
   // Helper exposé pour le log d'une petite valeur numérique
