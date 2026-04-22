@@ -15,6 +15,54 @@ import { LineChart as LineChartIcon } from 'lucide-react';
 import { useLisaSnapshotHistory } from '@/hooks/use-lisa';
 import { SkeletonCard } from '@/components/ui/skeleton';
 
+type ChartPoint = {
+  t: number;
+  tLabel: string;
+  tFull: string;
+  value: number;
+  realized: number;
+  returnPct: number;
+  drawdown: number;
+};
+
+// Tooltip défini hors du composant parent pour garantir que recharts appelle
+// bien le render à chaque déplacement du curseur (pas de closure capturée
+// sur une data point figée).
+function ChartTooltip(props: { active?: boolean; payload?: Array<{ payload: ChartPoint }> }) {
+  const { active, payload } = props;
+  if (!active || !payload || payload.length === 0) return null;
+  const point = payload[0].payload;
+  if (!point || typeof point.value !== 'number') return null;
+  return (
+    <div
+      className="rounded-md border bg-card p-2 text-[11px] shadow-sm"
+      style={{ minWidth: 160 }}
+    >
+      <div className="font-mono text-muted-foreground mb-1">{point.tFull}</div>
+      <div className="flex justify-between gap-3">
+        <span className="text-muted-foreground">Valeur</span>
+        <span className="font-mono font-medium tabular-nums">
+          {point.value.toFixed(2)} USD
+        </span>
+      </div>
+      <div className="flex justify-between gap-3">
+        <span className="text-muted-foreground">Return</span>
+        <span className={`font-mono tabular-nums ${point.returnPct >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+          {point.returnPct >= 0 ? '+' : ''}{point.returnPct.toFixed(2)}%
+        </span>
+      </div>
+      {point.drawdown < 0 && (
+        <div className="flex justify-between gap-3">
+          <span className="text-muted-foreground">Drawdown</span>
+          <span className="font-mono tabular-nums text-red-500">
+            {point.drawdown.toFixed(2)}%
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 type TimeWindow = '1d' | '1w' | '1m' | '1y';
 
 const WINDOW_DAYS: Record<TimeWindow, number> = {
@@ -151,46 +199,8 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
               />
               <Tooltip
                 cursor={{ stroke: 'currentColor', strokeWidth: 1, opacity: 0.2 }}
-                content={({ active, payload }) => {
-                  if (!active || !payload || payload.length === 0) return null;
-                  const point = payload[0].payload as {
-                    tFull: string;
-                    value: number;
-                    realized: number;
-                    returnPct: number;
-                    drawdown: number;
-                  };
-                  return (
-                    <div
-                      className="rounded-md border bg-card p-2 text-[11px] shadow-sm"
-                      style={{ minWidth: 160 }}
-                    >
-                      <div className="font-mono text-muted-foreground mb-1">
-                        {point.tFull}
-                      </div>
-                      <div className="flex justify-between gap-3">
-                        <span className="text-muted-foreground">Valeur</span>
-                        <span className="font-mono font-medium tabular-nums">
-                          {point.value.toFixed(2)} USD
-                        </span>
-                      </div>
-                      <div className="flex justify-between gap-3">
-                        <span className="text-muted-foreground">Return</span>
-                        <span className={`font-mono tabular-nums ${point.returnPct >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
-                          {point.returnPct >= 0 ? '+' : ''}{point.returnPct.toFixed(2)}%
-                        </span>
-                      </div>
-                      {point.drawdown < 0 && (
-                        <div className="flex justify-between gap-3">
-                          <span className="text-muted-foreground">Drawdown</span>
-                          <span className="font-mono tabular-nums text-red-500">
-                            {point.drawdown.toFixed(2)}%
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  );
-                }}
+                isAnimationActive={false}
+                content={<ChartTooltip />}
               />
               <ReferenceLine
                 y={firstValue}

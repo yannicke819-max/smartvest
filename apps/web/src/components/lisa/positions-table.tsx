@@ -18,18 +18,46 @@ export function LisaPositionsTable({ portfolioId }: { portfolioId: string }) {
   const openQuery = useLisaPositions(portfolioId, true);
   const allQuery = useLisaPositions(portfolioId, false);
 
-  const open = openQuery.data ?? [];
+  const openRaw = openQuery.data ?? [];
   const all = allQuery.data ?? [];
-  const closed = all.filter((p) => p.status !== 'open');
+  // Tri par entry_timestamp desc (plus récente en haut) pour voir l'activité Lisa
+  const open = [...openRaw].sort(
+    (a, b) => new Date(b.entryTimestamp).getTime() - new Date(a.entryTimestamp).getTime(),
+  );
+  const closed = all
+    .filter((p) => p.status !== 'open')
+    .sort((a, b) => {
+      const ta = new Date(a.exitTimestamp ?? a.entryTimestamp).getTime();
+      const tb = new Date(b.exitTimestamp ?? b.entryTimestamp).getTime();
+      return tb - ta;
+    });
+
+  // Activité des dernières 24h pour voir si Lisa a bougé
+  const since24h = Date.now() - 86_400_000;
+  const openedLast24h = all.filter((p) => new Date(p.entryTimestamp).getTime() >= since24h).length;
+  const closedLast24h = all.filter((p) => p.exitTimestamp && new Date(p.exitTimestamp).getTime() >= since24h).length;
+  const lastActivity = all
+    .map((p) => new Date(p.exitTimestamp ?? p.entryTimestamp).getTime())
+    .reduce((a, b) => Math.max(a, b), 0);
 
   return (
     <div className="rounded-lg border p-5 space-y-4">
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <Briefcase className="h-4 w-4 text-muted-foreground" />
         <h2 className="text-sm font-medium">Positions simulées</h2>
         <span className="text-xs text-muted-foreground">
           ({open.length} ouvertes · {closed.length} fermées)
         </span>
+        {all.length > 0 && (
+          <span className="ml-auto text-[10px] text-muted-foreground flex items-center gap-1.5">
+            <span className="rounded-md bg-muted px-1.5 py-0.5 font-mono">
+              24h : +{openedLast24h} / −{closedLast24h}
+            </span>
+            {lastActivity > 0 && (
+              <span>dernière activité {relativeAge(new Date(lastActivity).toISOString())}</span>
+            )}
+          </span>
+        )}
       </div>
 
       {openQuery.isLoading && <SkeletonCard />}
@@ -61,6 +89,25 @@ export function LisaPositionsTable({ portfolioId }: { portfolioId: string }) {
   );
 }
 
+function relativeAge(iso: string | null): string {
+  if (!iso) return '';
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 60_000) return 'à l\'instant';
+  const min = Math.round(ms / 60_000);
+  if (min < 60) return `il y a ${min} min`;
+  const h = Math.round(min / 60);
+  if (h < 24) return `il y a ${h}h`;
+  const d = Math.round(h / 24);
+  return `il y a ${d}j`;
+}
+
+function formatAbsolute(iso: string | null): string {
+  if (!iso) return '';
+  return new Date(iso).toLocaleString('fr-FR', {
+    day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
+  });
+}
+
 function PositionRow({ pos }: { pos: LisaPosition }) {
   const statusCfg = STATUS_LABELS[pos.status];
   const pnl = pos.realizedPnlUsd ? parseFloat(pos.realizedPnlUsd) : null;
@@ -81,6 +128,21 @@ function PositionRow({ pos }: { pos: LisaPosition }) {
         <div className="mt-1 text-muted-foreground">
           Qty {parseFloat(pos.quantity).toFixed(4)} @ entrée {parseFloat(pos.entryPrice).toFixed(4)}
           {' '}→ {pos.exitPrice ? `sortie ${parseFloat(pos.exitPrice).toFixed(4)}` : 'en cours'}
+        </div>
+        <div className="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground">
+          <span title={formatAbsolute(pos.entryTimestamp)}>
+            Ouverte {relativeAge(pos.entryTimestamp)}
+          </span>
+          <span>·</span>
+          <span className="font-mono">{formatAbsolute(pos.entryTimestamp)}</span>
+          {pos.exitTimestamp && (
+            <>
+              <span>→</span>
+              <span title={formatAbsolute(pos.exitTimestamp)}>
+                Fermée {relativeAge(pos.exitTimestamp)}
+              </span>
+            </>
+          )}
         </div>
         {pos.exitReason && (
           <div className="mt-1 text-muted-foreground italic flex items-start gap-1">
