@@ -134,22 +134,18 @@ export class LisaService {
       autopilot_aggressive: pick('autopilot_aggressive', 'autopilotAggressive', existing?.autopilot_aggressive ?? false),
     };
 
-    // Validation : auto_approve nécessite une expiration valide dans le futur
-    // ET un portefeuille de simulation (déjà vérifié plus haut).
+    // Validation : auto_approve exige uniquement un portefeuille de simulation
+    // (déjà vérifié plus haut). L'expiration est suggestive côté UI mais non
+    // bloquante ici — l'utilisateur peut laisser tourner sans deadline s'il
+    // le souhaite. Le kill-switch et le bouton de désactivation restent
+    // toujours accessibles comme garde-fous opérationnels.
     if (merged.autopilot_auto_approve === true) {
       const expiresAt = merged.autopilot_expires_at as string | null;
-      if (!expiresAt) {
-        throw new BadRequestException(
-          'autopilot_auto_approve=true requiert autopilot_expires_at (obligatoire, max 24h).',
-        );
-      }
-      const expiresMs = new Date(expiresAt).getTime();
-      if (isNaN(expiresMs) || expiresMs <= Date.now()) {
-        throw new BadRequestException('autopilot_expires_at doit être une date future.');
-      }
-      const maxHorizonMs = Date.now() + 24 * 60 * 60 * 1000;
-      if (expiresMs > maxHorizonMs) {
-        throw new BadRequestException('autopilot_expires_at max autorisé : 24h dans le futur.');
+      if (expiresAt) {
+        const expiresMs = new Date(expiresAt).getTime();
+        if (isNaN(expiresMs)) {
+          throw new BadRequestException('autopilot_expires_at : date invalide.');
+        }
       }
     }
 

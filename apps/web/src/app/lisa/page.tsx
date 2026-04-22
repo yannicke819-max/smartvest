@@ -176,27 +176,37 @@ export default function LisaPage() {
   async function handleActivateAutonomousHunter() {
     if (!selectedPortfolioId) return;
     const hoursStr = prompt(
-      'Durée du mode chasse autonome (1-24 heures). Expire automatiquement. '
+      'Durée du mode chasse autonome (en heures). Laisse vide pour tourner sans expiration. '
       + 'SIMULATION uniquement — ouvre des positions paper sans confirmation à chaque cycle.',
       '4',
     );
-    if (!hoursStr) return;
-    const hours = parseFloat(hoursStr);
-    if (!Number.isFinite(hours) || hours <= 0 || hours > 24) {
-      alert('Durée invalide. Max 24 h.');
-      return;
+    if (hoursStr === null) return; // cancel
+
+    let expiresAt: string | null = null;
+    const trimmed = hoursStr.trim();
+    if (trimmed.length > 0) {
+      const hours = parseFloat(trimmed);
+      if (!Number.isFinite(hours) || hours <= 0) {
+        alert('Durée invalide. Saisis un nombre positif ou laisse vide.');
+        return;
+      }
+      expiresAt = new Date(Date.now() + hours * 3600_000).toISOString();
     }
+
+    const expiryLine = expiresAt
+      ? `• Expire automatiquement dans ${trimmed}h`
+      : `• Sans expiration — tourne jusqu'à ce que tu désactives manuellement`;
+
     if (!confirm(
-      `Activer le mode chasse autonome pendant ${hours}h ?\n\n`
+      `Activer le mode chasse autonome ?\n\n`
       + `• Lisa scanne le marché toutes les ${autopilotCycleMin || 15} min\n`
       + `• Elle OUVRE automatiquement les positions qu'elle juge EV+\n`
       + `• Elle COUPE sèchement les positions défavorables\n`
       + `• Simulation paper uniquement — aucune exécution réelle\n`
       + `• Kill-switch reste accessible à tout instant\n`
-      + `• Expire automatiquement dans ${hours}h`,
+      + expiryLine,
     )) return;
 
-    const expiresAt = new Date(Date.now() + hours * 3600_000).toISOString();
     await upsertConfig.mutateAsync({
       autopilot_enabled: true,
       autopilot_cycle_minutes: autopilotCycleMin || 15,
@@ -675,9 +685,11 @@ export default function LisaPage() {
             <Activity className="h-4 w-4" />
             <h2 className="text-sm font-medium">Mode chasse autonome (simulation)</h2>
           </div>
-          {autopilotAutoApprove && autopilotExpiresAt && (
+          {autopilotAutoApprove && (
             <span className="text-[10px] font-mono rounded-md bg-amber-500/20 px-2 py-0.5">
-              ACTIF · expire {new Date(autopilotExpiresAt).toLocaleString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+              {autopilotExpiresAt
+                ? `ACTIF · expire ${new Date(autopilotExpiresAt).toLocaleString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}`
+                : 'ACTIF · sans expiration'}
             </span>
           )}
         </div>
