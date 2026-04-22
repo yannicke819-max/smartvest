@@ -12,7 +12,7 @@
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "apps/api/Dockerfile"
-buildArgs = { CACHEBUST = "9" }
+buildArgs = { CACHEBUST = "10" }
 
 [deploy]
 # Railway ignores the Dockerfile CMD when it detects a Node project and falls
