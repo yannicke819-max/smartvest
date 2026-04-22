@@ -6,3 +6,4 @@
  * risk-constrained allocation proposals. Simulation-first.
  */
 export * from './types';
+export * from './persona';
