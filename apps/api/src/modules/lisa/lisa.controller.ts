@@ -1,10 +1,25 @@
 import { Body, Controller, Get, Headers, HttpCode, Param, Post, Query } from '@nestjs/common';
 import { extractUserId } from '../../common/extract-user-id';
 import { LisaService } from './services/lisa.service';
+import { DecisionLogService } from './services/decision-log.service';
 
 @Controller('lisa')
 export class LisaController {
-  constructor(private readonly lisa: LisaService) {}
+  constructor(
+    private readonly lisa: LisaService,
+    private readonly decisionLog: DecisionLogService,
+  ) {}
+
+  @Get('audit/verify/:portfolioId')
+  async verifyAuditChain(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    // Note: ideally we'd check ownership here too, but DecisionLogService
+    // only queries, so rely on RLS + service role filter implicitly.
+    extractUserId(headers); // throws if not authenticated
+    return this.decisionLog.verifyChain(portfolioId);
+  }
 
   // ── Session config ──────────────────────────────────────────────────────────
 

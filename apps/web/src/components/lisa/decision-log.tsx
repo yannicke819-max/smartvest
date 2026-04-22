@@ -1,8 +1,8 @@
 'use client';
 
-import { ScrollText, Sparkles, ShieldCheck, Swords, AlertTriangle, UserCheck, Clock } from 'lucide-react';
+import { ScrollText, Sparkles, ShieldCheck, Swords, AlertTriangle, UserCheck, Clock, CheckCircle2, XCircle } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { useLisaDecisionLog, type LisaDecisionLogRow } from '@/hooks/use-lisa';
+import { useLisaDecisionLog, useAuditChainVerify, type LisaDecisionLogRow } from '@/hooks/use-lisa';
 import { SkeletonCard } from '@/components/ui/skeleton';
 
 const KIND_ICONS: Record<string, ReactNode> = {
@@ -32,16 +32,28 @@ const TRIGGER_LABELS: Record<string, string> = {
 
 export function LisaDecisionLog({ portfolioId }: { portfolioId: string }) {
   const logQuery = useLisaDecisionLog(portfolioId, 50);
+  const verifyQuery = useAuditChainVerify(portfolioId);
   const entries = logQuery.data ?? [];
+  const chain = verifyQuery.data;
 
   return (
     <div className="rounded-lg border p-5 space-y-3">
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <ScrollText className="h-4 w-4 text-muted-foreground" />
         <h2 className="text-sm font-medium">Decision log</h2>
-        <span className="text-xs text-muted-foreground">
-          (hash-chaîné, auditable)
-        </span>
+        {chain && chain.totalEntries > 0 && (
+          <span
+            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${
+              chain.isValid
+                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                : 'bg-red-50 text-red-700 border-red-200'
+            }`}
+            title={`${chain.totalEntries} entrée(s) vérifiée(s)`}
+          >
+            {chain.isValid ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
+            Hash chain {chain.isValid ? 'intègre' : `corrompue #${chain.firstCorruptedIndex ?? '?'}`}
+          </span>
+        )}
       </div>
 
       {logQuery.isLoading && <SkeletonCard />}

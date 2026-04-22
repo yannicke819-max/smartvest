@@ -64,6 +64,8 @@ export default function LisaPage() {
   const [capital, setCapital] = useState('10000');
   const [antiConsensus, setAntiConsensus] = useState(7);
   const [enableCrypto, setEnableCrypto] = useState(true);
+  const [autopilotEnabled, setAutopilotEnabled] = useState(false);
+  const [autopilotCycleMin, setAutopilotCycleMin] = useState(60);
 
   const config = configQuery.data;
 
@@ -74,6 +76,8 @@ export default function LisaPage() {
       capital_usd: capital,
       anti_consensus_strength: antiConsensus,
       enable_crypto: enableCrypto,
+      autopilot_enabled: autopilotEnabled,
+      autopilot_cycle_minutes: autopilotCycleMin,
     });
   }
 
@@ -237,6 +241,32 @@ export default function LisaPage() {
               Autoriser crypto (BTC, ETH, altcoins)
             </label>
           </div>
+        </div>
+
+        <div className="border-t pt-3 space-y-2">
+          <label className="flex items-center gap-2 text-xs font-medium">
+            <input
+              type="checkbox"
+              checked={config?.autopilot_enabled ?? autopilotEnabled}
+              onChange={(e) => setAutopilotEnabled(e.target.checked)}
+            />
+            Autopilot (génération automatique toutes les N minutes)
+          </label>
+          {(config?.autopilot_enabled ?? autopilotEnabled) && (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground pl-6">
+              <span>Fréquence :</span>
+              <input
+                type="number"
+                min="5"
+                max="1440"
+                value={config?.autopilot_cycle_minutes ?? autopilotCycleMin}
+                onChange={(e) => setAutopilotCycleMin(parseInt(e.target.value, 10))}
+                className="h-7 w-20 rounded-md border bg-background px-2 text-xs"
+              />
+              <span>minutes</span>
+              <span className="text-[10px] italic">· Les propositions sont générées mais requièrent toujours ton approbation pour ouvrir des positions (mode MANUAL_EXPLICIT)</span>
+            </div>
+          )}
         </div>
 
         <Button size="sm" onClick={handleSaveConfig} disabled={upsertConfig.isPending}>
