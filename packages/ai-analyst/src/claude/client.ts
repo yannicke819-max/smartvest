@@ -70,7 +70,7 @@ export class LisaClaudeClient {
       profile,
       userMessage,
       model = this.defaultModel,
-      maxTokens = 8000,
+      maxTokens = 16000,
     } = options;
 
     const { cacheable, profileSpecific } = buildLisaSystemPrompt(profile);
