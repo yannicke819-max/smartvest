@@ -29,9 +29,10 @@ export class LisaAutopilotService {
     private readonly decisionLog: DecisionLogService,
   ) {}
 
-  /** Tourne toutes les 5 minutes. Les portfolios configurés pour plus
-   *  d'intervalle sont skippés au check cycle_minutes. */
-  @Cron(CronExpression.EVERY_5_MINUTES, { name: 'lisa-autopilot' })
+  /** Tick toutes les 60 secondes. Chaque portfolio a son propre cycle_minutes
+   *  (min 1 min) qui détermine s'il est dû — permet aux users en hyper-trading
+   *  de tourner toutes les 1-2 min alors que les longs-termistes restent à 60. */
+  @Cron(CronExpression.EVERY_MINUTE, { name: 'lisa-autopilot' })
   async runAutopilotCycle() {
     const { data: configs, error } = await this.supabase.getClient()
       .from('lisa_session_configs')
@@ -204,6 +205,33 @@ export class LisaAutopilotService {
         payload: {},
         triggeredBy: 'autopilot_cron',
       }).catch((err) => this.logger.warn(`log append failed: ${String(err)}`));
+    }
+  }
+
+  /**
+   * Risk monitor rapide : tourne toutes les 60 secondes, INDÉPENDAMMENT du
+   * cycle Claude (qui peut être à 5 ou 15 min). Vérifie stops / targets /
+   * horizons sur toutes les positions ouvertes des portefeuilles en autopilot.
+   *
+   * Permet de fermer une perdante en moins d'1 min même si le prochain cycle
+   * Claude n'est que dans 14 min. Critique pour la réactivité en mode sniper.
+   */
+  @Cron(CronExpression.EVERY_MINUTE, { name: 'lisa-fast-risk-monitor' })
+  async runFastRiskMonitor() {
+    const { data: configs, error } = await this.supabase.getClient()
+      .from('lisa_session_configs')
+      .select('user_id, portfolio_id')
+      .eq('autopilot_enabled', true)
+      .eq('kill_switch_active', false);
+
+    if (error || !configs || configs.length === 0) return;
+
+    for (const cfg of configs) {
+      try {
+        await this.lisa.runRiskCheck(cfg.user_id as string, cfg.portfolio_id as string);
+      } catch (e) {
+        this.logger.debug(`fast risk monitor skipped for ${String(cfg.portfolio_id)}: ${String(e).slice(0, 80)}`);
+      }
     }
   }
 }

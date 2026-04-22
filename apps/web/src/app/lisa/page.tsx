@@ -394,13 +394,14 @@ export default function LisaPage() {
               <span>Fréquence :</span>
               <input
                 type="number"
-                min="5"
+                min="1"
                 max="1440"
                 value={autopilotCycleMin}
                 onChange={(e) => setAutopilotCycleMin(parseInt(e.target.value, 10))}
                 className="h-7 w-20 rounded-md border bg-background px-2 text-xs"
               />
               <span>minutes</span>
+              <span className="text-[10px] italic">· min 1 min (mode sniper)</span>
               <span className="text-[10px] italic">· Les propositions sont générées mais requièrent toujours ton approbation pour ouvrir des positions (mode MANUAL_EXPLICIT)</span>
             </div>
           )}

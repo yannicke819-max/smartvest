@@ -341,6 +341,14 @@ hors contraintes n'est acceptable, même en mode chasse.
     const allocations = proposal.allocations as Array<{ thesisId: string; pctCapital: number; amountUsd: string }>;
     const closeRecommendations = (proposal.close_recommendations as Array<{ positionId: string; reason: string }> | null) ?? [];
 
+    // Stop-loss plus serré si le portefeuille est en mode agressif (chasseuse EV+)
+    const { data: sessionCfg } = await this.supabase.getClient()
+      .from('lisa_session_configs')
+      .select('autopilot_aggressive')
+      .eq('portfolio_id', portfolioId)
+      .maybeSingle();
+    const aggressive = sessionCfg?.autopilot_aggressive === true;
+
     // 1. D'abord on exécute les fermetures recommandées par Lisa — libère du
     //    cash avant d'ouvrir les nouvelles positions.
     let closedRecommended = 0;
@@ -415,7 +423,11 @@ hors contraintes n'est acceptable, même en mode chasse.
         const direction = expression.direction as string;
         const livePx = new Decimal(quote.price);
         const adversePct = Math.abs(riskReward.adverseScenarioReturnPct ?? -5);
-        const stopPct = Math.max(adversePct, 3) / 100; // floor 3%, plafond = adverse
+        // Aggressive mode = stop plus serré (-2% floor au lieu de -3%) pour
+        // couper vite les perdantes et libérer du cash pour la prochaine idée.
+        const floor = aggressive ? 2 : 3;
+        const ceil = aggressive ? 5 : 10;
+        const stopPct = Math.min(Math.max(adversePct, floor), ceil) / 100;
         const stopLossPrice = direction === 'long' || direction === 'long_call' || direction === 'long_put'
           ? livePx.mul(new Decimal(1).minus(new Decimal(stopPct))).toFixed(8)
           : livePx.mul(new Decimal(1).plus(new Decimal(stopPct))).toFixed(8);
