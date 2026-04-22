@@ -89,6 +89,12 @@ export default function LisaPage() {
   const [enableCrypto, setEnableCrypto] = useState(true);
   const [autopilotEnabled, setAutopilotEnabled] = useState(false);
   const [autopilotCycleMin, setAutopilotCycleMin] = useState(15);
+  // Risk constraints — exposés dans l'UI (section avancée)
+  const [targetDeploymentPct, setTargetDeploymentPct] = useState(60);
+  const [maxPositionSizePct, setMaxPositionSizePct] = useState(25);
+  const [maxExposurePerAssetClassPct, setMaxExposurePerAssetClassPct] = useState(40);
+  const [maxOpenPositions, setMaxOpenPositions] = useState(10);
+  const [maxDrawdown2DaysPct, setMaxDrawdown2DaysPct] = useState(10);
   const [localConfigSaved, setLocalConfigSaved] = useState(false);
   const [selectedScenarios, setSelectedScenarios] = useState<Set<string>>(new Set());
   const [scenariosExpanded, setScenariosExpanded] = useState(true);
@@ -108,6 +114,12 @@ export default function LisaPage() {
       if (typeof config.enable_crypto === 'boolean') setEnableCrypto(config.enable_crypto);
       if (typeof config.autopilot_enabled === 'boolean') setAutopilotEnabled(config.autopilot_enabled);
       if (typeof config.autopilot_cycle_minutes === 'number') setAutopilotCycleMin(config.autopilot_cycle_minutes);
+      const rc = config.risk_constraints ?? {};
+      if (typeof rc.targetDeploymentPct === 'number') setTargetDeploymentPct(rc.targetDeploymentPct);
+      if (typeof rc.maxPositionSizePct === 'number') setMaxPositionSizePct(rc.maxPositionSizePct);
+      if (typeof rc.maxExposurePerAssetClassPct === 'number') setMaxExposurePerAssetClassPct(rc.maxExposurePerAssetClassPct);
+      if (typeof rc.maxOpenPositions === 'number') setMaxOpenPositions(rc.maxOpenPositions);
+      if (typeof rc.maxDrawdown2DaysPct === 'number') setMaxDrawdown2DaysPct(rc.maxDrawdown2DaysPct);
       setConfigSynced(true);
     }
   }, [config, configSynced]);
@@ -121,6 +133,13 @@ export default function LisaPage() {
       enable_crypto: enableCrypto,
       autopilot_enabled: autopilotEnabled,
       autopilot_cycle_minutes: autopilotCycleMin,
+      risk_constraints: {
+        targetDeploymentPct,
+        maxPositionSizePct,
+        maxExposurePerAssetClassPct,
+        maxOpenPositions,
+        maxDrawdown2DaysPct,
+      },
     });
     setLocalConfigSaved(true);
   }
@@ -320,6 +339,80 @@ export default function LisaPage() {
               <span className="text-[10px] italic">· Les propositions sont générées mais requièrent toujours ton approbation pour ouvrir des positions (mode MANUAL_EXPLICIT)</span>
             </div>
           )}
+        </div>
+
+        <div className="border-t pt-3 space-y-3">
+          <h3 className="text-xs font-medium">Contraintes de risque</h3>
+          <p className="text-[10px] text-muted-foreground -mt-1">
+            Pilotent combien Lisa déploie et comment elle sizing. Respectées par
+            le risk-enforcer au moment de la génération.
+          </p>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium">
+              Déploiement cible : {targetDeploymentPct}% ({(100 - targetDeploymentPct)}% cash reserve)
+            </label>
+            <input
+              type="range"
+              min="10"
+              max="95"
+              step="5"
+              value={targetDeploymentPct}
+              onChange={(e) => setTargetDeploymentPct(parseInt(e.target.value, 10))}
+              className="w-full"
+            />
+            <p className="text-[10px] text-muted-foreground">
+              10 % = ultra-prudent · 95 % = fully invested (garder au moins 5 % cash buffer)
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <label className="text-xs font-medium">Max par position (%)</label>
+              <input
+                type="number"
+                min="1"
+                max="100"
+                value={maxPositionSizePct}
+                onChange={(e) => setMaxPositionSizePct(parseFloat(e.target.value))}
+                className="h-8 w-full rounded-md border bg-background px-2 text-xs"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium">Max par classe d'actifs (%)</label>
+              <input
+                type="number"
+                min="1"
+                max="100"
+                value={maxExposurePerAssetClassPct}
+                onChange={(e) => setMaxExposurePerAssetClassPct(parseFloat(e.target.value))}
+                className="h-8 w-full rounded-md border bg-background px-2 text-xs"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium">Max positions ouvertes</label>
+              <input
+                type="number"
+                min="1"
+                max="50"
+                value={maxOpenPositions}
+                onChange={(e) => setMaxOpenPositions(parseInt(e.target.value, 10))}
+                className="h-8 w-full rounded-md border bg-background px-2 text-xs"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium">Max drawdown 2j (%) · hard kill</label>
+              <input
+                type="number"
+                min="1"
+                max="50"
+                step="0.5"
+                value={maxDrawdown2DaysPct}
+                onChange={(e) => setMaxDrawdown2DaysPct(parseFloat(e.target.value))}
+                className="h-8 w-full rounded-md border bg-background px-2 text-xs"
+              />
+            </div>
+          </div>
         </div>
 
         <Button size="sm" onClick={handleSaveConfig} disabled={upsertConfig.isPending}>

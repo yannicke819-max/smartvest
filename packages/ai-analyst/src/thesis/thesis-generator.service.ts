@@ -186,7 +186,7 @@ ${corpusBlock || '(no corpus events loaded for this query)'}
 - Enable derivatives: ${config.enableDerivatives}
 - Enable leverage: ${config.enableLeverage}
 
-## Risk constraints (HARD LIMITS)
+## Risk constraints (HARD LIMITS — respecter absolument)
 - Max drawdown 2 days: ${constraints.maxDrawdown2DaysPct}% (AUTO KILL if breached)
 - Max drawdown 7 days: ${constraints.maxDrawdown7DaysPct}%
 - Max drawdown 30 days: ${constraints.maxDrawdown30DaysPct}%
@@ -195,6 +195,16 @@ ${corpusBlock || '(no corpus events loaded for this query)'}
 - Max leverage: ${constraints.maxLeverage}x
 - Max per asset class: ${constraints.maxExposurePerAssetClassPct}%
 - Max portfolio volatility annualized: ${constraints.maxPortfolioVolatilityPct}%
+
+## Target deployment (SOFT TARGET — vise ce niveau d'exposition)
+- Déploiement cible : ${constraints.targetDeploymentPct ?? 60}% du capital
+- Cash reserve cible : ${100 - (constraints.targetDeploymentPct ?? 60)}%
+- IMPORTANT : la somme des allocations dans allocationSuggestion.perThesis
+  doit approcher ${constraints.targetDeploymentPct ?? 60}% (± 10%), pas rester
+  à 10%. Si tu ne trouves pas assez de setups de qualité pour déployer ce
+  niveau, dis-le explicitement dans warnings et ramène cashReservePct en
+  conséquence — mais ne mets pas par défaut 90% cash juste par prudence
+  générique si l'utilisateur a demandé ${constraints.targetDeploymentPct ?? 60}% d'exposition.
 
 ${req.userFocus ? `\n# USER FOCUS\n${req.userFocus}\n` : ''}
 

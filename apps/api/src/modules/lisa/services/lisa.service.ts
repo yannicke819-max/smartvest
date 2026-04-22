@@ -154,7 +154,7 @@ export class LisaService {
       profile: config.profile as SessionProfile,
       capitalUsd: String(config.capital_usd),
       baseCurrency: config.base_currency as string,
-      riskConstraints: (config.risk_constraints as LisaSessionConfig['riskConstraints']) ?? {
+      riskConstraints: {
         maxDrawdown2DaysPct: 10,
         maxDrawdown7DaysPct: 15,
         maxDrawdown30DaysPct: 25,
@@ -163,7 +163,9 @@ export class LisaService {
         maxLeverage: 1.5,
         maxExposurePerAssetClassPct: 40,
         maxPortfolioVolatilityPct: 20,
+        targetDeploymentPct: 60,
         autoLiquidateOnKill: true,
+        ...(config.risk_constraints as Partial<LisaSessionConfig['riskConstraints']> ?? {}),
       },
       antiConsensusStrength: (config.anti_consensus_strength as number) ?? 7,
       maxTheses: (config.max_theses as number) ?? 5,

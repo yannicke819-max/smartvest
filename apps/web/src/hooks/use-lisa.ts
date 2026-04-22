@@ -13,6 +13,19 @@ export type SessionProfile =
   | 'sniper_mode'
   | 'hyper_active';
 
+export interface LisaRiskConstraints {
+  targetDeploymentPct?: number;
+  maxPositionSizePct?: number;
+  maxExposurePerAssetClassPct?: number;
+  maxOpenPositions?: number;
+  maxDrawdown2DaysPct?: number;
+  maxDrawdown7DaysPct?: number;
+  maxDrawdown30DaysPct?: number;
+  maxLeverage?: number;
+  maxPortfolioVolatilityPct?: number;
+  autoLiquidateOnKill?: boolean;
+}
+
 export interface LisaSessionConfigRow {
   id: string;
   user_id: string;
@@ -20,7 +33,7 @@ export interface LisaSessionConfigRow {
   profile: SessionProfile;
   capital_usd: string;
   base_currency: string;
-  risk_constraints: Record<string, unknown>;
+  risk_constraints: LisaRiskConstraints;
   anti_consensus_strength: number;
   max_theses: number;
   enable_crypto: boolean;

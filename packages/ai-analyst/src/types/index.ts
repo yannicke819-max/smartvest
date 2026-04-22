@@ -227,6 +227,9 @@ export const RiskConstraints = z.object({
   maxExposurePerAssetClassPct: z.number().min(0).max(100).default(40.0),
   /** Volatilité portefeuille annualisée max */
   maxPortfolioVolatilityPct: z.number().min(0).default(20.0),
+  /** % capital cible à déployer (le reste = cash reserve). Soft target,
+   *  Claude vise ce niveau d'exposition lors de la génération. */
+  targetDeploymentPct: z.number().min(0).max(100).default(60.0),
   /** Si true, auto-liquidate all si drawdown 2d > maxDrawdown2DaysPct */
   autoLiquidateOnKill: z.boolean().default(true),
 });
