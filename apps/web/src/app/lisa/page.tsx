@@ -61,8 +61,7 @@ export default function LisaPage() {
         .then((n) => { if (n > 0) qc.invalidateQueries({ queryKey: ['portfolios'] }); })
         .catch(() => {});
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [simulationPortfolios.length]);
+  }, [simulationPortfolios.length]); // eslint-disable-line
   const [userFocus, setUserFocus] = useState('');
   const [killReason, setKillReason] = useState('');
 

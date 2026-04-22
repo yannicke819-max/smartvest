@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { Activity, CheckCircle, XCircle, AlertTriangle, RefreshCw, Zap, Database, Server, Bot } from 'lucide-react';
+import { Activity, CheckCircle, XCircle, AlertTriangle, RefreshCw, Zap, Server, Bot } from 'lucide-react';
 import { BackButton } from '@/components/ui/back-button';
 import { Button } from '@/components/ui/button';
 import { createSupabaseBrowserClient } from '@/lib/supabase/client';
