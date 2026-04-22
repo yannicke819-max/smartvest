@@ -72,14 +72,16 @@ export default function LisaPage() {
   const snapshotQuery = useLisaSnapshot(selectedPortfolioId);
   const killSwitch = useTriggerKillSwitch(selectedPortfolioId ?? '');
 
-  const [profile, setProfile] = useState<SessionProfile>('long_term_investor');
+  const [profile, setProfile] = useState<SessionProfile>('sniper_mode');
   const [capital, setCapital] = useState('10000');
-  const [antiConsensus, setAntiConsensus] = useState(7);
+  const [antiConsensus, setAntiConsensus] = useState(9);
   const [enableCrypto, setEnableCrypto] = useState(true);
   const [autopilotEnabled, setAutopilotEnabled] = useState(false);
-  const [autopilotCycleMin, setAutopilotCycleMin] = useState(60);
+  const [autopilotCycleMin, setAutopilotCycleMin] = useState(15);
+  const [localConfigSaved, setLocalConfigSaved] = useState(false);
 
   const config = configQuery.data;
+  const canGenerate = !!(config ?? localConfigSaved);
 
   async function handleSaveConfig() {
     if (!selectedPortfolioId) return;
@@ -91,6 +93,7 @@ export default function LisaPage() {
       autopilot_enabled: autopilotEnabled,
       autopilot_cycle_minutes: autopilotCycleMin,
     });
+    setLocalConfigSaved(true);
   }
 
   async function handleGenerate() {
@@ -287,32 +290,69 @@ export default function LisaPage() {
       </div>
 
       {/* Generate proposal card */}
-      <div className="rounded-lg border p-5 space-y-3">
+      <div className="rounded-lg border p-5 space-y-4">
         <div className="flex items-center gap-2">
           <TrendingUp className="h-4 w-4 text-muted-foreground" />
           <h2 className="text-sm font-medium">Générer une proposition Lisa</h2>
         </div>
 
+        {/* Scénarios prédéfinis */}
         <div className="space-y-1.5">
-          <label className="block text-xs font-medium">Focus utilisateur (optionnel)</label>
+          <p className="text-xs font-medium text-muted-foreground">Scénarios rapides</p>
+          <div className="flex flex-wrap gap-2">
+            {[
+              { label: '⚡ Breakout crypto', value: 'anomalies intraday BTC ETH, breakout technique, momentum haussier crypto' },
+              { label: '🎯 Sniper indices', value: 'niveaux clés SPY QQQ, rebond technique, entrée précise sur pullback' },
+              { label: '🔄 Rotation sectorielle', value: 'rotation énergie vers tech, arbitrage sectoriel, momentum relatif' },
+              { label: '🛡️ Défensif macro', value: 'refuge or GLD, obligations courte durée, couverture dollar fort' },
+              { label: '📈 Momentum US', value: 'actions US momentum fort, earnings surprise positif, flux institutionnels' },
+              { label: '🌍 Macro émergents', value: 'anomalie sur émergents, divergence DXY, opportunité de change' },
+              { label: '⚠️ Anti-consensus', value: 'position contrariante maximale, actifs sur-vendus, panique de marché' },
+              { label: '🔮 Volatilité VIX', value: 'exploitation pic VIX, vente de volatilité, mean reversion rapide' },
+              { label: '🪙 Altcoins', value: 'altcoins sous-valorisés vs BTC, rotation crypto, momentum altseason' },
+              { label: '🏭 Matières premières', value: 'pétrole Brent, cuivre, anomalie commodities, cycle inflationniste' },
+            ].map(({ label, value }) => (
+              <button
+                key={label}
+                onClick={() => setUserFocus(value)}
+                className={`rounded-full border px-3 py-1 text-xs transition-colors hover:bg-primary/10 hover:border-primary/50 ${
+                  userFocus === value ? 'border-primary bg-primary/10 font-medium' : 'border-border'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Champ libre */}
+        <div className="space-y-1.5">
+          <label className="block text-xs font-medium">Focus libre (optionnel)</label>
           <textarea
             value={userFocus}
             onChange={(e) => setUserFocus(e.target.value)}
             rows={2}
-            placeholder="Ex: focus défensif, ou rotation énergie, ou anomalies crypto…"
+            placeholder="Décris ton focus ou utilise un scénario ci-dessus…"
             className="w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"
           />
         </div>
 
-        <Button
-          onClick={handleGenerate}
-          disabled={generateProposal.isPending || !config}
-        >
-          <Sparkles className="mr-1.5 h-4 w-4" />
-          {generateProposal.isPending ? 'Lisa analyse le marché…' : 'Générer propositions'}
-        </Button>
+        <div className="flex items-center gap-3">
+          <Button
+            onClick={handleGenerate}
+            disabled={generateProposal.isPending || !canGenerate}
+          >
+            <Sparkles className="mr-1.5 h-4 w-4" />
+            {generateProposal.isPending ? 'Lisa analyse le marché…' : 'Générer propositions'}
+          </Button>
+          {userFocus && (
+            <button onClick={() => setUserFocus('')} className="text-xs text-muted-foreground hover:text-foreground">
+              Effacer
+            </button>
+          )}
+        </div>
 
-        {!config && (
+        {!canGenerate && (
           <p className="text-xs text-muted-foreground">
             Sauvegardez une configuration avant de générer.
           </p>
