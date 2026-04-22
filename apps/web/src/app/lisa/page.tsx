@@ -132,6 +132,23 @@ export default function LisaPage() {
 
   async function handleSaveConfig() {
     if (!selectedPortfolioId) return;
+
+    // Confirmation explicite la première fois qu'on active auto-approve
+    if (autopilotAutoApprove && !config?.autopilot_auto_approve) {
+      const ok = confirm(
+        'ACTIVATION DU MODE AUTONOME\n\n'
+        + '• Lisa ouvrira et fermera des positions toute seule sans te demander.\n'
+        + `• Scan toutes les ${autopilotCycleMin} min.\n`
+        + '• Simulation paper uniquement — aucune exécution réelle.\n'
+        + '• Tu peux désactiver à tout moment en décochant la case.\n\n'
+        + 'Confirmer ?',
+      );
+      if (!ok) {
+        setAutopilotAutoApprove(false);
+        return;
+      }
+    }
+
     await upsertConfig.mutateAsync({
       profile,
       capital_usd: capital,
@@ -139,6 +156,10 @@ export default function LisaPage() {
       enable_crypto: enableCrypto,
       autopilot_enabled: autopilotEnabled,
       autopilot_cycle_minutes: autopilotCycleMin,
+      autopilot_auto_approve: autopilotAutoApprove,
+      autopilot_aggressive: autopilotAggressive,
+      // Pas d'expiration par défaut — l'utilisateur veut "no-touch" sans limite
+      autopilot_expires_at: autopilotAutoApprove ? (autopilotExpiresAt ?? null) : null,
       risk_constraints: {
         targetDeploymentPct,
         maxPositionSizePct,
@@ -222,6 +243,8 @@ export default function LisaPage() {
 
   async function handleDisableAutonomousHunter() {
     if (!selectedPortfolioId) return;
+    // Arrêt immédiat : coupe auto-approve + persona agressive, mais laisse
+    // autopilot_enabled pour continuer à recevoir des propositions manuelles.
     await upsertConfig.mutateAsync({
       autopilot_auto_approve: false,
       autopilot_expires_at: null,
@@ -385,24 +408,85 @@ export default function LisaPage() {
             <input
               type="checkbox"
               checked={autopilotEnabled}
-              onChange={(e) => setAutopilotEnabled(e.target.checked)}
+              onChange={(e) => {
+                setAutopilotEnabled(e.target.checked);
+                if (!e.target.checked) {
+                  // Désactiver autopilot → coupe aussi auto-approve + agressive
+                  setAutopilotAutoApprove(false);
+                  setAutopilotAggressive(false);
+                }
+              }}
             />
             Autopilot (génération automatique toutes les N minutes)
           </label>
           {autopilotEnabled && (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground pl-6">
-              <span>Fréquence :</span>
-              <input
-                type="number"
-                min="1"
-                max="1440"
-                value={autopilotCycleMin}
-                onChange={(e) => setAutopilotCycleMin(parseInt(e.target.value, 10))}
-                className="h-7 w-20 rounded-md border bg-background px-2 text-xs"
-              />
-              <span>minutes</span>
-              <span className="text-[10px] italic">· min 1 min (mode sniper)</span>
-              <span className="text-[10px] italic">· Les propositions sont générées mais requièrent toujours ton approbation pour ouvrir des positions (mode MANUAL_EXPLICIT)</span>
+            <div className="pl-6 space-y-2">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span>Fréquence :</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="1440"
+                  value={autopilotCycleMin}
+                  onChange={(e) => setAutopilotCycleMin(parseInt(e.target.value, 10))}
+                  className="h-7 w-20 rounded-md border bg-background px-2 text-xs"
+                />
+                <span>minutes</span>
+                <span className="text-[10px] italic">· min 1 min (mode sniper)</span>
+              </div>
+
+              <label className="flex items-start gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  checked={autopilotAutoApprove}
+                  onChange={(e) => setAutopilotAutoApprove(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>
+                  <span className="font-medium">Auto-approbation (no-touch)</span>
+                  <span className="block text-[10px] text-muted-foreground">
+                    Lisa ouvre et ferme les positions <strong>toute seule</strong> sans confirmation —
+                    tu ne dois rien faire. Simulation paper uniquement.
+                  </span>
+                </span>
+              </label>
+
+              <label className="flex items-start gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  checked={autopilotAggressive}
+                  onChange={(e) => setAutopilotAggressive(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>
+                  <span className="font-medium">Persona agressive (chasseuse EV+)</span>
+                  <span className="block text-[10px] text-muted-foreground">
+                    Turnover élevé, stops serrés (−2 % floor), coupure sèche des perdantes,
+                    scan multi-asset continu.
+                  </span>
+                </span>
+              </label>
+
+              <div className={`rounded-md border p-2 text-[11px] ${
+                autopilotAutoApprove
+                  ? 'border-amber-500/40 bg-amber-500/10 text-amber-900 dark:text-amber-200'
+                  : 'border-blue-500/30 bg-blue-500/5 text-blue-900 dark:text-blue-200'
+              }`}>
+                {autopilotAutoApprove ? (
+                  <>
+                    <strong>Mode AUTONOME ACTIF</strong> — aucune action requise.
+                    Lisa scanne toutes les {autopilotCycleMin} min et exécute elle-même.
+                    {autopilotExpiresAt && (
+                      <> Expire {new Date(autopilotExpiresAt).toLocaleString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}.</>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <strong>Mode PROPOSITION</strong> — Lisa génère des idées toutes les {autopilotCycleMin} min
+                    mais tu dois cliquer "Approuver" sur chaque proposition pour ouvrir les positions.
+                  </>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -679,49 +763,25 @@ export default function LisaPage() {
       {/* Decision log */}
       {selectedPortfolioId && <LisaDecisionLog portfolioId={selectedPortfolioId} />}
 
-      {/* Mode chasse autonome (simulation uniquement) */}
-      <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-5 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2 text-amber-600 dark:text-amber-500">
+      {/* Statut mode autonome (read-only — la config se fait dans le panneau Configuration) */}
+      {autopilotEnabled && autopilotAutoApprove && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-4 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-amber-700 dark:text-amber-300">
             <Activity className="h-4 w-4" />
-            <h2 className="text-sm font-medium">Mode chasse autonome (simulation)</h2>
-          </div>
-          {autopilotAutoApprove && (
-            <span className="text-[10px] font-mono rounded-md bg-amber-500/20 px-2 py-0.5">
-              {autopilotExpiresAt
-                ? `ACTIF · expire ${new Date(autopilotExpiresAt).toLocaleString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}`
-                : 'ACTIF · sans expiration'}
+            <span className="text-sm">
+              <strong>Mode AUTONOME actif</strong> — Lisa tourne toute seule toutes les {autopilotCycleMin} min, aucune action requise de ta part.
             </span>
-          )}
+          </div>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={handleDisableAutonomousHunter}
+            disabled={upsertConfig.isPending}
+          >
+            Stop immédiat
+          </Button>
         </div>
-        <p className="text-xs text-muted-foreground">
-          Lisa scanne en continu les opportunités EV+, ouvre et ferme automatiquement
-          les positions du portefeuille simulé sans ta confirmation. Turnover élevé,
-          coupure sèche des perdants. Respect absolu des contraintes de risque.
-          <strong className="text-foreground"> Simulation paper uniquement — aucune exécution réelle.</strong>
-        </p>
-        <div className="flex flex-col gap-2 sm:flex-row">
-          {!autopilotAutoApprove ? (
-            <Button
-              variant="default"
-              size="sm"
-              onClick={handleActivateAutonomousHunter}
-              disabled={upsertConfig.isPending}
-            >
-              Activer le mode chasse autonome
-            </Button>
-          ) : (
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={handleDisableAutonomousHunter}
-              disabled={upsertConfig.isPending}
-            >
-              Désactiver immédiatement
-            </Button>
-          )}
-        </div>
-      </div>
+      )}
 
       {/* Kill switch */}
       <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-5 space-y-3">
