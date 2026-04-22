@@ -221,12 +221,29 @@ hors contraintes n'est acceptable, même en mode chasse.
 
     const mergedFocus = [aggressivePersona, userFocus].filter((s) => s && s.trim().length > 0).join('\n\n');
 
-    const result = await this.thesisGenerator.generateTheses({
-      config: sessionConfig,
-      marketSnapshot,
-      ...(mergedFocus ? { userFocus: mergedFocus } : {}),
-      includeFullCorpus: true,
-    });
+    let result: Awaited<ReturnType<ThesisGeneratorService['generateTheses']>>;
+    try {
+      result = await this.thesisGenerator.generateTheses({
+        config: sessionConfig,
+        marketSnapshot,
+        ...(mergedFocus ? { userFocus: mergedFocus } : {}),
+        includeFullCorpus: true,
+      });
+    } catch (e) {
+      // Parse failure ou erreur Claude : on log dans le decision log et on
+      // retourne une erreur 400 explicite avec contexte lisible (pas un 500
+      // qui fait croire à une panne d'infra).
+      const msg = e instanceof Error ? e.message : String(e);
+      await this.logDecision(portfolioId, 'proposal_failed', {
+        summary: 'Génération proposition échouée',
+        rationale: msg.slice(0, 2000),
+        payload: { source: 'thesis_generator' },
+        triggeredBy: 'user_manual',
+      });
+      throw new BadRequestException(
+        `Lisa n'a pas pu produire une proposition exploitable (${msg.slice(0, 150)}). Réessaie dans un instant — les parse failures Claude sont rares et transitoires.`,
+      );
+    }
 
     // Enforce risk constraints (structural safety net)
     const enforcement = this.riskEnforcer.enforce(result.proposal);
