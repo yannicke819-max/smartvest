@@ -253,6 +253,22 @@ défini, sans markdown, sans explications hors JSON.
         if (origId) idMap.set(origId, newId);
         t.id = newId;
       }
+      // Normalize common assetClass aliases Claude invents despite the prompt
+      const exprs = t.expressions as Array<Record<string, unknown>> | undefined;
+      if (Array.isArray(exprs)) {
+        for (const e of exprs) {
+          e.assetClass = this.normalizeAssetClass(e.assetClass, e.symbol);
+        }
+      }
+    }
+    // Also normalize pools scan asset classes
+    for (const key of ['favored', 'avoided'] as const) {
+      const pools = ((root.poolsScan as Record<string, unknown>)?.[key]) as Array<Record<string, unknown>> | undefined;
+      if (Array.isArray(pools)) {
+        for (const p of pools) {
+          p.assetClass = this.normalizeAssetClass(p.assetClass);
+        }
+      }
     }
 
     // Allocation suggestion (read before theses map so we can patch thesisId refs)
@@ -326,6 +342,69 @@ défini, sans markdown, sans explications hors JSON.
     };
 
     return proposal;
+  }
+
+  /**
+   * Mappe les valeurs génériques / aliases que Claude invente parfois
+   * (ex: "crypto", "equity") vers la bonne valeur granulaire de l'enum.
+   * Si le symbol est connu (BTC/ETH), on l'utilise pour désambiguïser.
+   */
+  private normalizeAssetClass(value: unknown, symbol?: unknown): unknown {
+    if (typeof value !== 'string') return value;
+    const v = value.trim();
+    // Déjà valide : on ne touche pas
+    const VALID = new Set([
+      'equity_us_large', 'equity_us_small', 'equity_eu', 'equity_em', 'equity_jp', 'equity_cn',
+      'govt_bonds_us', 'govt_bonds_eu', 'govt_bonds_em',
+      'credit_ig', 'credit_hy', 'credit_em', 'credit_private',
+      'fx_g10', 'fx_em', 'fx_exotic',
+      'commodities_energy', 'commodities_metals_precious', 'commodities_metals_industrial', 'commodities_agri',
+      'crypto_bitcoin', 'crypto_ethereum', 'crypto_altcoins', 'crypto_stablecoin',
+      'derivatives_options', 'derivatives_futures', 'derivatives_swaps', 'derivatives_vol',
+      'structured_products', 'real_estate', 'alt_hedge_funds', 'cash',
+    ]);
+    if (VALID.has(v)) return v;
+
+    const sym = typeof symbol === 'string' ? symbol.toUpperCase() : '';
+    const lv = v.toLowerCase();
+
+    // Crypto génériques — désambiguïser via le symbol si possible
+    if (lv === 'crypto' || lv === 'cryptocurrency') {
+      if (sym.includes('BTC') || sym === 'XBT') return 'crypto_bitcoin';
+      if (sym.includes('ETH')) return 'crypto_ethereum';
+      if (sym === 'USDT' || sym === 'USDC' || sym === 'DAI' || sym === 'BUSD') return 'crypto_stablecoin';
+      return 'crypto_altcoins';
+    }
+    if (lv === 'bitcoin' || lv === 'btc') return 'crypto_bitcoin';
+    if (lv === 'ethereum' || lv === 'eth') return 'crypto_ethereum';
+    if (lv === 'stablecoin' || lv === 'stablecoins') return 'crypto_stablecoin';
+    if (lv === 'altcoin' || lv === 'altcoins') return 'crypto_altcoins';
+
+    // Equity génériques
+    if (lv === 'equity' || lv === 'stocks' || lv === 'equities') return 'equity_us_large';
+    if (lv === 'equity_us') return 'equity_us_large';
+
+    // Bonds / credit
+    if (lv === 'bond' || lv === 'bonds' || lv === 'govt_bonds' || lv === 'sovereign') return 'govt_bonds_us';
+    if (lv === 'credit' || lv === 'corporate_bonds') return 'credit_ig';
+    if (lv === 'high_yield' || lv === 'hy') return 'credit_hy';
+
+    // FX
+    if (lv === 'fx' || lv === 'forex' || lv === 'currency') return 'fx_g10';
+
+    // Commodities
+    if (lv === 'commodity' || lv === 'commodities') return 'commodities_metals_precious';
+    if (lv === 'gold' || lv === 'silver' || lv === 'precious_metals') return 'commodities_metals_precious';
+    if (lv === 'oil' || lv === 'energy' || lv === 'natgas') return 'commodities_energy';
+
+    // Derivatives
+    if (lv === 'derivative' || lv === 'derivatives') return 'derivatives_futures';
+    if (lv === 'vix' || lv === 'volatility' || lv === 'vol') return 'derivatives_vol';
+    if (lv === 'options') return 'derivatives_options';
+    if (lv === 'futures') return 'derivatives_futures';
+
+    // Inconnu : on renvoie la valeur originale, Zod produira une erreur explicite
+    return v;
   }
 
   /**

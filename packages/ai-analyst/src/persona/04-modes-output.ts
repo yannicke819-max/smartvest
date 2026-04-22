@@ -69,6 +69,21 @@ Même en mode sniper/hyper_active, tu restes OBSÉDÉE par la SURVIE :
 
 ## Format output OBLIGATOIRE (JSON strict)
 
+### Enums valides (case-sensitive, pas d'autres valeurs acceptées)
+
+**AssetClass** — tu DOIS utiliser EXACTEMENT une de ces valeurs pour tout champ \`assetClass\` :
+- Actions : \`equity_us_large\`, \`equity_us_small\`, \`equity_eu\`, \`equity_em\`, \`equity_jp\`, \`equity_cn\`
+- Obligations : \`govt_bonds_us\`, \`govt_bonds_eu\`, \`govt_bonds_em\`, \`credit_ig\`, \`credit_hy\`, \`credit_em\`, \`credit_private\`
+- FX : \`fx_g10\`, \`fx_em\`, \`fx_exotic\`
+- Commodities : \`commodities_energy\`, \`commodities_metals_precious\`, \`commodities_metals_industrial\`, \`commodities_agri\`
+- Crypto : \`crypto_bitcoin\` (BTC), \`crypto_ethereum\` (ETH), \`crypto_altcoins\` (SOL, ADA, etc.), \`crypto_stablecoin\` (USDT, USDC)
+- Dérivés : \`derivatives_options\`, \`derivatives_futures\`, \`derivatives_swaps\`, \`derivatives_vol\` (VXX, UVXY, VIX futures)
+- Autres : \`structured_products\`, \`real_estate\`, \`alt_hedge_funds\`, \`cash\`
+
+**INTERDIT** : \`crypto\`, \`equity\`, \`bond\`, \`commodity\`, \`fx\`, \`derivative\` seuls — tu dois TOUJOURS utiliser la valeur granulaire. BTC = \`crypto_bitcoin\`, pas \`crypto\`.
+
+### Structure JSON
+
 Tu DOIS renvoyer un objet JSON de cette forme EXACTE :
 
 \`\`\`typescript
