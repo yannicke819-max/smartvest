@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Types (miroir des types @smartvest/ai-analyst côté backend)
+// Types
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type SessionProfile =
@@ -120,6 +120,12 @@ export interface LisaRiskCheckResult {
   snapshot: LisaSnapshot;
 }
 
+// Pas de retry sur 404 — l'API Lisa n'est pas encore déployée sur Railway.
+const LISA_QUERY_OPTIONS = {
+  retry: false,
+  refetchOnWindowFocus: false,
+} as const;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Session config
 // ─────────────────────────────────────────────────────────────────────────────
@@ -129,6 +135,7 @@ export function useLisaConfig(portfolioId: string | null) {
     queryKey: ['lisa', 'config', portfolioId],
     queryFn: () => apiFetch<LisaSessionConfigRow | null>(`/lisa/config/${portfolioId}`),
     enabled: !!portfolioId,
+    ...LISA_QUERY_OPTIONS,
   });
 }
 
@@ -155,6 +162,7 @@ export function useLisaProposals(portfolioId: string | null, limit = 20) {
     queryKey: ['lisa', 'proposals', portfolioId, limit],
     queryFn: () => apiFetch<LisaProposalRow[]>(`/lisa/proposals/${portfolioId}?limit=${limit}`),
     enabled: !!portfolioId,
+    ...LISA_QUERY_OPTIONS,
   });
 }
 
@@ -212,6 +220,7 @@ export function useLisaPositions(portfolioId: string | null, openOnly = false) {
     queryFn: () => apiFetch<LisaPosition[]>(`/lisa/positions/${portfolioId}?openOnly=${openOnly}`),
     enabled: !!portfolioId,
     refetchInterval: 30_000,
+    ...LISA_QUERY_OPTIONS,
   });
 }
 
@@ -221,6 +230,7 @@ export function useLisaSnapshot(portfolioId: string | null) {
     queryFn: () => apiFetch<LisaSnapshot>(`/lisa/snapshot/${portfolioId}`),
     enabled: !!portfolioId,
     refetchInterval: 60_000,
+    ...LISA_QUERY_OPTIONS,
   });
 }
 
@@ -229,6 +239,7 @@ export function useLisaSnapshotHistory(portfolioId: string | null, windowDays = 
     queryKey: ['lisa', 'snapshots', portfolioId, windowDays],
     queryFn: () => apiFetch<LisaSnapshot[]>(`/lisa/snapshots/${portfolioId}?window=${windowDays}`),
     enabled: !!portfolioId,
+    ...LISA_QUERY_OPTIONS,
   });
 }
 
@@ -242,6 +253,7 @@ export function useLisaDecisionLog(portfolioId: string | null, limit = 50) {
     queryFn: () => apiFetch<LisaDecisionLogRow[]>(`/lisa/decisions/${portfolioId}?limit=${limit}`),
     enabled: !!portfolioId,
     refetchInterval: 30_000,
+    ...LISA_QUERY_OPTIONS,
   });
 }
 
@@ -267,6 +279,7 @@ export function useAuditChainVerify(portfolioId: string | null) {
       ),
     enabled: !!portfolioId,
     staleTime: 60_000,
+    ...LISA_QUERY_OPTIONS,
   });
 }
 
