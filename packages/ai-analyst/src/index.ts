@@ -10,3 +10,4 @@ export * from './persona';
 export * from './claude';
 export * from './corpus';
 export * from './thesis';
+export * from './allocation';
