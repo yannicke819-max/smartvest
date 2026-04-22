@@ -21,7 +21,7 @@ export interface ClaudeCallOptions {
   model?: string;
   /** Max tokens output (défaut 8000, suffisant pour 3-7 thèses JSON) */
   maxTokens?: number;
-  /** Temperature (défaut 0.3 pour reproductibilité + créativité légère) */
+  /** @deprecated temperature n'est plus supporté par claude-opus-4-7+ */
   temperature?: number;
 }
 
@@ -71,7 +71,6 @@ export class LisaClaudeClient {
       userMessage,
       model = this.defaultModel,
       maxTokens = 8000,
-      temperature = 0.3,
     } = options;
 
     const { cacheable, profileSpecific } = buildLisaSystemPrompt(profile);
@@ -94,7 +93,6 @@ export class LisaClaudeClient {
     const response = await this.client.messages.create({
       model,
       max_tokens: maxTokens,
-      temperature,
       system: systemBlocks as unknown as Anthropic.TextBlockParam[],
       messages: [
         {
