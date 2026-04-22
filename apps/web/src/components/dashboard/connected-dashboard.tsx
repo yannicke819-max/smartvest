@@ -1,12 +1,12 @@
 'use client';
 
 import type React from 'react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Plus, Wallet, BellRing, Shuffle, TrendingUp, UploadCloud, Target, Globe, Shield, Inbox, Coins, ArrowUpCircle, Gauge, FlaskConical, Sparkles } from 'lucide-react';
 import { usePortfolios, useUserProfile } from '@/hooks/use-portfolio';
-import { createPaperPortfolio } from '@/app/actions/paper-portfolio';
+import { createPaperPortfolio, deduplicateSimulationPortfolios } from '@/app/actions/paper-portfolio';
 import { useQueryClient } from '@tanstack/react-query';
 import { useRecentTransactions } from '@/hooks/use-dashboard';
 import { useValuation, useAllocation, useAlerts } from '@/hooks/use-valuation';
@@ -50,6 +50,13 @@ export function ConnectedDashboard() {
       setPaperPending(false);
     }
   }
+
+  // Nettoie silencieusement les doublons de portfolios simulation au chargement.
+  useEffect(() => {
+    deduplicateSimulationPortfolios()
+      .then((n) => { if (n > 0) qc.invalidateQueries({ queryKey: ['portfolios'] }); })
+      .catch(() => {});
+  }, []); // eslint-disable-line
 
   const valuationQuery = useValuation(portfolioId);
   const allocationQuery = useAllocation(portfolioId);
