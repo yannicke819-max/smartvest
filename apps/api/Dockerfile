@@ -1,34 +1,30 @@
 # Multi-stage build for the SmartVest API (NestJS, npm workspaces monorepo).
 # Build context = repo root.
 #
-# Pattern: only directory-level COPYs (apps/, packages/). No sub-path COPY
-# and no file COPY mixed with directory COPYs in the same parent — this
-# avoids a BuildKit "not found" cache computation error that Railway trips
-# on (observed on commit 5c4ad0a and 00a9b5b). Layer caching for
-# node_modules is slightly less aggressive, but for personal use builds
-# are infrequent enough that correctness wins.
+# .dockerignore exclut dist/, *.tsbuildinfo, node_modules locaux → tsc -b
+# compile toujours proprement sans artefacts stale.
 
-# cache-bust: 7 — migrations resilient (semicolon) + push dev branch
 FROM node:20-alpine AS builder
+# cache-bust: 8
+ENV CACHE_BUST=8
 WORKDIR /repo
 
 COPY package.json package-lock.json tsconfig.base.json ./
 COPY packages packages
-COPY apps apps
+COPY apps/api apps/api
 COPY scripts scripts
 COPY supabase supabase
 
 RUN npm install --include=dev
-RUN npm run -w @smartvest/api build
+# Compile packages + API en une seule passe (composite project references).
+# tsc -b compile les références dans l'ordre de dépendance, puis l'API.
+RUN npx tsc -b apps/api/tsconfig.json
 
 # =========================================================================
 FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 
-# Runner layout mirrors the monorepo so both `npm start -w @smartvest/api`
-# (Railway default) and `node dist/main.js` from /app/apps/api work
-# without surprises. node_modules at /app/ keeps workspace symlinks valid.
 COPY --from=builder /repo/package.json /repo/package-lock.json ./
 COPY --from=builder /repo/node_modules ./node_modules
 COPY --from=builder /repo/packages ./packages
@@ -39,7 +35,5 @@ COPY --from=builder /repo/supabase/migrations ./supabase/migrations
 
 WORKDIR /app/apps/api
 EXPOSE 3001
-# Run migrations first, then always start the API (semicolon = unconditional).
-# Migration failures are logged but never block the container from starting —
-# the API handles missing tables gracefully with 500 errors instead of crash.
+# Toujours démarrer l'API (;) même si une migration échoue.
 CMD ["sh", "-c", "node /app/scripts/apply-migrations.mjs; node dist/main.js"]

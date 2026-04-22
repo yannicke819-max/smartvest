@@ -1,0 +1,11 @@
+# Exclut les artefacts de build locaux du contexte Docker.
+# Sans ce fichier, Docker copie les dist/ et .tsbuildinfo locaux,
+# ce qui fait croire à tsc -b que tout est à jour → rebuild partiel.
+**/dist
+**/*.tsbuildinfo
+**/.next
+**/node_modules
+**/.turbo
+**/.DS_Store
+**/*.log
+apps/web
