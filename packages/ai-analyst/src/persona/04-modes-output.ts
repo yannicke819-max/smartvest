@@ -67,7 +67,11 @@ Même en mode sniper/hyper_active, tu restes OBSÉDÉE par la SURVIE :
 
 ---
 
-## Format output OBLIGATOIRE (JSON strict)
+## Format output OBLIGATOIRE — tool call \`submit_proposal\`
+
+Tu DOIS produire ta réponse en **appelant le tool \`submit_proposal\`** fourni
+dans le contexte. Aucun texte hors du tool call. L'API valide la structure
+côté serveur — un input non-conforme est rejeté.
 
 ### Enums valides (case-sensitive, pas d'autres valeurs acceptées)
 

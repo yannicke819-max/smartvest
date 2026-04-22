@@ -14,6 +14,7 @@
 import { randomUUID } from 'node:crypto';
 import JSON5 from 'json5';
 import { z } from 'zod';
+import { PROPOSAL_TOOL } from './proposal-tool-schema';
 import type { LisaClaudeClient } from '../claude/client';
 import type { CorpusQueryService } from '../corpus/corpus-query.service';
 import type {
@@ -120,57 +121,27 @@ export class ThesisGeneratorService {
     // 2. Compose user message
     const userMessage = this.composeUserMessage(req, corpusBlock);
 
-    // 3. Call Claude avec retry unique sur erreur de parse JSON.
-    //    Au 2e essai on impose un format strict + une limite de longueur.
-    let claudeResult: Awaited<ReturnType<LisaClaudeClient['call']>> | null = null;
-    let parsed: unknown;
-    try {
-      claudeResult = await this.claudeClient.call({
-        profile: req.config.profile,
-        userMessage,
-      });
-      // Détection explicite de troncation (max_tokens hit) avant même de
-      // tenter le parse — déclenche un retry plus court automatiquement.
-      if (claudeResult.stopReason === 'max_tokens') {
-        throw new Error('JSON parse failed: response truncated at max_tokens');
-      }
-      parsed = this.extractAndParseJson(claudeResult.rawText);
-    } catch (firstErr) {
-      const msg = firstErr instanceof Error ? firstErr.message : String(firstErr);
-      if (!msg.includes('JSON parse failed') && !msg.includes('Unexpected') && !msg.includes('truncated')) {
-        throw firstErr;
-      }
+    // 3. Call Claude avec tool_use forcé. L'API Anthropic valide le JSON
+    //    côté serveur — plus aucune chance de parse failure côté client.
+    //    Si Claude essaie de produire du JSON malformé, l'API re-prompte
+    //    automatiquement jusqu'à conformité.
+    const toolResult = await this.claudeClient.callWithTool({
+      profile: req.config.profile,
+      userMessage,
+      tool: PROPOSAL_TOOL as unknown as { name: string; description: string; input_schema: Record<string, unknown> },
+    });
 
-      const wasTruncated = msg.includes('truncated') || claudeResult?.stopReason === 'max_tokens';
-      const retryMessage = userMessage + `
-
-# RETRY — STRICT JSON ONLY${wasTruncated ? ' (output précédent tronqué — sois PLUS COURT)' : ''}
-Ton output précédent contenait une erreur de syntaxe JSON. Cette fois :
-- ${wasTruncated ? 'GÉNÈRE AU MAX 2 thèses (pas 3+) avec summary courts (3-5 lignes max chacun)' : 'Génère au max 3 thèses concises'}
-- Catalyst, summary, whoIsWrong, rationale : 1-2 phrases max chacun
-- Pas de prose hors JSON, pas de commentaires // ou /* */
-- Chaque élément d'array et chaque paire clé-valeur séparée par une virgule
-- Pas de virgule traînante avant } ou ]
-- Pas de markdown
-- Échapper les guillemets à l'intérieur des strings (\\")
-- Total < 8000 caractères pour garantir absence de troncation
-`;
-      claudeResult = await this.claudeClient.call({
-        profile: req.config.profile,
-        userMessage: retryMessage,
-      });
-      if (claudeResult.stopReason === 'max_tokens') {
-        throw new Error('JSON parse failed: response truncated at max_tokens (retry)');
-      }
-      parsed = this.extractAndParseJson(claudeResult.rawText);
-    }
+    const parsed = toolResult.input;
+    const claudeMeta = {
+      model: toolResult.model,
+      usage: toolResult.usage,
+    };
 
     // 5. Validate + normalize into AllocationProposal
-    const proposal = this.normalizeProposal(parsed, req.config, claudeResult);
+    const proposal = this.normalizeProposal(parsed, req.config, claudeMeta);
 
-    // 5b. Extract closeRecommendations si présent (nouvelle feature —
-    //     gestion active des positions existantes).
-    const rawRoot = parsed as Record<string, unknown>;
+    // 5b. Extract closeRecommendations
+    const rawRoot = parsed;
     const closeRecsRaw = (rawRoot.closeRecommendations as Array<Record<string, unknown>> | undefined) ?? [];
     const openPositionIds = new Set((req.openPositions ?? []).map((p) => p.positionId));
     const closeRecommendations = closeRecsRaw
@@ -182,21 +153,21 @@ Ton output précédent contenait une erreur de syntaxe JSON. Cette fois :
 
     // 6. Compute metadata
     const costUsd = (this.claudeClient.constructor as typeof LisaClaudeClient)
-      .estimateCostUsd(claudeResult.usage);
+      .estimateCostUsd(toolResult.usage);
 
     const totalInput =
-      (claudeResult.usage.inputTokens ?? 0) +
-      (claudeResult.usage.cacheReadInputTokens ?? 0) +
-      (claudeResult.usage.cacheCreationInputTokens ?? 0);
+      (toolResult.usage.inputTokens ?? 0) +
+      (toolResult.usage.cacheReadInputTokens ?? 0) +
+      (toolResult.usage.cacheCreationInputTokens ?? 0);
     const cacheHitRatio = totalInput > 0
-      ? (claudeResult.usage.cacheReadInputTokens ?? 0) / totalInput
+      ? (toolResult.usage.cacheReadInputTokens ?? 0) / totalInput
       : null;
 
     return {
       proposal,
       costUsd,
       cacheHitRatio,
-      rawClaudeText: claudeResult.rawText,
+      rawClaudeText: JSON.stringify(parsed).slice(0, 50_000),
       warnings: proposal.warnings,
       closeRecommendations,
     };
@@ -328,10 +299,11 @@ thèse initiale tient toujours (respect du plan, pas de panic-sell).`;
   }
 
   /**
-   * Extrait le JSON d'un texte Claude (qui peut avoir du préambule ou
-   * être entouré de fences ```json...```). Tolérant aux imperfections
-   * fréquentes : trailing commas, commentaires //, fences mal placées.
+   * @deprecated Plus utilisé depuis le passage à tool_use (callWithTool).
+   * Conservé temporairement comme référence du parser tolérant ; à supprimer
+   * une fois confirmé que tool_use est stable en production.
    */
+  // @ts-expect-error — méthode privée non utilisée gardée comme référence
   private extractAndParseJson(text: string): unknown {
     // Strip markdown code fences if present
     let cleaned = text

@@ -131,6 +131,72 @@ export class LisaClaudeClient {
   }
 
   /**
+   * Appel Claude avec tool_use forcé. Garantit une sortie JSON conforme au
+   * input_schema du tool — Anthropic valide côté serveur, plus aucune chance
+   * de parse failure côté client.
+   */
+  async callWithTool(options: ClaudeCallOptions & {
+    tool: { name: string; description: string; input_schema: Record<string, unknown> };
+  }): Promise<ClaudeToolResult> {
+    const {
+      profile,
+      userMessage,
+      model = this.defaultModel,
+      maxTokens = 16000,
+      tool,
+    } = options;
+
+    const { cacheable, profileSpecific } = buildLisaSystemPrompt(profile);
+    const systemBlocks = [
+      { type: 'text' as const, text: cacheable, cache_control: { type: 'ephemeral' as const } },
+      { type: 'text' as const, text: profileSpecific },
+    ];
+
+    const params: Anthropic.MessageCreateParamsNonStreaming = {
+      model,
+      max_tokens: maxTokens,
+      system: systemBlocks as unknown as Anthropic.TextBlockParam[],
+      tools: [tool] as unknown as Anthropic.Tool[],
+      tool_choice: { type: 'tool', name: tool.name },
+      messages: [{ role: 'user', content: userMessage }],
+    };
+    const response = await this.client.messages.create(params);
+
+    const toolBlock = response.content.find(
+      (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
+    );
+    if (!toolBlock) {
+      const stopReason = response.stop_reason;
+      throw new Error(
+        `Claude n'a pas appelé le tool ${tool.name} (stop_reason=${stopReason}). `
+        + `Content blocks: ${response.content.map((b) => b.type).join(',')}`,
+      );
+    }
+
+    const usage = response.usage as Anthropic.Usage & {
+      cache_creation_input_tokens?: number;
+      cache_read_input_tokens?: number;
+    };
+
+    return {
+      input: toolBlock.input as Record<string, unknown>,
+      toolUseId: toolBlock.id,
+      usage: {
+        inputTokens: usage.input_tokens,
+        outputTokens: usage.output_tokens,
+        ...(usage.cache_creation_input_tokens !== undefined
+          ? { cacheCreationInputTokens: usage.cache_creation_input_tokens }
+          : {}),
+        ...(usage.cache_read_input_tokens !== undefined
+          ? { cacheReadInputTokens: usage.cache_read_input_tokens }
+          : {}),
+      },
+      model: response.model,
+      stopReason: response.stop_reason,
+    };
+  }
+
+  /**
    * Estime le coût d'un appel (USD).
    * Pricing Claude Opus 4.7 (à date — à mettre à jour) :
    *  - Input : $15 / 1M tokens
@@ -156,4 +222,12 @@ export class LisaClaudeClient {
 
     return cost;
   }
+}
+
+export interface ClaudeToolResult {
+  input: Record<string, unknown>;
+  toolUseId: string;
+  usage: ClaudeCallResult['usage'];
+  model: string;
+  stopReason: string | null;
 }

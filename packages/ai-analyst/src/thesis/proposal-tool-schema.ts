@@ -1,0 +1,273 @@
+/**
+ * Schema Anthropic tool_use pour la sortie d'une proposition Lisa.
+ *
+ * En passant ce schema dans `tools` + `tool_choice: { type: 'tool', name: ... }`,
+ * Claude est OBLIGÉ de produire un JSON conforme — l'API Anthropic valide la
+ * structure côté serveur et re-prompte si nécessaire. Élimine 100% des parse
+ * failures côté SmartVest.
+ *
+ * Le schema mirror les types Zod de packages/ai-analyst/src/types/index.ts.
+ * Si tu modifies un enum côté Zod, met à jour ici aussi.
+ */
+
+const ASSET_CLASS_ENUM = [
+  'equity_us_large', 'equity_us_small', 'equity_eu', 'equity_em', 'equity_jp', 'equity_cn',
+  'govt_bonds_us', 'govt_bonds_eu', 'govt_bonds_em',
+  'credit_ig', 'credit_hy', 'credit_em', 'credit_private',
+  'fx_g10', 'fx_em', 'fx_exotic',
+  'commodities_energy', 'commodities_metals_precious', 'commodities_metals_industrial',
+  'commodities_agri',
+  'crypto_bitcoin', 'crypto_ethereum', 'crypto_altcoins', 'crypto_stablecoin',
+  'derivatives_options', 'derivatives_futures', 'derivatives_swaps', 'derivatives_vol',
+  'structured_products', 'real_estate', 'alt_hedge_funds', 'cash',
+] as const;
+
+const MARKET_REGIME_ENUM = [
+  'risk_on_reflation', 'risk_on_goldilocks', 'risk_off_flight_to_quality',
+  'risk_off_liquidity_crunch', 'stagflation', 'deflationary_shock',
+  'late_cycle_peak', 'early_cycle_recovery', 'mid_cycle_expansion',
+  'policy_pivot_dovish', 'policy_pivot_hawkish', 'geopolitical_stress',
+  'tech_bubble_euphoria', 'fragmented_no_consensus',
+] as const;
+
+const THESIS_CATEGORY_ENUM = [
+  'hidden_gem', 'turnaround', 'flow_timing', 'watchlist',
+  'contrarian', 'mean_reversion', 'event_driven',
+] as const;
+
+const DIRECTION_ENUM = [
+  'long', 'short', 'long_call', 'long_put', 'short_call', 'short_put', 'pair_spread',
+] as const;
+
+const SIZING_METHOD_ENUM = [
+  'fixed_notional', 'pct_portfolio', 'kelly_fraction', 'risk_parity', 'vol_targeting',
+] as const;
+
+const METRIC_TYPE_ENUM = ['price', 'yield', 'spread', 'vix', 'ratio', 'event', 'time'] as const;
+const THRESHOLD_DIRECTION_ENUM = ['above', 'below', 'cross', 'occurs'] as const;
+const DRIVER_TYPE_ENUM = [
+  'fundamentals_cashflow', 'fundamentals_spreads', 'flows_positioning',
+  'pure_narrative', 'mixed',
+] as const;
+const EVIDENCE_TYPE_ENUM = ['hard_data', 'soft_data', 'qualitative', 'speculative'] as const;
+const SESSION_PROFILE_ENUM = ['long_term_investor', 'active_trading', 'sniper_mode', 'hyper_active'] as const;
+
+const expressionSchema = {
+  type: 'object',
+  properties: {
+    symbol: { type: 'string', description: 'Ticker exact (BTC, AAPL, EURUSD, ...)' },
+    name: { type: 'string', description: 'Nom humain de l\'instrument' },
+    assetClass: { type: 'string', enum: ASSET_CLASS_ENUM },
+    preferredVenue: { type: 'string', description: 'IBKR | Saxo | Binance | Kraken | etc.' },
+    direction: { type: 'string', enum: DIRECTION_ENUM },
+    sizingMethod: { type: 'string', enum: SIZING_METHOD_ENUM },
+    sizingValue: { type: 'string', description: 'Decimal as string (ex: "0.10" pour 10%)' },
+    estimatedCostBps: { type: 'integer', minimum: 0, description: 'Coût total entrée en bps' },
+    averageDailyVolumeUsd: { type: ['string', 'null'], description: 'ADV en USD (decimal as string) ou null' },
+    whyThisExpression: { type: 'string', description: 'Pourquoi cette expression vs les autres' },
+  },
+  required: ['symbol', 'name', 'assetClass', 'preferredVenue', 'direction', 'sizingMethod', 'sizingValue', 'estimatedCostBps', 'whyThisExpression'],
+};
+
+const thesisSchema = {
+  type: 'object',
+  properties: {
+    title: { type: 'string', maxLength: 200, description: 'Nom court lisible humain' },
+    summary: { type: 'string', description: 'Résumé 3-7 lignes max' },
+    catalyst: { type: 'string', description: 'Catalyseur principal (1-3 phrases)' },
+    whoIsWrong: { type: 'string', description: 'Qui est mal positionné (1-2 phrases)' },
+    category: { type: 'string', enum: THESIS_CATEGORY_ENUM },
+    expressions: { type: 'array', minItems: 1, items: expressionSchema },
+    preferredExpressionIndex: { type: 'integer', minimum: 0 },
+    expressionChoiceRationale: { type: 'string' },
+    riskReward: {
+      type: 'object',
+      properties: {
+        centralScenarioReturnPct: {
+          type: 'object',
+          properties: {
+            low: { type: 'number' },
+            mid: { type: 'number' },
+            high: { type: 'number' },
+          },
+          required: ['low', 'mid', 'high'],
+        },
+        adverseScenarioReturnPct: { type: 'number', description: 'Scénario adverse en % (négatif)' },
+        riskRewardRatio: { type: 'number' },
+        horizonDays: { type: 'integer', minimum: 1 },
+        convexitySources: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['centralScenarioReturnPct', 'adverseScenarioReturnPct', 'riskRewardRatio', 'horizonDays', 'convexitySources'],
+    },
+    invalidation: {
+      type: 'object',
+      properties: {
+        conditions: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              description: { type: 'string' },
+              metricType: { type: 'string', enum: METRIC_TYPE_ENUM },
+              thresholdValue: { type: ['string', 'null'] },
+              thresholdDirection: { type: ['string', 'null'], enum: [...THRESHOLD_DIRECTION_ENUM, null] },
+            },
+            required: ['description', 'metricType'],
+          },
+        },
+        qualitativeConditions: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['conditions', 'qualitativeConditions'],
+    },
+    antiBullshit: {
+      type: 'object',
+      properties: {
+        isCrowded: { type: 'boolean' },
+        isCrowdedRationale: { type: 'string' },
+        driverType: { type: 'string', enum: DRIVER_TYPE_ENUM },
+        evidenceType: { type: 'string', enum: EVIDENCE_TYPE_ENUM },
+        selfCritique: { type: 'string' },
+      },
+      required: ['isCrowded', 'isCrowdedRationale', 'driverType', 'evidenceType', 'selfCritique'],
+    },
+    analogSlugs: { type: 'array', items: { type: 'string' }, description: 'Slugs du historical_events_corpus consultés' },
+    confidenceScore: { type: 'integer', minimum: 0, maximum: 100 },
+  },
+  required: ['title', 'summary', 'catalyst', 'whoIsWrong', 'category', 'expressions', 'preferredExpressionIndex', 'expressionChoiceRationale', 'riskReward', 'invalidation', 'antiBullshit', 'analogSlugs', 'confidenceScore'],
+};
+
+export const PROPOSAL_TOOL = {
+  name: 'submit_proposal',
+  description: 'Submit a complete Lisa investment proposal with market context, '
+    + 'investment theses, allocation suggestions, and recommendations to close existing positions. '
+    + 'This is the ONLY way to communicate your output — do not write any text outside this tool call.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      sessionMeta: {
+        type: 'object',
+        properties: {
+          timestamp: { type: 'string', description: 'ISO 8601 UTC' },
+          profile: { type: 'string', enum: SESSION_PROFILE_ENUM },
+          antiConsensusStrength: { type: 'integer', minimum: 0, maximum: 10 },
+        },
+        required: ['timestamp', 'profile', 'antiConsensusStrength'],
+      },
+      marketContext: {
+        type: 'object',
+        properties: {
+          regime: { type: 'string', enum: MARKET_REGIME_ENUM },
+          regimeSummary: { type: 'string', description: 'Synthèse macro 3-7 lignes' },
+          regimeDrivers: { type: 'array', items: { type: 'string' } },
+          vix: { type: 'number' },
+          usdDxy: { type: 'number' },
+          us10yYield: { type: 'number' },
+          brentUsd: { type: 'number' },
+          btcUsd: { type: 'number' },
+          goldUsd: { type: 'number' },
+        },
+        required: ['regime', 'regimeSummary', 'regimeDrivers'],
+      },
+      poolsScan: {
+        type: 'object',
+        properties: {
+          favored: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                assetClass: { type: 'string', enum: ASSET_CLASS_ENUM },
+                rationale: { type: 'string' },
+                confidenceScore: { type: 'integer', minimum: 0, maximum: 100 },
+              },
+              required: ['assetClass', 'rationale'],
+            },
+          },
+          avoided: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                assetClass: { type: 'string', enum: ASSET_CLASS_ENUM },
+                rationale: { type: 'string' },
+              },
+              required: ['assetClass', 'rationale'],
+            },
+          },
+        },
+        required: ['favored', 'avoided'],
+      },
+      theses: { type: 'array', minItems: 0, maxItems: 7, items: thesisSchema },
+      allocationSuggestion: {
+        type: 'object',
+        properties: {
+          totalCapitalUsd: { type: 'string', description: 'Decimal as string' },
+          perThesis: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                thesisId: { type: 'string', description: 'Réfère un title/index de thèse — sera réassigné UUID côté serveur' },
+                pctCapital: { type: 'number', minimum: 0, maximum: 100 },
+                amountUsd: { type: 'string' },
+              },
+              required: ['thesisId', 'pctCapital', 'amountUsd'],
+            },
+          },
+          cashReservePct: { type: 'number', minimum: 0, maximum: 100 },
+        },
+        required: ['totalCapitalUsd', 'perThesis', 'cashReservePct'],
+      },
+      closeRecommendations: {
+        type: 'array',
+        description: 'Positions ouvertes à fermer MAINTENANT. Liste vide si aucune.',
+        items: {
+          type: 'object',
+          properties: {
+            positionId: { type: 'string', description: 'Copier exactement l\'id depuis le bloc POSITIONS ACTUELLEMENT OUVERTES' },
+            reason: { type: 'string', description: 'Rationale courte' },
+          },
+          required: ['positionId', 'reason'],
+        },
+      },
+      warnings: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Warnings utilisateur (régime ambigu, données manquantes, etc.)',
+      },
+      sessionNotes: {
+        type: 'object',
+        properties: {
+          marketNoiseIgnored: { type: 'string' },
+          topOpportunityZones: { type: 'array', items: { type: 'string' } },
+          processLearnings: { type: 'string' },
+        },
+      },
+    },
+    required: ['marketContext', 'theses', 'allocationSuggestion'],
+  },
+} as const;
+
+export type ProposalToolInput = {
+  sessionMeta?: { timestamp: string; profile: string; antiConsensusStrength: number };
+  marketContext: {
+    regime: string;
+    regimeSummary: string;
+    regimeDrivers: string[];
+    vix?: number; usdDxy?: number; us10yYield?: number;
+    brentUsd?: number; btcUsd?: number; goldUsd?: number;
+  };
+  poolsScan?: {
+    favored: Array<{ assetClass: string; rationale: string; confidenceScore?: number }>;
+    avoided: Array<{ assetClass: string; rationale: string }>;
+  };
+  theses: Array<Record<string, unknown>>;
+  allocationSuggestion: {
+    totalCapitalUsd: string;
+    perThesis: Array<{ thesisId: string; pctCapital: number; amountUsd: string }>;
+    cashReservePct: number;
+  };
+  closeRecommendations?: Array<{ positionId: string; reason: string }>;
+  warnings?: string[];
+  sessionNotes?: { marketNoiseIgnored?: string; topOpportunityZones?: string[]; processLearnings?: string };
+};
