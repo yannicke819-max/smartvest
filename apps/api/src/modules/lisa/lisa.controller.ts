@@ -140,4 +140,13 @@ export class LisaController {
   ) {
     return this.lisa.triggerKillSwitch(extractUserId(headers), portfolioId, reason ?? 'Manual user kill');
   }
+
+  @Post('portfolio/:portfolioId/reset-simulation')
+  @HttpCode(200)
+  resetSimulation(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    return this.lisa.resetSimulation(extractUserId(headers), portfolioId);
+  }
 }

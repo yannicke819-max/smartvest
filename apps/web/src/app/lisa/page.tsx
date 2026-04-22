@@ -12,6 +12,7 @@ import {
   useLisaProposals,
   useLisaSnapshot,
   useTriggerKillSwitch,
+  useResetSimulation,
   type SessionProfile,
 } from '@/hooks/use-lisa';
 import { DisclaimerBanner } from '@/components/disclaimer-banner';
@@ -80,6 +81,7 @@ export default function LisaPage() {
   const proposalsQuery = useLisaProposals(selectedPortfolioId);
   const snapshotQuery = useLisaSnapshot(selectedPortfolioId);
   const killSwitch = useTriggerKillSwitch(selectedPortfolioId ?? '');
+  const resetSim = useResetSimulation(selectedPortfolioId ?? '');
 
   const [profile, setProfile] = useState<SessionProfile>('sniper_mode');
   const [capital, setCapital] = useState('10000');
@@ -135,6 +137,15 @@ export default function LisaPage() {
     if (!confirm(`Fermer TOUTES les positions ? Raison : ${reason}`)) return;
     await killSwitch.mutateAsync(reason);
     setKillReason('');
+  }
+
+  async function handleResetSimulation() {
+    if (!selectedPortfolioId) return;
+    if (!confirm(
+      'Effacer TOUT le portefeuille simulé ? Cela supprime définitivement positions, '
+      + 'propositions, snapshots et décision log. Action irréversible.',
+    )) return;
+    await resetSim.mutateAsync();
   }
 
   // ── No simulation portfolio case ────────────────────────────────────────────
@@ -533,6 +544,23 @@ export default function LisaPage() {
             disabled={killSwitch.isPending}
           >
             {killSwitch.isPending ? 'Fermeture…' : 'Fermer toutes les positions'}
+          </Button>
+        </div>
+
+        <div className="pt-3 border-t border-destructive/20">
+          <p className="text-xs text-muted-foreground mb-2">
+            Reset complet : efface positions, propositions, snapshots et
+            journal — retour à l'état initial sans P&L résiduel. À utiliser
+            si le portefeuille contient des positions ouvertes avec des prix
+            factices (ex : fallback avant fix).
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleResetSimulation}
+            disabled={resetSim.isPending}
+          >
+            {resetSim.isPending ? 'Reset…' : 'Reset simulation (effacer tout)'}
           </Button>
         </div>
       </div>

@@ -86,7 +86,7 @@ export class LisaService {
     return data;
   }
 
-  async upsertSessionConfig(userId: string, portfolioId: string, config: Partial<LisaSessionConfig>) {
+  async upsertSessionConfig(userId: string, portfolioId: string, config: Record<string, unknown>) {
     // Vérifier que le portefeuille appartient bien à l'user ET is_simulation
     const { data: portfolio, error: pErr } = await this.supabase.getClient()
       .from('portfolios')
@@ -99,23 +99,41 @@ export class LisaService {
       throw new BadRequestException('Lisa ne peut opérer QUE sur un portefeuille de simulation (is_simulation=true)');
     }
 
+    // Accept both snake_case (frontend native) and camelCase (domain type).
+    // Le frontend envoie par convention du snake_case qui matche les colonnes DB.
+    const pick = <T>(snake: string, camel: string, fallback: T): T => {
+      const v = config[snake] ?? config[camel];
+      return (v === undefined || v === null) ? fallback : (v as T);
+    };
+
+    // Fetch existing row to preserve fields not sent in the partial update
+    const { data: existing } = await this.supabase.getClient()
+      .from('lisa_session_configs')
+      .select('*')
+      .eq('portfolio_id', portfolioId)
+      .maybeSingle();
+
+    const merged = {
+      user_id: userId,
+      portfolio_id: portfolioId,
+      profile: pick('profile', 'profile', existing?.profile ?? 'long_term_investor'),
+      capital_usd: pick('capital_usd', 'capitalUsd', existing?.capital_usd ?? '10000'),
+      base_currency: pick('base_currency', 'baseCurrency', existing?.base_currency ?? 'EUR'),
+      risk_constraints: pick('risk_constraints', 'riskConstraints', existing?.risk_constraints ?? {}),
+      include_asset_classes: pick('include_asset_classes', 'includeAssetClasses', existing?.include_asset_classes ?? null),
+      exclude_asset_classes: pick('exclude_asset_classes', 'excludeAssetClasses', existing?.exclude_asset_classes ?? null),
+      anti_consensus_strength: pick('anti_consensus_strength', 'antiConsensusStrength', existing?.anti_consensus_strength ?? 7),
+      max_theses: pick('max_theses', 'maxTheses', existing?.max_theses ?? 5),
+      enable_crypto: pick('enable_crypto', 'enableCrypto', existing?.enable_crypto ?? true),
+      enable_derivatives: pick('enable_derivatives', 'enableDerivatives', existing?.enable_derivatives ?? false),
+      enable_leverage: pick('enable_leverage', 'enableLeverage', existing?.enable_leverage ?? false),
+      autopilot_enabled: pick('autopilot_enabled', 'autopilotEnabled', existing?.autopilot_enabled ?? false),
+      autopilot_cycle_minutes: pick('autopilot_cycle_minutes', 'autopilotCycleMinutes', existing?.autopilot_cycle_minutes ?? 15),
+    };
+
     const { data, error } = await this.supabase.getClient()
       .from('lisa_session_configs')
-      .upsert({
-        user_id: userId,
-        portfolio_id: portfolioId,
-        profile: config.profile ?? 'long_term_investor',
-        capital_usd: config.capitalUsd ?? '10000',
-        base_currency: config.baseCurrency ?? 'EUR',
-        risk_constraints: config.riskConstraints ?? {},
-        include_asset_classes: config.includeAssetClasses ?? null,
-        exclude_asset_classes: config.excludeAssetClasses ?? null,
-        anti_consensus_strength: config.antiConsensusStrength ?? 7,
-        max_theses: config.maxTheses ?? 5,
-        enable_crypto: config.enableCrypto ?? true,
-        enable_derivatives: config.enableDerivatives ?? false,
-        enable_leverage: config.enableLeverage ?? false,
-      }, { onConflict: 'portfolio_id' })
+      .upsert(merged, { onConflict: 'portfolio_id' })
       .select()
       .single();
     if (error) throw new BadRequestException(error.message);
@@ -377,6 +395,37 @@ export class LisaService {
     };
 
     return this.riskMonitor.checkPortfolio(portfolioId, constraints);
+  }
+
+  /**
+   * Reset complet de la simulation : supprime TOUTES les positions, snapshots
+   * et decision log pour ce portefeuille. Utile pour effacer un état corrompu
+   * (ex : positions ouvertes avec prix fallback avant live feed disponible).
+   * À la différence du kill-switch, ne matérialise PAS de P&L réalisé.
+   */
+  async resetSimulation(userId: string, portfolioId: string) {
+    await this.assertPortfolioOwner(userId, portfolioId);
+    const client = this.supabase.getClient();
+
+    const [posRes, snapRes, logRes, propRes] = await Promise.all([
+      client.from('lisa_positions').delete().eq('portfolio_id', portfolioId),
+      client.from('lisa_portfolio_snapshots').delete().eq('portfolio_id', portfolioId),
+      client.from('lisa_decision_log').delete().eq('portfolio_id', portfolioId),
+      client.from('lisa_proposals').delete().eq('portfolio_id', portfolioId),
+    ]);
+
+    const errors = [posRes.error, snapRes.error, logRes.error, propRes.error].filter(Boolean);
+    if (errors.length) {
+      throw new BadRequestException(`Reset partiel — erreurs : ${errors.map((e) => e!.message).join(' | ')}`);
+    }
+
+    // Réactive la config (lève kill_switch éventuel posé avant)
+    await client
+      .from('lisa_session_configs')
+      .update({ kill_switch_active: false })
+      .eq('portfolio_id', portfolioId);
+
+    return { ok: true, portfolioId };
   }
 
   async triggerKillSwitch(userId: string, portfolioId: string, reason: string) {

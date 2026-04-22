@@ -296,3 +296,17 @@ export function useTriggerKillSwitch(portfolioId: string) {
     },
   });
 }
+
+export function useResetSimulation(portfolioId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<{ ok: boolean; portfolioId: string }>(
+        `/lisa/portfolio/${portfolioId}/reset-simulation`,
+        { method: 'POST' },
+      ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['lisa'] });
+    },
+  });
+}
