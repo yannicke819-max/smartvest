@@ -9,7 +9,7 @@ insert into public.historical_events_corpus (
   context_description, key_drivers, preconditions,
   market_impact_by_asset_class, regime_shift, resolution,
   lessons_learned, limitations_of_comparison, similar_setups_tags,
-  severity_at_peak, data_quality, references
+  severity_at_peak, data_quality, source_references
 ) values (
   'glp1_obesity_drugs_revolution_2022_2025',
   'GLP-1 Obesity Drugs Revolution (Ozempic, Mounjaro, Zepbound)',
@@ -181,4 +181,4 @@ on conflict (slug) do update set
   limitations_of_comparison=excluded.limitations_of_comparison,
   similar_setups_tags=excluded.similar_setups_tags,
   severity_at_peak=excluded.severity_at_peak, data_quality=excluded.data_quality,
-  references=excluded.source_references, updated_at=now();
+  source_references = excluded.source_references, updated_at=now();

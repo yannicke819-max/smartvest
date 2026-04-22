@@ -235,5 +235,5 @@ on conflict (slug) do update set
   similar_setups_tags = excluded.similar_setups_tags,
   severity_at_peak = excluded.severity_at_peak,
   data_quality = excluded.data_quality,
-  references = excluded.source_references,
+  source_references = excluded.source_references,
   updated_at = now();
