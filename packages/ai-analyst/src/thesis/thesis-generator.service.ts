@@ -1,0 +1,332 @@
+/**
+ * ThesisGeneratorService — Orchestre l'appel Claude pour produire
+ * des thèses Lisa structurées à partir du contexte marché + corpus.
+ *
+ * Pipeline :
+ *  1. Compose le user message (contexte marché live + corpus filtré +
+ *     config session + demande spécifique)
+ *  2. Appelle LisaClaudeClient avec le profile approprié
+ *  3. Parse le JSON output de Claude
+ *  4. Valide via Zod (LisaThesis + AllocationProposal schema)
+ *  5. Retourne proposal structurée + metadata de coût
+ */
+
+import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
+import type { LisaClaudeClient } from '../claude/client';
+import type { CorpusQueryService } from '../corpus/corpus-query.service';
+import type {
+  AllocationProposal,
+  LisaSessionConfig,
+  LisaThesis,
+  MarketRegime,
+} from '../types';
+import { LisaThesis as LisaThesisSchema, RiskConstraints } from '../types';
+
+/**
+ * Live market snapshot passé à Lisa à chaque cycle.
+ * Format volontairement synthétique — Claude n'a pas besoin d'un dump complet
+ * pour raisonner ; il a besoin des signaux clés.
+ */
+export interface MarketSnapshot {
+  timestamp: string;
+  vix: number;
+  usdDxy: number;
+  us10yYield: number;
+  us2yYield: number;
+  brentUsd: number;
+  btcUsd: number;
+  ethUsd: number;
+  goldUsd: number;
+  sp500: number;
+  nasdaq: number;
+  eurUsd: number;
+  usdJpy: number;
+  /** Spread HY OAS en bps */
+  creditHyOasBps: number;
+  creditIgOasBps: number;
+  /** News / événements récents 24-72h */
+  recentNews: Array<{
+    headline: string;
+    source: string;
+    timestamp: string;
+    relevance: 'high' | 'medium' | 'low';
+  }>;
+  /** Economic calendar 7 jours à venir */
+  upcomingEvents: Array<{
+    name: string;
+    date: string;
+    importance: 'high' | 'medium' | 'low';
+  }>;
+}
+
+export interface GenerateThesesRequest {
+  config: LisaSessionConfig;
+  marketSnapshot: MarketSnapshot;
+  /** Question / focus spécifique de l'utilisateur (optionnel) */
+  userFocus?: string;
+  /** Tags à matcher dans le corpus (auto-détectés si omis) */
+  corpusTags?: string[];
+  /** Include ALL corpus (25 events) dans le prompt ? (défaut false, seulement
+   *  les analogs filtrés par tags) */
+  includeFullCorpus?: boolean;
+}
+
+export interface GenerateThesesResponse {
+  proposal: AllocationProposal;
+  costUsd: number;
+  cacheHitRatio: number | null;
+  rawClaudeText: string;
+  warnings: string[];
+}
+
+export class ThesisGeneratorService {
+  constructor(
+    private readonly claudeClient: LisaClaudeClient,
+    private readonly corpus: CorpusQueryService,
+  ) {}
+
+  async generateTheses(req: GenerateThesesRequest): Promise<GenerateThesesResponse> {
+    // 1. Fetch corpus relevant
+    const corpusEvents = req.includeFullCorpus
+      ? await this.corpus.fetchAll()
+      : await this.corpus.fetchByTags(req.corpusTags ?? [], 10);
+
+    const projected = corpusEvents.map((e) => this.corpus.projectForPrompt(e));
+    const corpusBlock = this.corpus.serializeCorpusForPrompt(projected);
+
+    // 2. Compose user message
+    const userMessage = this.composeUserMessage(req, corpusBlock);
+
+    // 3. Call Claude
+    const claudeResult = await this.claudeClient.call({
+      profile: req.config.profile,
+      userMessage,
+    });
+
+    // 4. Parse JSON
+    const parsed = this.extractAndParseJson(claudeResult.rawText);
+
+    // 5. Validate + normalize into AllocationProposal
+    const proposal = this.normalizeProposal(parsed, req.config, claudeResult);
+
+    // 6. Compute metadata
+    const costUsd = (this.claudeClient.constructor as typeof LisaClaudeClient)
+      .estimateCostUsd(claudeResult.usage);
+
+    const totalInput =
+      (claudeResult.usage.inputTokens ?? 0) +
+      (claudeResult.usage.cacheReadInputTokens ?? 0) +
+      (claudeResult.usage.cacheCreationInputTokens ?? 0);
+    const cacheHitRatio = totalInput > 0
+      ? (claudeResult.usage.cacheReadInputTokens ?? 0) / totalInput
+      : null;
+
+    return {
+      proposal,
+      costUsd,
+      cacheHitRatio,
+      rawClaudeText: claudeResult.rawText,
+      warnings: proposal.warnings,
+    };
+  }
+
+  private composeUserMessage(req: GenerateThesesRequest, corpusBlock: string): string {
+    const m = req.marketSnapshot;
+    const config = req.config;
+
+    const recentNewsBlock = m.recentNews
+      .slice(0, 10)
+      .map((n) => `- [${n.timestamp}] (${n.source}, ${n.relevance}) ${n.headline}`)
+      .join('\n');
+
+    const upcomingEventsBlock = m.upcomingEvents
+      .slice(0, 10)
+      .map((e) => `- ${e.date}: ${e.name} (${e.importance})`)
+      .join('\n');
+
+    const constraints = config.riskConstraints;
+
+    return `
+# LIVE MARKET CONTEXT
+Timestamp: ${m.timestamp}
+
+## Macro snapshot
+- VIX: ${m.vix}
+- DXY: ${m.usdDxy}
+- US 10y yield: ${m.us10yYield}%
+- US 2y yield: ${m.us2yYield}%
+- US 2s10s: ${(m.us10yYield - m.us2yYield).toFixed(2)}bps
+- Credit IG OAS: ${m.creditIgOasBps}bps
+- Credit HY OAS: ${m.creditHyOasBps}bps
+- Brent: $${m.brentUsd}
+- Gold: $${m.goldUsd}
+- BTC: $${m.btcUsd}
+- ETH: $${m.ethUsd}
+- EUR/USD: ${m.eurUsd}
+- USD/JPY: ${m.usdJpy}
+- S&P 500: ${m.sp500}
+- Nasdaq: ${m.nasdaq}
+
+## Recent news (24-72h)
+${recentNewsBlock || '- (no recent news provided)'}
+
+## Upcoming events (7 days)
+${upcomingEventsBlock || '- (no upcoming events provided)'}
+
+# HISTORICAL CORPUS (analogs à disposition)
+${corpusBlock || '(no corpus events loaded for this query)'}
+
+# SESSION CONFIG
+- Profile: ${config.profile}
+- Capital available: ${config.capitalUsd} ${config.baseCurrency}
+- Anti-consensus strength: ${config.antiConsensusStrength}/10
+- Max theses: ${config.maxTheses}
+- Enable crypto: ${config.enableCrypto}
+- Enable derivatives: ${config.enableDerivatives}
+- Enable leverage: ${config.enableLeverage}
+
+## Risk constraints (HARD LIMITS)
+- Max drawdown 2 days: ${constraints.maxDrawdown2DaysPct}% (AUTO KILL if breached)
+- Max drawdown 7 days: ${constraints.maxDrawdown7DaysPct}%
+- Max drawdown 30 days: ${constraints.maxDrawdown30DaysPct}%
+- Max single position size: ${constraints.maxPositionSizePct}%
+- Max open positions: ${constraints.maxOpenPositions}
+- Max leverage: ${constraints.maxLeverage}x
+- Max per asset class: ${constraints.maxExposurePerAssetClassPct}%
+- Max portfolio volatility annualized: ${constraints.maxPortfolioVolatilityPct}%
+
+${req.userFocus ? `\n# USER FOCUS\n${req.userFocus}\n` : ''}
+
+# REQUEST
+Applique TA méthode Lisa complète. Renvoie UNIQUEMENT le JSON au format
+défini, sans markdown, sans explications hors JSON.
+`.trim();
+  }
+
+  /**
+   * Extrait le JSON d'un texte Claude (qui peut avoir du préambule ou
+   * être entouré de fences ```json...```).
+   */
+  private extractAndParseJson(text: string): unknown {
+    // Strip markdown code fences if present
+    const cleaned = text
+      .replace(/^```(?:json)?\s*/m, '')
+      .replace(/\s*```\s*$/m, '')
+      .trim();
+
+    // Try direct parse
+    try {
+      return JSON.parse(cleaned);
+    } catch {
+      // Fall back: find first { ... last }
+      const firstBrace = cleaned.indexOf('{');
+      const lastBrace = cleaned.lastIndexOf('}');
+      if (firstBrace === -1 || lastBrace === -1) {
+        throw new Error('No JSON object found in Claude output');
+      }
+      const candidate = cleaned.slice(firstBrace, lastBrace + 1);
+      return JSON.parse(candidate);
+    }
+  }
+
+  /**
+   * Normalise la réponse Claude brute en AllocationProposal typée.
+   * Génère les UUIDs manquants, valide les enums, enforce les contraintes.
+   */
+  private normalizeProposal(
+    parsed: unknown,
+    config: LisaSessionConfig,
+    claudeResult: { model: string; usage: { inputTokens: number; outputTokens: number; cacheReadInputTokens?: number } },
+  ): AllocationProposal {
+    const root = parsed as Record<string, unknown>;
+    const now = new Date().toISOString();
+
+    // Extract theses, ensure IDs, attach claude meta
+    const thesesRaw = (root.theses as Array<Record<string, unknown>>) ?? [];
+    const theses: LisaThesis[] = thesesRaw.map((t) => {
+      const thesisId = (t.id as string) || randomUUID();
+      const enriched = {
+        ...t,
+        id: thesisId,
+        generatedAt: now,
+        claudeMeta: {
+          model: claudeResult.model,
+          inputTokens: claudeResult.usage.inputTokens,
+          outputTokens: claudeResult.usage.outputTokens,
+          ...(claudeResult.usage.cacheReadInputTokens !== undefined
+            ? { cachedTokens: claudeResult.usage.cacheReadInputTokens }
+            : {}),
+        },
+      };
+
+      // Validation stricte Zod
+      try {
+        return LisaThesisSchema.parse(enriched);
+      } catch (e) {
+        const issue = e instanceof z.ZodError
+          ? e.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(' | ')
+          : String(e);
+        throw new Error(`Thesis validation failed for "${String(t.title)}": ${issue}`);
+      }
+    });
+
+    // Allocation suggestion
+    const allocSug = (root.allocationSuggestion as Record<string, unknown>) ?? {};
+    const perThesis = (allocSug.perThesis as Array<Record<string, unknown>>) ?? [];
+    const allocations = perThesis.map((a) => ({
+      thesisId: a.thesisId as string,
+      pctCapital: a.pctCapital as number,
+      amountUsd: a.amountUsd as string,
+    }));
+    const cashReservePct = (allocSug.cashReservePct as number) ?? 0;
+
+    // Market context
+    const mc = (root.marketContext as Record<string, unknown>) ?? {};
+    const poolsScan = (root.poolsScan as Record<string, unknown>) ?? {};
+
+    const proposal: AllocationProposal = {
+      id: randomUUID(),
+      capitalUsd: config.capitalUsd,
+      baseCurrency: config.baseCurrency,
+      detectedRegime: (mc.regime as MarketRegime) ?? 'fragmented_no_consensus',
+      regimeSummary: (mc.regimeSummary as string) ?? '',
+      favoredPockets: ((poolsScan.favored as Array<Record<string, unknown>>) ?? []).map((p) => ({
+        assetClass: p.assetClass as AllocationProposal['favoredPockets'][number]['assetClass'],
+        rationale: p.rationale as string,
+      })),
+      avoidedPockets: ((poolsScan.avoided as Array<Record<string, unknown>>) ?? []).map((p) => ({
+        assetClass: p.assetClass as AllocationProposal['avoidedPockets'][number]['assetClass'],
+        rationale: p.rationale as string,
+      })),
+      theses,
+      allocations,
+      cashReservePct,
+      portfolioRiskLens: this.computeDefaultRiskLens(),
+      constraints: RiskConstraints.parse(config.riskConstraints),
+      warnings: (root.warnings as string[]) ?? [],
+      generatedAt: now,
+      status: 'draft' as const,
+    };
+
+    return proposal;
+  }
+
+  /**
+   * Default risk lens placeholder — sera remplacé par un calcul réel
+   * dans P4.6 (allocation proposer) une fois les expressions fixées.
+   */
+  private computeDefaultRiskLens(): AllocationProposal['portfolioRiskLens'] {
+    return {
+      annualizedVolatilityPct: 0,
+      var95_1day_pct: 0,
+      expectedShortfall95_1day_pct: 0,
+      historicalMaxDrawdownPct: 0,
+      daysToExit50pct: 0,
+      correlationsToMajorAssets: {},
+      effectiveLeverage: 0,
+      beta: 0,
+      regimeSensitivity: {},
+    };
+  }
+}
