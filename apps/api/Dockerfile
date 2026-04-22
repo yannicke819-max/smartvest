@@ -1,12 +1,13 @@
 # Multi-stage build for the SmartVest API (NestJS, npm workspaces monorepo).
 # Build context = repo root.
-#
-# .dockerignore exclut dist/, *.tsbuildinfo, node_modules locaux → tsc -b
-# compile toujours proprement sans artefacts stale.
 
 FROM node:20-alpine AS builder
-# cache-bust: 8
-ENV CACHE_BUST=8
+
+# ARG CACHEBUST invalide le cache Docker dès qu'on change sa valeur
+# (doit être passé via --build-arg CACHEBUST=X ou buildArgs dans railway.toml).
+ARG CACHEBUST=9
+RUN echo "cachebust=$CACHEBUST"
+
 WORKDIR /repo
 
 COPY package.json package-lock.json tsconfig.base.json ./
@@ -16,9 +17,26 @@ COPY scripts scripts
 COPY supabase supabase
 
 RUN npm install --include=dev
-# Compile packages + API en une seule passe (composite project references).
-# tsc -b compile les références dans l'ordre de dépendance, puis l'API.
+
+# Nettoyage défensif : supprime tous les artefacts stale avant compilation.
+# Garantit que tsc -b compile vraiment, même si le contexte copie des dist/
+# anciens (normalement bloqués par .dockerignore).
+RUN rm -rf apps/api/dist apps/api/tsconfig.tsbuildinfo \
+    && find . -name "*.tsbuildinfo" -not -path "*/node_modules/*" -delete \
+    && find packages -type d -name "dist" -exec rm -rf {} + 2>/dev/null || true
+
 RUN npx tsc -b apps/api/tsconfig.json
+
+# Fail-fast : si LisaModule n'est pas dans dist, le build échoue explicitement
+# au lieu de produire une image silencieusement cassée.
+RUN test -f apps/api/dist/modules/lisa/lisa.module.js \
+    || (echo "❌ LisaModule not compiled" && ls -la apps/api/dist/modules/ && exit 1)
+RUN test -f apps/api/dist/modules/lisa/lisa.controller.js \
+    || (echo "❌ LisaController not compiled" && exit 1)
+RUN test -f apps/api/dist/app.module.js \
+    && grep -q "lisa" apps/api/dist/app.module.js \
+    || (echo "❌ LisaModule not registered in compiled app.module.js" && exit 1)
+RUN echo "✅ LisaModule present in build output"
 
 # =========================================================================
 FROM node:20-alpine AS runner
@@ -35,5 +53,5 @@ COPY --from=builder /repo/supabase/migrations ./supabase/migrations
 
 WORKDIR /app/apps/api
 EXPOSE 3001
-# Toujours démarrer l'API (;) même si une migration échoue.
+# ; garantit que l'API démarre même si une migration échoue.
 CMD ["sh", "-c", "node /app/scripts/apply-migrations.mjs; node dist/main.js"]
