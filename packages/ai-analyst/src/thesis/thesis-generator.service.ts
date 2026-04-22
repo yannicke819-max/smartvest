@@ -242,10 +242,29 @@ défini, sans markdown, sans explications hors JSON.
     const root = parsed as Record<string, unknown>;
     const now = new Date().toISOString();
 
-    // Extract theses, ensure IDs, attach claude meta
+    // Extract theses, ensure IDs are valid UUIDs, attach claude meta
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const thesesRaw = (root.theses as Array<Record<string, unknown>>) ?? [];
+    const idMap = new Map<string, string>();
+    for (const t of thesesRaw) {
+      const origId = typeof t.id === 'string' ? t.id : '';
+      if (!UUID_RE.test(origId)) {
+        const newId = randomUUID();
+        if (origId) idMap.set(origId, newId);
+        t.id = newId;
+      }
+    }
+
+    // Allocation suggestion (read before theses map so we can patch thesisId refs)
+    const allocSug = (root.allocationSuggestion as Record<string, unknown>) ?? {};
+    const perThesisRaw = (allocSug.perThesis as Array<Record<string, unknown>>) ?? [];
+    for (const a of perThesisRaw) {
+      const mapped = idMap.get(a.thesisId as string);
+      if (mapped) a.thesisId = mapped;
+    }
+
     const theses: LisaThesis[] = thesesRaw.map((t) => {
-      const thesisId = (t.id as string) || randomUUID();
+      const thesisId = t.id as string;
       const enriched = {
         ...t,
         id: thesisId,
@@ -271,10 +290,7 @@ défini, sans markdown, sans explications hors JSON.
       }
     });
 
-    // Allocation suggestion
-    const allocSug = (root.allocationSuggestion as Record<string, unknown>) ?? {};
-    const perThesis = (allocSug.perThesis as Array<Record<string, unknown>>) ?? [];
-    const allocations = perThesis.map((a) => ({
+    const allocations = perThesisRaw.map((a) => ({
       thesisId: a.thesisId as string,
       pctCapital: a.pctCapital as number,
       amountUsd: a.amountUsd as string,

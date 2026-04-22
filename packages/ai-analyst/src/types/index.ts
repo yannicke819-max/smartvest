@@ -25,6 +25,7 @@ export const AssetClass = z.enum([
   'crypto_bitcoin', 'crypto_ethereum', 'crypto_altcoins', 'crypto_stablecoin',
   // Dérivés
   'derivatives_options', 'derivatives_futures', 'derivatives_swaps',
+  'derivatives_vol',
   'structured_products',
   // Autres
   'real_estate', 'alt_hedge_funds', 'cash',
