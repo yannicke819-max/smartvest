@@ -233,6 +233,15 @@ export function ConnectedDashboard() {
               </Button>
             </Link>
           )}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleCreatePaperPortfolio}
+            disabled={paperPending}
+          >
+            <FlaskConical className="mr-1.5 h-3.5 w-3.5" />
+            {paperPending ? 'Création…' : 'Simulation'}
+          </Button>
           <Link href="/lisa">
             <Button variant="outline" size="sm">
               <Sparkles className="mr-1.5 h-3.5 w-3.5" />
