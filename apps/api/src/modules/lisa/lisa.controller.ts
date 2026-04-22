@@ -2,13 +2,24 @@ import { Body, Controller, Get, Headers, HttpCode, Param, Post, Query } from '@n
 import { extractUserId } from '../../common/extract-user-id';
 import { LisaService } from './services/lisa.service';
 import { DecisionLogService } from './services/decision-log.service';
+import { RealtimePriceService } from './services/realtime-price.service';
 
 @Controller('lisa')
 export class LisaController {
   constructor(
     private readonly lisa: LisaService,
     private readonly decisionLog: DecisionLogService,
+    private readonly realtimePrice: RealtimePriceService,
   ) {}
+
+  @Get('realtime/price-cache')
+  getPriceCache() {
+    return {
+      wsConnected: this.realtimePrice.isConnected(),
+      activeCryptoCount: this.realtimePrice.getActiveCryptoCount(),
+      prices: this.realtimePrice.snapshot(),
+    };
+  }
 
   @Get('audit/verify/:portfolioId')
   async verifyAuditChain(

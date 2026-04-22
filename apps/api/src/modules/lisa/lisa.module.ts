@@ -4,11 +4,12 @@ import { LisaController } from './lisa.controller';
 import { LisaService } from './services/lisa.service';
 import { LisaAutopilotService } from './services/lisa-autopilot.service';
 import { DecisionLogService } from './services/decision-log.service';
+import { RealtimePriceService } from './services/realtime-price.service';
 
 @Module({
   imports: [SupabaseModule],
   controllers: [LisaController],
-  providers: [LisaService, LisaAutopilotService, DecisionLogService],
-  exports: [LisaService, DecisionLogService],
+  providers: [LisaService, LisaAutopilotService, DecisionLogService, RealtimePriceService],
+  exports: [LisaService, DecisionLogService, RealtimePriceService],
 })
 export class LisaModule {}

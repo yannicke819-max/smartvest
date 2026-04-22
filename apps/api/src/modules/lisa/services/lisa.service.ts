@@ -18,6 +18,7 @@ import {
 import { BinanceAdapter } from '@smartvest/brokers';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { DecisionLogService } from './decision-log.service';
+import { RealtimePriceService } from './realtime-price.service';
 
 /**
  * LisaService — orchestrateur principal du module AI analyst.
@@ -43,6 +44,7 @@ export class LisaService {
     private readonly config: ConfigService,
     private readonly supabase: SupabaseService,
     private readonly decisionLog: DecisionLogService,
+    private readonly realtimePrice: RealtimePriceService,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
     this.claudeClient = anthropicKey
@@ -715,10 +717,21 @@ hors contraintes n'est acceptable, même en mode chasse.
    * Fetch live price via EODHD real-time API.
    * Falls back to Supabase quotes cache, then to a static fallback.
    */
+  /** Public wrapper for the price warmer (autopilot cron). */
+  async warmPrice(symbol: string): Promise<void> {
+    await this.fetchLivePrice(symbol);
+  }
+
   private async fetchLivePrice(symbol: string): Promise<{ symbol: string; price: string; asOf: string; source: string }> {
     const eodhKey = this.config.get<string>('EODHD_API_KEY');
     const now = new Date().toISOString();
     let eodhdTicker: string | null = null;
+
+    // 0. Realtime cache (Binance WS pour crypto, refresh EODHD pour le reste)
+    const cached = this.realtimePrice.getCached(symbol);
+    if (cached) {
+      return { symbol, price: cached.price, asOf: cached.asOf, source: cached.source };
+    }
 
     // 1. Try EODHD real-time endpoint
     if (eodhKey && eodhKey !== 'demo') {
@@ -733,6 +746,7 @@ hors contraintes n'est acceptable, même en mode chasse.
           const price = data['close'] ?? data['previousClose'] ?? data['open'];
           if (price && Number(price) > 0) {
             this.logEodhdCall({ ticker: symbol, eodhdTicker, source: 'eodhd', success: true, statusCode: res.status, latencyMs, priceUsd: Number(price), calledBy: 'live_price' });
+            this.realtimePrice.setCached(symbol, String(price), 'eodhd', now);
             return { symbol, price: String(price), asOf: now, source: 'eodhd' };
           }
           this.logEodhdCall({ ticker: symbol, eodhdTicker, source: 'eodhd', success: false, statusCode: res.status, latencyMs, calledBy: 'live_price', errorMessage: 'empty_price_field' });

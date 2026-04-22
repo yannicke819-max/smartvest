@@ -3,6 +3,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { LisaService } from './lisa.service';
 import { DecisionLogService } from './decision-log.service';
+import { RealtimePriceService } from './realtime-price.service';
 
 /**
  * LisaAutopilotService — Cron scheduler for portfolios with autopilot enabled.
@@ -27,6 +28,7 @@ export class LisaAutopilotService {
     private readonly supabase: SupabaseService,
     private readonly lisa: LisaService,
     private readonly decisionLog: DecisionLogService,
+    private readonly realtimePrice: RealtimePriceService,
   ) {}
 
   /** Tick toutes les 60 secondes. Chaque portfolio a son propre cycle_minutes
@@ -232,6 +234,79 @@ export class LisaAutopilotService {
       } catch (e) {
         this.logger.debug(`fast risk monitor skipped for ${String(cfg.portfolio_id)}: ${String(e).slice(0, 80)}`);
       }
+    }
+  }
+
+  /**
+   * Price warmer : toutes les 30 s, rafraîchit les prix de TOUS les symboles
+   * des positions ouvertes.
+   *
+   * - Crypto : inscrit le symbole dans RealtimePriceService → reçoit les
+   *   ticks WebSocket Binance en continu (~1 tick/seconde, gratuit).
+   * - Non-crypto : pull EODHD et push dans le cache. Volume estimé :
+   *   ~10 positions × 2 req/min = 20/min = 28.800/jour, soit 29% du quota
+   *   100k/j. Marge confortable.
+   *
+   * Effet : fetchLivePrice (qui lit le cache en priorité) coûte 0 appel
+   * EODHD dans 95% des cas, et les risk checks voient des prix frais (<30s).
+   */
+  @Cron('*/30 * * * * *', { name: 'lisa-price-warmer' })
+  async runPriceWarmer() {
+    // 1. Récupère toutes les positions ouvertes des portfolios en autopilot
+    const { data: configs } = await this.supabase.getClient()
+      .from('lisa_session_configs')
+      .select('portfolio_id')
+      .eq('autopilot_enabled', true)
+      .eq('kill_switch_active', false);
+
+    if (!configs || configs.length === 0) {
+      this.realtimePrice.updateActiveCryptoSymbols([]);
+      return;
+    }
+
+    const portfolioIds = configs.map((c) => c.portfolio_id as string);
+
+    const { data: positions } = await this.supabase.getClient()
+      .from('lisa_positions')
+      .select('symbol, asset_class')
+      .in('portfolio_id', portfolioIds)
+      .eq('status', 'open');
+
+    if (!positions || positions.length === 0) {
+      this.realtimePrice.updateActiveCryptoSymbols([]);
+      return;
+    }
+
+    // 2. Sépare crypto (WS) vs autres (EODHD pull)
+    const cryptoSymbols = new Set<string>();
+    const otherSymbols = new Set<string>();
+    for (const pos of positions) {
+      const assetClass = String(pos.asset_class ?? '');
+      const symbol = String(pos.symbol ?? '');
+      if (!symbol) continue;
+      if (assetClass.startsWith('crypto_')) cryptoSymbols.add(symbol);
+      else otherSymbols.add(symbol);
+    }
+
+    // 3. Met à jour la liste Binance WS (auto-reconnecte si changement)
+    this.realtimePrice.updateActiveCryptoSymbols(Array.from(cryptoSymbols));
+
+    // 4. Pull EODHD en parallèle pour les non-crypto (cache-miss only — on ne
+    //    refetch pas si un ticker a déjà un prix de <30s).
+    const STALE_MS = 30_000;
+    const toRefresh = Array.from(otherSymbols).filter((s) => {
+      const cached = this.realtimePrice.getCached(s);
+      if (!cached) return true;
+      return (Date.now() - new Date(cached.asOf).getTime()) > STALE_MS;
+    });
+
+    if (toRefresh.length > 0) {
+      // Appelle lisa.fetchLivePrice — qui gère EODHD + fallback + logEodhdCall
+      // + push vers le cache automatiquement.
+      await Promise.all(toRefresh.map((s) =>
+        this.lisa.warmPrice(s).catch(() => { /* ignore individual failures */ }),
+      ));
+      this.logger.debug(`Price warmer: refreshed ${toRefresh.length} non-crypto symbols, ${cryptoSymbols.size} crypto on WS`);
     }
   }
 }
