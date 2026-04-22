@@ -8,3 +8,4 @@
 export * from './types';
 export * from './persona';
 export * from './claude';
+export * from './corpus';
