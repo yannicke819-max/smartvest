@@ -621,10 +621,8 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       });
 
     if (error) {
-      // Ignorer si la migration 0051 n'est pas encore appliquée
-      if (!/lisa_mechanical_directives/.test(error.message) && !/does not exist/i.test(error.message)) {
-        this.logger.warn(`writeDirective DB error: ${error.message}`);
-      }
+      // Log all directive write errors with enough context to diagnose migration issues
+      this.logger.warn(`writeDirective DB error: ${error.message} — apply migrations 0051/0053 if missing columns`);
       return;
     }
 
