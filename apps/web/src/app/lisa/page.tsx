@@ -457,6 +457,50 @@ export default function LisaPage() {
                 </span>
               </label>
 
+              {autopilotAutoApprove && (
+                <div className="pl-6 space-y-1">
+                  <label className="text-xs font-medium">
+                    Durée limitée (optionnelle, max 24 h)
+                  </label>
+                  <div className="flex items-center gap-2 text-xs">
+                    <input
+                      type="number"
+                      min="1"
+                      max="24"
+                      step="0.5"
+                      placeholder="vide = sans limite"
+                      value={(() => {
+                        if (!autopilotExpiresAt) return '';
+                        const remaining = new Date(autopilotExpiresAt).getTime() - Date.now();
+                        if (remaining <= 0) return '';
+                        return (remaining / 3_600_000).toFixed(1);
+                      })()}
+                      onChange={(e) => {
+                        const h = parseFloat(e.target.value);
+                        if (!Number.isFinite(h) || h <= 0) {
+                          setAutopilotExpiresAt(null);
+                        } else {
+                          const clamped = Math.min(h, 24);
+                          setAutopilotExpiresAt(new Date(Date.now() + clamped * 3_600_000).toISOString());
+                        }
+                      }}
+                      className="h-7 w-24 rounded-md border bg-background px-2 text-xs"
+                    />
+                    <span className="text-muted-foreground">heures</span>
+                    {autopilotExpiresAt && new Date(autopilotExpiresAt).getTime() > Date.now() && (
+                      <span className="text-[10px] text-amber-600">
+                        → expire {new Date(autopilotExpiresAt).toLocaleString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[10px] text-muted-foreground italic">
+                    Laisse vide pour tourner indéfiniment. Sinon l'auto-approbation se coupe
+                    d'elle-même à l'expiration (l'autopilot continue à générer des propositions
+                    mais sans auto-ouvrir). Kill-switch reste toujours accessible en permanence.
+                  </p>
+                </div>
+              )}
+
               <label className="flex items-start gap-2 text-xs">
                 <input
                   type="checkbox"

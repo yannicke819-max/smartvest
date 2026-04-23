@@ -179,6 +179,7 @@ export function useLisaProposals(portfolioId: string | null, limit = 20) {
     queryKey: ['lisa', 'proposals', portfolioId, limit],
     queryFn: () => apiFetch<LisaProposalRow[]>(`/lisa/proposals/${portfolioId}?limit=${limit}`),
     enabled: !!portfolioId,
+    refetchInterval: 30_000, // nouvelles propositions Lisa : check toutes les 30s
     ...LISA_QUERY_OPTIONS,
   });
 }
@@ -256,6 +257,7 @@ export function useLisaSnapshotHistory(portfolioId: string | null, windowDays = 
     queryKey: ['lisa', 'snapshots', portfolioId, windowDays],
     queryFn: () => apiFetch<LisaSnapshot[]>(`/lisa/snapshots/${portfolioId}?window=${windowDays}`),
     enabled: !!portfolioId,
+    refetchInterval: 60_000, // chart capital : rafraîchi toutes les 60s
     ...LISA_QUERY_OPTIONS,
   });
 }
