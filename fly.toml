@@ -1,33 +1,21 @@
-# fly.toml — SmartVest API (NestJS)
+# fly.toml app configuration file generated for smartvest-w7jpuw on 2026-04-23T13:04:44Z
 #
-# auto_stop_machines = 'off' : la machine reste TOUJOURS up.
-# Indispensable pour que les crons Lisa tournent sans interruption :
-#   - autopilot (1 min)
-#   - fast-risk-monitor (1 min)
-#   - price-warmer (30 s)
-#   - WebSocket Binance (connexion persistante)
-# Si Fly mettait la machine en veille, ces crons s'arrêtent et les
-# positions ne sont plus surveillées.
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
-# primary_region = 'cdg' (Paris) : Binance.com bloque les IPs US (HTTP 451
-# "Service unavailable from a restricted location"). Le WebSocket public
-# stream.binance.com a la même restriction. Une région EU est obligatoire
-# pour que la connexion Binance fonctionne — `iad` (Washington DC) ne
-# convient pas.
 
-app = 'smartvest'
+app = 'smartvest-w7jpuw'
 primary_region = 'cdg'
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = 'Dockerfile'
 
 [env]
-  NODE_ENV = 'production'
   API_PORT = '3001'
+  NODE_ENV = 'production'
   PORT = '3001'
 
 [http_service]
-  internal_port = 3001
+  internal_port = 8080
   force_https = true
   auto_stop_machines = 'off'
   auto_start_machines = true
@@ -35,11 +23,11 @@ primary_region = 'cdg'
   processes = ['app']
 
   [[http_service.checks]]
-    grace_period = "30s"
-    interval = "30s"
-    method = "GET"
-    path = "/health"
-    timeout = "5s"
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '30s'
+    method = 'GET'
+    path = '/health'
 
 [[vm]]
   memory = '1gb'
