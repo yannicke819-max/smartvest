@@ -1,5 +1,11 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import WebSocket from 'ws';
+import { SupabaseService } from '../../supabase/supabase.service';
+
+/** Hard cap à 95k/j (100k quota EODHD moins 5k de marge de sécurité). */
+const EODHD_DAILY_HARD_CAP = 95_000;
+/** Seuil à partir duquel on ralentit préventivement (80% du cap). */
+const EODHD_DAILY_WARN_THRESHOLD = 80_000;
 
 /**
  * RealtimePriceService — cache unifié de prix en mémoire.
@@ -31,6 +37,12 @@ export class RealtimePriceService implements OnModuleDestroy {
 
   /** Symbols d'intérêt (positions ouvertes crypto). Re-resolved périodiquement. */
   private activeCryptoSymbols = new Set<string>();
+
+  /** Compteur 24h EODHD en cache, rafraîchi depuis eodhd_request_log. */
+  private eodhd24hCount = 0;
+  private eodhd24hCountAsOf = 0;
+
+  constructor(private readonly supabase: SupabaseService) {}
 
   onModuleDestroy(): void {
     if (this.ws) {
@@ -191,5 +203,55 @@ export class RealtimePriceService implements OnModuleDestroy {
   /** État connecté ? (WebSocket.OPEN === 1) */
   isConnected(): boolean {
     return this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  /**
+   * Vérifie si on peut encore appeler EODHD aujourd'hui sans dépasser le cap.
+   * Le compteur est rafraîchi toutes les 60 s depuis eodhd_request_log.
+   * Si l'usage dépasse le hard cap → refuse ; si > warn threshold → log warn
+   * mais laisse passer.
+   *
+   * Retourne :
+   *   - 'ok' : call autorisé
+   *   - 'warn' : call autorisé mais proche du cap (logger avertit)
+   *   - 'blocked' : call refusé, utiliser le cache même périmé
+   */
+  async canCallEodhd(): Promise<'ok' | 'warn' | 'blocked'> {
+    const now = Date.now();
+    // Rafraîchit le compteur si cache > 60s
+    if (now - this.eodhd24hCountAsOf > 60_000) {
+      try {
+        const since24h = new Date(now - 86_400_000).toISOString();
+        const { count } = await this.supabase.getClient()
+          .from('eodhd_request_log')
+          .select('*', { count: 'exact', head: true })
+          .eq('source', 'eodhd')
+          .gte('timestamp', since24h);
+        this.eodhd24hCount = count ?? 0;
+        this.eodhd24hCountAsOf = now;
+      } catch (e) {
+        this.logger.warn(`Quota check failed: ${String(e).slice(0, 80)}. Letting call through.`);
+        return 'ok';
+      }
+    }
+
+    if (this.eodhd24hCount >= EODHD_DAILY_HARD_CAP) {
+      this.logger.warn(`EODHD quota cap hit (${this.eodhd24hCount}/${EODHD_DAILY_HARD_CAP}) — blocking new calls, serving cache`);
+      return 'blocked';
+    }
+    if (this.eodhd24hCount >= EODHD_DAILY_WARN_THRESHOLD) {
+      return 'warn';
+    }
+    return 'ok';
+  }
+
+  /** Pour l'endpoint monitoring : expose le compteur et le cap courant. */
+  getQuotaStatus(): { count24h: number; hardCap: number; warnThreshold: number; lastCheckAsOf: string | null } {
+    return {
+      count24h: this.eodhd24hCount,
+      hardCap: EODHD_DAILY_HARD_CAP,
+      warnThreshold: EODHD_DAILY_WARN_THRESHOLD,
+      lastCheckAsOf: this.eodhd24hCountAsOf > 0 ? new Date(this.eodhd24hCountAsOf).toISOString() : null,
+    };
   }
 }

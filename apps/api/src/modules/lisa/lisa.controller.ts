@@ -18,6 +18,7 @@ export class LisaController {
       wsConnected: this.realtimePrice.isConnected(),
       activeCryptoCount: this.realtimePrice.getActiveCryptoCount(),
       prices: this.realtimePrice.snapshot(),
+      quota: this.realtimePrice.getQuotaStatus(),
     };
   }
 

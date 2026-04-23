@@ -755,6 +755,18 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       return { symbol, price: cached.price, asOf: cached.asOf, source: cached.source };
     }
 
+    // Hard cap EODHD : si quota jour dépassé, on renvoie le cache même
+    // périmé (ou fallback statique) pour ne pas violer la limite 100k/j.
+    const quotaStatus = await this.realtimePrice.canCallEodhd();
+    if (quotaStatus === 'blocked') {
+      // Essai dernière chance : cache même trop vieux
+      const anyCached = this.realtimePrice.snapshot().find((s) => s.symbol.toUpperCase() === symbol.toUpperCase());
+      if (anyCached) {
+        return { symbol, price: anyCached.price, asOf: new Date(Date.now() - anyCached.ageMs).toISOString(), source: `${anyCached.source}_stale` };
+      }
+      return { symbol, price: this.getFallbackPrice(symbol), asOf: now, source: 'fallback_quota_cap' };
+    }
+
     // 1. Try EODHD real-time endpoint
     if (eodhKey && eodhKey !== 'demo') {
       const tStart = Date.now();
@@ -937,7 +949,11 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       }
     };
 
-    const [vix, dxy, us10y, us2y, brent, btc, eth, gold, spy, qqq, eurusd, usdjpy] =
+    const [
+      vix, dxy, us10y, us2y, brent, btc, eth, gold, spy, qqq, eurusd, usdjpy,
+      // Extensions macro : sectoriels + crypto alt + FX EM + bonds
+      silver, copper, uranium, natgas, solana, xrp, tlt, hyg, iwm, eem,
+    ] =
       await Promise.all([
         fetchNum('^VIX.INDX'),
         fetchNum('DX-Y.NYB.FOREX'),
@@ -951,7 +967,22 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         fetchNum('QQQ.US'),
         fetchNum('EURUSD.FOREX'),
         fetchNum('USDJPY.FOREX'),
+        fetchNum('SI.COMM'),          // Silver
+        fetchNum('HG.COMM'),          // Copper
+        fetchNum('URA.US'),           // Uranium ETF
+        fetchNum('NG.COMM'),          // Natural gas
+        fetchNum('SOL-USD.CC'),       // Solana
+        fetchNum('XRP-USD.CC'),       // XRP
+        fetchNum('TLT.US'),           // US long bonds 20y
+        fetchNum('HYG.US'),           // High yield corporate bonds
+        fetchNum('IWM.US'),           // Russell 2000 (small caps)
+        fetchNum('EEM.US'),           // Emerging markets
       ]);
+    // Les nouveaux tickers ne sont pas dans le type MarketSnapshot pour l'instant
+    // — ils seront poussés dans recentNews / additionalContext si besoin plus tard.
+    // Conservés ici pour alimenter le cache EODHD et le log pour analyse quota.
+    void silver; void copper; void uranium; void natgas; void solana;
+    void xrp; void tlt; void hyg; void iwm; void eem;
 
     // SPY ≈ SP500/10, QQQ ≈ NASDAQ/40
     return {

@@ -1,9 +1,18 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { LisaService } from './lisa.service';
 import { DecisionLogService } from './decision-log.service';
 import { RealtimePriceService } from './realtime-price.service';
+
+/** Tickers macro et indices stratégiques que Lisa consulte en permanence.
+ *  Warmed une fois au boot pour peupler le cache immédiatement, évite le
+ *  premier cycle où le cache est froid. */
+const BOOT_WARMUP_TICKERS = [
+  'VIX', 'DXY', 'BRENT', 'GOLD', 'SILVER',
+  'SPY', 'QQQ', 'IWM', 'EEM', 'TLT', 'HYG',
+  'EURUSD', 'USDJPY', 'GBPUSD',
+];
 
 /**
  * LisaAutopilotService — Cron scheduler for portfolios with autopilot enabled.
@@ -21,7 +30,21 @@ import { RealtimePriceService } from './realtime-price.service';
  *  - Si drawdown 7j > limit → pause nouvelles positions (warning)
  */
 @Injectable()
-export class LisaAutopilotService {
+export class LisaAutopilotService implements OnApplicationBootstrap {
+  /** Pre-warmer : au démarrage de l'app, alimente le cache avec les tickers
+   *  macro essentiels. Coût : ~14 appels EODHD one-shot (0.014% du quota). */
+  async onApplicationBootstrap(): Promise<void> {
+    this.logger.log(`Pre-warming ${BOOT_WARMUP_TICKERS.length} macro tickers...`);
+    try {
+      await Promise.all(BOOT_WARMUP_TICKERS.map((t) =>
+        this.lisa.warmPrice(t).catch(() => { /* ignore individual failures */ }),
+      ));
+      this.logger.log('Pre-warm completed');
+    } catch (e) {
+      this.logger.warn(`Pre-warm partial failure: ${String(e).slice(0, 120)}`);
+    }
+  }
+
   private readonly logger = new Logger(LisaAutopilotService.name);
 
   constructor(
@@ -293,7 +316,8 @@ export class LisaAutopilotService {
 
     // 4. Pull EODHD en parallèle pour les non-crypto (cache-miss only — on ne
     //    refetch pas si un ticker a déjà un prix de <30s).
-    const STALE_MS = 30_000;
+    // Serrer à 15s (avec cron à 30s → refresh chaque tick = max age 30s)
+    const STALE_MS = 15_000;
     const toRefresh = Array.from(otherSymbols).filter((s) => {
       const cached = this.realtimePrice.getCached(s);
       if (!cached) return true;
