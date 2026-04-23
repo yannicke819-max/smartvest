@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Sparkles, Target, ShieldAlert, TrendingUp, Activity, ChevronDown, ChevronUp } from 'lucide-react';
 import { usePortfolios } from '@/hooks/use-portfolio';
 import { deduplicateSimulationPortfolios } from '@/app/actions/paper-portfolio';
@@ -96,6 +96,17 @@ export default function LisaPage() {
   // autopilotExpiresAt pour que l'utilisateur puisse taper "10" sans que
   // la valeur recalculée à partir du timestamp ne le bloque à "1.0".
   const [autopilotDurationHoursInput, setAutopilotDurationHoursInput] = useState<string>('');
+  // Timestamp d'expiration calculé UNE FOIS quand l'utilisateur change l'input,
+  // pas à chaque render. Sans ce useMemo, new Date(Date.now() + h*3600000)
+  // recalculerait à chaque re-render (toutes les 30-60s à cause des refetch
+  // positions/snapshot) et l'heure affichée glisserait en avant.
+  const autopilotComputedExpiryMs = useMemo<number | null>(() => {
+    const trimmed = autopilotDurationHoursInput.trim();
+    if (trimmed === '') return null;
+    const h = parseFloat(trimmed);
+    if (!Number.isFinite(h) || h <= 0) return null;
+    return Date.now() + Math.min(h, 24) * 3_600_000;
+  }, [autopilotDurationHoursInput]);
   const [autopilotAggressive, setAutopilotAggressive] = useState(false);
   const [autopilotMarketHoursOnly, setAutopilotMarketHoursOnly] = useState(false);
   // Risk constraints — exposés dans l'UI (section avancée)
@@ -150,15 +161,14 @@ export default function LisaPage() {
 
     // Confirmation explicite la première fois qu'on active auto-approve
     if (autopilotAutoApprove && !config?.autopilot_auto_approve) {
-      // Construit la ligne durée selon ce que l'utilisateur a saisi
-      const durTrim = autopilotDurationHoursInput.trim();
-      const durH = parseFloat(durTrim);
+      // Utilise le timestamp figé pour éviter tout décalage entre popup + save
       let durationLine: string;
-      if (durTrim === '' || !Number.isFinite(durH) || durH <= 0) {
+      if (autopilotComputedExpiryMs === null) {
         durationLine = '• Durée : SANS LIMITE (jusqu\'à ce que tu désactives manuellement).';
       } else {
+        const durH = parseFloat(autopilotDurationHoursInput);
         const clamped = Math.min(durH, 24);
-        const expiry = new Date(Date.now() + clamped * 3_600_000);
+        const expiry = new Date(autopilotComputedExpiryMs);
         durationLine = `• Durée : ${clamped} h → s'arrête automatiquement le ${expiry.toLocaleString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}.`;
       }
 
@@ -188,15 +198,11 @@ export default function LisaPage() {
       autopilot_aggressive: autopilotAggressive,
       autopilot_market_hours_only: autopilotMarketHoursOnly,
       // Pas d'expiration par défaut — l'utilisateur veut "no-touch" sans limite
-      autopilot_expires_at: (() => {
-        if (!autopilotAutoApprove) return null;
-        const trimmed = autopilotDurationHoursInput.trim();
-        if (trimmed === '') return null; // sans limite
-        const h = parseFloat(trimmed);
-        if (!Number.isFinite(h) || h <= 0) return null;
-        const clamped = Math.min(h, 24);
-        return new Date(Date.now() + clamped * 3_600_000).toISOString();
-      })(),
+      // Utilise le timestamp figé calculé au moment de la saisie user
+      // (pas Date.now() courant qui aurait drift entre la saisie et le save).
+      autopilot_expires_at: (!autopilotAutoApprove || autopilotComputedExpiryMs === null)
+        ? null
+        : new Date(autopilotComputedExpiryMs).toISOString(),
       risk_constraints: {
         targetDeploymentPct,
         maxPositionSizePct,
@@ -506,13 +512,9 @@ export default function LisaPage() {
                       className="h-7 w-24 rounded-md border bg-background px-2 text-xs"
                     />
                     <span className="text-muted-foreground">heures</span>
-                    {(() => {
-                      const trimmed = autopilotDurationHoursInput.trim();
-                      if (trimmed === '') return null;
-                      const h = parseFloat(trimmed);
-                      if (!Number.isFinite(h) || h <= 0) return null;
-                      const clamped = Math.min(h, 24);
-                      const expiry = new Date(Date.now() + clamped * 3_600_000);
+                    {autopilotComputedExpiryMs !== null && (() => {
+                      const h = parseFloat(autopilotDurationHoursInput);
+                      const expiry = new Date(autopilotComputedExpiryMs);
                       return (
                         <span className="text-[10px] text-amber-600">
                           → expirera {expiry.toLocaleString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
