@@ -47,6 +47,7 @@ interface MechanicalDirective {
   id: string;
   portfolioId: string;
   marketMomentum: 'bullish_strong' | 'neutral' | 'bearish';
+  trajectoryStatus: 'EN_AVANCE' | 'DANS_LE_PLAN' | 'EN_RETARD' | 'HORS_TRAJECTOIRE';
   activeThemes: string[];
   favoredAssetClasses: string[];
   avoidedAssetClasses: string[];
@@ -154,11 +155,17 @@ export class MechanicalTradingService {
       await this.checkStopTarget(pos);
     }
 
-    // Step 3 — Open new positions (seulement si directive valide)
+    // Step 3 — Open new positions (seulement si directive valide + trajectoire permet)
     if (!directive || directive.validUntil <= new Date()) {
       if (directive) {
         this.logger.debug(`${portfolioId}: directive expirée — mode défensif uniquement`);
       }
+      return;
+    }
+
+    // HORS_TRAJECTOIRE → préservation du capital, aucune ouverture
+    if (directive.trajectoryStatus === 'HORS_TRAJECTOIRE') {
+      this.logger.debug(`${portfolioId}: HORS_TRAJECTOIRE — ouvertures suspendues, protection capital`);
       return;
     }
 
@@ -190,15 +197,34 @@ export class MechanicalTradingService {
     const cashUsd = new Decimal(snap?.cash_usd ?? capitalUsd.toString());
     if (cashUsd.lt(10)) return; // pas assez de cash
 
-    // Momentum multiplier sur la taille de position
-    const momentumMultiplier =
-      directive.marketMomentum === 'bullish_strong' ? 1.2 :
-      directive.marketMomentum === 'bearish' ? 0.7 : 1.0;
+    // Sizing multiplier : combine trajectoire × momentum pour optimiser
+    // l'atteinte de l'objectif. La trajectoire PRIME sur le momentum.
+    let sizingMultiplier = 1.0;
+    if (directive.trajectoryStatus === 'EN_RETARD') {
+      // On rattrape le retard — max size, pleins pots si momentum le permet
+      sizingMultiplier = directive.marketMomentum === 'bearish' ? 0.9 : 1.25;
+    } else if (directive.trajectoryStatus === 'DANS_LE_PLAN') {
+      sizingMultiplier =
+        directive.marketMomentum === 'bullish_strong' ? 1.1 :
+        directive.marketMomentum === 'bearish' ? 0.8 : 1.0;
+    } else if (directive.trajectoryStatus === 'EN_AVANCE') {
+      // Marge avant objectif — on lock les gains, sélectivité accrue
+      sizingMultiplier = 0.7;
+    }
+
+    // Plafond de nouvelles ouvertures par cycle selon trajectoire
+    const openCap =
+      directive.trajectoryStatus === 'EN_RETARD' ? 4 :
+      directive.trajectoryStatus === 'EN_AVANCE' ? 1 : 2;
 
     let slotsUsed = 0;
 
     for (const target of directive.targetSymbols) {
       if (activePositions.length + slotsUsed >= maxPositions) break;
+      if (slotsUsed >= openCap) break; // plafond trajectoire
+
+      // En EN_AVANCE : n'ouvrir que sur haute conviction (≥ 7/10)
+      if (directive.trajectoryStatus === 'EN_AVANCE' && target.convictionScore < 7) continue;
 
       // Skip si asset class évitée
       if (directive.avoidedAssetClasses.includes(target.assetClass)) continue;
@@ -215,8 +241,8 @@ export class MechanicalTradingService {
 
       const price = new Decimal(quote.price);
 
-      // Taille de position
-      const maxNotional = capitalUsd.mul(maxPositionPct).div(100).mul(momentumMultiplier);
+      // Taille de position (trajectoire + momentum)
+      const maxNotional = capitalUsd.mul(maxPositionPct).div(100).mul(sizingMultiplier);
       const notional = Decimal.min(maxNotional, cashUsd.mul(0.9));
       if (notional.lt(10)) continue;
 
@@ -297,7 +323,7 @@ export class MechanicalTradingService {
         portfolioId,
         kind: 'mechanical_open',
         summary: `[MÉCANIQUE] Ouverture ${target.direction.toUpperCase()} ${target.symbol} @ ${price.toFixed(4)} · notional $${notional.toFixed(0)} · stop ${stopPct}% · target ${tpPct}%`,
-        rationale: `Directive Lisa: thèmes=[${directive.activeThemes.slice(0, 3).join(', ')}] momentum=${directive.marketMomentum} conviction=${target.convictionScore}/10`,
+        rationale: `Directive Lisa: thèmes=[${directive.activeThemes.slice(0, 3).join(', ')}] trajectoire=${directive.trajectoryStatus} momentum=${directive.marketMomentum} conviction=${target.convictionScore}/10 sizing×${sizingMultiplier.toFixed(2)}`,
         payload: {
           positionId,
           symbol: target.symbol,
@@ -418,6 +444,7 @@ export class MechanicalTradingService {
       id: data.id as string,
       portfolioId: data.portfolio_id as string,
       marketMomentum: (data.market_momentum as MechanicalDirective['marketMomentum']) ?? 'neutral',
+      trajectoryStatus: (data.trajectory_status as MechanicalDirective['trajectoryStatus']) ?? 'DANS_LE_PLAN',
       activeThemes: (data.active_themes as string[]) ?? [],
       favoredAssetClasses: (data.favored_asset_classes as string[]) ?? [],
       avoidedAssetClasses: (data.avoided_asset_classes as string[]) ?? [],

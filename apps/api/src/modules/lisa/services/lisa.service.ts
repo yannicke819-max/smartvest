@@ -524,7 +524,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     });
 
     // Écrire la directive mécanique — l'agent sans-LLM l'utilise pendant 35 min
-    await this.writeDirective(portfolioId, finalProposal, result.closeRecommendations ?? []).catch(
+    await this.writeDirective(portfolioId, finalProposal, result.closeRecommendations ?? [], trajectoryStatus).catch(
       (e) => this.logger.warn(`writeDirective failed (non-blocking): ${String(e)}`),
     );
 
@@ -540,16 +540,30 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     portfolioId: string,
     proposal: AllocationProposal,
     closeRecommendations: Array<{ positionId: string; reason: string }>,
+    trajectoryStatus: TrajectoryStatus | null,
   ): Promise<void> {
     // Extraire les thèmes depuis favored_pockets
     const activeThemes = proposal.favoredPockets.map((p) => p.assetClass);
     const favoredAssetClasses = [...new Set(proposal.favoredPockets.map((p) => p.assetClass))];
     const avoidedAssetClasses = [...new Set(proposal.avoidedPockets.map((p) => p.assetClass))];
 
-    // Posture de risque selon momentum
-    const riskPosture =
-      proposal.marketMomentum === 'bullish_strong' ? 'aggressive' :
-      proposal.marketMomentum === 'bearish' ? 'defensive' : 'normal';
+    // Posture de risque : trajectoire PRIME sur momentum
+    //  - HORS_TRAJECTOIRE → defensive (protège le capital, pas de nouvelles ouvertures)
+    //  - EN_RETARD + momentum bullish → aggressive (rattrape le retard)
+    //  - EN_AVANCE → normal (pas besoin de forcer)
+    //  - DANS_LE_PLAN → basé sur momentum
+    let riskPosture: 'aggressive' | 'normal' | 'defensive';
+    if (trajectoryStatus === 'HORS_TRAJECTOIRE') {
+      riskPosture = 'defensive';
+    } else if (trajectoryStatus === 'EN_RETARD' && proposal.marketMomentum !== 'bearish') {
+      riskPosture = 'aggressive';
+    } else if (trajectoryStatus === 'EN_AVANCE') {
+      riskPosture = 'normal';
+    } else {
+      riskPosture =
+        proposal.marketMomentum === 'bullish_strong' ? 'aggressive' :
+        proposal.marketMomentum === 'bearish' ? 'defensive' : 'normal';
+    }
 
     // Construire target_symbols depuis les thèses + allocations
     const targetSymbols = proposal.theses.flatMap((thesis) => {
@@ -589,6 +603,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       .insert({
         portfolio_id: portfolioId,
         market_momentum: proposal.marketMomentum ?? 'neutral',
+        trajectory_status: trajectoryStatus ?? 'DANS_LE_PLAN',
         active_themes: activeThemes,
         favored_asset_classes: favoredAssetClasses,
         avoided_asset_classes: avoidedAssetClasses,

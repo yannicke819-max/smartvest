@@ -17,6 +17,10 @@ create table if not exists public.lisa_mechanical_directives (
   market_momentum text not null default 'neutral'
     check (market_momentum in ('bullish_strong', 'neutral', 'bearish')),
 
+  -- Statut trajectoire calculé par Lisa — pilote la pression d'ouverture
+  trajectory_status text not null default 'DANS_LE_PLAN'
+    check (trajectory_status in ('EN_AVANCE', 'DANS_LE_PLAN', 'EN_RETARD', 'HORS_TRAJECTOIRE')),
+
   -- Thèmes actifs identifiés par Lisa (ex: ["BTC/ETH breakout", "DXY divergence"])
   active_themes jsonb not null default '[]',
 
