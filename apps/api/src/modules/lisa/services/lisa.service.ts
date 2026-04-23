@@ -108,9 +108,16 @@ export class LisaService {
 
     // Accept both snake_case (frontend native) and camelCase (domain type).
     // Le frontend envoie par convention du snake_case qui matche les colonnes DB.
+    // IMPORTANT : on distingue "clé absente du payload" (= pas de changement)
+    // vs "clé présente avec valeur null" (= clear explicite). Le ?? de
+    // l'ancienne version confondait les deux cas, ce qui empêchait de
+    // nettoyer autopilot_expires_at quand le user décochait auto_approve.
+    const hasKey = (obj: Record<string, unknown>, key: string): boolean =>
+      Object.prototype.hasOwnProperty.call(obj, key);
     const pick = <T>(snake: string, camel: string, fallback: T): T => {
-      const v = config[snake] ?? config[camel];
-      return (v === undefined || v === null) ? fallback : (v as T);
+      if (hasKey(config, snake)) return config[snake] as T;
+      if (hasKey(config, camel)) return config[camel] as T;
+      return fallback;
     };
 
     // Fetch existing row to preserve fields not sent in the partial update
