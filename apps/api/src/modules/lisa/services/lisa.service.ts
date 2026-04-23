@@ -157,11 +157,29 @@ export class LisaService {
       }
     }
 
-    const { data, error } = await this.supabase.getClient()
+    let { data, error } = await this.supabase.getClient()
       .from('lisa_session_configs')
       .upsert(merged, { onConflict: 'portfolio_id' })
       .select()
       .single();
+
+    // Si la colonne autopilot_market_hours_only n'existe pas encore en DB
+    // (migration 0047 pas encore appliquée), Supabase renvoie une erreur 400
+    // "Could not find the '...' column". On retente sans ce champ pour que
+    // la sauvegarde des autres champs ne soit pas bloquée.
+    if (error && /autopilot_market_hours_only/i.test(error.message)) {
+      this.logger.warn('Colonne autopilot_market_hours_only absente — retry sans ce champ');
+      const { autopilot_market_hours_only: _omit, ...mergedFallback } = merged;
+      void _omit;
+      const retry = await this.supabase.getClient()
+        .from('lisa_session_configs')
+        .upsert(mergedFallback, { onConflict: 'portfolio_id' })
+        .select()
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
+
     if (error) throw new BadRequestException(error.message);
     return data;
   }

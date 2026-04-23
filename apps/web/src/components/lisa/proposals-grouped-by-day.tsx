@@ -1,15 +1,20 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Activity, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { SkeletonCard } from '@/components/ui/skeleton';
 import { LisaProposalCard } from '@/components/lisa/proposal-card';
 import { usePurgeOldProposals, type LisaProposalRow } from '@/hooks/use-lisa';
 
+const STORAGE_KEY_EXPANDED = 'lisa:proposals:expanded-days';
+const STORAGE_KEY_COLLAPSED_TODAY = 'lisa:proposals:today-collapsed';
+
 /**
  * Groupe les propositions Lisa par jour calendaire (UTC).
  * - Section "Aujourd'hui" dépliée par défaut, autres repliées.
+ * - L'état replié/déplié est **persisté dans localStorage** — un refresh
+ *   de la page respecte les choix utilisateur (avant : tout se re-dépliait).
  * - Bouton "Purger anciennes" supprime les proposals terminales (executed/
  *   rejected/expired) et celles de plus de 24h.
  */
@@ -23,7 +28,34 @@ export function LisaProposalsGroupedByDay({
   isLoading: boolean;
 }) {
   const purge = usePurgeOldProposals(portfolioId);
+  // État déplié : set de day keys. "Aujourd'hui" est déplié par défaut
+  // sauf si le user l'a explicitement replié (stocké séparément).
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [todayCollapsed, setTodayCollapsed] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
+
+  // Hydrate depuis localStorage au mount (côté client uniquement)
+  useEffect(() => {
+    try {
+      const rawExpanded = localStorage.getItem(STORAGE_KEY_EXPANDED);
+      if (rawExpanded) {
+        const arr = JSON.parse(rawExpanded) as string[];
+        if (Array.isArray(arr)) setExpanded(new Set(arr));
+      }
+      const rawCollapsed = localStorage.getItem(STORAGE_KEY_COLLAPSED_TODAY);
+      if (rawCollapsed === 'true') setTodayCollapsed(true);
+    } catch { /* ignore */ }
+    setHydrated(true);
+  }, []);
+
+  // Persiste à chaque changement
+  useEffect(() => {
+    if (!hydrated) return;
+    try {
+      localStorage.setItem(STORAGE_KEY_EXPANDED, JSON.stringify(Array.from(expanded)));
+      localStorage.setItem(STORAGE_KEY_COLLAPSED_TODAY, String(todayCollapsed));
+    } catch { /* ignore */ }
+  }, [expanded, todayCollapsed, hydrated]);
 
   const grouped = useMemo(() => {
     const buckets = new Map<string, { key: string; label: string; items: LisaProposalRow[] }>();
@@ -43,30 +75,24 @@ export function LisaProposalsGroupedByDay({
       buckets.get(key)!.items.push(p);
     }
 
-    // Tri desc par jour
     return Array.from(buckets.values()).sort((a, b) => b.key.localeCompare(a.key));
   }, [proposals]);
 
   const totalCount = proposals.length;
   const todayKey = dayKey(new Date());
-  const isTodayExpanded = expanded.has(todayKey) || (expanded.size === 0 && grouped[0]?.key === todayKey);
 
-  // Par défaut on déplie seulement "aujourd'hui"
   const isExpanded = (key: string) => {
-    if (expanded.has(key)) return true;
-    if (expanded.size === 0 && key === todayKey) return true;
-    return false;
+    if (key === todayKey) return !todayCollapsed;
+    return expanded.has(key);
   };
 
   const toggleExpanded = (key: string) => {
+    if (key === todayKey) {
+      setTodayCollapsed((prev) => !prev);
+      return;
+    }
     setExpanded((prev) => {
       const next = new Set(prev);
-      // Si set vide et on clique sur today (expanded par défaut), on commence par ajouter today puis retirer
-      if (next.size === 0 && key === todayKey) {
-        // Ajouter tous les autres days (pour que today soit désormais "le seul non-expanded" après toggle)
-        grouped.forEach((g) => { if (g.key !== todayKey) next.add(g.key); });
-        return next;
-      }
       if (next.has(key)) next.delete(key);
       else next.add(key);
       return next;

@@ -107,31 +107,33 @@ export default function LisaPage() {
   const config = configQuery.data;
   const canGenerate = !!(config ?? localConfigSaved);
 
-  // Sync l'état local une seule fois quand la config arrive — ensuite l'UI
-  // pilote elle-même les states (sinon checked={config?.X ?? local} override
-  // les clics utilisateur).
-  const [configSynced, setConfigSynced] = useState(false);
+  // Sync l'état local une fois par portfolio_id quand la config arrive.
+  // Si on change de portefeuille OU si la config est rechargée (après save),
+  // on reset le flag pour resynchroniser.
+  const [syncedForPortfolio, setSyncedForPortfolio] = useState<string | null>(null);
   useEffect(() => {
-    if (config && !configSynced) {
-      if (config.profile) setProfile(config.profile as SessionProfile);
-      if (config.capital_usd) setCapital(String(config.capital_usd));
-      if (typeof config.anti_consensus_strength === 'number') setAntiConsensus(config.anti_consensus_strength);
-      if (typeof config.enable_crypto === 'boolean') setEnableCrypto(config.enable_crypto);
-      if (typeof config.autopilot_enabled === 'boolean') setAutopilotEnabled(config.autopilot_enabled);
-      if (typeof config.autopilot_cycle_minutes === 'number') setAutopilotCycleMin(config.autopilot_cycle_minutes);
-      if (typeof config.autopilot_auto_approve === 'boolean') setAutopilotAutoApprove(config.autopilot_auto_approve);
-      if (config.autopilot_expires_at) setAutopilotExpiresAt(config.autopilot_expires_at);
-      if (typeof config.autopilot_aggressive === 'boolean') setAutopilotAggressive(config.autopilot_aggressive);
-      if (typeof config.autopilot_market_hours_only === 'boolean') setAutopilotMarketHoursOnly(config.autopilot_market_hours_only);
-      const rc = config.risk_constraints ?? {};
-      if (typeof rc.targetDeploymentPct === 'number') setTargetDeploymentPct(rc.targetDeploymentPct);
-      if (typeof rc.maxPositionSizePct === 'number') setMaxPositionSizePct(rc.maxPositionSizePct);
-      if (typeof rc.maxExposurePerAssetClassPct === 'number') setMaxExposurePerAssetClassPct(rc.maxExposurePerAssetClassPct);
-      if (typeof rc.maxOpenPositions === 'number') setMaxOpenPositions(rc.maxOpenPositions);
-      if (typeof rc.maxDrawdown2DaysPct === 'number') setMaxDrawdown2DaysPct(rc.maxDrawdown2DaysPct);
-      setConfigSynced(true);
-    }
-  }, [config, configSynced]);
+    if (!selectedPortfolioId) return;
+    if (!config) return;
+    if (syncedForPortfolio === selectedPortfolioId) return;
+
+    if (config.profile) setProfile(config.profile as SessionProfile);
+    if (config.capital_usd) setCapital(String(config.capital_usd));
+    if (typeof config.anti_consensus_strength === 'number') setAntiConsensus(config.anti_consensus_strength);
+    if (typeof config.enable_crypto === 'boolean') setEnableCrypto(config.enable_crypto);
+    if (typeof config.autopilot_enabled === 'boolean') setAutopilotEnabled(config.autopilot_enabled);
+    if (typeof config.autopilot_cycle_minutes === 'number') setAutopilotCycleMin(config.autopilot_cycle_minutes);
+    if (typeof config.autopilot_auto_approve === 'boolean') setAutopilotAutoApprove(config.autopilot_auto_approve);
+    if (config.autopilot_expires_at) setAutopilotExpiresAt(config.autopilot_expires_at);
+    if (typeof config.autopilot_aggressive === 'boolean') setAutopilotAggressive(config.autopilot_aggressive);
+    if (typeof config.autopilot_market_hours_only === 'boolean') setAutopilotMarketHoursOnly(config.autopilot_market_hours_only);
+    const rc = config.risk_constraints ?? {};
+    if (typeof rc.targetDeploymentPct === 'number') setTargetDeploymentPct(rc.targetDeploymentPct);
+    if (typeof rc.maxPositionSizePct === 'number') setMaxPositionSizePct(rc.maxPositionSizePct);
+    if (typeof rc.maxExposurePerAssetClassPct === 'number') setMaxExposurePerAssetClassPct(rc.maxExposurePerAssetClassPct);
+    if (typeof rc.maxOpenPositions === 'number') setMaxOpenPositions(rc.maxOpenPositions);
+    if (typeof rc.maxDrawdown2DaysPct === 'number') setMaxDrawdown2DaysPct(rc.maxDrawdown2DaysPct);
+    setSyncedForPortfolio(selectedPortfolioId);
+  }, [config, selectedPortfolioId, syncedForPortfolio]);
 
   async function handleSaveConfig() {
     if (!selectedPortfolioId) return;
