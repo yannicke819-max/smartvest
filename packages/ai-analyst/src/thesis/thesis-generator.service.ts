@@ -487,6 +487,19 @@ défini, sans markdown, sans explications hors JSON.
       }
     } else {
       mechLines.push(`- Aucun cycle mécanique enregistré — agent en attente de première directive.`);
+      // Fallback: compute exposure from open positions so Signal E can still trigger
+      const positions = req.openPositions ?? [];
+      if (positions.length > 0) {
+        const totalNotional = positions.reduce((s, p) => s + parseFloat(p.entryNotionalUsd), 0);
+        const cashUsd = req.availableCashUsd ? parseFloat(req.availableCashUsd) : 0;
+        const totalCapital = totalNotional + cashUsd;
+        const exposurePct = totalCapital > 0 ? (totalNotional / totalCapital) * 100 : null;
+        if (exposurePct != null) {
+          mechLines.push(
+            `- Exposition estimée (depuis positions ouvertes) : ${exposurePct.toFixed(1)}% capital · Cash : $${cashUsd.toFixed(0)} · ${positions.length} positions${exposurePct > 75 ? ' ⚠️ EXPOSITION ÉLEVÉE — Signal E actif' : ''}`,
+          );
+        }
+      }
     }
 
     return [
