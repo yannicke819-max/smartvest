@@ -44,6 +44,7 @@ export interface LisaSessionConfigRow {
   autopilot_auto_approve?: boolean;
   autopilot_expires_at?: string | null;
   autopilot_aggressive?: boolean;
+  autopilot_market_hours_only?: boolean;
   kill_switch_active: boolean;
   created_at: string;
   updated_at: string;

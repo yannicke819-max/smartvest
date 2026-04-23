@@ -49,7 +49,7 @@ export class LisaClaudeClient {
   private readonly client: Anthropic;
   private readonly defaultModel: string;
 
-  constructor(apiKey: string, defaultModel = 'claude-opus-4-7') {
+  constructor(apiKey: string, defaultModel = 'claude-sonnet-4-6') {
     if (!apiKey) {
       throw new Error('LisaClaudeClient requires a valid Anthropic API key.');
     }
@@ -205,10 +205,15 @@ export class LisaClaudeClient {
    *  - Cache read : $1.50 / 1M tokens (0.1x input — économie ~90%)
    */
   static estimateCostUsd(usage: ClaudeCallResult['usage']): number {
-    const INPUT_PER_M = 15;
-    const OUTPUT_PER_M = 75;
-    const CACHE_WRITE_PER_M = 18.75;
-    const CACHE_READ_PER_M = 1.5;
+    // Claude Sonnet 4.6 pricing (à date) — 5× moins cher que Opus :
+    //  - Input : $3 / 1M tokens
+    //  - Output : $15 / 1M tokens
+    //  - Cache write : $3.75 / 1M tokens (1.25x input)
+    //  - Cache read : $0.30 / 1M tokens (0.1x input — économie ~90%)
+    const INPUT_PER_M = 3;
+    const OUTPUT_PER_M = 15;
+    const CACHE_WRITE_PER_M = 3.75;
+    const CACHE_READ_PER_M = 0.30;
 
     const nonCachedInput = usage.inputTokens;
     const cacheWrite = usage.cacheCreationInputTokens ?? 0;

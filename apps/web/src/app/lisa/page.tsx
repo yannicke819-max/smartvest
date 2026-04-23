@@ -92,6 +92,7 @@ export default function LisaPage() {
   const [autopilotAutoApprove, setAutopilotAutoApprove] = useState(false);
   const [autopilotExpiresAt, setAutopilotExpiresAt] = useState<string | null>(null);
   const [autopilotAggressive, setAutopilotAggressive] = useState(false);
+  const [autopilotMarketHoursOnly, setAutopilotMarketHoursOnly] = useState(false);
   // Risk constraints — exposés dans l'UI (section avancée)
   const [targetDeploymentPct, setTargetDeploymentPct] = useState(60);
   const [maxPositionSizePct, setMaxPositionSizePct] = useState(25);
@@ -120,6 +121,7 @@ export default function LisaPage() {
       if (typeof config.autopilot_auto_approve === 'boolean') setAutopilotAutoApprove(config.autopilot_auto_approve);
       if (config.autopilot_expires_at) setAutopilotExpiresAt(config.autopilot_expires_at);
       if (typeof config.autopilot_aggressive === 'boolean') setAutopilotAggressive(config.autopilot_aggressive);
+      if (typeof config.autopilot_market_hours_only === 'boolean') setAutopilotMarketHoursOnly(config.autopilot_market_hours_only);
       const rc = config.risk_constraints ?? {};
       if (typeof rc.targetDeploymentPct === 'number') setTargetDeploymentPct(rc.targetDeploymentPct);
       if (typeof rc.maxPositionSizePct === 'number') setMaxPositionSizePct(rc.maxPositionSizePct);
@@ -158,6 +160,7 @@ export default function LisaPage() {
       autopilot_cycle_minutes: autopilotCycleMin,
       autopilot_auto_approve: autopilotAutoApprove,
       autopilot_aggressive: autopilotAggressive,
+      autopilot_market_hours_only: autopilotMarketHoursOnly,
       // Pas d'expiration par défaut — l'utilisateur veut "no-touch" sans limite
       autopilot_expires_at: autopilotAutoApprove ? (autopilotExpiresAt ?? null) : null,
       risk_constraints: {
@@ -463,6 +466,23 @@ export default function LisaPage() {
                   <span className="block text-[10px] text-muted-foreground">
                     Turnover élevé, stops serrés (−2 % floor), coupure sèche des perdantes,
                     scan multi-asset continu.
+                  </span>
+                </span>
+              </label>
+
+              <label className="flex items-start gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  checked={autopilotMarketHoursOnly}
+                  onChange={(e) => setAutopilotMarketHoursOnly(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>
+                  <span className="font-medium">Heures de marché uniquement (économie ~45 %)</span>
+                  <span className="block text-[10px] text-muted-foreground">
+                    Lisa ne tourne que de 09 h à 22 h heure de Paris (07–20 h UTC) — couvre
+                    Euronext + NYSE. Hors de cette fenêtre, les cycles sont skippés.
+                    La nuit et le weekend, le risk monitor reste actif (stops auto).
                   </span>
                 </span>
               </label>

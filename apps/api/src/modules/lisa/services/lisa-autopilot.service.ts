@@ -61,7 +61,7 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
   async runAutopilotCycle() {
     const { data: configs, error } = await this.supabase.getClient()
       .from('lisa_session_configs')
-      .select('user_id, portfolio_id, profile, autopilot_cycle_minutes, autopilot_auto_approve, autopilot_expires_at, kill_switch_active, updated_at')
+      .select('user_id, portfolio_id, profile, autopilot_cycle_minutes, autopilot_auto_approve, autopilot_expires_at, autopilot_market_hours_only, kill_switch_active, updated_at')
       .eq('autopilot_enabled', true)
       .eq('kill_switch_active', false);
 
@@ -74,8 +74,18 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
 
     this.logger.log(`Autopilot cycle: ${configs.length} portfolio(s) in autopilot mode`);
 
+    // Fenêtre "heures de marché" : 07:00-20:00 UTC
+    // (= 09:00-22:00 CET été / 08:00-21:00 CET hiver, couvre Euronext + NYSE)
+    const currentHourUtc = new Date().getUTCHours();
+    const inMarketHours = currentHourUtc >= 7 && currentHourUtc < 20;
+
     for (const cfg of configs) {
       try {
+        // Skip si market_hours_only activé ET hors fenêtre
+        if (cfg.autopilot_market_hours_only === true && !inMarketHours) {
+          continue;
+        }
+
         // Auto-expire le mode auto_approve si deadline dépassée
         const autoApprove = cfg.autopilot_auto_approve === true;
         const expiresAt = cfg.autopilot_expires_at as string | null;

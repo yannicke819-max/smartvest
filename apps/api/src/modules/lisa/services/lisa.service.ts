@@ -139,6 +139,7 @@ export class LisaService {
       autopilot_auto_approve: pick('autopilot_auto_approve', 'autopilotAutoApprove', existing?.autopilot_auto_approve ?? false),
       autopilot_expires_at: pick('autopilot_expires_at', 'autopilotExpiresAt', existing?.autopilot_expires_at ?? null),
       autopilot_aggressive: pick('autopilot_aggressive', 'autopilotAggressive', existing?.autopilot_aggressive ?? false),
+      autopilot_market_hours_only: pick('autopilot_market_hours_only', 'autopilotMarketHoursOnly', existing?.autopilot_market_hours_only ?? false),
     };
 
     // Validation : auto_approve exige uniquement un portefeuille de simulation
