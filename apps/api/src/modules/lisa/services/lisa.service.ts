@@ -331,6 +331,9 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       constraints_used: finalProposal.constraints,
       warnings: [...finalProposal.warnings, ...enforcement.violations.map((v) => v.message)],
       status: 'proposed',
+      claude_model: result.claudeMeta.model,
+      claude_input_tokens: result.claudeMeta.inputTokens,
+      claude_output_tokens: result.claudeMeta.outputTokens,
       claude_cost_usd: result.costUsd,
       generated_at: finalProposal.generatedAt,
       expires_at: new Date(Date.now() + 3600_000).toISOString(), // 1h validity

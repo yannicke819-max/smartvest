@@ -101,6 +101,15 @@ export interface GenerateThesesResponse {
   warnings: string[];
   /** Positions que Lisa recommande de fermer à l'approbation. */
   closeRecommendations: Array<{ positionId: string; reason: string }>;
+  /** Métadonnées Claude pour persistance et monitoring quota. */
+  claudeMeta: {
+    model: string;
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationInputTokens: number;
+    cacheReadInputTokens: number;
+    stopReason: string | null;
+  };
 }
 
 export class ThesisGeneratorService {
@@ -170,6 +179,14 @@ export class ThesisGeneratorService {
       rawClaudeText: JSON.stringify(parsed).slice(0, 50_000),
       warnings: proposal.warnings,
       closeRecommendations,
+      claudeMeta: {
+        model: toolResult.model,
+        inputTokens: toolResult.usage.inputTokens ?? 0,
+        outputTokens: toolResult.usage.outputTokens ?? 0,
+        cacheCreationInputTokens: toolResult.usage.cacheCreationInputTokens ?? 0,
+        cacheReadInputTokens: toolResult.usage.cacheReadInputTokens ?? 0,
+        stopReason: toolResult.stopReason,
+      },
     };
   }
 
