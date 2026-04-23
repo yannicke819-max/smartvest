@@ -85,9 +85,19 @@ export default function MonitoringPage() {
     count24h: number;
     hardCap: number;
     warnThreshold: number;
+    dailyLimit: number;
+    extraLimit: number;
+    effectiveCap: number;
+    callsLastMinute: number;
+    rateLimitPerMinute: number;
     wsConnected: boolean;
     activeCryptoCount: number;
-  }>({ count24h: 0, hardCap: 95000, warnThreshold: 80000, wsConnected: false, activeCryptoCount: 0 });
+  }>({
+    count24h: 0, hardCap: 95000, warnThreshold: 80000,
+    dailyLimit: 100000, extraLimit: 0, effectiveCap: 100000,
+    callsLastMinute: 0, rateLimitPerMinute: 1000,
+    wsConnected: false, activeCryptoCount: 0,
+  });
   const [creditAlert, setCreditAlert] = useState<{ active: boolean; loggedAt: string | null; rationale: string | null }>({
     active: false,
     loggedAt: null,
@@ -333,12 +343,22 @@ export default function MonitoringPage() {
         const body = await qRes.json() as {
           wsConnected: boolean;
           activeCryptoCount: number;
-          quota: { count24h: number; hardCap: number; warnThreshold: number; lastCheckAsOf: string | null };
+          quota: {
+            count24h: number; hardCap: number; warnThreshold: number;
+            dailyLimit?: number; extraLimit?: number; effectiveCap?: number;
+            callsLastMinute?: number; rateLimitPerMinute?: number;
+            lastCheckAsOf: string | null;
+          };
         };
         setQuota({
           count24h: body.quota.count24h,
           hardCap: body.quota.hardCap,
           warnThreshold: body.quota.warnThreshold,
+          dailyLimit: body.quota.dailyLimit ?? 100000,
+          extraLimit: body.quota.extraLimit ?? 0,
+          effectiveCap: body.quota.effectiveCap ?? body.quota.hardCap,
+          callsLastMinute: body.quota.callsLastMinute ?? 0,
+          rateLimitPerMinute: body.quota.rateLimitPerMinute ?? 1000,
           wsConnected: body.wsConnected,
           activeCryptoCount: body.activeCryptoCount,
         });
@@ -565,10 +585,10 @@ export default function MonitoringPage() {
               </div>
             </div>
 
-            {/* Jauge quota journalier — hard cap 95k, warn 80k */}
+            {/* Jauge quota journalier — basée sur le vrai cap EODHD via /api/user */}
             {(() => {
-              const pct = Math.min(100, (quota.count24h / quota.hardCap) * 100);
-              const warnPct = (quota.warnThreshold / quota.hardCap) * 100;
+              const pct = Math.min(100, (quota.count24h / Math.max(quota.hardCap, 1)) * 100);
+              const warnPct = (quota.warnThreshold / Math.max(quota.hardCap, 1)) * 100;
               let fillColor = 'bg-emerald-500';
               let label = 'OK';
               if (quota.count24h >= quota.hardCap) { fillColor = 'bg-red-500'; label = 'CAP ATTEINT — appels EODHD bloqués'; }
@@ -584,7 +604,6 @@ export default function MonitoringPage() {
                   </div>
                   <div className="relative h-2 rounded-full bg-muted overflow-hidden">
                     <div className={`h-full ${fillColor} transition-all`} style={{ width: `${pct}%` }} />
-                    {/* Marqueur du seuil d'avertissement */}
                     <div
                       className="absolute top-0 h-full w-[1px] bg-amber-600/70"
                       style={{ left: `${warnPct}%` }}
@@ -593,7 +612,50 @@ export default function MonitoringPage() {
                   </div>
                   <div className="flex items-center justify-between text-[10px] text-muted-foreground">
                     <span>{label}</span>
-                    <span>Hard cap = 95 k/j (marge 5 k vs quota 100 k)</span>
+                    <span>
+                      Cap = {quota.hardCap.toLocaleString('fr-FR')} (95% du plan EODHD {quota.effectiveCap.toLocaleString('fr-FR')}
+                      {quota.extraLimit > 0 && ` · +${quota.extraLimit.toLocaleString('fr-FR')} extra`})
+                    </span>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Jauge per-minute — rate limit EODHD 1000 req/min, safe 900 */}
+            {(() => {
+              const rateCap = quota.rateLimitPerMinute;
+              const rateSafe = Math.floor(rateCap * 0.9);
+              const pct = Math.min(100, (quota.callsLastMinute / rateCap) * 100);
+              const safePct = (rateSafe / rateCap) * 100;
+              let fillColor = 'bg-emerald-500';
+              let label = 'OK';
+              if (quota.callsLastMinute >= rateSafe) {
+                fillColor = 'bg-red-500';
+                label = `⚠️ Proche rate limit — nouveaux appels bloqués jusqu'à baisse sous ${rateSafe}/min`;
+              } else if (quota.callsLastMinute >= rateSafe * 0.7) {
+                fillColor = 'bg-amber-500';
+                label = 'Activité soutenue';
+              }
+              return (
+                <div className="rounded-md border p-2 space-y-1.5">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="font-medium">Rate limit EODHD (60 s glissantes)</span>
+                    <span className="font-mono tabular-nums">
+                      {quota.callsLastMinute.toLocaleString('fr-FR')} / {rateCap.toLocaleString('fr-FR')}
+                      <span className="text-muted-foreground"> ({pct.toFixed(1)}%)</span>
+                    </span>
+                  </div>
+                  <div className="relative h-2 rounded-full bg-muted overflow-hidden">
+                    <div className={`h-full ${fillColor} transition-all`} style={{ width: `${pct}%` }} />
+                    <div
+                      className="absolute top-0 h-full w-[1px] bg-amber-600/70"
+                      style={{ left: `${safePct}%` }}
+                      title={`Safe threshold : ${rateSafe}/min (10% de marge)`}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                    <span>{label}</span>
+                    <span>Limit EODHD : {rateCap}/min documenté</span>
                   </div>
                 </div>
               );
