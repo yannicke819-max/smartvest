@@ -568,14 +568,25 @@ export default function MonitoringPage() {
       <div className="rounded-lg border">
         <div className="flex items-center gap-2 border-b px-4 py-2.5 bg-muted/30">
           <Activity className="h-4 w-4 text-muted-foreground" />
-          <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Coût mensuel infrastructure (EUR)</span>
+          <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Coût infrastructure SmartVest uniquement (EUR)</span>
           <span className="ml-auto text-[10px] font-mono text-muted-foreground">
             mois calendaire · taux USD→EUR {usage.usdEurRate.toFixed(3)}
           </span>
         </div>
         <div className="divide-y">
           <div className="grid grid-cols-[1fr_auto_auto] gap-3 px-4 py-2.5 text-xs items-center">
-            <span className="font-medium">Claude API (consommation tokens)</span>
+            <div>
+              <span className="font-medium">Claude API — propositions Lisa</span>
+              <span className="block text-[10px] text-muted-foreground">
+                {usage.claudeMonth.requests} proposition(s) ce mois
+                {usage.claudeMonth.requests > 0 && (
+                  <> · moyenne €{(usage.claudeMonth.costEur / usage.claudeMonth.requests).toFixed(3)}/prop</>
+                )}
+              </span>
+              <span className="block text-[10px] text-muted-foreground">
+                Aujourd'hui : {usage.claudeToday.requests} prop · €{usage.claudeToday.costEur.toFixed(3)}
+              </span>
+            </div>
             <span className="font-mono tabular-nums text-muted-foreground">${usage.claudeMonth.costUsd.toFixed(2)}</span>
             <span className="font-mono font-medium tabular-nums w-20 text-right">€{usage.claudeMonth.costEur.toFixed(2)}</span>
           </div>
@@ -590,7 +601,7 @@ export default function MonitoringPage() {
             <span className="font-mono font-medium tabular-nums w-20 text-right">€{usage.eodhdMonth.subscriptionEur.toFixed(2)}</span>
           </div>
           <div className="grid grid-cols-[1fr_auto_auto] gap-3 px-4 py-3 text-sm items-center bg-muted/20">
-            <span className="font-semibold">Total mensuel</span>
+            <span className="font-semibold">Total mensuel SmartVest</span>
             <span className="font-mono tabular-nums text-muted-foreground">
               ${(usage.claudeMonth.costUsd + usage.eodhdMonth.subscriptionUsd).toFixed(2)}
             </span>
@@ -600,9 +611,14 @@ export default function MonitoringPage() {
           </div>
         </div>
         <p className="px-4 pb-3 pt-1 text-[10px] text-muted-foreground italic">
+          <strong>Périmètre SmartVest uniquement</strong> — calculé depuis la table <code className="rounded bg-muted px-1">lisa_proposals</code>,
+          chaque proposition Lisa y enregistre ses propres tokens. Les autres projets partageant la même clé API Anthropic
+          (ex. KUT) ne sont PAS comptés ici. Pour le total cumulé tous projets confondus, consulter
+          directement <code className="rounded bg-muted px-1">console.anthropic.com/usage</code>.
+          <br />
           Fly.io (machine 24/7) ~€1.80/mois non inclus ici — facturé séparément par Fly.
           Abonnement EODHD réglable via env var <code className="rounded bg-muted px-1">EODHD_MONTHLY_COST_USD</code>,
-          taux de change via <code className="rounded bg-muted px-1">USD_EUR_RATE</code>.
+          taux USD→EUR récupéré en live (BCE via Frankfurter), override via <code className="rounded bg-muted px-1">USD_EUR_RATE</code>.
         </p>
       </div>
 
