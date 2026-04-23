@@ -110,8 +110,12 @@ export class EodhdEnrichmentService {
   /**
    * Calendrier économique (CPI, NFP, FOMC, GDP, etc.) sur une fenêtre future.
    * Cache 1 heure.
+   *
+   * importanceMin défaut 1 (tous événements) pour maximiser la visibilité de
+   * Lisa. Passer à 2 ou 3 si trop de bruit. EODHD importance : 1=low, 2=medium,
+   * 3=high (FOMC, NFP, CPI, ECB…).
    */
-  async fetchUpcomingEconomicEvents(daysAhead = 7, importanceMin: 1 | 2 | 3 = 2): Promise<EodhdEconomicEvent[]> {
+  async fetchUpcomingEconomicEvents(daysAhead = 7, importanceMin: 1 | 2 | 3 = 1): Promise<EodhdEconomicEvent[]> {
     const CACHE_MS = 60 * 60 * 1000;
     if (this.eventsCache && Date.now() - this.eventsCache.asOf < CACHE_MS) {
       return this.eventsCache.data;

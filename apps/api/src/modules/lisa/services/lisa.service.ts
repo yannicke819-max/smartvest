@@ -226,7 +226,7 @@ export class LisaService {
     try {
       const [news, econEvents] = await Promise.all([
         this.eodhdEnrichment.fetchRecentNews(undefined, 15),
-        this.eodhdEnrichment.fetchUpcomingEconomicEvents(7, 2),
+        this.eodhdEnrichment.fetchUpcomingEconomicEvents(7, 1),
       ]);
       marketSnapshot.recentNews = news.slice(0, 10).map((n) => ({
         headline: n.title,
@@ -234,7 +234,13 @@ export class LisaService {
         timestamp: n.date,
         relevance: (n.sentiment !== null && Math.abs(n.sentiment) >= 0.5) ? 'high' : 'medium',
       }));
-      marketSnapshot.upcomingEvents = econEvents.slice(0, 10).map((e) => ({
+      // Trie les events : importance desc (3→1), puis date asc — les plus
+      // critiques en premier. Cap à 20 pour éviter bloat du prompt.
+      const sortedEvents = [...econEvents].sort((a, b) => {
+        if (b.importance !== a.importance) return b.importance - a.importance;
+        return new Date(a.date).getTime() - new Date(b.date).getTime();
+      });
+      marketSnapshot.upcomingEvents = sortedEvents.slice(0, 20).map((e) => ({
         name: `${e.country ? `[${e.country}] ` : ''}${e.name}${e.estimate ? ` (est ${e.estimate})` : ''}`,
         date: e.date,
         importance: e.importance === 3 ? 'high' : e.importance === 2 ? 'medium' : 'low',
