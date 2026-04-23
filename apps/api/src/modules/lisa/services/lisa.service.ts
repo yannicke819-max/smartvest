@@ -1156,12 +1156,43 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     )).toISOString();
   }
 
-  /** Taux de change USD→EUR utilisé pour les conversions d'affichage.
-   *  Configurable via env var USD_EUR_RATE, défaut 0.93. */
-  private usdToEurRate(): number {
+  /** Cache du taux USD→EUR récupéré dynamiquement depuis Frankfurter (BCE). */
+  private cachedUsdEurRate: number | null = null;
+  private cachedUsdEurRateAsOf = 0;
+
+  /**
+   * Taux de change USD→EUR en live depuis l'API Frankfurter (source BCE).
+   * Mise à jour toutes les 24h, cache en mémoire. En cas d'échec : env var
+   * USD_EUR_RATE, sinon 0.855 en dernier recours.
+   *
+   * Frankfurter publie les taux de référence BCE mis à jour chaque jour
+   * ouvré vers 16h CET. API gratuite, pas de clé, pas de quota.
+   */
+  private async usdToEurRate(): Promise<number> {
+    const CACHE_MS = 24 * 60 * 60 * 1000;
+    if (this.cachedUsdEurRate && Date.now() - this.cachedUsdEurRateAsOf < CACHE_MS) {
+      return this.cachedUsdEurRate;
+    }
+    try {
+      const res = await fetch('https://api.frankfurter.app/latest?from=USD&to=EUR', {
+        signal: AbortSignal.timeout(3000),
+      });
+      if (res.ok) {
+        const data = await res.json() as { rates?: { EUR?: number } };
+        const rate = data.rates?.EUR;
+        if (typeof rate === 'number' && rate > 0.5 && rate < 2) {
+          this.cachedUsdEurRate = rate;
+          this.cachedUsdEurRateAsOf = Date.now();
+          return rate;
+        }
+      }
+    } catch {
+      // fall through to fallback
+    }
+    // Fallback : env var ou défaut
     const raw = this.config.get<string>('USD_EUR_RATE');
     const parsed = raw ? parseFloat(raw) : NaN;
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0.93;
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0.855;
   }
 
   /**
@@ -1214,7 +1245,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     // All-In-One avec quota 100k appels/jour).
     const subRaw = this.config.get<string>('EODHD_MONTHLY_COST_USD');
     const subscriptionUsd = subRaw && !isNaN(parseFloat(subRaw)) ? parseFloat(subRaw) : 99.99;
-    const rate = this.usdToEurRate();
+    const rate = await this.usdToEurRate();
 
     return {
       today: {
@@ -1253,7 +1284,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     const client = this.supabase.getClient();
     const startOfToday = this.startOfTodayUtc();
     const startOfMonth = this.startOfMonthUtc();
-    const rate = this.usdToEurRate();
+    const rate = await this.usdToEurRate();
 
     const [today, month, all] = await Promise.all([
       client
