@@ -180,7 +180,7 @@ function CycleRow({ cycle }: { cycle: MechanicalCycleSummary }) {
 
 function ActionRow({ action }: { action: AgentAction }) {
   const info = KIND_LABELS[action.kind] ?? { label: action.kind, color: 'text-muted-foreground' };
-  const ago = Math.round((Date.now() - new Date(action.created_at).getTime()) / 60000);
+  const ago = Math.round((Date.now() - new Date(action.timestamp).getTime()) / 60000);
 
   return (
     <div className="flex items-start gap-2 py-1.5 border-b border-border/40 text-xs">

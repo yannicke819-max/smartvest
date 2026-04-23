@@ -1691,10 +1691,10 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       // Actions récentes de l'agent dans le decision log
       client
         .from('lisa_decision_log')
-        .select('created_at, kind, summary, payload')
+        .select('timestamp, kind, summary, payload')
         .eq('portfolio_id', portfolioId)
-        .in('kind', ['mechanical_open', 'mechanical_close_stop', 'mechanical_close_target', 'mechanical_close_invalidated', 'mechanical_skip', 'autopilot_cycle_completed', 'mechanical_override_applied'])
-        .order('created_at', { ascending: false })
+        .in('kind', ['autopilot_cycle_completed', 'autopilot_cycle_started', 'position_opened', 'position_closed'])
+        .order('timestamp', { ascending: false })
         .limit(30),
     ]);
 

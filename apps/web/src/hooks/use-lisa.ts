@@ -151,7 +151,7 @@ export interface MechanicalDirective {
 }
 
 export interface AgentAction {
-  created_at: string;
+  timestamp: string;
   kind: string;
   summary: string;
   payload: Record<string, unknown>;
