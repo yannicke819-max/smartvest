@@ -8,9 +8,15 @@
 #   - WebSocket Binance (connexion persistante)
 # Si Fly mettait la machine en veille, ces crons s'arrêtent et les
 # positions ne sont plus surveillées.
+#
+# primary_region = 'cdg' (Paris) : Binance.com bloque les IPs US (HTTP 451
+# "Service unavailable from a restricted location"). Le WebSocket public
+# stream.binance.com a la même restriction. Une région EU est obligatoire
+# pour que la connexion Binance fonctionne — `iad` (Washington DC) ne
+# convient pas.
 
 app = 'smartvest'
-primary_region = 'iad'
+primary_region = 'cdg'
 
 [build]
   dockerfile = "Dockerfile"
