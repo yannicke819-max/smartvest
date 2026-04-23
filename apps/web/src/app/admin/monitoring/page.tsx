@@ -59,11 +59,13 @@ export default function MonitoringPage() {
     claudeAll: { requests: number; inputTokens: number; outputTokens: number; costUsd: number };
     eodhd24h: { total: number; success: number; failures: number; fallbacks: number; avgLatencyMs: number };
     eodhdAll: { total: number; success: number };
+    eodhdLastCallAsOf: string | null;
   }>({
     claude24h: { requests: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 },
     claudeAll: { requests: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 },
     eodhd24h: { total: 0, success: 0, failures: 0, fallbacks: 0, avgLatencyMs: 0 },
     eodhdAll: { total: 0, success: 0 },
+    eodhdLastCallAsOf: null,
   });
   const [binance, setBinance] = useState<{
     configured: boolean;
@@ -279,11 +281,13 @@ export default function MonitoringPage() {
 
       let eodhd24h = { total: 0, success: 0, failures: 0, fallbacks: 0, avgLatencyMs: 0 };
       let eodhdAll = { total: 0, success: 0 };
+      let eodhdLastCallAsOf: string | null = null;
       if (eodhdStatsRes.ok) {
         const stats = await eodhdStatsRes.json() as {
           total24h: number; success24h: number; failures24h: number;
           fallbacks24h: number; avgLatencyMs24h: number;
           totalAll: number; successAll: number;
+          lastCallAsOf: string | null;
         };
         eodhd24h = {
           total: stats.total24h,
@@ -293,9 +297,10 @@ export default function MonitoringPage() {
           avgLatencyMs: stats.avgLatencyMs24h,
         };
         eodhdAll = { total: stats.totalAll, success: stats.successAll };
+        eodhdLastCallAsOf = stats.lastCallAsOf;
       }
 
-      setUsage({ claude24h, claudeAll, eodhd24h, eodhdAll });
+      setUsage({ claude24h, claudeAll, eodhd24h, eodhdAll, eodhdLastCallAsOf });
     } catch {
       // keep defaults (zeros)
     }
@@ -460,13 +465,30 @@ export default function MonitoringPage() {
             </div>
           </div>
           <div className="px-4 py-3 space-y-2">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-2">
               <span className="text-sm font-medium">EODHD (prix live)</span>
-              <span className="text-[10px] font-mono text-muted-foreground">
-                {usage.eodhd24h.total > 0
-                  ? `${Math.round((usage.eodhd24h.success / usage.eodhd24h.total) * 100)}% success`
-                  : 'aucun appel 24h'}
-              </span>
+              <div className="flex items-center gap-3 text-[10px] font-mono text-muted-foreground">
+                {usage.eodhdLastCallAsOf && (() => {
+                  const ageMs = Date.now() - new Date(usage.eodhdLastCallAsOf).getTime();
+                  let human: string;
+                  if (ageMs < 60_000) human = `${Math.round(ageMs / 1000)}s`;
+                  else if (ageMs < 3_600_000) human = `${Math.round(ageMs / 60_000)}min`;
+                  else if (ageMs < 86_400_000) human = `${Math.round(ageMs / 3_600_000)}h`;
+                  else human = `${Math.round(ageMs / 86_400_000)}j`;
+                  // Rouge si > 2min (cron devrait tourner toutes les 30s)
+                  const isStale = ageMs > 120_000;
+                  return (
+                    <span className={isStale ? 'text-amber-600' : ''}>
+                      dernier appel : il y a {human}
+                    </span>
+                  );
+                })()}
+                <span>
+                  {usage.eodhd24h.total > 0
+                    ? `${Math.round((usage.eodhd24h.success / usage.eodhd24h.total) * 100)}% success`
+                    : 'aucun appel 24h'}
+                </span>
+              </div>
             </div>
             <div className="grid grid-cols-4 gap-2 text-xs">
               <div className="rounded-md bg-muted/30 p-2">
