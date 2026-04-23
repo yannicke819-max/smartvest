@@ -150,10 +150,23 @@ export default function LisaPage() {
 
     // Confirmation explicite la première fois qu'on active auto-approve
     if (autopilotAutoApprove && !config?.autopilot_auto_approve) {
+      // Construit la ligne durée selon ce que l'utilisateur a saisi
+      const durTrim = autopilotDurationHoursInput.trim();
+      const durH = parseFloat(durTrim);
+      let durationLine: string;
+      if (durTrim === '' || !Number.isFinite(durH) || durH <= 0) {
+        durationLine = '• Durée : SANS LIMITE (jusqu\'à ce que tu désactives manuellement).';
+      } else {
+        const clamped = Math.min(durH, 24);
+        const expiry = new Date(Date.now() + clamped * 3_600_000);
+        durationLine = `• Durée : ${clamped} h → s'arrête automatiquement le ${expiry.toLocaleString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}.`;
+      }
+
       const ok = confirm(
         'ACTIVATION DU MODE AUTONOME\n\n'
         + '• Lisa ouvrira et fermera des positions toute seule sans te demander.\n'
         + `• Scan toutes les ${autopilotCycleMin} min.\n`
+        + durationLine + '\n'
         + '• Simulation paper uniquement — aucune exécution réelle.\n'
         + '• Tu peux désactiver à tout moment en décochant la case.\n\n'
         + 'Confirmer ?',
