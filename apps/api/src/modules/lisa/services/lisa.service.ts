@@ -1000,7 +1000,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
   }
 
   /**
-   * Récupère le solde RÉEL du compte Binance de l'utilisateur via l'API
+   * Récupère le solde du compte Binance externe de l'utilisateur via l'API
    * privée signed (/api/v3/account). Lecture seule — ne peut rien trader.
    *
    * Retourne une vue enrichie : par asset, solde libre + bloqué, prix USD

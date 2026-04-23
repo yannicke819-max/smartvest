@@ -295,7 +295,7 @@ export default function MonitoringPage() {
       // keep defaults (zeros)
     }
 
-    // 10. Balance Binance réelle
+    // 10. Balance Binance (compte externe)
     try {
       const token = (await supabase.auth.getSession()).data.session?.access_token;
       const bRes = await fetch(`${API}/lisa/binance/balance`, {
@@ -474,11 +474,11 @@ export default function MonitoringPage() {
         </div>
       </div>
 
-      {/* Balance Binance réelle (compte utilisateur, lecture seule) */}
+      {/* Balance Binance — compte externe utilisateur, lecture seule */}
       <div className="rounded-lg border">
         <div className="flex items-center gap-2 border-b px-4 py-2.5 bg-muted/30">
           <Zap className="h-4 w-4 text-muted-foreground" />
-          <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Binance — compte réel (lecture seule)</span>
+          <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Binance — compte externe (lecture seule)</span>
           {binance.configured && binance.balances.length > 0 && (
             <span className="ml-auto text-xs font-mono tabular-nums">
               Total : <span className="font-medium">${parseFloat(binance.totalUsd).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
