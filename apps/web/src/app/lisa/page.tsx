@@ -845,25 +845,48 @@ export default function LisaPage() {
       {/* Decision log */}
       {selectedPortfolioId && <LisaDecisionLog portfolioId={selectedPortfolioId} />}
 
-      {/* Statut mode autonome (read-only — la config se fait dans le panneau Configuration) */}
-      {autopilotEnabled && autopilotAutoApprove && (
-        <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-4 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 text-amber-700 dark:text-amber-300">
-            <Activity className="h-4 w-4" />
-            <span className="text-sm">
-              <strong>Mode AUTONOME actif</strong> — Lisa tourne toute seule toutes les {autopilotCycleMin} min, aucune action requise de ta part.
-            </span>
+      {/* Statut mode autonome */}
+      {autopilotEnabled && autopilotAutoApprove && (() => {
+        const utcHour = new Date().getUTCHours();
+        const inMarketHours = utcHour >= 7 && utcHour < 20;
+        const isPausedByMarketHours = autopilotMarketHoursOnly && !inMarketHours;
+        const nextResumeHour = autopilotMarketHoursOnly
+          ? (utcHour < 7 ? 7 : 7 + 24) // 07:00 UTC aujourd'hui ou demain
+          : null;
+        return (
+          <div className={`rounded-lg border p-4 flex items-center justify-between gap-3 ${
+            isPausedByMarketHours
+              ? 'border-orange-500/60 bg-orange-500/10'
+              : 'border-amber-500/40 bg-amber-500/5'
+          }`}>
+            <div className={`flex items-center gap-2 ${
+              isPausedByMarketHours ? 'text-orange-800 dark:text-orange-200' : 'text-amber-700 dark:text-amber-300'
+            }`}>
+              <Activity className="h-4 w-4 flex-shrink-0" />
+              {isPausedByMarketHours ? (
+                <span className="text-sm">
+                  <strong>Mode AUTONOME EN PAUSE</strong> — l'option "Heures de marché uniquement" est active
+                  et nous sommes hors fenêtre (7h–20h UTC).
+                  Lisa reprendra automatiquement à {nextResumeHour !== null ? `${nextResumeHour % 24}h UTC` : '7h UTC'}
+                  {' '}(09h Paris en été).
+                </span>
+              ) : (
+                <span className="text-sm">
+                  <strong>Mode AUTONOME actif</strong> — Lisa tourne toute seule toutes les {autopilotCycleMin} min.
+                </span>
+              )}
+            </div>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={handleDisableAutonomousHunter}
+              disabled={upsertConfig.isPending}
+            >
+              Stop immédiat
+            </Button>
           </div>
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={handleDisableAutonomousHunter}
-            disabled={upsertConfig.isPending}
-          >
-            Stop immédiat
-          </Button>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Kill switch */}
       <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-5 space-y-3">

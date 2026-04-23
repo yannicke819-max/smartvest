@@ -81,8 +81,10 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
 
     for (const cfg of configs) {
       try {
-        // Skip si market_hours_only activé ET hors fenêtre
+        // Skip si market_hours_only activé ET hors fenêtre.
+        // Log discret pour que l'utilisateur puisse diagnostiquer l'inactivité.
         if (cfg.autopilot_market_hours_only === true && !inMarketHours) {
+          this.logger.log(`Portfolio ${String(cfg.portfolio_id)}: market_hours_only=true, skip (UTC ${currentHourUtc}h, fenêtre 7-20 UTC)`);
           continue;
         }
 

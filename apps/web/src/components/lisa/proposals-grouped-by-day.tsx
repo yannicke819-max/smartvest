@@ -1,22 +1,19 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Activity, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { SkeletonCard } from '@/components/ui/skeleton';
 import { LisaProposalCard } from '@/components/lisa/proposal-card';
 import { usePurgeOldProposals, type LisaProposalRow } from '@/hooks/use-lisa';
 
-const STORAGE_KEY_EXPANDED = 'lisa:proposals:expanded-days';
-const STORAGE_KEY_COLLAPSED_TODAY = 'lisa:proposals:today-collapsed';
-
 /**
  * Groupe les propositions Lisa par jour calendaire (UTC).
- * - Section "Aujourd'hui" dépliée par défaut, autres repliées.
- * - L'état replié/déplié est **persisté dans localStorage** — un refresh
- *   de la page respecte les choix utilisateur (avant : tout se re-dépliait).
- * - Bouton "Purger anciennes" supprime les proposals terminales (executed/
- *   rejected/expired) et celles de plus de 24h.
+ *
+ * Par défaut, TOUTES les sections sont repliées (y compris "Aujourd'hui").
+ * L'utilisateur déplie manuellement ce qu'il veut consulter. Aucune
+ * persistance entre refreshs : chaque rechargement de page repart avec
+ * tout replié — comportement explicitement demandé.
  */
 export function LisaProposalsGroupedByDay({
   proposals,
@@ -28,40 +25,8 @@ export function LisaProposalsGroupedByDay({
   isLoading: boolean;
 }) {
   const purge = usePurgeOldProposals(portfolioId);
-  // État déplié : set de day keys. "Aujourd'hui" est déplié par défaut
-  // sauf si le user l'a explicitement replié (stocké séparément).
+  // Set des jours dépliés. Vide au mount → tout replié.
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  // Par défaut "Aujourd'hui" est REPLIÉE comme les autres jours.
-  // L'utilisateur déplie manuellement ce qu'il veut consulter.
-  const [todayCollapsed, setTodayCollapsed] = useState(true);
-  const [hydrated, setHydrated] = useState(false);
-
-  // Hydrate depuis localStorage au mount (côté client uniquement).
-  // Par défaut TOUT est replié — l'utilisateur déplie ce qui l'intéresse,
-  // ses choix sont conservés au refresh suivant.
-  useEffect(() => {
-    try {
-      const rawExpanded = localStorage.getItem(STORAGE_KEY_EXPANDED);
-      if (rawExpanded) {
-        const arr = JSON.parse(rawExpanded) as string[];
-        if (Array.isArray(arr)) setExpanded(new Set(arr));
-      }
-      // todayCollapsed défaut true (tout replié au refresh par défaut).
-      // Si l'utilisateur a explicitement marqué "déplié" en localStorage, on respecte.
-      const rawCollapsed = localStorage.getItem(STORAGE_KEY_COLLAPSED_TODAY);
-      setTodayCollapsed(rawCollapsed === 'false' ? false : true);
-    } catch { /* ignore */ }
-    setHydrated(true);
-  }, []);
-
-  // Persiste à chaque changement
-  useEffect(() => {
-    if (!hydrated) return;
-    try {
-      localStorage.setItem(STORAGE_KEY_EXPANDED, JSON.stringify(Array.from(expanded)));
-      localStorage.setItem(STORAGE_KEY_COLLAPSED_TODAY, String(todayCollapsed));
-    } catch { /* ignore */ }
-  }, [expanded, todayCollapsed, hydrated]);
 
   const grouped = useMemo(() => {
     const buckets = new Map<string, { key: string; label: string; items: LisaProposalRow[] }>();
@@ -85,18 +50,10 @@ export function LisaProposalsGroupedByDay({
   }, [proposals]);
 
   const totalCount = proposals.length;
-  const todayKey = dayKey(new Date());
 
-  const isExpanded = (key: string) => {
-    if (key === todayKey) return !todayCollapsed;
-    return expanded.has(key);
-  };
+  const isExpanded = (key: string) => expanded.has(key);
 
   const toggleExpanded = (key: string) => {
-    if (key === todayKey) {
-      setTodayCollapsed((prev) => !prev);
-      return;
-    }
     setExpanded((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
