@@ -1549,6 +1549,43 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     const totalCost7d = claudeUsd + eodhdUsd + tradingFrictionsUsd;
     const avgDailyCostUsd7d = totalCost7d > 0 ? totalCost7d / 7 : null;
 
+    // 5. Dernier cycle mécanique — briefing pour Lisa
+    const { data: lastCycleSummary } = await client
+      .from('lisa_mechanical_cycle_summary')
+      .select('*')
+      .eq('portfolio_id', portfolioId)
+      .order('cycle_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    let lastMechanicalCycle: import('@smartvest/ai-analyst').MechanicalCycleSummary | null = null;
+    if (lastCycleSummary) {
+      lastMechanicalCycle = {
+        cycleAt: lastCycleSummary.cycle_at as string,
+        directiveId: (lastCycleSummary.directive_id as string | null) ?? null,
+        directiveAgeMinutes: (lastCycleSummary.directive_age_minutes as number | null) ?? null,
+        opensCount: (lastCycleSummary.opens_count as number) ?? 0,
+        closesStopCount: (lastCycleSummary.closes_stop_count as number) ?? 0,
+        closesTargetCount: (lastCycleSummary.closes_target_count as number) ?? 0,
+        closesInvalidatedCount: (lastCycleSummary.closes_invalidated_count as number) ?? 0,
+        netPnlSinceProposalUsd: Number(lastCycleSummary.net_pnl_since_proposal_usd ?? 0),
+        grossWinsUsd: Number(lastCycleSummary.gross_wins_usd ?? 0),
+        grossLossesUsd: Number(lastCycleSummary.gross_losses_usd ?? 0),
+        winRatePct: lastCycleSummary.win_rate_pct != null ? Number(lastCycleSummary.win_rate_pct) : null,
+        avgHoldMinutes: lastCycleSummary.avg_hold_minutes != null ? Number(lastCycleSummary.avg_hold_minutes) : null,
+        largestWinPct: lastCycleSummary.largest_win_pct != null ? Number(lastCycleSummary.largest_win_pct) : null,
+        largestLossPct: lastCycleSummary.largest_loss_pct != null ? Number(lastCycleSummary.largest_loss_pct) : null,
+        stopsClusterFlag: (lastCycleSummary.stops_cluster_flag as boolean) ?? false,
+        stopsClusterWindowMinutes: (lastCycleSummary.stops_cluster_window_minutes as number | null) ?? null,
+        exposurePct: lastCycleSummary.exposure_pct != null ? Number(lastCycleSummary.exposure_pct) : null,
+        cashUsd: lastCycleSummary.cash_usd != null ? Number(lastCycleSummary.cash_usd) : null,
+        openPositionsCount: (lastCycleSummary.open_positions_count as number) ?? 0,
+        drawdownSinceDirectivePct: lastCycleSummary.drawdown_since_directive_pct != null ? Number(lastCycleSummary.drawdown_since_directive_pct) : null,
+        vixLevel: lastCycleSummary.vix_level != null ? Number(lastCycleSummary.vix_level) : null,
+        dxyLevel: lastCycleSummary.dxy_level != null ? Number(lastCycleSummary.dxy_level) : null,
+      };
+    }
+
     return {
       netReturnFromInceptionPct,
       netReturn7dPct,
@@ -1564,6 +1601,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         eodhdUsd,
         tradingFrictionsUsd,
       },
+      lastMechanicalCycle,
     };
   }
 

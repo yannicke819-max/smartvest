@@ -449,6 +449,46 @@ défini, sans markdown, sans explications hors JSON.
       gapLines.push(`- Historique 7j insuffisant pour mesurer l'écart — tenir compte de l'objectif dans les arbitrages à venir`);
     }
 
+    // Agent mécanique — briefing structuré pour Lisa
+    const mechLines: string[] = [];
+    const mc = metrics?.lastMechanicalCycle ?? null;
+    if (mc) {
+      const cycleAge = Math.round((Date.now() - new Date(mc.cycleAt).getTime()) / 60000);
+      mechLines.push(
+        `- Dernier cycle : il y a ${cycleAge} min · Directive âgée de ${mc.directiveAgeMinutes ?? '?'} min`,
+      );
+      mechLines.push(
+        `- Ouvertures : ${mc.opensCount} · Stops touchés : ${mc.closesStopCount} · Targets atteints : ${mc.closesTargetCount} · Invalidés : ${mc.closesInvalidatedCount}`,
+      );
+      const pnlSign = mc.netPnlSinceProposalUsd >= 0 ? '+' : '';
+      mechLines.push(
+        `- P&L mécanique : ${pnlSign}$${mc.netPnlSinceProposalUsd.toFixed(2)} · Win rate : ${mc.winRatePct != null ? `${mc.winRatePct.toFixed(0)}%` : 'n/a'} · Hold moyen : ${mc.avgHoldMinutes != null ? `${mc.avgHoldMinutes.toFixed(0)} min` : 'n/a'}`,
+      );
+      if (mc.largestWinPct != null || mc.largestLossPct != null) {
+        mechLines.push(
+          `- Outliers : meilleur gain ${mc.largestWinPct != null ? `+${mc.largestWinPct.toFixed(2)}%` : 'n/a'} · pire perte ${mc.largestLossPct != null ? `${mc.largestLossPct.toFixed(2)}%` : 'n/a'}`,
+        );
+      }
+      if (mc.stopsClusterFlag) {
+        mechLines.push(
+          `- ⚠️ ALERTE RÉGIME : ${mc.closesStopCount} stops en ${mc.stopsClusterWindowMinutes ?? '?'} min → possible rupture de régime intraday. Réévalue la thèse directionnelle dans [DIAGNOSTIC].`,
+        );
+      }
+      mechLines.push(
+        `- Exposition : ${mc.exposurePct != null ? `${mc.exposurePct.toFixed(1)}%` : 'n/a'} capital · Cash : ${mc.cashUsd != null ? `$${mc.cashUsd.toFixed(0)}` : 'n/a'} · Positions ouvertes : ${mc.openPositionsCount}`,
+      );
+      if (mc.drawdownSinceDirectivePct != null) {
+        mechLines.push(`- Drawdown depuis directive : -${mc.drawdownSinceDirectivePct.toFixed(2)}%`);
+      }
+      if (mc.vixLevel != null || mc.dxyLevel != null) {
+        mechLines.push(
+          `- Macro : VIX ${mc.vixLevel != null ? mc.vixLevel.toFixed(2) : 'n/a'}${mc.vixLevel != null && mc.vixLevel > 25 ? ' (ÉLEVÉ — vigilance)' : ''} · DXY ${mc.dxyLevel != null ? mc.dxyLevel.toFixed(2) : 'n/a'}`,
+        );
+      }
+    } else {
+      mechLines.push(`- Aucun cycle mécanique enregistré — agent en attente de première directive.`);
+    }
+
     return [
       '',
       '# MISSION — TRAJECTOIRE PORTEFEUILLE',
@@ -459,6 +499,7 @@ défini, sans markdown, sans explications hors JSON.
       gapLines.length > 0
         ? `\n## Écart à la trajectoire cible (horizon ${objectives?.performanceHorizonDays ?? 30}j, mesure 7j)\n${gapLines.join('\n')}`
         : '',
+      `\n## Agent mécanique (depuis dernière directive)\n${mechLines.join('\n')}`,
     ]
       .filter((s) => s !== '')
       .join('\n');

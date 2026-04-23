@@ -55,6 +55,7 @@ interface MechanicalDirective {
   targetSymbols: TargetSymbol[];
   closeConditions: CloseCondition[];
   riskPosture: 'aggressive' | 'normal' | 'defensive';
+  generatedAt: Date;
   validUntil: Date;
 }
 
@@ -343,9 +344,13 @@ export class MechanicalTradingService {
       this.logger.log(`[MÉCANIQUE] ${portfolioId.slice(0, 8)} — OPEN ${target.direction} ${target.symbol} @ ${price.toFixed(4)}`);
     }
 
-    // Snapshot daily performance après ouvertures (upsert 1 row/day)
-    await this.performance.takeSnapshot(portfolioId)
-      .catch((e) => this.logger.warn(`performance snapshot failed: ${String(e)}`));
+    // Snapshot daily performance + résumé cycle pour Lisa (non-bloquants)
+    await Promise.all([
+      this.performance.takeSnapshot(portfolioId)
+        .catch((e) => this.logger.warn(`performance snapshot failed: ${String(e)}`)),
+      this.writeCycleSummary(portfolioId, directive, capitalUsd)
+        .catch((e) => this.logger.warn(`cycle summary failed: ${String(e)}`)),
+    ]);
   }
 
   private async checkStopTarget(pos: OpenPosition): Promise<void> {
@@ -435,6 +440,157 @@ export class MechanicalTradingService {
     this.logger.log(`[MÉCANIQUE] ${(pos.portfolio_id as string).slice(0, 8)} — CLOSE ${pos.direction} ${pos.symbol} @ ${exitPrice.toFixed(4)} · PnL ${realizedPnl.toFixed(2)} USD (${pnlPct.toFixed(2)}%)`);
   }
 
+  /**
+   * Calcule et persiste le résumé du cycle mécanique depuis la génération de
+   * la directive. Transmis à Lisa avant sa prochaine proposition pour qu'elle
+   * intègre : stops touchés, P&L, cluster de régime, exposition, macro (VIX/DXY).
+   */
+  private async writeCycleSummary(
+    portfolioId: string,
+    directive: MechanicalDirective,
+    capitalUsd: Decimal,
+  ): Promise<void> {
+    const client = this.supabase.getClient();
+    const sinceDirective = directive.generatedAt.toISOString();
+
+    // Positions fermées depuis la directive (toutes sources)
+    const { data: closedSince } = await client
+      .from('lisa_positions')
+      .select('status, realized_pnl_usd, realized_pnl_pct, entry_timestamp, exit_timestamp')
+      .eq('portfolio_id', portfolioId)
+      .neq('status', 'open')
+      .gte('exit_timestamp', sinceDirective)
+      .order('exit_timestamp', { ascending: true });
+
+    const closed = closedSince ?? [];
+    const closesStop = closed.filter((p) => p.status === 'closed_stop');
+    const closesTarget = closed.filter((p) => p.status === 'closed_target');
+    const closesInvalidated = closed.filter((p) => p.status === 'closed_invalidated');
+
+    // Ouvertures mécaniques depuis la directive
+    const { data: opensSince } = await client
+      .from('lisa_positions')
+      .select('id')
+      .eq('portfolio_id', portfolioId)
+      .eq('source', 'mechanical')
+      .gte('entry_timestamp', sinceDirective);
+    const opensCount = (opensSince ?? []).length;
+
+    // P&L
+    const wins = closed.filter((p) => Number(p.realized_pnl_usd ?? 0) > 0);
+    const losses = closed.filter((p) => Number(p.realized_pnl_usd ?? 0) < 0);
+    const netPnl = closed.reduce((sum, p) => sum + Number(p.realized_pnl_usd ?? 0), 0);
+    const grossWins = wins.reduce((sum, p) => sum + Number(p.realized_pnl_usd ?? 0), 0);
+    const grossLosses = losses.reduce((sum, p) => sum + Number(p.realized_pnl_usd ?? 0), 0);
+    const winRate = closed.length > 0 ? (wins.length / closed.length) * 100 : null;
+
+    // Durée moyenne de hold
+    const holdsMin = closed
+      .filter((p) => p.entry_timestamp && p.exit_timestamp)
+      .map((p) =>
+        (new Date(p.exit_timestamp as string).getTime() - new Date(p.entry_timestamp as string).getTime()) / 60000,
+      );
+    const avgHoldMinutes = holdsMin.length > 0 ? holdsMin.reduce((a, b) => a + b, 0) / holdsMin.length : null;
+
+    // Outliers
+    const largestWinPct = wins.length > 0 ? Math.max(...wins.map((p) => Number(p.realized_pnl_pct ?? 0))) : null;
+    const largestLossPct = losses.length > 0 ? Math.min(...losses.map((p) => Number(p.realized_pnl_pct ?? 0))) : null;
+
+    // Cluster de stops : ≥3 dans ≤10 min → signal de rupture de régime
+    let stopsClusterFlag = false;
+    let stopsClusterWindowMinutes: number | null = null;
+    if (closesStop.length >= 3) {
+      for (let i = 0; i <= closesStop.length - 3; i++) {
+        const t0 = new Date(closesStop[i].exit_timestamp as string).getTime();
+        const t2 = new Date(closesStop[i + 2].exit_timestamp as string).getTime();
+        const winMin = (t2 - t0) / 60000;
+        if (winMin <= 10) {
+          stopsClusterFlag = true;
+          stopsClusterWindowMinutes = Math.round(winMin);
+          break;
+        }
+      }
+    }
+
+    // Positions ouvertes actuelles + exposition
+    const { data: openPos } = await client
+      .from('lisa_positions')
+      .select('entry_notional_usd')
+      .eq('portfolio_id', portfolioId)
+      .eq('status', 'open');
+    const openCount = (openPos ?? []).length;
+    const totalExposure = (openPos ?? []).reduce((sum, p) => sum + Number(p.entry_notional_usd ?? 0), 0);
+    const exposurePct = capitalUsd.gt(0) ? (totalExposure / capitalUsd.toNumber()) * 100 : null;
+
+    // Cash depuis dernier snapshot
+    const { data: snap } = await client
+      .from('lisa_portfolio_snapshots')
+      .select('cash_usd')
+      .eq('portfolio_id', portfolioId)
+      .order('timestamp', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const cashUsd = snap?.cash_usd != null ? Number(snap.cash_usd) : null;
+
+    // Drawdown depuis génération directive (peak-to-trough)
+    const { data: snapsSince } = await client
+      .from('lisa_portfolio_snapshots')
+      .select('total_value_usd')
+      .eq('portfolio_id', portfolioId)
+      .gte('timestamp', sinceDirective)
+      .order('timestamp', { ascending: true });
+    let drawdownSinceDirectivePct: number | null = null;
+    if (snapsSince && snapsSince.length >= 2) {
+      let peak = Number(snapsSince[0].total_value_usd);
+      let maxDD = 0;
+      for (const s of snapsSince) {
+        const v = Number(s.total_value_usd);
+        if (v > peak) peak = v;
+        if (peak > 0) {
+          const dd = ((peak - v) / peak) * 100;
+          if (dd > maxDD) maxDD = dd;
+        }
+      }
+      drawdownSinceDirectivePct = maxDD;
+    }
+
+    // Macro en cache EODHD ($0 de coût supplémentaire)
+    const [vixQuote, dxyQuote] = await Promise.all([
+      this.lisa.getLivePrice('VIX').catch(() => null),
+      this.lisa.getLivePrice('DXY').catch(() => null),
+    ]);
+
+    const directiveAgeMinutes = Math.round((Date.now() - directive.generatedAt.getTime()) / 60000);
+
+    await client.from('lisa_mechanical_cycle_summary').insert({
+      portfolio_id: portfolioId,
+      cycle_at: new Date().toISOString(),
+      directive_id: directive.id,
+      opens_count: opensCount,
+      closes_stop_count: closesStop.length,
+      closes_target_count: closesTarget.length,
+      closes_invalidated_count: closesInvalidated.length,
+      net_pnl_since_proposal_usd: netPnl.toFixed(4),
+      gross_wins_usd: grossWins.toFixed(4),
+      gross_losses_usd: grossLosses.toFixed(4),
+      win_rate_pct: winRate != null ? winRate.toFixed(2) : null,
+      avg_hold_minutes: avgHoldMinutes != null ? avgHoldMinutes.toFixed(2) : null,
+      largest_win_pct: largestWinPct != null ? largestWinPct.toFixed(4) : null,
+      largest_loss_pct: largestLossPct != null ? largestLossPct.toFixed(4) : null,
+      stops_cluster_flag: stopsClusterFlag,
+      stops_cluster_window_minutes: stopsClusterWindowMinutes,
+      exposure_pct: exposurePct != null ? exposurePct.toFixed(2) : null,
+      cash_usd: cashUsd != null ? cashUsd.toFixed(2) : null,
+      open_positions_count: openCount,
+      drawdown_since_directive_pct: drawdownSinceDirectivePct != null ? drawdownSinceDirectivePct.toFixed(4) : null,
+      vix_level: vixQuote ? Number(vixQuote.price).toFixed(4) : null,
+      dxy_level: dxyQuote ? Number(dxyQuote.price).toFixed(4) : null,
+      directive_age_minutes: directiveAgeMinutes,
+    }).then(({ error }) => {
+      if (error) this.logger.warn(`cycle summary insert failed: ${error.message}`);
+    });
+  }
+
   private async loadDirective(portfolioId: string): Promise<MechanicalDirective | null> {
     const { data } = await this.supabase.getClient()
       .from('lisa_mechanical_directives')
@@ -457,6 +613,7 @@ export class MechanicalTradingService {
       targetSymbols: (data.target_symbols as TargetSymbol[]) ?? [],
       closeConditions: (data.close_conditions as CloseCondition[]) ?? [],
       riskPosture: (data.risk_posture as MechanicalDirective['riskPosture']) ?? 'normal',
+      generatedAt: new Date(data.generated_at as string),
       validUntil: new Date(data.valid_until as string),
     };
   }

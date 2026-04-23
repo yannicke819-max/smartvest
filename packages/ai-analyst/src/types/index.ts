@@ -307,6 +307,42 @@ export interface CostBreakdown {
   tradingFrictionsUsd: number;
 }
 
+/**
+ * Résumé d'un cycle mécanique (agent sans LLM).
+ * Transmis à Lisa avant sa proposition pour qu'elle intègre ce qui s'est
+ * passé depuis sa dernière directive (stops touchés, P&L, macro, régime).
+ */
+export interface MechanicalCycleSummary {
+  cycleAt: string;
+  directiveId: string | null;
+  directiveAgeMinutes: number | null;
+  // Activité depuis la dernière directive
+  opensCount: number;
+  closesStopCount: number;
+  closesTargetCount: number;
+  closesInvalidatedCount: number;
+  // P&L mécanique
+  netPnlSinceProposalUsd: number;
+  grossWinsUsd: number;
+  grossLossesUsd: number;
+  winRatePct: number | null;
+  avgHoldMinutes: number | null;
+  // Outliers
+  largestWinPct: number | null;
+  largestLossPct: number | null;
+  // Signal de régime : cluster de stops = possible rupture
+  stopsClusterFlag: boolean;
+  stopsClusterWindowMinutes: number | null;
+  // Santé portefeuille
+  exposurePct: number | null;
+  cashUsd: number | null;
+  openPositionsCount: number;
+  drawdownSinceDirectivePct: number | null;
+  // Macro (EODHD cache)
+  vixLevel: number | null;
+  dxyLevel: number | null;
+}
+
 /** Métriques historiques calculées à la volée avant chaque cycle Lisa. */
 export interface HistoryMetrics {
   netReturnFromInceptionPct: number | null;
@@ -319,6 +355,8 @@ export interface HistoryMetrics {
   recentStreak: RecentStreak;
   avgDailyCostUsd7d: number | null;
   costBreakdown: CostBreakdown;
+  /** Dernier cycle de l'agent mécanique — null si aucun cycle enregistré. */
+  lastMechanicalCycle: MechanicalCycleSummary | null;
 }
 
 /** Objectifs de performance nets de coûts (tous optionnels). */
