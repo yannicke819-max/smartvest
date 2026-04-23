@@ -59,9 +59,14 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
    *  de tourner toutes les 1-2 min alors que les longs-termistes restent à 60. */
   @Cron(CronExpression.EVERY_MINUTE, { name: 'lisa-autopilot' })
   async runAutopilotCycle() {
+    // SELECT * plutôt que liste explicite : si la migration 0047 n'est pas
+    // encore appliquée et que autopilot_market_hours_only n'existe pas en DB,
+    // Supabase ne plante pas sur la colonne manquante — toutes les colonnes
+    // présentes sont renvoyées, et autopilot_market_hours_only sera undefined
+    // donc lu comme false (comportement "désactivé" côté logique).
     const { data: configs, error } = await this.supabase.getClient()
       .from('lisa_session_configs')
-      .select('user_id, portfolio_id, profile, autopilot_cycle_minutes, autopilot_auto_approve, autopilot_expires_at, autopilot_market_hours_only, kill_switch_active, updated_at')
+      .select('*')
       .eq('autopilot_enabled', true)
       .eq('kill_switch_active', false);
 
