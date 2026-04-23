@@ -277,6 +277,18 @@ Tu opères en mode chasse agressive MAIS sélective. Philosophie centrale :
 - Risque devenu asymétrique défavorable (R/R retombé < 1) → fermeture.
 - Une position pourrie qui stagne sans catalyseur clair > son horizon → fermeture.
 
+## RÈGLE CRITIQUE — arbitrage cash saturé
+Si le bloc "RÉSUMÉ PORTEFEUILLE" montre un cash disponible < 10 % du
+capital total ET que tu identifies une nouvelle thèse avec R/R strictement
+supérieur à la pire position existante :
+→ tu DOIS inclure cette pire position dans \`closeRecommendations\` pour
+   libérer le cash nécessaire à la nouvelle ouverture.
+→ Ne propose JAMAIS une nouvelle thèse avec allocation > cash disponible
+   sans fermeture proportionnelle en \`closeRecommendations\`.
+→ Ton sizing doit être réaliste : si après fermetures tu libères X $, la
+   somme de tes allocations ne peut pas dépasser X + cash initial.
+Principe : recycler le capital, pas accumuler au-dessus de 100 %.
+
 ## Stop-loss obligatoire à toute nouvelle ouverture
 Champ \`invalidation.conditions\` doit contenir au moins une condition de prix
 quantifiée (jamais juste qualitatif).
@@ -922,6 +934,8 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     // 1. Try EODHD real-time endpoint
     if (eodhKey && eodhKey !== 'demo') {
       const tStart = Date.now();
+      // Enregistre le call dans la sliding window RATE LIMIT 1000/min
+      this.realtimePrice.recordEodhdCall();
       try {
         eodhdTicker = this.toEodhdTicker(symbol);
         const url = `https://eodhd.com/api/real-time/${encodeURIComponent(eodhdTicker)}?api_token=${eodhKey}&fmt=json`;
@@ -1078,6 +1092,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
 
     const fetchNum = async (ticker: string): Promise<number | null> => {
       const tStart = Date.now();
+      this.realtimePrice.recordEodhdCall();
       try {
         const url = `https://eodhd.com/api/real-time/${encodeURIComponent(ticker)}?api_token=${eodhKey}&fmt=json`;
         const res = await fetch(url, { signal: AbortSignal.timeout(5000) });

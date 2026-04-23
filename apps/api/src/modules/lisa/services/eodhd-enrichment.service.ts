@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../supabase/supabase.service';
+import { RealtimePriceService } from './realtime-price.service';
 
 /**
  * EodhdEnrichmentService — wrappers autour des endpoints EODHD Premium
@@ -31,6 +32,7 @@ export class EodhdEnrichmentService {
   constructor(
     private readonly config: ConfigService,
     private readonly supabase: SupabaseService,
+    private readonly realtimePrice: RealtimePriceService,
   ) {}
 
   private apiKey(): string | null {
@@ -82,6 +84,7 @@ export class EodhdEnrichmentService {
       // Si plusieurs symbols, on prend general tickers trending (pas de filter)
       const symbolParam = symbols && symbols.length === 1 ? `&s=${encodeURIComponent(symbols[0])}` : '';
       const url = `https://eodhd.com/api/news?api_token=${key}&limit=${limit}${symbolParam}&fmt=json`;
+      this.realtimePrice.recordEodhdCall();
       const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
       const latencyMs = Date.now() - tStart;
 
@@ -130,6 +133,7 @@ export class EodhdEnrichmentService {
       const to = new Date(now.getTime() + daysAhead * 86_400_000);
       const fromStr = now.toISOString().slice(0, 10);
       const toStr = to.toISOString().slice(0, 10);
+      this.realtimePrice.recordEodhdCall();
       const url = `https://eodhd.com/api/economic-events?api_token=${key}&from=${fromStr}&to=${toStr}&limit=100&fmt=json`;
       const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
       const latencyMs = Date.now() - tStart;
@@ -187,6 +191,7 @@ export class EodhdEnrichmentService {
 
     const tStart = Date.now();
     try {
+      this.realtimePrice.recordEodhdCall();
       const symList = toFetch.map((s) => encodeURIComponent(this.toEodhdTicker(s))).join(',');
       const url = `https://eodhd.com/api/calendar/earnings?api_token=${key}&symbols=${symList}&from=${fromStr}&to=${toStr}&fmt=json`;
       const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
@@ -243,6 +248,7 @@ export class EodhdEnrichmentService {
     if (!key) return null;
 
     const tStart = Date.now();
+      this.realtimePrice.recordEodhdCall();
     try {
       const ticker = this.toEodhdTicker(s);
       const url = `https://eodhd.com/api/fundamentals/${encodeURIComponent(ticker)}?api_token=${key}&fmt=json`;

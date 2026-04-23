@@ -1,11 +1,15 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import WebSocket from 'ws';
 import { SupabaseService } from '../../supabase/supabase.service';
 
-/** Hard cap à 95k/j (100k quota EODHD moins 5k de marge de sécurité). */
-const EODHD_DAILY_HARD_CAP = 95_000;
-/** Seuil à partir duquel on ralentit préventivement (80% du cap). */
-const EODHD_DAILY_WARN_THRESHOLD = 80_000;
+/** Rate limit EODHD documenté : 1000 requêtes / minute maximum.
+ *  On se garde 10 % de marge → bloque à 900/min. */
+const EODHD_RATE_LIMIT_PER_MINUTE = 1000;
+const EODHD_RATE_LIMIT_SAFE_THRESHOLD = 900;
+/** Fallback hard cap quotidien si /api/user n'est pas accessible.
+ *  En temps normal on utilise le dailyRateLimit retourné par EODHD. */
+const EODHD_DAILY_FALLBACK_CAP = 95_000;
 
 /**
  * RealtimePriceService — cache unifié de prix en mémoire.
@@ -38,11 +42,21 @@ export class RealtimePriceService implements OnModuleDestroy {
   /** Symbols d'intérêt (positions ouvertes crypto). Re-resolved périodiquement. */
   private activeCryptoSymbols = new Set<string>();
 
-  /** Compteur 24h EODHD en cache, rafraîchi depuis eodhd_request_log. */
+  /** Compteur journalier EODHD en cache. Source prioritaire : /api/user
+   *  (valeur officielle EODHD). Fallback : count sur eodhd_request_log. */
   private eodhd24hCount = 0;
   private eodhd24hCountAsOf = 0;
+  private eodhdDailyLimit = EODHD_DAILY_FALLBACK_CAP;
+  private eodhdExtraLimit = 0;
 
-  constructor(private readonly supabase: SupabaseService) {}
+  /** Sliding window des timestamps des appels EODHD sortants dans les
+   *  dernières 60 s — pour bloquer avant de hit le rate limit 1000/min. */
+  private recentCallTimestamps: number[] = [];
+
+  constructor(
+    private readonly supabase: SupabaseService,
+    private readonly config: ConfigService,
+  ) {}
 
   onModuleDestroy(): void {
     if (this.ws) {
@@ -218,45 +232,111 @@ export class RealtimePriceService implements OnModuleDestroy {
    */
   async canCallEodhd(): Promise<'ok' | 'warn' | 'blocked'> {
     const now = Date.now();
-    // Rafraîchit le compteur si cache > 60s
+
+    // 1. Rate limit par minute (sliding window) — max 900 req/min
+    //    pour garder 10% de marge sous le cap 1000/min d'EODHD.
+    this.recentCallTimestamps = this.recentCallTimestamps.filter((t) => now - t < 60_000);
+    if (this.recentCallTimestamps.length >= EODHD_RATE_LIMIT_SAFE_THRESHOLD) {
+      this.logger.warn(`EODHD rate limit proche (${this.recentCallTimestamps.length}/min) — blocage momentané`);
+      return 'blocked';
+    }
+
+    // 2. Quota journalier — source prioritaire : /api/user (EODHD officiel)
+    //    Fallback : count depuis eodhd_request_log si le call user échoue.
     if (now - this.eodhd24hCountAsOf > 60_000) {
-      try {
-        // Reset CALENDAIRE à 00:00 UTC — aligne avec le reset quota EODHD réel
-        const nowDate = new Date(now);
-        const startOfTodayUtc = new Date(Date.UTC(
-          nowDate.getUTCFullYear(), nowDate.getUTCMonth(), nowDate.getUTCDate(),
-          0, 0, 0, 0,
-        )).toISOString();
-        const { count } = await this.supabase.getClient()
-          .from('eodhd_request_log')
-          .select('*', { count: 'exact', head: true })
-          .eq('source', 'eodhd')
-          .gte('timestamp', startOfTodayUtc);
-        this.eodhd24hCount = count ?? 0;
-        this.eodhd24hCountAsOf = now;
-      } catch (e) {
-        this.logger.warn(`Quota check failed: ${String(e).slice(0, 80)}. Letting call through.`);
-        return 'ok';
+      const refreshed = await this.refreshQuotaFromUserApi();
+      if (!refreshed) {
+        // Fallback DB count (calendaire 00:00 UTC)
+        try {
+          const nowDate = new Date(now);
+          const startOfTodayUtc = new Date(Date.UTC(
+            nowDate.getUTCFullYear(), nowDate.getUTCMonth(), nowDate.getUTCDate(),
+            0, 0, 0, 0,
+          )).toISOString();
+          const { count } = await this.supabase.getClient()
+            .from('eodhd_request_log')
+            .select('*', { count: 'exact', head: true })
+            .eq('source', 'eodhd')
+            .gte('timestamp', startOfTodayUtc);
+          this.eodhd24hCount = count ?? 0;
+          this.eodhd24hCountAsOf = now;
+        } catch (e) {
+          this.logger.warn(`Quota DB fallback failed: ${String(e).slice(0, 80)}`);
+          return 'ok';
+        }
       }
     }
 
-    if (this.eodhd24hCount >= EODHD_DAILY_HARD_CAP) {
-      this.logger.warn(`EODHD quota cap hit (${this.eodhd24hCount}/${EODHD_DAILY_HARD_CAP}) — blocking new calls, serving cache`);
+    const effectiveCap = this.eodhdDailyLimit + this.eodhdExtraLimit;
+    const hardCapSafe = Math.floor(effectiveCap * 0.95); // 5% marge vs cap réel
+    const warnThreshold = Math.floor(effectiveCap * 0.80);
+
+    if (this.eodhd24hCount >= hardCapSafe) {
+      this.logger.warn(`EODHD daily quota proche (${this.eodhd24hCount}/${effectiveCap}) — blocage`);
       return 'blocked';
     }
-    if (this.eodhd24hCount >= EODHD_DAILY_WARN_THRESHOLD) {
-      return 'warn';
-    }
+    if (this.eodhd24hCount >= warnThreshold) return 'warn';
     return 'ok';
   }
 
+  /** Enregistre un appel sortant EODHD dans la sliding window.
+   *  À appeler APRÈS que canCallEodhd() a retourné 'ok' ou 'warn'. */
+  recordEodhdCall(): void {
+    this.recentCallTimestamps.push(Date.now());
+  }
+
+  /** Fetch le compteur officiel EODHD via /api/user.
+   *  Retourne true si succès, false si fallback nécessaire. */
+  private async refreshQuotaFromUserApi(): Promise<boolean> {
+    const apiKey = this.config.get<string>('EODHD_API_KEY');
+    if (!apiKey || apiKey === 'demo') return false;
+
+    try {
+      const url = `https://eodhd.com/api/user?api_token=${apiKey}&fmt=json`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      if (!res.ok) return false;
+      const data = await res.json() as {
+        apiRequests?: number;
+        dailyRateLimit?: number;
+        extraLimit?: number;
+      };
+      if (typeof data.apiRequests === 'number') this.eodhd24hCount = data.apiRequests;
+      if (typeof data.dailyRateLimit === 'number' && data.dailyRateLimit > 0) {
+        this.eodhdDailyLimit = data.dailyRateLimit;
+      }
+      if (typeof data.extraLimit === 'number') this.eodhdExtraLimit = data.extraLimit;
+      this.eodhd24hCountAsOf = Date.now();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Pour l'endpoint monitoring : expose le compteur et le cap courant. */
-  getQuotaStatus(): { count24h: number; hardCap: number; warnThreshold: number; lastCheckAsOf: string | null } {
+  getQuotaStatus(): {
+    count24h: number;
+    dailyLimit: number;
+    extraLimit: number;
+    effectiveCap: number;
+    hardCap: number;
+    warnThreshold: number;
+    lastCheckAsOf: string | null;
+    callsLastMinute: number;
+    rateLimitPerMinute: number;
+  } {
+    const now = Date.now();
+    const callsLastMinute = this.recentCallTimestamps.filter((t) => now - t < 60_000).length;
+    const effectiveCap = this.eodhdDailyLimit + this.eodhdExtraLimit;
     return {
       count24h: this.eodhd24hCount,
-      hardCap: EODHD_DAILY_HARD_CAP,
-      warnThreshold: EODHD_DAILY_WARN_THRESHOLD,
+      dailyLimit: this.eodhdDailyLimit,
+      extraLimit: this.eodhdExtraLimit,
+      effectiveCap,
+      hardCap: Math.floor(effectiveCap * 0.95),
+      warnThreshold: Math.floor(effectiveCap * 0.80),
       lastCheckAsOf: this.eodhd24hCountAsOf > 0 ? new Date(this.eodhd24hCountAsOf).toISOString() : null,
+      callsLastMinute,
+      rateLimitPerMinute: EODHD_RATE_LIMIT_PER_MINUTE,
     };
   }
 }
