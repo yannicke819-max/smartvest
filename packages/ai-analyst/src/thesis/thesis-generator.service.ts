@@ -269,8 +269,36 @@ défini, sans markdown, sans explications hors JSON.
     availableCash: string | undefined,
   ): string {
     if (!positions || positions.length === 0) {
-      return '(aucune position ouverte — marge de manœuvre maximale pour ouvrir)';
+      return `(aucune position ouverte — marge de manœuvre maximale pour ouvrir)
+${availableCash ? `Cash disponible : ${availableCash} USD\n` : ''}
+Biais du cycle : OPPORTUNISTE — toute thèse à conviction normale est bienvenue.`;
     }
+
+    // Bandeau agrégé : Lisa doit voir d'un coup d'œil l'état global du
+    // portefeuille pour décider si elle ouvre, ferme ou laisse courir.
+    const totalEntryNotional = positions.reduce((s, p) => s + parseFloat(p.entryNotionalUsd), 0);
+    const weightedPnlPct = totalEntryNotional > 0
+      ? positions.reduce((s, p) => s + p.unrealizedPnlPct * (parseFloat(p.entryNotionalUsd) / totalEntryNotional), 0)
+      : 0;
+    const avgAge = positions.reduce((s, p) => s + p.ageDays, 0) / positions.length;
+    const worstPosPnl = Math.min(...positions.map((p) => p.unrealizedPnlPct));
+
+    let bias: 'HOLD recommandé' | 'OPPORTUNISTE' | 'URGENCE RÉÉQUILIBRAGE';
+    let biasRationale: string;
+    if (worstPosPnl <= -5 || weightedPnlPct <= -2) {
+      bias = 'URGENCE RÉÉQUILIBRAGE';
+      biasRationale = 'au moins une position dégradée (≤ −5%) ou portefeuille en perte significative — closeRecommendations prioritaires, ouvertures mesurées';
+    } else if (weightedPnlPct >= 0.5 && worstPosPnl > -3) {
+      bias = 'HOLD recommandé';
+      biasRationale = 'portefeuille en gain net, aucune position dégradée — n\'ouvre QUE si une nouvelle thèse a un R/R supérieur au pire R/R existant. Array `theses` vide est la bonne réponse par défaut';
+    } else {
+      bias = 'OPPORTUNISTE';
+      biasRationale = 'portefeuille proche du break-even — propose selon conviction normale';
+    }
+
+    const summary = `RÉSUMÉ PORTEFEUILLE : P&L latent global ${weightedPnlPct >= 0 ? '+' : ''}${weightedPnlPct.toFixed(2)}% · ${positions.length} position(s) ouverte(s) · âge moyen ${avgAge.toFixed(1)}j · pire P&L individuel ${worstPosPnl >= 0 ? '+' : ''}${worstPosPnl.toFixed(2)}%
+Biais du cycle : **${bias}** — ${biasRationale}`;
+
     const lines = positions.map((p) => {
       const pnlSign = p.unrealizedPnlPct >= 0 ? '+' : '';
       const horizonHint = p.horizonDays !== null
@@ -281,9 +309,11 @@ défini, sans markdown, sans explications hors JSON.
     const cashLine = availableCash
       ? `\nCash disponible : ${availableCash} USD (après fermetures que tu recommandes)`
       : '';
-    return lines.join('\n') + cashLine + `
+    return `${summary}
 
-À partir de cette liste, retourne dans ton JSON output un champ
+${lines.join('\n')}${cashLine}
+
+À partir de cette liste, retourne dans ton tool call un champ
 "closeRecommendations" (array, peut être vide) listant les positions à
 fermer MAINTENANT, chacune au format :
   { "positionId": "<id copié exact>", "reason": "rationale courte" }
@@ -292,10 +322,18 @@ Critères de fermeture typiques :
 - P&L latent < -3% ET le scénario d'entrée ne tient plus
 - Horizon déjà dépassé ou presque (< 1j restant) sans catalyseur matérialisé
 - La thèse sous-jacente est invalidée par un news/macro récent
-- Meilleure opportunité à coût d'opportunité élevé (cash bloqué pour rien)
+- R/R retombé sous 1 (asymétrie défavorable)
 
 Ne ferme PAS une position juste parce qu'elle est en légère perte si la
-thèse initiale tient toujours (respect du plan, pas de panic-sell).`;
+thèse initiale tient toujours (respect du plan, pas de panic-sell).
+
+**IMPORTANT — règle d'ouverture conditionnelle au biais :**
+- Biais HOLD recommandé → array \`theses\` vide est la réponse par défaut.
+  N'ouvre QUE si tu identifies une opportunité avec R/R strictement
+  supérieur au pire R/R des positions ci-dessus.
+- Biais OPPORTUNISTE → ouvre selon ta conviction normale.
+- Biais URGENCE → priorise les fermetures, ouvertures uniquement si elles
+  réduisent l'exposition agrégée ou couvrent un risque concentré.`;
   }
 
   /**
