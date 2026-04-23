@@ -390,6 +390,23 @@ export function LisaProposalCard({
               </Button>
             </div>
           )}
+
+          {(proposal.status === 'approved' || proposal.status === 'executed') && (
+            <div className="flex items-center gap-2 pt-2 border-t">
+              <Button size="sm" disabled className="cursor-not-allowed opacity-60">
+                <CheckCircle2 className="mr-1.5 h-4 w-4" />
+                Approuvé &amp; positions ouvertes
+              </Button>
+              {proposal.executed_at && (
+                <span className="text-xs text-muted-foreground">
+                  le {new Date(proposal.executed_at).toLocaleString('fr-FR', {
+                    day: '2-digit', month: '2-digit', year: 'numeric',
+                    hour: '2-digit', minute: '2-digit',
+                  })}
+                </span>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

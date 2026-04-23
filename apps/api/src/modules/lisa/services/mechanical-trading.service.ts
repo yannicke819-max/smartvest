@@ -18,6 +18,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import Decimal from 'decimal.js';
 import { randomUUID } from 'node:crypto';
 import { SupabaseService } from '../../supabase/supabase.service';
+import { PerformanceService } from '../../performance/performance.service';
 import { DecisionLogService } from './decision-log.service';
 import { LisaService } from './lisa.service';
 
@@ -86,6 +87,7 @@ export class MechanicalTradingService {
     private readonly supabase: SupabaseService,
     private readonly decisionLog: DecisionLogService,
     private readonly lisa: LisaService,
+    private readonly performance: PerformanceService,
   ) {}
 
   @Cron(CronExpression.EVERY_MINUTE, { name: 'mechanical-trading' })
@@ -340,6 +342,10 @@ export class MechanicalTradingService {
 
       this.logger.log(`[MÉCANIQUE] ${portfolioId.slice(0, 8)} — OPEN ${target.direction} ${target.symbol} @ ${price.toFixed(4)}`);
     }
+
+    // Snapshot daily performance après ouvertures (upsert 1 row/day)
+    await this.performance.takeSnapshot(portfolioId)
+      .catch((e) => this.logger.warn(`performance snapshot failed: ${String(e)}`));
   }
 
   private async checkStopTarget(pos: OpenPosition): Promise<void> {

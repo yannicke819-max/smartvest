@@ -2,6 +2,7 @@ import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { randomUUID } from 'crypto';
 import { SupabaseService } from '../../supabase/supabase.service';
+import { PerformanceService } from '../../performance/performance.service';
 import { LisaService } from './lisa.service';
 import { DecisionLogService } from './decision-log.service';
 import { RealtimePriceService } from './realtime-price.service';
@@ -57,6 +58,7 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
     private readonly lisa: LisaService,
     private readonly decisionLog: DecisionLogService,
     private readonly realtimePrice: RealtimePriceService,
+    private readonly performance: PerformanceService,
   ) {}
 
   /**
@@ -309,6 +311,10 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
         triggeredBy: 'autopilot_cron',
       }).catch((err) => this.logger.warn(`log append failed: ${String(err)}`));
     }
+
+    // Snapshot daily performance (upsert — 1 row/day, mise à jour en continu)
+    await this.performance.takeSnapshot(portfolioId)
+      .catch((e) => this.logger.warn(`performance snapshot failed: ${String(e)}`));
   }
 
   /**
