@@ -10,11 +10,15 @@ import {
   RiskMonitorService,
   ThesisGeneratorService,
   type AllocationProposal,
+  type HistoryMetrics,
   type LisaSessionConfig,
   type MarketSnapshot,
   type PaperPosition,
+  type PerformanceObjectives,
   type PortfolioSnapshot,
+  type RecentStreak,
   type SessionProfile,
+  type TrajectoryStatus,
 } from '@smartvest/ai-analyst';
 import { BinanceAdapter } from '@smartvest/brokers';
 import { SupabaseService } from '../../supabase/supabase.service';
@@ -147,6 +151,12 @@ export class LisaService {
       autopilot_expires_at: pick('autopilot_expires_at', 'autopilotExpiresAt', existing?.autopilot_expires_at ?? null),
       autopilot_aggressive: pick('autopilot_aggressive', 'autopilotAggressive', existing?.autopilot_aggressive ?? false),
       autopilot_market_hours_only: pick('autopilot_market_hours_only', 'autopilotMarketHoursOnly', existing?.autopilot_market_hours_only ?? false),
+      // Lisa v2 — objectifs & budget (tous nullables)
+      return_target_daily_pct: pick('return_target_daily_pct', 'returnTargetDailyPct', existing?.return_target_daily_pct ?? null),
+      return_target_monthly_pct: pick('return_target_monthly_pct', 'returnTargetMonthlyPct', existing?.return_target_monthly_pct ?? null),
+      return_target_annual_pct: pick('return_target_annual_pct', 'returnTargetAnnualPct', existing?.return_target_annual_pct ?? null),
+      daily_cost_budget_usd: pick('daily_cost_budget_usd', 'dailyCostBudgetUsd', existing?.daily_cost_budget_usd ?? null),
+      performance_horizon_days: pick('performance_horizon_days', 'performanceHorizonDays', existing?.performance_horizon_days ?? 30),
     };
 
     // Validation : auto_approve exige uniquement un portefeuille de simulation
@@ -174,6 +184,26 @@ export class LisaService {
     // (migration 0047 pas encore appliquée), Supabase renvoie une erreur 400
     // "Could not find the '...' column". On retente sans ce champ pour que
     // la sauvegarde des autres champs ne soit pas bloquée.
+    if (error && /return_target_|daily_cost_budget_usd|performance_horizon_days/i.test(error.message)) {
+      this.logger.warn('Colonnes Lisa v2 (0050) absentes — retry sans objectifs');
+      const {
+        return_target_daily_pct: _a,
+        return_target_monthly_pct: _b,
+        return_target_annual_pct: _c,
+        daily_cost_budget_usd: _d,
+        performance_horizon_days: _e,
+        ...mergedFallback
+      } = merged;
+      void _a; void _b; void _c; void _d; void _e;
+      const retry = await this.supabase.getClient()
+        .from('lisa_session_configs')
+        .upsert(mergedFallback, { onConflict: 'portfolio_id' })
+        .select()
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
+
     if (error && /autopilot_market_hours_only/i.test(error.message)) {
       this.logger.warn('Colonne autopilot_market_hours_only absente — retry sans ce champ');
       const { autopilot_market_hours_only: _omit, ...mergedFallback } = merged;
@@ -367,6 +397,25 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       };
     }));
 
+    // Lisa v2 — portfolio trajectory optimizer : on lit les objectifs de
+    // la config session et on calcule les métriques historiques avant de
+    // lancer Claude, pour que le bloc # MISSION soit complet.
+    const objectives: PerformanceObjectives = {
+      returnTargetDailyPct: config.return_target_daily_pct !== null && config.return_target_daily_pct !== undefined
+        ? Number(config.return_target_daily_pct) : null,
+      returnTargetMonthlyPct: config.return_target_monthly_pct !== null && config.return_target_monthly_pct !== undefined
+        ? Number(config.return_target_monthly_pct) : null,
+      returnTargetAnnualPct: config.return_target_annual_pct !== null && config.return_target_annual_pct !== undefined
+        ? Number(config.return_target_annual_pct) : null,
+      dailyCostBudgetUsd: config.daily_cost_budget_usd !== null && config.daily_cost_budget_usd !== undefined
+        ? Number(config.daily_cost_budget_usd) : null,
+      performanceHorizonDays: Number(config.performance_horizon_days ?? 30),
+    };
+
+    const historyMetrics = await this.computeHistoryMetrics(portfolioId);
+    const { status: trajectoryStatus, targetExtrapolatedPct: targetExtrapolated7dPct } =
+      this.computeTrajectoryStatus(objectives, historyMetrics);
+
     let result: Awaited<ReturnType<ThesisGeneratorService['generateTheses']>>;
     try {
       result = await this.thesisGenerator.generateTheses({
@@ -376,6 +425,10 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         includeFullCorpus: true,
         openPositions,
         availableCashUsd: currentSnapshot.cashUsd,
+        objectives,
+        historyMetrics,
+        trajectoryStatus,
+        targetExtrapolated7dPct,
       });
     } catch (e) {
       // Parse failure ou erreur Claude : on log dans le decision log et on
@@ -1251,6 +1304,202 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       recentNews: [],
       upcomingEvents: [],
     };
+  }
+
+  /**
+   * Calcule les métriques historiques du portefeuille sur 7-30 j pour le
+   * bloc # MISSION injecté dans le prompt Claude (v2 : portfolio trajectory
+   * optimizer). Fail-safe : toute métrique indisponible est null, Lisa sait
+   * alors "historique insuffisant" plutôt que de voir un 0 trompeur.
+   */
+  private async computeHistoryMetrics(portfolioId: string): Promise<HistoryMetrics> {
+    const client = this.supabase.getClient();
+    const now = Date.now();
+    const SEVEN_DAYS_MS = 7 * 86_400_000;
+    const sevenDaysAgo = new Date(now - SEVEN_DAYS_MS).toISOString();
+    const thirtyDaysAgo = new Date(now - 30 * 86_400_000).toISOString();
+
+    // 1. Snapshots 30 j — returns + volatility + drawdown
+    const { data: snapshots } = await client
+      .from('lisa_portfolio_snapshots')
+      .select('timestamp, total_value_usd, return_from_inception_pct, drawdown_from_peak_pct')
+      .eq('portfolio_id', portfolioId)
+      .gte('timestamp', thirtyDaysAgo)
+      .order('timestamp', { ascending: true });
+
+    let netReturnFromInceptionPct: number | null = null;
+    let netReturn7dPct: number | null = null;
+    let netReturn30dPct: number | null = null;
+    let drawdownFromPeakPct: number | null = null;
+    let realizedVolatility7dPct: number | null = null;
+
+    if (snapshots && snapshots.length > 0) {
+      const latest = snapshots[snapshots.length - 1];
+      netReturnFromInceptionPct = Number(latest.return_from_inception_pct);
+      drawdownFromPeakPct = Number(latest.drawdown_from_peak_pct);
+
+      const sevenCutoff = now - SEVEN_DAYS_MS;
+      const oldestIn7d = snapshots.find((s) => new Date(s.timestamp as string).getTime() >= sevenCutoff);
+      if (oldestIn7d) {
+        const pStart = Number(oldestIn7d.total_value_usd);
+        const pEnd = Number(latest.total_value_usd);
+        if (pStart > 0) netReturn7dPct = ((pEnd - pStart) / pStart) * 100;
+      }
+      const oldest30 = snapshots[0];
+      const p30 = Number(oldest30.total_value_usd);
+      if (p30 > 0) {
+        netReturn30dPct = ((Number(latest.total_value_usd) - p30) / p30) * 100;
+      }
+
+      // Volatilité : écart-type des returns quotidiens sur 7 j
+      // On garde le dernier snapshot de chaque jour (YYYY-MM-DD) pour lisser
+      // les échantillons multiples dans la même journée.
+      const byDay = new Map<string, number>();
+      for (const s of snapshots) {
+        const dayKey = String(s.timestamp).slice(0, 10);
+        byDay.set(dayKey, Number(s.total_value_usd));
+      }
+      const dailyValues = Array.from(byDay.entries()).sort().slice(-8); // 8 jours = 7 returns
+      if (dailyValues.length >= 3) {
+        const returns: number[] = [];
+        for (let i = 1; i < dailyValues.length; i++) {
+          const prev = dailyValues[i - 1][1];
+          const cur = dailyValues[i][1];
+          if (prev > 0) returns.push(((cur - prev) / prev) * 100);
+        }
+        if (returns.length >= 2) {
+          const mean = returns.reduce((sum, x) => sum + x, 0) / returns.length;
+          const variance = returns.reduce((sum, x) => sum + (x - mean) ** 2, 0) / returns.length;
+          realizedVolatility7dPct = Math.sqrt(variance);
+        }
+      }
+    }
+
+    // 2. Positions fermées — win rate + streak + frictions 7 j
+    const { data: closedPositions } = await client
+      .from('lisa_positions')
+      .select('realized_pnl_usd, exit_timestamp, estimated_entry_cost_usd')
+      .eq('portfolio_id', portfolioId)
+      .neq('status', 'open')
+      .order('exit_timestamp', { ascending: false })
+      .limit(200);
+
+    let winRatePct: number | null = null;
+    let closedPositionsCount = 0;
+    let recentStreak: RecentStreak = null;
+    let tradingFrictionsUsd = 0;
+
+    if (closedPositions && closedPositions.length > 0) {
+      closedPositionsCount = closedPositions.length;
+      const wins = closedPositions.filter((p) => Number(p.realized_pnl_usd ?? 0) > 0).length;
+      winRatePct = (wins / closedPositionsCount) * 100;
+
+      const firstPnl = Number(closedPositions[0].realized_pnl_usd ?? 0);
+      if (firstPnl !== 0) {
+        const isWin = firstPnl > 0;
+        let count = 0;
+        for (const p of closedPositions) {
+          const pnl = Number(p.realized_pnl_usd ?? 0);
+          if (pnl === 0) break;
+          if ((pnl > 0) === isWin) count++;
+          else break;
+        }
+        recentStreak = { kind: isWin ? 'wins' : 'losses', count };
+      }
+
+      tradingFrictionsUsd = closedPositions
+        .filter((p) => p.exit_timestamp && new Date(p.exit_timestamp as string).getTime() >= now - SEVEN_DAYS_MS)
+        .reduce((sum, p) => sum + Number(p.estimated_entry_cost_usd ?? 0), 0);
+    }
+
+    // 3. Coûts Claude 7 j
+    const { data: recentProposals } = await client
+      .from('lisa_proposals')
+      .select('claude_cost_usd')
+      .eq('portfolio_id', portfolioId)
+      .gte('generated_at', sevenDaysAgo);
+    const claudeUsd = (recentProposals ?? []).reduce(
+      (sum, p) => sum + Number(p.claude_cost_usd ?? 0),
+      0,
+    );
+
+    // 4. Coûts EODHD 7 j — plan All-In-One est à tarif fixe, donc on
+    // approxime via un marginal cost par call ($0.0001/call = $1 pour 10k
+    // appels). C'est une indication d'échelle pour Lisa, pas une facture.
+    const { count: eodhdCount } = await client
+      .from('eodhd_request_log')
+      .select('*', { count: 'exact', head: true })
+      .eq('portfolio_id', portfolioId)
+      .eq('source', 'eodhd')
+      .gte('timestamp', sevenDaysAgo);
+    const eodhdUsd = (eodhdCount ?? 0) * 0.0001;
+
+    const totalCost7d = claudeUsd + eodhdUsd + tradingFrictionsUsd;
+    const avgDailyCostUsd7d = totalCost7d > 0 ? totalCost7d / 7 : null;
+
+    return {
+      netReturnFromInceptionPct,
+      netReturn7dPct,
+      netReturn30dPct,
+      drawdownFromPeakPct,
+      realizedVolatility7dPct,
+      winRatePct,
+      closedPositionsCount,
+      recentStreak,
+      avgDailyCostUsd7d,
+      costBreakdown: {
+        claudeUsd,
+        eodhdUsd,
+        tradingFrictionsUsd,
+      },
+    };
+  }
+
+  /**
+   * Dérive le statut d'avancement vs la trajectoire cible sur l'horizon
+   * configuré. Utilise netReturn dans la fenêtre 7j (proxy) comparée à
+   * la cible extrapolée depuis return_target_daily_pct ou _monthly_pct.
+   */
+  private computeTrajectoryStatus(
+    objectives: PerformanceObjectives,
+    metrics: HistoryMetrics,
+  ): { status: TrajectoryStatus | null; targetExtrapolatedPct: number | null } {
+    // Priorité : daily > monthly > annual pour extrapoler sur 7 j
+    let targetPerDay: number | null = null;
+    if (objectives.returnTargetDailyPct !== null) {
+      targetPerDay = objectives.returnTargetDailyPct;
+    } else if (objectives.returnTargetMonthlyPct !== null) {
+      targetPerDay = objectives.returnTargetMonthlyPct / 30;
+    } else if (objectives.returnTargetAnnualPct !== null) {
+      targetPerDay = objectives.returnTargetAnnualPct / 365;
+    }
+
+    if (targetPerDay === null || metrics.netReturn7dPct === null) {
+      return { status: null, targetExtrapolatedPct: null };
+    }
+
+    const targetExtrapolatedPct = targetPerDay * 7;
+    const realised = metrics.netReturn7dPct;
+
+    // Règle HORS_TRAJECTOIRE : return négatif OU coûts > 50% gains
+    const bruteGain = realised; // proxy — 7d return net suffit ici
+    const costShare =
+      metrics.avgDailyCostUsd7d !== null && bruteGain > 0
+        ? (metrics.avgDailyCostUsd7d * 7) / ((bruteGain / 100) * 10_000) // % de gains réalisés absorbés par coûts (10k capital ref)
+        : 0;
+
+    let status: TrajectoryStatus;
+    if (realised < 0 || costShare > 0.5) {
+      status = 'HORS_TRAJECTOIRE';
+    } else if (realised >= targetExtrapolatedPct * 1.1) {
+      status = 'EN_AVANCE';
+    } else if (realised >= targetExtrapolatedPct * 0.8) {
+      status = 'DANS_LE_PLAN';
+    } else {
+      status = 'EN_RETARD';
+    }
+
+    return { status, targetExtrapolatedPct };
   }
 
   private async logDecision(

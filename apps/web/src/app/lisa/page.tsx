@@ -109,6 +109,11 @@ export default function LisaPage() {
   }, [autopilotDurationHoursInput]);
   const [autopilotAggressive, setAutopilotAggressive] = useState(false);
   const [autopilotMarketHoursOnly, setAutopilotMarketHoursOnly] = useState(false);
+  // Lisa v2 — objectifs de rendement nets + budget coûts (tous optionnels)
+  const [returnTargetDaily, setReturnTargetDaily] = useState<string>('');
+  const [returnTargetMonthly, setReturnTargetMonthly] = useState<string>('');
+  const [returnTargetAnnual, setReturnTargetAnnual] = useState<string>('');
+  const [dailyCostBudget, setDailyCostBudget] = useState<string>('');
   // Risk constraints — exposés dans l'UI (section avancée)
   const [targetDeploymentPct, setTargetDeploymentPct] = useState(60);
   const [maxPositionSizePct, setMaxPositionSizePct] = useState(25);
@@ -147,6 +152,11 @@ export default function LisaPage() {
     }
     if (typeof config.autopilot_aggressive === 'boolean') setAutopilotAggressive(config.autopilot_aggressive);
     if (typeof config.autopilot_market_hours_only === 'boolean') setAutopilotMarketHoursOnly(config.autopilot_market_hours_only);
+    // Lisa v2 — objectifs
+    setReturnTargetDaily(config.return_target_daily_pct != null ? String(config.return_target_daily_pct) : '');
+    setReturnTargetMonthly(config.return_target_monthly_pct != null ? String(config.return_target_monthly_pct) : '');
+    setReturnTargetAnnual(config.return_target_annual_pct != null ? String(config.return_target_annual_pct) : '');
+    setDailyCostBudget(config.daily_cost_budget_usd != null ? String(config.daily_cost_budget_usd) : '');
     const rc = config.risk_constraints ?? {};
     if (typeof rc.targetDeploymentPct === 'number') setTargetDeploymentPct(rc.targetDeploymentPct);
     if (typeof rc.maxPositionSizePct === 'number') setMaxPositionSizePct(rc.maxPositionSizePct);
@@ -187,6 +197,14 @@ export default function LisaPage() {
       }
     }
 
+    // Helper : parseFloat ou null si vide / NaN
+    const parseOrNull = (s: string): number | null => {
+      const t = s.trim();
+      if (t === '') return null;
+      const v = parseFloat(t);
+      return Number.isFinite(v) ? v : null;
+    };
+
     await upsertConfig.mutateAsync({
       profile,
       capital_usd: capital,
@@ -197,6 +215,10 @@ export default function LisaPage() {
       autopilot_auto_approve: autopilotAutoApprove,
       autopilot_aggressive: autopilotAggressive,
       autopilot_market_hours_only: autopilotMarketHoursOnly,
+      return_target_daily_pct: parseOrNull(returnTargetDaily),
+      return_target_monthly_pct: parseOrNull(returnTargetMonthly),
+      return_target_annual_pct: parseOrNull(returnTargetAnnual),
+      daily_cost_budget_usd: parseOrNull(dailyCostBudget),
       // Pas d'expiration par défaut — l'utilisateur veut "no-touch" sans limite
       // Utilise le timestamp figé calculé au moment de la saisie user
       // (pas Date.now() courant qui aurait drift entre la saisie et le save).
@@ -445,6 +467,68 @@ export default function LisaPage() {
               Autoriser crypto (BTC, ETH, altcoins)
             </label>
           </div>
+        </div>
+
+        {/* Lisa v2 — Objectifs de trajectoire + budget coûts (optionnels) */}
+        <div className="border-t pt-3 space-y-2">
+          <div className="flex items-center gap-2">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Objectifs de trajectoire (nets de coûts)
+            </h3>
+            <span className="text-[10px] text-muted-foreground">— optionnels, laisse vide si pas de cible</span>
+          </div>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="space-y-1">
+              <label className="block text-[11px] font-medium">Cible daily (%)</label>
+              <input
+                type="number"
+                step="0.01"
+                value={returnTargetDaily}
+                onChange={(e) => setReturnTargetDaily(e.target.value)}
+                placeholder="ex: 0.15"
+                className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="block text-[11px] font-medium">Cible monthly (%)</label>
+              <input
+                type="number"
+                step="0.1"
+                value={returnTargetMonthly}
+                onChange={(e) => setReturnTargetMonthly(e.target.value)}
+                placeholder="ex: 3.5"
+                className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="block text-[11px] font-medium">Cible annual (%)</label>
+              <input
+                type="number"
+                step="0.5"
+                value={returnTargetAnnual}
+                onChange={(e) => setReturnTargetAnnual(e.target.value)}
+                placeholder="ex: 25"
+                className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="block text-[11px] font-medium">Budget coûts / jour ($)</label>
+              <input
+                type="number"
+                step="0.1"
+                min="0"
+                value={dailyCostBudget}
+                onChange={(e) => setDailyCostBudget(e.target.value)}
+                placeholder="ex: 5.00"
+                className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+              />
+            </div>
+          </div>
+          <p className="text-[10px] text-muted-foreground">
+            Lisa compare la trajectoire réalisée 7j à ces cibles et ajuste sa
+            sélectivité (EN AVANCE / DANS LE PLAN / EN RETARD / HORS TRAJECTOIRE).
+            Le budget coûts déclenche un warning si dépassé — pas de blocage dur.
+          </p>
         </div>
 
         <div className="border-t pt-3 space-y-2">

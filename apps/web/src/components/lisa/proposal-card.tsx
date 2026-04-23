@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { CheckCircle2, XCircle, ChevronDown, ChevronUp, AlertTriangle, TrendingUp, TrendingDown } from 'lucide-react';
+import { CheckCircle2, XCircle, ChevronDown, ChevronUp, AlertTriangle, TrendingUp, TrendingDown, Search, Play, AlertCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   useApproveProposal,
@@ -151,18 +151,67 @@ export function LisaProposalCard({
 
       {expanded && (
         <div className="border-t p-4 space-y-4">
-          {/* Warnings */}
-          {proposal.warnings.length > 0 && (
-            <div className="rounded-md border-amber-200 bg-amber-50 border p-3 text-xs space-y-1">
-              <div className="flex items-center gap-1 font-medium text-amber-800">
-                <AlertTriangle className="h-3 w-3" />
-                Warnings
-              </div>
-              {proposal.warnings.map((w, i) => (
-                <p key={i} className="text-amber-700">· {w}</p>
-              ))}
-            </div>
-          )}
+          {/* Lisa v2 — blocs structurés [DIAGNOSTIC] / [PLAN] / [CONDITIONS] */}
+          {(() => {
+            const STRUCTURED_RE = /^\[(DIAGNOSTIC|PLAN|CONDITIONS)\]\s*(.+)$/s;
+            const structured: Record<'DIAGNOSTIC' | 'PLAN' | 'CONDITIONS', string | null> = {
+              DIAGNOSTIC: null,
+              PLAN: null,
+              CONDITIONS: null,
+            };
+            const others: string[] = [];
+            for (const w of proposal.warnings) {
+              const m = STRUCTURED_RE.exec(w);
+              if (m) {
+                const key = m[1] as 'DIAGNOSTIC' | 'PLAN' | 'CONDITIONS';
+                if (structured[key] === null) structured[key] = m[2].trim();
+                else others.push(w);
+              } else {
+                others.push(w);
+              }
+            }
+            const hasAllThree = structured.DIAGNOSTIC && structured.PLAN && structured.CONDITIONS;
+
+            return (
+              <>
+                {hasAllThree && (
+                  <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+                    <section className="rounded-md border border-sky-200 bg-sky-50 p-3 text-xs space-y-1">
+                      <header className="flex items-center gap-1 font-semibold text-sky-800 uppercase tracking-wide">
+                        <Search className="h-3 w-3" /> Diagnostic
+                      </header>
+                      <p className="text-sky-900 leading-relaxed">{structured.DIAGNOSTIC}</p>
+                    </section>
+                    <section className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-xs space-y-1">
+                      <header className="flex items-center gap-1 font-semibold text-emerald-800 uppercase tracking-wide">
+                        <Play className="h-3 w-3" /> Plan
+                      </header>
+                      <p className="text-emerald-900 leading-relaxed">{structured.PLAN}</p>
+                    </section>
+                    <section className="rounded-md border border-violet-200 bg-violet-50 p-3 text-xs space-y-1">
+                      <header className="flex items-center gap-1 font-semibold text-violet-800 uppercase tracking-wide">
+                        <AlertCircle className="h-3 w-3" /> Conditions
+                      </header>
+                      <p className="text-violet-900 leading-relaxed">{structured.CONDITIONS}</p>
+                    </section>
+                  </div>
+                )}
+
+                {/* Autres warnings (après les 3 blocs ou en fallback si préfixes absents) */}
+                {(hasAllThree ? others : proposal.warnings).length > 0 && (
+                  <div className="rounded-md border-amber-200 bg-amber-50 border p-3 text-xs space-y-1">
+                    <div className="flex items-center gap-1 font-medium text-amber-800">
+                      <AlertTriangle className="h-3 w-3" />
+                      {hasAllThree ? 'Autres warnings' : 'Warnings'}
+                    </div>
+                    {(hasAllThree ? others : proposal.warnings).map((w, i) => (
+                      <p key={i} className="text-amber-700">· {w}</p>
+                    ))}
+                  </div>
+                )}
+              </>
+            );
+          })()}
 
           {/* Favored / Avoided */}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

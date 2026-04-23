@@ -45,6 +45,12 @@ export interface LisaSessionConfigRow {
   autopilot_expires_at?: string | null;
   autopilot_aggressive?: boolean;
   autopilot_market_hours_only?: boolean;
+  // Lisa v2 — objectifs & budget (tous optionnels)
+  return_target_daily_pct?: number | null;
+  return_target_monthly_pct?: number | null;
+  return_target_annual_pct?: number | null;
+  daily_cost_budget_usd?: number | null;
+  performance_horizon_days?: number;
   kill_switch_active: boolean;
   created_at: string;
   updated_at: string;

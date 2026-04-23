@@ -291,6 +291,46 @@ export const AllocationProposal = z.object({
 export type AllocationProposal = z.infer<typeof AllocationProposal>;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Portfolio Trajectory Optimizer (Lisa v2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Statut d'avancement vs la trajectoire cible sur performance_horizon_days. */
+export type TrajectoryStatus = 'EN_AVANCE' | 'DANS_LE_PLAN' | 'EN_RETARD' | 'HORS_TRAJECTOIRE';
+
+/** Séquence récente de positions fermées dans le même sens (gain ou perte). */
+export type RecentStreak = { kind: 'wins' | 'losses'; count: number } | null;
+
+/** Ventilation des coûts journaliers moyens sur 7 j. */
+export interface CostBreakdown {
+  claudeUsd: number;
+  eodhdUsd: number;
+  tradingFrictionsUsd: number;
+}
+
+/** Métriques historiques calculées à la volée avant chaque cycle Lisa. */
+export interface HistoryMetrics {
+  netReturnFromInceptionPct: number | null;
+  netReturn7dPct: number | null;
+  netReturn30dPct: number | null;
+  drawdownFromPeakPct: number | null;
+  realizedVolatility7dPct: number | null;
+  winRatePct: number | null;
+  closedPositionsCount: number;
+  recentStreak: RecentStreak;
+  avgDailyCostUsd7d: number | null;
+  costBreakdown: CostBreakdown;
+}
+
+/** Objectifs de performance nets de coûts (tous optionnels). */
+export interface PerformanceObjectives {
+  returnTargetDailyPct: number | null;
+  returnTargetMonthlyPct: number | null;
+  returnTargetAnnualPct: number | null;
+  dailyCostBudgetUsd: number | null;
+  performanceHorizonDays: number;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Decision Log — traçabilité de CHAQUE action Lisa
 // ─────────────────────────────────────────────────────────────────────────────
 export const DecisionLogEntryKind = z.enum([

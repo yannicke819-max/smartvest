@@ -12,20 +12,29 @@
  */
 
 import type { SessionProfile } from '../types';
+import { LISA_MISSION } from './00-mission';
 import { LISA_PERSONA_CORE } from './01-persona-core';
 import { LISA_ANTI_CONSENSUS } from './02-anti-consensus';
 import { LISA_FLOW_THESIS } from './03-flow-thesis';
 import { LISA_MODES_OUTPUT } from './04-modes-output';
 import { getProfileOverride } from './05-profile-overrides';
 
-export { LISA_PERSONA_CORE, LISA_ANTI_CONSENSUS, LISA_FLOW_THESIS, LISA_MODES_OUTPUT };
+export { LISA_MISSION, LISA_PERSONA_CORE, LISA_ANTI_CONSENSUS, LISA_FLOW_THESIS, LISA_MODES_OUTPUT };
 export { getProfileOverride, LISA_PROFILE_OVERRIDES } from './05-profile-overrides';
 
 /**
  * Bloc CACHEABLE principal — stable entre sessions, candidat idéal pour
  * le prompt caching Anthropic (cache_control: { type: "ephemeral" }).
+ *
+ * Ordre d'assemblage (significatif pour Claude) :
+ *   1. MISSION : trajectoire portefeuille, boucle de contrôle, format 3-blocs
+ *   2. PERSONA : identité, contraintes légales
+ *   3. ANTI-CONSENSUS : philosophie contre-courant
+ *   4. FLOW/THESIS : catégories de thèses
+ *   5. MODES/OUTPUT : formats et profils de session
  */
 export const LISA_SYSTEM_PROMPT_CACHEABLE = [
+  LISA_MISSION,
   LISA_PERSONA_CORE,
   LISA_ANTI_CONSENSUS,
   LISA_FLOW_THESIS,

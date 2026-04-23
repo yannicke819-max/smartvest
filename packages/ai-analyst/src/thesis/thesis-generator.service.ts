@@ -19,9 +19,12 @@ import type { LisaClaudeClient } from '../claude/client';
 import type { CorpusQueryService } from '../corpus/corpus-query.service';
 import type {
   AllocationProposal,
+  HistoryMetrics,
   LisaSessionConfig,
   LisaThesis,
   MarketRegime,
+  PerformanceObjectives,
+  TrajectoryStatus,
 } from '../types';
 import { LisaThesis as LisaThesisSchema, RiskConstraints } from '../types';
 
@@ -107,6 +110,15 @@ export interface GenerateThesesRequest {
   openPositions?: OpenPositionSummary[];
   /** Cash disponible en USD après fermeture des positions recommandées. */
   availableCashUsd?: string;
+  /** Objectifs de performance nets de coûts (optionnels). Si null, Lisa opère
+   *  sans cible chiffrée — comportement original préservé. */
+  objectives?: PerformanceObjectives;
+  /** Métriques historiques calculées avant cycle (7d/30d + coûts + streak). */
+  historyMetrics?: HistoryMetrics;
+  /** Statut de trajectoire dérivé par le back depuis objectives + metrics. */
+  trajectoryStatus?: TrajectoryStatus | null;
+  /** Cible extrapolée sur 7 j (issue des objectifs). */
+  targetExtrapolated7dPct?: number | null;
 }
 
 export interface GenerateThesesResponse {
@@ -284,7 +296,23 @@ ${this.formatOpenPositionsBlock(req.openPositions, req.availableCashUsd)}
   conséquence — mais ne mets pas par défaut 90% cash juste par prudence
   générique si l'utilisateur a demandé ${constraints.targetDeploymentPct ?? 60}% d'exposition.
 
+${this.formatMissionBlock(req)}
 ${req.userFocus ? `\n# USER FOCUS\n${req.userFocus}\n` : ''}
+
+# STRUCTURE DE TA RÉPONSE (obligatoire)
+Le champ \`warnings\` DOIT contenir au minimum 3 éléments, dans l'ordre,
+préfixés exactement :
+1. "[DIAGNOSTIC] ..." — objectifs vs réalité, coût vs gain, concentration
+   de risque, écart à la trajectoire cible. Cite les chiffres du bloc
+   # MISSION ci-dessus.
+2. "[PLAN] ..." — actions concrètes ce cycle (exposition cible, nb
+   positions max, taille cible, style : opportuniste / sélectif /
+   défensif). Si "ne rien faire", justifie-le explicitement comme plan.
+3. "[CONDITIONS] ..." — signaux de marché / P&L / coûts qui invalideraient
+   ce plan et déclencheraient un ajustement au prochain cycle.
+
+Les autres warnings (régime ambigu, données manquantes, etc.) viennent
+APRÈS ces trois entrées, dans l'ordre libre.
 
 # MARKET MOMENTUM — flag obligatoire \`marketContext.marketMomentum\`
 Tu DOIS classer le momentum du cycle parmi :
@@ -315,6 +343,125 @@ autorise la réactivité, il ne l'impose pas.
 Applique TA méthode Lisa complète. Renvoie UNIQUEMENT le JSON au format
 défini, sans markdown, sans explications hors JSON.
 `.trim();
+  }
+
+  /**
+   * Bloc # MISSION — trajectoire portefeuille.
+   * Agrège objectifs + métriques + écart/statut pour que Claude raisonne en
+   * termes d'alignement à la trajectoire cible (v2 persona).
+   * Si aucune métrique n'est fournie (ex : appels legacy sans objectives),
+   * renvoie une string vide pour préserver l'ancien comportement.
+   */
+  private formatMissionBlock(req: GenerateThesesRequest): string {
+    const objectives = req.objectives;
+    const metrics = req.historyMetrics;
+    if (!objectives && !metrics) return '';
+
+    const capitalNum = parseFloat(req.config.capitalUsd);
+    const amountPerDay =
+      objectives?.returnTargetDailyPct != null
+        ? ((objectives.returnTargetDailyPct / 100) * capitalNum).toFixed(2)
+        : null;
+    const fmtPct = (v: number | null | undefined, digits = 2) =>
+      v === null || v === undefined ? 'n/a' : `${v >= 0 ? '+' : ''}${v.toFixed(digits)}%`;
+    const fmtUsd = (v: number | null | undefined, digits = 2) =>
+      v === null || v === undefined ? 'n/a' : `$${v.toFixed(digits)}`;
+
+    const objLines: string[] = [];
+    if (objectives) {
+      if (objectives.returnTargetDailyPct != null) {
+        objLines.push(
+          `- Quotidien : +${objectives.returnTargetDailyPct.toFixed(2)}%` +
+            (amountPerDay ? ` (~$${amountPerDay} sur capital $${capitalNum.toFixed(0)})` : ''),
+        );
+      } else {
+        objLines.push(`- Quotidien : non fixé`);
+      }
+      objLines.push(
+        `- Mensuel : ${objectives.returnTargetMonthlyPct != null ? `+${objectives.returnTargetMonthlyPct.toFixed(2)}%` : 'non fixé'}`,
+      );
+      objLines.push(
+        `- Annuel : ${objectives.returnTargetAnnualPct != null ? `+${objectives.returnTargetAnnualPct.toFixed(2)}%` : 'non fixé'}`,
+      );
+      if (
+        objectives.returnTargetDailyPct === null &&
+        objectives.returnTargetMonthlyPct === null &&
+        objectives.returnTargetAnnualPct === null
+      ) {
+        objLines.push(`(null partout = Lisa opère en conviction libre, sans cible chiffrée)`);
+      }
+    }
+
+    const costLines: string[] = [];
+    if (metrics) {
+      const cb = metrics.costBreakdown;
+      const total = cb.claudeUsd + cb.eodhdUsd + cb.tradingFrictionsUsd;
+      costLines.push(
+        `- Claude : ${fmtUsd(cb.claudeUsd)} · EODHD : ${fmtUsd(cb.eodhdUsd, 4)} · Trading (fees+spread+slip) : ${fmtUsd(cb.tradingFrictionsUsd)}`,
+      );
+      const dailyAvg = metrics.avgDailyCostUsd7d;
+      const budgetLine =
+        objectives?.dailyCostBudgetUsd != null
+          ? ` · Budget max : ${fmtUsd(objectives.dailyCostBudgetUsd)} · Consommation : ${
+              dailyAvg != null ? `${Math.min(999, Math.round((dailyAvg / objectives.dailyCostBudgetUsd) * 100))}%` : 'n/a'
+            }`
+          : '';
+      costLines.push(`- Total 7j : ${fmtUsd(total)} · Moyenne/jour : ${fmtUsd(dailyAvg)}${budgetLine}`);
+    }
+
+    const histLines: string[] = [];
+    if (metrics) {
+      histLines.push(
+        `- Return inception : ${fmtPct(metrics.netReturnFromInceptionPct)} · Drawdown peak : ${fmtPct(metrics.drawdownFromPeakPct)}`,
+      );
+      histLines.push(
+        `- Return 7j : ${fmtPct(metrics.netReturn7dPct)} · Return 30j : ${fmtPct(metrics.netReturn30dPct)}`,
+      );
+      histLines.push(
+        `- Volatilité réalisée 7j : ${fmtPct(metrics.realizedVolatility7dPct)} · Win rate : ${
+          metrics.winRatePct != null ? `${metrics.winRatePct.toFixed(0)}% (${metrics.closedPositionsCount} closed)` : 'n/a'
+        }`,
+      );
+      if (metrics.recentStreak) {
+        const label = metrics.recentStreak.kind === 'wins' ? 'gains' : 'pertes';
+        histLines.push(`- Streak : ${metrics.recentStreak.count} ${label} consécutifs`);
+      } else {
+        histLines.push(`- Streak : aucune séquence claire (ou historique insuffisant)`);
+      }
+    }
+
+    const gapLines: string[] = [];
+    if (req.trajectoryStatus && req.targetExtrapolated7dPct != null && metrics?.netReturn7dPct != null) {
+      const statusLabel =
+        req.trajectoryStatus === 'EN_AVANCE'
+          ? '**EN AVANCE** — sélectivité peut être relâchée (cap +1, conviction mini abaissée)'
+          : req.trajectoryStatus === 'DANS_LE_PLAN'
+            ? '**DANS LE PLAN** — régime normal, pas de changement de posture'
+            : req.trajectoryStatus === 'EN_RETARD'
+              ? `**EN RETARD** — examiner d'abord si le risque est sous-utilisé (drawdown ${fmtPct(metrics.drawdownFromPeakPct)} << limite), sinon envisager révision d'objectif`
+              : `**HORS TRAJECTOIRE** — objectif structurellement irréaliste dans la configuration actuelle OU coûts > 50% des gains bruts. Signale-le dans [DIAGNOSTIC] et propose révision (cible, horizon, risque)`;
+      const delta = metrics.netReturn7dPct - req.targetExtrapolated7dPct;
+      gapLines.push(
+        `- Cible 7j extrapolée : ${fmtPct(req.targetExtrapolated7dPct)} · Réalisé 7j : ${fmtPct(metrics.netReturn7dPct)}`,
+      );
+      gapLines.push(`- Écart : ${delta >= 0 ? '+' : ''}${delta.toFixed(2)} pt · Statut : ${statusLabel}`);
+    } else if (objectives && Object.values(objectives).some((v) => v !== null && v !== 30)) {
+      gapLines.push(`- Historique 7j insuffisant pour mesurer l'écart — tenir compte de l'objectif dans les arbitrages à venir`);
+    }
+
+    return [
+      '',
+      '# MISSION — TRAJECTOIRE PORTEFEUILLE',
+      '',
+      objLines.length > 0 ? `## Objectifs (nets de coûts)\n${objLines.join('\n')}` : '',
+      costLines.length > 0 ? `\n## Coûts journaliers (moyenne 7j)\n${costLines.join('\n')}` : '',
+      histLines.length > 0 ? `\n## Historique récent\n${histLines.join('\n')}` : '',
+      gapLines.length > 0
+        ? `\n## Écart à la trajectoire cible (horizon ${objectives?.performanceHorizonDays ?? 30}j, mesure 7j)\n${gapLines.join('\n')}`
+        : '',
+    ]
+      .filter((s) => s !== '')
+      .join('\n');
   }
 
   /**
