@@ -34,6 +34,12 @@ export class LisaController {
     return this.lisa.fetchEodhdStats();
   }
 
+  @Get('claude/stats')
+  getClaudeStats(@Headers() headers: Record<string, string>) {
+    extractUserId(headers);
+    return this.lisa.fetchClaudeStats();
+  }
+
   @Get('audit/verify/:portfolioId')
   async verifyAuditChain(
     @Headers() headers: Record<string, string>,

@@ -55,17 +55,23 @@ export default function MonitoringPage() {
     kill_switch: { label: 'Kill-switch global', status: 'loading' },
   });
   const [usage, setUsage] = useState<{
-    claude24h: { requests: number; inputTokens: number; outputTokens: number; costUsd: number };
-    claudeAll: { requests: number; inputTokens: number; outputTokens: number; costUsd: number };
-    eodhd24h: { total: number; success: number; failures: number; fallbacks: number; avgLatencyMs: number };
+    claudeToday: { requests: number; inputTokens: number; outputTokens: number; costUsd: number; costEur: number };
+    claudeMonth: { requests: number; inputTokens: number; outputTokens: number; costUsd: number; costEur: number };
+    claudeAll: { requests: number; costUsd: number; costEur: number };
+    eodhdToday: { total: number; success: number; failures: number; fallbacks: number; avgLatencyMs: number };
+    eodhdMonth: { calls: number; subscriptionUsd: number; subscriptionEur: number };
     eodhdAll: { total: number; success: number };
     eodhdLastCallAsOf: string | null;
+    usdEurRate: number;
   }>({
-    claude24h: { requests: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 },
-    claudeAll: { requests: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 },
-    eodhd24h: { total: 0, success: 0, failures: 0, fallbacks: 0, avgLatencyMs: 0 },
+    claudeToday: { requests: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, costEur: 0 },
+    claudeMonth: { requests: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, costEur: 0 },
+    claudeAll: { requests: 0, costUsd: 0, costEur: 0 },
+    eodhdToday: { total: 0, success: 0, failures: 0, fallbacks: 0, avgLatencyMs: 0 },
+    eodhdMonth: { calls: 0, subscriptionUsd: 19.99, subscriptionEur: 18.59 },
     eodhdAll: { total: 0, success: 0 },
     eodhdLastCallAsOf: null,
+    usdEurRate: 0.93,
   });
   const [binance, setBinance] = useState<{
     configured: boolean;
@@ -246,63 +252,46 @@ export default function MonitoringPage() {
       // keep unknown
     }
 
-    // 8. Claude stats : agrégation depuis lisa_proposals (RLS permissive OK)
-    // 9. EODHD stats : via API backend (bypass RLS — sinon frontent ne voit rien)
+    // 8. Claude + EODHD stats via API backend (bypass RLS, fenêtres calendaires UTC)
     try {
-      const since24h = new Date(Date.now() - 86_400_000).toISOString();
       const token = (await supabase.auth.getSession()).data.session?.access_token;
+      const authHeaders: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
 
-      const [p24h, pAll, eodhdStatsRes] = await Promise.all([
-        supabase
-          .from('lisa_proposals')
-          .select('claude_input_tokens, claude_output_tokens, claude_cost_usd')
-          .gte('generated_at', since24h),
-        supabase
-          .from('lisa_proposals')
-          .select('claude_input_tokens, claude_output_tokens, claude_cost_usd'),
-        fetch(`${API}/lisa/eodhd/stats`, {
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-          signal: AbortSignal.timeout(5000),
-        }),
+      const [claudeRes, eodhdRes] = await Promise.all([
+        fetch(`${API}/lisa/claude/stats`, { headers: authHeaders, signal: AbortSignal.timeout(5000) }),
+        fetch(`${API}/lisa/eodhd/stats`, { headers: authHeaders, signal: AbortSignal.timeout(5000) }),
       ]);
 
-      const aggClaude = (rows: Array<{ claude_input_tokens: number | null; claude_output_tokens: number | null; claude_cost_usd: number | null }> | null) => {
-        const list = rows ?? [];
-        return {
-          requests: list.length,
-          inputTokens: list.reduce((s, r) => s + (Number(r.claude_input_tokens) || 0), 0),
-          outputTokens: list.reduce((s, r) => s + (Number(r.claude_output_tokens) || 0), 0),
-          costUsd: list.reduce((s, r) => s + (Number(r.claude_cost_usd) || 0), 0),
+      const next = { ...usage };
+      if (claudeRes.ok) {
+        const c = await claudeRes.json() as {
+          today: { requests: number; inputTokens: number; outputTokens: number; costUsd: number; costEur: number };
+          thisMonth: { requests: number; inputTokens: number; outputTokens: number; costUsd: number; costEur: number };
+          all: { requests: number; costUsd: number; costEur: number };
+          usdEurRate: number;
         };
-      };
-
-      const claude24h = aggClaude(p24h.data as never);
-      const claudeAll = aggClaude(pAll.data as never);
-
-      let eodhd24h = { total: 0, success: 0, failures: 0, fallbacks: 0, avgLatencyMs: 0 };
-      let eodhdAll = { total: 0, success: 0 };
-      let eodhdLastCallAsOf: string | null = null;
-      if (eodhdStatsRes.ok) {
-        const stats = await eodhdStatsRes.json() as {
-          total24h: number; success24h: number; failures24h: number;
-          fallbacks24h: number; avgLatencyMs24h: number;
-          totalAll: number; successAll: number;
-          lastCallAsOf: string | null;
-        };
-        eodhd24h = {
-          total: stats.total24h,
-          success: stats.success24h,
-          failures: stats.failures24h,
-          fallbacks: stats.fallbacks24h,
-          avgLatencyMs: stats.avgLatencyMs24h,
-        };
-        eodhdAll = { total: stats.totalAll, success: stats.successAll };
-        eodhdLastCallAsOf = stats.lastCallAsOf;
+        next.claudeToday = c.today;
+        next.claudeMonth = c.thisMonth;
+        next.claudeAll = c.all;
+        next.usdEurRate = c.usdEurRate;
       }
-
-      setUsage({ claude24h, claudeAll, eodhd24h, eodhdAll, eodhdLastCallAsOf });
+      if (eodhdRes.ok) {
+        const e = await eodhdRes.json() as {
+          today: { total: number; success: number; failures: number; fallbacks: number; avgLatencyMs: number };
+          thisMonth: { calls: number; subscriptionUsd: number; subscriptionEur: number };
+          all: { total: number; success: number };
+          lastCallAsOf: string | null;
+          usdEurRate: number;
+        };
+        next.eodhdToday = e.today;
+        next.eodhdMonth = e.thisMonth;
+        next.eodhdAll = e.all;
+        next.eodhdLastCallAsOf = e.lastCallAsOf;
+        next.usdEurRate = e.usdEurRate;
+      }
+      setUsage(next);
     } catch {
-      // keep defaults (zeros)
+      // keep defaults
     }
 
     // 10. Balance Binance (compte externe)
@@ -443,26 +432,30 @@ export default function MonitoringPage() {
             </div>
             <div className="grid grid-cols-4 gap-2 text-xs">
               <div className="rounded-md bg-muted/30 p-2">
-                <p className="text-[10px] text-muted-foreground">Requêtes 24h</p>
-                <p className="font-mono font-medium tabular-nums">{usage.claude24h.requests}</p>
-                <p className="text-[10px] text-muted-foreground">total : {usage.claudeAll.requests}</p>
+                <p className="text-[10px] text-muted-foreground">Requêtes (aujourd'hui)</p>
+                <p className="font-mono font-medium tabular-nums">{usage.claudeToday.requests}</p>
+                <p className="text-[10px] text-muted-foreground">mois : {usage.claudeMonth.requests}</p>
               </div>
               <div className="rounded-md bg-muted/30 p-2">
-                <p className="text-[10px] text-muted-foreground">Input tokens 24h</p>
-                <p className="font-mono font-medium tabular-nums">{usage.claude24h.inputTokens.toLocaleString('fr-FR')}</p>
-                <p className="text-[10px] text-muted-foreground">total : {usage.claudeAll.inputTokens.toLocaleString('fr-FR')}</p>
+                <p className="text-[10px] text-muted-foreground">Input tokens (aujourd'hui)</p>
+                <p className="font-mono font-medium tabular-nums">{usage.claudeToday.inputTokens.toLocaleString('fr-FR')}</p>
+                <p className="text-[10px] text-muted-foreground">mois : {usage.claudeMonth.inputTokens.toLocaleString('fr-FR')}</p>
               </div>
               <div className="rounded-md bg-muted/30 p-2">
-                <p className="text-[10px] text-muted-foreground">Output tokens 24h</p>
-                <p className="font-mono font-medium tabular-nums">{usage.claude24h.outputTokens.toLocaleString('fr-FR')}</p>
-                <p className="text-[10px] text-muted-foreground">total : {usage.claudeAll.outputTokens.toLocaleString('fr-FR')}</p>
+                <p className="text-[10px] text-muted-foreground">Output tokens (aujourd'hui)</p>
+                <p className="font-mono font-medium tabular-nums">{usage.claudeToday.outputTokens.toLocaleString('fr-FR')}</p>
+                <p className="text-[10px] text-muted-foreground">mois : {usage.claudeMonth.outputTokens.toLocaleString('fr-FR')}</p>
               </div>
               <div className="rounded-md bg-muted/30 p-2">
-                <p className="text-[10px] text-muted-foreground">Coût 24h</p>
-                <p className="font-mono font-medium tabular-nums">${usage.claude24h.costUsd.toFixed(4)}</p>
-                <p className="text-[10px] text-muted-foreground">total : ${usage.claudeAll.costUsd.toFixed(2)}</p>
+                <p className="text-[10px] text-muted-foreground">Coût (aujourd'hui)</p>
+                <p className="font-mono font-medium tabular-nums">€{usage.claudeToday.costEur.toFixed(4)}</p>
+                <p className="text-[10px] text-muted-foreground">mois : €{usage.claudeMonth.costEur.toFixed(2)}</p>
               </div>
             </div>
+            <p className="text-[10px] text-muted-foreground italic">
+              Fenêtres calendaires UTC : "aujourd'hui" = depuis 00:00 UTC, "mois" = depuis le 1er à 00:00 UTC.
+              Conversion USD→EUR au taux {usage.usdEurRate.toFixed(3)} (configurable via env USD_EUR_RATE).
+            </p>
           </div>
           <div className="px-4 py-3 space-y-2">
             <div className="flex items-center justify-between flex-wrap gap-2">
@@ -484,34 +477,34 @@ export default function MonitoringPage() {
                   );
                 })()}
                 <span>
-                  {usage.eodhd24h.total > 0
-                    ? `${Math.round((usage.eodhd24h.success / usage.eodhd24h.total) * 100)}% success`
-                    : 'aucun appel 24h'}
+                  {usage.eodhdToday.total > 0
+                    ? `${Math.round((usage.eodhdToday.success / usage.eodhdToday.total) * 100)}% success`
+                    : 'aucun appel aujourd\'hui'}
                 </span>
               </div>
             </div>
             <div className="grid grid-cols-4 gap-2 text-xs">
               <div className="rounded-md bg-muted/30 p-2">
-                <p className="text-[10px] text-muted-foreground">Appels 24h</p>
-                <p className="font-mono font-medium tabular-nums">{usage.eodhd24h.total}</p>
-                <p className="text-[10px] text-muted-foreground">total : {usage.eodhdAll.total}</p>
+                <p className="text-[10px] text-muted-foreground">Appels (aujourd'hui)</p>
+                <p className="font-mono font-medium tabular-nums">{usage.eodhdToday.total}</p>
+                <p className="text-[10px] text-muted-foreground">mois : {usage.eodhdMonth.calls.toLocaleString('fr-FR')}</p>
               </div>
               <div className="rounded-md bg-muted/30 p-2">
-                <p className="text-[10px] text-muted-foreground">Succès 24h</p>
-                <p className="font-mono font-medium tabular-nums text-emerald-600">{usage.eodhd24h.success}</p>
-                <p className="text-[10px] text-muted-foreground">total : {usage.eodhdAll.success}</p>
+                <p className="text-[10px] text-muted-foreground">Succès (aujourd'hui)</p>
+                <p className="font-mono font-medium tabular-nums text-emerald-600">{usage.eodhdToday.success}</p>
+                <p className="text-[10px] text-muted-foreground">total : {usage.eodhdAll.success.toLocaleString('fr-FR')}</p>
               </div>
               <div className="rounded-md bg-muted/30 p-2">
-                <p className="text-[10px] text-muted-foreground">Échecs 24h</p>
-                <p className={`font-mono font-medium tabular-nums ${usage.eodhd24h.failures > 0 ? 'text-red-500' : ''}`}>
-                  {usage.eodhd24h.failures}
+                <p className="text-[10px] text-muted-foreground">Échecs (aujourd'hui)</p>
+                <p className={`font-mono font-medium tabular-nums ${usage.eodhdToday.failures > 0 ? 'text-red-500' : ''}`}>
+                  {usage.eodhdToday.failures}
                 </p>
-                <p className="text-[10px] text-muted-foreground">fallback : {usage.eodhd24h.fallbacks}</p>
+                <p className="text-[10px] text-muted-foreground">fallback : {usage.eodhdToday.fallbacks}</p>
               </div>
               <div className="rounded-md bg-muted/30 p-2">
                 <p className="text-[10px] text-muted-foreground">Latence moy.</p>
-                <p className={`font-mono font-medium tabular-nums ${usage.eodhd24h.avgLatencyMs > 1000 ? 'text-amber-500' : ''}`}>
-                  {usage.eodhd24h.avgLatencyMs} ms
+                <p className={`font-mono font-medium tabular-nums ${usage.eodhdToday.avgLatencyMs > 1000 ? 'text-amber-500' : ''}`}>
+                  {usage.eodhdToday.avgLatencyMs} ms
                 </p>
                 <p className="text-[10px] text-muted-foreground">cap : 95 k/j ↓</p>
               </div>
@@ -528,7 +521,7 @@ export default function MonitoringPage() {
               return (
                 <div className="rounded-md border p-2 space-y-1.5">
                   <div className="flex items-center justify-between text-[11px]">
-                    <span className="font-medium">Quota journalier EODHD</span>
+                    <span className="font-medium">Quota journalier EODHD (reset 00:00 UTC)</span>
                     <span className="font-mono tabular-nums">
                       {quota.count24h.toLocaleString('fr-FR')} / {quota.hardCap.toLocaleString('fr-FR')}
                       <span className="text-muted-foreground"> ({pct.toFixed(1)}%)</span>
@@ -569,6 +562,48 @@ export default function MonitoringPage() {
             </p>
           </div>
         </div>
+      </div>
+
+      {/* Synthèse coût mensuel calendaire (EUR) */}
+      <div className="rounded-lg border">
+        <div className="flex items-center gap-2 border-b px-4 py-2.5 bg-muted/30">
+          <Activity className="h-4 w-4 text-muted-foreground" />
+          <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Coût mensuel infrastructure (EUR)</span>
+          <span className="ml-auto text-[10px] font-mono text-muted-foreground">
+            mois calendaire · taux USD→EUR {usage.usdEurRate.toFixed(3)}
+          </span>
+        </div>
+        <div className="divide-y">
+          <div className="grid grid-cols-[1fr_auto_auto] gap-3 px-4 py-2.5 text-xs items-center">
+            <span className="font-medium">Claude API (consommation tokens)</span>
+            <span className="font-mono tabular-nums text-muted-foreground">${usage.claudeMonth.costUsd.toFixed(2)}</span>
+            <span className="font-mono font-medium tabular-nums w-20 text-right">€{usage.claudeMonth.costEur.toFixed(2)}</span>
+          </div>
+          <div className="grid grid-cols-[1fr_auto_auto] gap-3 px-4 py-2.5 text-xs items-center">
+            <div>
+              <span className="font-medium">EODHD (abonnement mensuel fixe)</span>
+              <span className="block text-[10px] text-muted-foreground">
+                {usage.eodhdMonth.calls.toLocaleString('fr-FR')} appels ce mois · plan 100 k/jour
+              </span>
+            </div>
+            <span className="font-mono tabular-nums text-muted-foreground">${usage.eodhdMonth.subscriptionUsd.toFixed(2)}</span>
+            <span className="font-mono font-medium tabular-nums w-20 text-right">€{usage.eodhdMonth.subscriptionEur.toFixed(2)}</span>
+          </div>
+          <div className="grid grid-cols-[1fr_auto_auto] gap-3 px-4 py-3 text-sm items-center bg-muted/20">
+            <span className="font-semibold">Total mensuel</span>
+            <span className="font-mono tabular-nums text-muted-foreground">
+              ${(usage.claudeMonth.costUsd + usage.eodhdMonth.subscriptionUsd).toFixed(2)}
+            </span>
+            <span className="font-mono font-bold tabular-nums w-20 text-right">
+              €{(usage.claudeMonth.costEur + usage.eodhdMonth.subscriptionEur).toFixed(2)}
+            </span>
+          </div>
+        </div>
+        <p className="px-4 pb-3 pt-1 text-[10px] text-muted-foreground italic">
+          Fly.io (machine 24/7) ~€1.80/mois non inclus ici — facturé séparément par Fly.
+          Abonnement EODHD réglable via env var <code className="rounded bg-muted px-1">EODHD_MONTHLY_COST_USD</code>,
+          taux de change via <code className="rounded bg-muted px-1">USD_EUR_RATE</code>.
+        </p>
       </div>
 
       {/* Balance Binance — compte externe utilisateur, lecture seule */}

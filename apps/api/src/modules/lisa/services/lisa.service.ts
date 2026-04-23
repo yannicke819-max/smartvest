@@ -1138,29 +1138,58 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     }
   }
 
+  /** Borne de temps : début du jour courant en UTC (00:00 UTC). */
+  private startOfTodayUtc(): string {
+    const now = new Date();
+    return new Date(Date.UTC(
+      now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(),
+      0, 0, 0, 0,
+    )).toISOString();
+  }
+
+  /** Borne de temps : début du mois calendaire courant en UTC. */
+  private startOfMonthUtc(): string {
+    const now = new Date();
+    return new Date(Date.UTC(
+      now.getUTCFullYear(), now.getUTCMonth(), 1,
+      0, 0, 0, 0,
+    )).toISOString();
+  }
+
+  /** Taux de change USD→EUR utilisé pour les conversions d'affichage.
+   *  Configurable via env var USD_EUR_RATE, défaut 0.93. */
+  private usdToEurRate(): number {
+    const raw = this.config.get<string>('USD_EUR_RATE');
+    const parsed = raw ? parseFloat(raw) : NaN;
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0.93;
+  }
+
   /**
    * Statistiques EODHD agrégées depuis eodhd_request_log.
-   * Lu via service role (bypass RLS) — la lecture directe depuis le front
-   * avec clé anon peut être bloquée par les policies Supabase.
+   * Fenêtres CALENDAIRES UTC : "today" = depuis 00:00 UTC, "thisMonth" = depuis
+   * le 1er du mois 00:00 UTC. Aligné avec le reset réel d'EODHD.
    */
   async fetchEodhdStats(): Promise<{
-    total24h: number;
-    success24h: number;
-    failures24h: number;
-    fallbacks24h: number;
-    avgLatencyMs24h: number;
-    totalAll: number;
-    successAll: number;
+    today: { total: number; success: number; failures: number; fallbacks: number; avgLatencyMs: number };
+    thisMonth: { calls: number; subscriptionUsd: number; subscriptionEur: number };
+    all: { total: number; success: number };
     lastCallAsOf: string | null;
+    usdEurRate: number;
   }> {
     const client = this.supabase.getClient();
-    const since24h = new Date(Date.now() - 86_400_000).toISOString();
+    const startOfToday = this.startOfTodayUtc();
+    const startOfMonth = this.startOfMonthUtc();
 
-    const [rows24h, allCount, allSuccessCount, lastCall] = await Promise.all([
+    const [rowsToday, rowsMonth, allCount, allSuccessCount, lastCall] = await Promise.all([
       client
         .from('eodhd_request_log')
         .select('source, success, latency_ms')
-        .gte('timestamp', since24h),
+        .gte('timestamp', startOfToday),
+      client
+        .from('eodhd_request_log')
+        .select('source', { count: 'exact', head: true })
+        .gte('timestamp', startOfMonth)
+        .eq('source', 'eodhd'),
       client
         .from('eodhd_request_log')
         .select('*', { count: 'exact', head: true }),
@@ -1176,21 +1205,89 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         .maybeSingle(),
     ]);
 
-    const rows = (rows24h.data ?? []) as Array<{ source: string; success: boolean; latency_ms: number | null }>;
+    const rows = (rowsToday.data ?? []) as Array<{ source: string; success: boolean; latency_ms: number | null }>;
     const eodhdRows = rows.filter((r) => r.source === 'eodhd');
     const latencies = eodhdRows.map((r) => r.latency_ms).filter((n): n is number => typeof n === 'number' && n > 0);
 
+    // Abonnement EODHD (fixe mensuel, payé peu importe le nb d'appels).
+    // Configurable via env var EODHD_MONTHLY_COST_USD, défaut 19.99 (plan standard 100k/j).
+    const subRaw = this.config.get<string>('EODHD_MONTHLY_COST_USD');
+    const subscriptionUsd = subRaw && !isNaN(parseFloat(subRaw)) ? parseFloat(subRaw) : 19.99;
+    const rate = this.usdToEurRate();
+
     return {
-      total24h: eodhdRows.length,
-      success24h: eodhdRows.filter((r) => r.success).length,
-      failures24h: eodhdRows.filter((r) => !r.success).length,
-      fallbacks24h: rows.filter((r) => r.source !== 'eodhd').length,
-      avgLatencyMs24h: latencies.length > 0
-        ? Math.round(latencies.reduce((s, n) => s + n, 0) / latencies.length)
-        : 0,
-      totalAll: allCount.count ?? 0,
-      successAll: allSuccessCount.count ?? 0,
+      today: {
+        total: eodhdRows.length,
+        success: eodhdRows.filter((r) => r.success).length,
+        failures: eodhdRows.filter((r) => !r.success).length,
+        fallbacks: rows.filter((r) => r.source !== 'eodhd').length,
+        avgLatencyMs: latencies.length > 0
+          ? Math.round(latencies.reduce((s, n) => s + n, 0) / latencies.length)
+          : 0,
+      },
+      thisMonth: {
+        calls: rowsMonth.count ?? 0,
+        subscriptionUsd,
+        subscriptionEur: subscriptionUsd * rate,
+      },
+      all: {
+        total: allCount.count ?? 0,
+        success: allSuccessCount.count ?? 0,
+      },
       lastCallAsOf: (lastCall.data?.timestamp as string | undefined) ?? null,
+      usdEurRate: rate,
+    };
+  }
+
+  /**
+   * Statistiques Claude agrégées depuis lisa_proposals.
+   * Fenêtres CALENDAIRES UTC identiques à fetchEodhdStats.
+   */
+  async fetchClaudeStats(): Promise<{
+    today: { requests: number; inputTokens: number; outputTokens: number; costUsd: number; costEur: number };
+    thisMonth: { requests: number; inputTokens: number; outputTokens: number; costUsd: number; costEur: number };
+    all: { requests: number; costUsd: number; costEur: number };
+    usdEurRate: number;
+  }> {
+    const client = this.supabase.getClient();
+    const startOfToday = this.startOfTodayUtc();
+    const startOfMonth = this.startOfMonthUtc();
+    const rate = this.usdToEurRate();
+
+    const [today, month, all] = await Promise.all([
+      client
+        .from('lisa_proposals')
+        .select('claude_input_tokens, claude_output_tokens, claude_cost_usd')
+        .gte('generated_at', startOfToday),
+      client
+        .from('lisa_proposals')
+        .select('claude_input_tokens, claude_output_tokens, claude_cost_usd')
+        .gte('generated_at', startOfMonth),
+      client
+        .from('lisa_proposals')
+        .select('claude_input_tokens, claude_output_tokens, claude_cost_usd'),
+    ]);
+
+    const agg = (rows: Array<{ claude_input_tokens: number | null; claude_output_tokens: number | null; claude_cost_usd: number | null }> | null) => {
+      const list = rows ?? [];
+      const inputTokens = list.reduce((s, r) => s + (Number(r.claude_input_tokens) || 0), 0);
+      const outputTokens = list.reduce((s, r) => s + (Number(r.claude_output_tokens) || 0), 0);
+      const costUsd = list.reduce((s, r) => s + (Number(r.claude_cost_usd) || 0), 0);
+      return {
+        requests: list.length,
+        inputTokens,
+        outputTokens,
+        costUsd,
+        costEur: costUsd * rate,
+      };
+    };
+
+    const allStats = agg(all.data as never);
+    return {
+      today: agg(today.data as never),
+      thisMonth: agg(month.data as never),
+      all: { requests: allStats.requests, costUsd: allStats.costUsd, costEur: allStats.costEur },
+      usdEurRate: rate,
     };
   }
 }

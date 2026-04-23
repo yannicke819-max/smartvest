@@ -221,12 +221,17 @@ export class RealtimePriceService implements OnModuleDestroy {
     // Rafraîchit le compteur si cache > 60s
     if (now - this.eodhd24hCountAsOf > 60_000) {
       try {
-        const since24h = new Date(now - 86_400_000).toISOString();
+        // Reset CALENDAIRE à 00:00 UTC — aligne avec le reset quota EODHD réel
+        const nowDate = new Date(now);
+        const startOfTodayUtc = new Date(Date.UTC(
+          nowDate.getUTCFullYear(), nowDate.getUTCMonth(), nowDate.getUTCDate(),
+          0, 0, 0, 0,
+        )).toISOString();
         const { count } = await this.supabase.getClient()
           .from('eodhd_request_log')
           .select('*', { count: 'exact', head: true })
           .eq('source', 'eodhd')
-          .gte('timestamp', since24h);
+          .gte('timestamp', startOfTodayUtc);
         this.eodhd24hCount = count ?? 0;
         this.eodhd24hCountAsOf = now;
       } catch (e) {
