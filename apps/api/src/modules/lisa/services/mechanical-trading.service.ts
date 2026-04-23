@@ -44,6 +44,16 @@ interface CloseCondition {
   urgency: 'immediate' | 'at_stop' | 'on_next_unfavorable_price';
 }
 
+interface TacticalOverrides {
+  pauseOpens?: boolean;
+  pauseOpensReason?: 'stops_cluster' | 'vix_spike' | 'drawdown' | 'exposure_high' | 'choppiness' | 'regime_break';
+  tightenStopsMultiplier?: number;
+  minConvictionOverride?: number;
+  maxNewOpensOverride?: number;
+  closeLowestConvictionIfExposureAbovePct?: number;
+  preferredAssetClasses?: string[];
+}
+
 interface MechanicalDirective {
   id: string;
   portfolioId: string;
@@ -55,6 +65,7 @@ interface MechanicalDirective {
   targetSymbols: TargetSymbol[];
   closeConditions: CloseCondition[];
   riskPosture: 'aggressive' | 'normal' | 'defensive';
+  tacticalOverrides: TacticalOverrides;
   generatedAt: Date;
   validUntil: Date;
 }
@@ -172,6 +183,17 @@ export class MechanicalTradingService {
       return;
     }
 
+    // === Overrides tactiques de Lisa (golden-trader) — s'appliquent AVANT le flow trajectoire ===
+    const overrides = directive.tacticalOverrides ?? {};
+
+    // Lisa a explicitement demandé une pause → aucune ouverture ce cycle
+    if (overrides.pauseOpens === true) {
+      this.logger.log(
+        `[MÉCANIQUE] ${portfolioId.slice(0, 8)} — pauseOpens=true (reason=${overrides.pauseOpensReason ?? 'unspecified'}) — skip ouvertures`,
+      );
+      return;
+    }
+
     // Reload open positions after stop/target checks
     const { data: positionsForOpen } = await this.supabase.getClient()
       .from('lisa_positions')
@@ -187,6 +209,33 @@ export class MechanicalTradingService {
     const capitalUsd = new Decimal(cfg.capital_usd || '10000');
 
     if (activePositions.length >= maxPositions) return;
+
+    // Override : fermer la plus basse conviction si exposition > seuil
+    if (overrides.closeLowestConvictionIfExposureAbovePct != null && activePositions.length > 0) {
+      // Note: le runtime Supabase renvoie snake_case, on accède via bracket (l'interface OpenPosition est partielle)
+      const readNotional = (p: OpenPosition) =>
+        Number((p as unknown as Record<string, unknown>)['entry_notional_usd'] ?? 0);
+      const totalExposure = activePositions.reduce((s, p) => s + readNotional(p), 0);
+      const exposurePct = capitalUsd.gt(0) ? (totalExposure / capitalUsd.toNumber()) * 100 : 0;
+      if (exposurePct > overrides.closeLowestConvictionIfExposureAbovePct) {
+        // On identifie la position avec le plus petit notional comme proxy de "plus basse conviction"
+        // (pas de colonne conviction sur lisa_positions ; notional reflète déjà le sizing par conviction)
+        const weakest = [...activePositions].sort(
+          (a, b) => readNotional(a) - readNotional(b),
+        )[0];
+        if (weakest) {
+          const quote = await this.lisa.getLivePrice(weakest.symbol).catch(() => null);
+          if (quote) {
+            await this.closePosition(
+              weakest.id,
+              quote.price,
+              'closed_invalidated',
+              `[MÉCANIQUE] Override Lisa: exposition ${exposurePct.toFixed(1)}% > seuil ${overrides.closeLowestConvictionIfExposureAbovePct}% — fermeture plus basse conviction`,
+            );
+          }
+        }
+      }
+    }
 
     // Get available cash from snapshot
     const { data: snap } = await this.supabase.getClient()
@@ -216,21 +265,45 @@ export class MechanicalTradingService {
     }
 
     // Plafond de nouvelles ouvertures par cycle selon trajectoire
-    const openCap =
+    const openCapFromTrajectory =
       directive.trajectoryStatus === 'EN_RETARD' ? 4 :
       directive.trajectoryStatus === 'EN_AVANCE' ? 1 : 2;
+
+    // Override Lisa : maxNewOpensOverride ne peut que RÉDUIRE, jamais relâcher
+    const openCap = overrides.maxNewOpensOverride != null
+      ? Math.min(openCapFromTrajectory, overrides.maxNewOpensOverride)
+      : openCapFromTrajectory;
+
+    // Override Lisa : conviction minimum (surcharge le seuil EN_AVANCE)
+    const minConvictionFromTrajectory = directive.trajectoryStatus === 'EN_AVANCE' ? 7 : 0;
+    const minConviction = overrides.minConvictionOverride != null
+      ? Math.max(minConvictionFromTrajectory, overrides.minConvictionOverride)
+      : minConvictionFromTrajectory;
+
+    // Override Lisa : stops serrés (multiplier < 1 = stops plus proches du prix d'entrée)
+    const stopsMult = typeof overrides.tightenStopsMultiplier === 'number'
+      ? overrides.tightenStopsMultiplier
+      : 1.0;
+
+    // Override Lisa : classes d'actifs préférées (filtrage positif, si défini)
+    const preferredClasses = Array.isArray(overrides.preferredAssetClasses) && overrides.preferredAssetClasses.length > 0
+      ? new Set(overrides.preferredAssetClasses)
+      : null;
 
     let slotsUsed = 0;
 
     for (const target of directive.targetSymbols) {
       if (activePositions.length + slotsUsed >= maxPositions) break;
-      if (slotsUsed >= openCap) break; // plafond trajectoire
+      if (slotsUsed >= openCap) break; // plafond trajectoire (éventuellement réduit par override)
 
-      // En EN_AVANCE : n'ouvrir que sur haute conviction (≥ 7/10)
-      if (directive.trajectoryStatus === 'EN_AVANCE' && target.convictionScore < 7) continue;
+      // Filtre conviction (trajectoire + override Lisa)
+      if (target.convictionScore < minConviction) continue;
 
       // Skip si asset class évitée
       if (directive.avoidedAssetClasses.includes(target.assetClass)) continue;
+
+      // Si Lisa a défini preferredAssetClasses, on filtre positivement
+      if (preferredClasses && !preferredClasses.has(target.assetClass)) continue;
 
       // Skip si position déjà ouverte sur ce symbole
       const alreadyOpen = activePositions.some(
@@ -249,8 +322,8 @@ export class MechanicalTradingService {
       const notional = Decimal.min(maxNotional, cashUsd.mul(0.9));
       if (notional.lt(10)) continue;
 
-      // Stop / target prices
-      const stopPct = Math.max(target.stopLossPct ?? 2, 0.5);
+      // Stop / target prices — override Lisa peut resserrer les stops
+      const stopPct = Math.max((target.stopLossPct ?? 2) * stopsMult, 0.3);
       const tpPct = Math.max(target.takeProfitPct ?? 4, 0.5);
 
       const stopPrice = target.direction === 'long'
@@ -322,11 +395,15 @@ export class MechanicalTradingService {
 
       slotsUsed++;
 
+      const overridesTag = Object.keys(overrides).length > 0
+        ? ` · overrides=[${Object.entries(overrides).map(([k, v]) => `${k}=${JSON.stringify(v)}`).slice(0, 4).join(', ')}]`
+        : '';
+
       await this.decisionLog.append({
         portfolioId,
         kind: 'mechanical_open',
-        summary: `[MÉCANIQUE] Ouverture ${target.direction.toUpperCase()} ${target.symbol} @ ${price.toFixed(4)} · notional $${notional.toFixed(0)} · stop ${stopPct}% · target ${tpPct}%`,
-        rationale: `Directive Lisa: thèmes=[${directive.activeThemes.slice(0, 3).join(', ')}] trajectoire=${directive.trajectoryStatus} momentum=${directive.marketMomentum} conviction=${target.convictionScore}/10 sizing×${sizingMultiplier.toFixed(2)}`,
+        summary: `[MÉCANIQUE] Ouverture ${target.direction.toUpperCase()} ${target.symbol} @ ${price.toFixed(4)} · notional $${notional.toFixed(0)} · stop ${stopPct.toFixed(2)}% · target ${tpPct}%`,
+        rationale: `Directive Lisa: thèmes=[${directive.activeThemes.slice(0, 3).join(', ')}] trajectoire=${directive.trajectoryStatus} momentum=${directive.marketMomentum} conviction=${target.convictionScore}/10 sizing×${sizingMultiplier.toFixed(2)}${overridesTag}`,
         payload: {
           positionId,
           symbol: target.symbol,
@@ -613,6 +690,7 @@ export class MechanicalTradingService {
       targetSymbols: (data.target_symbols as TargetSymbol[]) ?? [],
       closeConditions: (data.close_conditions as CloseCondition[]) ?? [],
       riskPosture: (data.risk_posture as MechanicalDirective['riskPosture']) ?? 'normal',
+      tacticalOverrides: (data.tactical_overrides as TacticalOverrides | null) ?? {},
       generatedAt: new Date(data.generated_at as string),
       validUntil: new Date(data.valid_until as string),
     };

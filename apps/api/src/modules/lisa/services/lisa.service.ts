@@ -598,6 +598,10 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
 
     const validUntil = new Date(Date.now() + 35 * 60_000).toISOString();
 
+    // Parser les warnings [AGENT] {...} → tactical_overrides JSON
+    // (format strict : une ligne, JSON valide strict après le préfixe)
+    const tacticalOverrides = this.parseAgentDirectives(proposal.warnings ?? []);
+
     const { error } = await this.supabase.getClient()
       .from('lisa_mechanical_directives')
       .insert({
@@ -610,6 +614,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         target_symbols: targetSymbols,
         close_conditions: closeConditions,
         risk_posture: riskPosture,
+        tactical_overrides: tacticalOverrides,
         source_proposal_id: proposal.id,
         generated_at: new Date().toISOString(),
         valid_until: validUntil,
@@ -630,7 +635,66 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       .eq('portfolio_id', portfolioId)
       .lt('generated_at', new Date(Date.now() - 2 * 3_600_000).toISOString());
 
-    this.logger.log(`Directive mécanique écrite — ${targetSymbols.length} symboles cibles, validité 35 min`);
+    this.logger.log(`Directive mécanique écrite — ${targetSymbols.length} symboles cibles, validité 35 min${
+      Object.keys(tacticalOverrides).length > 0 ? `, overrides: ${Object.keys(tacticalOverrides).join(',')}` : ''
+    }`);
+  }
+
+  /**
+   * Parse les warnings préfixés [AGENT] {...} en un objet tactical_overrides
+   * strict. Les entrées malformées ou avec clés inconnues sont ignorées
+   * silencieusement (fail-safe : l'agent fonctionne toujours sur les défauts).
+   *
+   * Clés acceptées :
+   *  - pauseOpens: boolean
+   *  - pauseOpensReason: enum ('stops_cluster'|'vix_spike'|'drawdown'|'exposure_high'|'choppiness'|'regime_break')
+   *  - tightenStopsMultiplier: number (borné [0.3, 2.0])
+   *  - minConvictionOverride: number (borné [0, 10])
+   *  - maxNewOpensOverride: number (borné [0, 10])
+   *  - closeLowestConvictionIfExposureAbovePct: number (borné [0, 100])
+   *  - preferredAssetClasses: string[]
+   */
+  private parseAgentDirectives(warnings: string[]): Record<string, unknown> {
+    const agentRe = /^\[AGENT\]\s*(\{.*\})\s*$/s;
+    const VALID_REASONS = new Set(['stops_cluster', 'vix_spike', 'drawdown', 'exposure_high', 'choppiness', 'regime_break']);
+    const out: Record<string, unknown> = {};
+
+    for (const w of warnings) {
+      const m = agentRe.exec(w.trim());
+      if (!m) continue;
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(m[1]);
+      } catch (e) {
+        this.logger.warn(`[AGENT] JSON invalide, ignoré: ${m[1].slice(0, 120)}`);
+        continue;
+      }
+      if (typeof parsed !== 'object' || parsed === null) continue;
+      const p = parsed as Record<string, unknown>;
+
+      if (typeof p.pauseOpens === 'boolean') out.pauseOpens = p.pauseOpens;
+      if (typeof p.pauseOpensReason === 'string' && VALID_REASONS.has(p.pauseOpensReason)) {
+        out.pauseOpensReason = p.pauseOpensReason;
+      }
+      if (typeof p.tightenStopsMultiplier === 'number' && Number.isFinite(p.tightenStopsMultiplier)) {
+        out.tightenStopsMultiplier = Math.max(0.3, Math.min(2.0, p.tightenStopsMultiplier));
+      }
+      if (typeof p.minConvictionOverride === 'number' && Number.isFinite(p.minConvictionOverride)) {
+        out.minConvictionOverride = Math.max(0, Math.min(10, Math.round(p.minConvictionOverride)));
+      }
+      if (typeof p.maxNewOpensOverride === 'number' && Number.isFinite(p.maxNewOpensOverride)) {
+        out.maxNewOpensOverride = Math.max(0, Math.min(10, Math.round(p.maxNewOpensOverride)));
+      }
+      if (typeof p.closeLowestConvictionIfExposureAbovePct === 'number' && Number.isFinite(p.closeLowestConvictionIfExposureAbovePct)) {
+        out.closeLowestConvictionIfExposureAbovePct = Math.max(0, Math.min(100, p.closeLowestConvictionIfExposureAbovePct));
+      }
+      if (Array.isArray(p.preferredAssetClasses) && p.preferredAssetClasses.every((x) => typeof x === 'string')) {
+        out.preferredAssetClasses = p.preferredAssetClasses;
+      }
+    }
+
+    return out;
   }
 
   async approveProposal(userId: string, proposalId: string): Promise<{ openedPositions: PaperPosition[]; skipped: number; closedRecommended: number }> {

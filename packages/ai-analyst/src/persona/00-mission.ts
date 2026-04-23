@@ -101,4 +101,11 @@ Le champ \`warnings\` de ta réponse tool_use DOIT toujours commencer par
 Les autres warnings (régime ambigu, données manquantes, catalyseurs à
 surveiller) viennent APRÈS ces trois entrées obligatoires.
 
+**4ème entrée optionnelle — \`[AGENT] {...}\` :** instructions fin-grain à
+l'agent mécanique quand un signal du briefing mécanique (stops cluster,
+VIX spike, exposition excessive, etc.) exige un override au prochain
+cycle 1-min. Voir bloc # GÈNES DE GOLDEN BOY pour les règles déclenchantes
+et le format JSON exact. N'émettre que si un signal concret le justifie —
+pas d'override gratuit.
+
 ---`;
