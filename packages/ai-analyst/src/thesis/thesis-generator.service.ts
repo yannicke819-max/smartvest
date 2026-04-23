@@ -74,6 +74,22 @@ export interface OpenPositionSummary {
   unrealizedPnlPct: number;
   ageDays: number;
   horizonDays: number | null;
+  fundamentals?: {
+    pe: number | null;
+    forwardPE: number | null;
+    revenueGrowthPct: number | null;
+    beta: number | null;
+    dividendYieldPct: number | null;
+    marketCapUsd: number | null;
+    sector: string | null;
+    industry: string | null;
+  } | null;
+  nextEarning?: {
+    symbol: string;
+    reportDate: string;
+    epsEstimate: number | null;
+    revenueEstimate: number | null;
+  } | null;
 }
 
 export interface GenerateThesesRequest {
@@ -321,7 +337,34 @@ Biais du cycle : **${bias}** — ${biasRationale}`;
       const horizonHint = p.horizonDays !== null
         ? ` horizon=${Math.max(0, p.horizonDays - p.ageDays)}j restants`
         : '';
-      return `- id=${p.positionId} ${p.direction.toUpperCase()} ${p.symbol} (${p.assetClass}) qty=${p.quantity} entry=${p.entryPrice} now=${p.currentPrice} pnl=${pnlSign}${p.unrealizedPnlPct.toFixed(2)}% age=${p.ageDays}j${horizonHint} notional=${p.entryNotionalUsd}$`;
+      const base = `- id=${p.positionId} ${p.direction.toUpperCase()} ${p.symbol} (${p.assetClass}) qty=${p.quantity} entry=${p.entryPrice} now=${p.currentPrice} pnl=${pnlSign}${p.unrealizedPnlPct.toFixed(2)}% age=${p.ageDays}j${horizonHint} notional=${p.entryNotionalUsd}$`;
+
+      // Enrichissement EODHD : fundamentals + next earning
+      const extras: string[] = [];
+      if (p.fundamentals) {
+        const f = p.fundamentals;
+        const parts: string[] = [];
+        if (f.sector) parts.push(`sector=${f.sector}`);
+        if (f.pe !== null) parts.push(`P/E=${f.pe.toFixed(1)}`);
+        if (f.forwardPE !== null) parts.push(`fwd P/E=${f.forwardPE.toFixed(1)}`);
+        if (f.revenueGrowthPct !== null) parts.push(`rev YoY=${f.revenueGrowthPct >= 0 ? '+' : ''}${f.revenueGrowthPct.toFixed(1)}%`);
+        if (f.beta !== null) parts.push(`β=${f.beta.toFixed(2)}`);
+        if (f.dividendYieldPct !== null && f.dividendYieldPct > 0) parts.push(`div=${f.dividendYieldPct.toFixed(1)}%`);
+        if (f.marketCapUsd !== null) {
+          const mcB = f.marketCapUsd / 1e9;
+          parts.push(`mcap=${mcB >= 1000 ? (mcB / 1000).toFixed(1) + 'T' : mcB.toFixed(1) + 'B'}$`);
+        }
+        if (parts.length > 0) extras.push(`  Fundamentals: ${parts.join(' · ')}`);
+      }
+      if (p.nextEarning) {
+        const e = p.nextEarning;
+        const daysTo = Math.ceil((new Date(e.reportDate).getTime() - Date.now()) / 86_400_000);
+        if (daysTo >= 0 && daysTo <= 14) {
+          const est = e.epsEstimate !== null ? ` (EPS est ${e.epsEstimate.toFixed(2)})` : '';
+          extras.push(`  ⚠️ Earnings dans ${daysTo}j : ${e.reportDate}${est}`);
+        }
+      }
+      return extras.length > 0 ? `${base}\n${extras.join('\n')}` : base;
     });
     const cashLine = availableCash
       ? `\nCash disponible : ${availableCash} USD (après fermetures que tu recommandes)`

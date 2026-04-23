@@ -20,6 +20,7 @@ import { BinanceAdapter } from '@smartvest/brokers';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { DecisionLogService } from './decision-log.service';
 import { RealtimePriceService } from './realtime-price.service';
+import { EodhdEnrichmentService } from './eodhd-enrichment.service';
 
 /**
  * LisaService — orchestrateur principal du module AI analyst.
@@ -46,6 +47,7 @@ export class LisaService {
     private readonly supabase: SupabaseService,
     private readonly decisionLog: DecisionLogService,
     private readonly realtimePrice: RealtimePriceService,
+    private readonly eodhdEnrichment: EodhdEnrichmentService,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
     this.claudeClient = anthropicKey
@@ -199,6 +201,29 @@ export class LisaService {
 
     const marketSnapshot = await this.fetchMarketSnapshot();
 
+    // Enrichissement EODHD Premium : news + calendrier économique injectés
+    // dans le MarketSnapshot pour que Lisa voie les catalyseurs récents et
+    // à venir (sinon elle raisonne à l'aveugle côté news).
+    try {
+      const [news, econEvents] = await Promise.all([
+        this.eodhdEnrichment.fetchRecentNews(undefined, 15),
+        this.eodhdEnrichment.fetchUpcomingEconomicEvents(7, 2),
+      ]);
+      marketSnapshot.recentNews = news.slice(0, 10).map((n) => ({
+        headline: n.title,
+        source: n.symbols.length > 0 ? n.symbols.slice(0, 3).join(', ') : 'general',
+        timestamp: n.date,
+        relevance: (n.sentiment !== null && Math.abs(n.sentiment) >= 0.5) ? 'high' : 'medium',
+      }));
+      marketSnapshot.upcomingEvents = econEvents.slice(0, 10).map((e) => ({
+        name: `${e.country ? `[${e.country}] ` : ''}${e.name}${e.estimate ? ` (est ${e.estimate})` : ''}`,
+        date: e.date,
+        importance: e.importance === 3 ? 'high' : e.importance === 2 ? 'medium' : 'low',
+      }));
+    } catch (e) {
+      this.logger.warn(`EODHD enrichment partial failure: ${String(e).slice(0, 120)}`);
+    }
+
     // Persona "chasseur EV+" injectée en amont du user focus si le flag est actif.
     // N'ajoute AUCUN droit d'exécution réelle — elle modifie juste le cadrage de
     // l'analyse produite par Claude (plus de turnover, sizing plus agressif dans
@@ -248,6 +273,17 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     // Récupère les positions ouvertes + cash pour gestion active
     const currentSnapshot = await this.paperBroker.computeSnapshot(portfolioId);
     const openPositionsRaw = await this.paperBroker.getPositions(portfolioId, true);
+
+    // Pré-fetch enrichissement fondamentaux + earnings pour tous les symbols
+    // ouverts (les fonctions gèrent le cache et les exclusions crypto/FX).
+    const uniqueSymbols = Array.from(new Set(openPositionsRaw.map((p) => p.symbol)));
+    const [earningsAll, fundamentalsArr] = await Promise.all([
+      this.eodhdEnrichment.fetchEarningsForSymbols(uniqueSymbols, 14),
+      Promise.all(uniqueSymbols.map((s) => this.eodhdEnrichment.fetchKeyFundamentals(s))),
+    ]);
+    const fundamentalsBySymbol = new Map<string, typeof fundamentalsArr[number]>();
+    uniqueSymbols.forEach((s, i) => fundamentalsBySymbol.set(s, fundamentalsArr[i]));
+
     const openPositions = await Promise.all(openPositionsRaw.map(async (pos) => {
       let currentPrice = pos.entryPrice;
       try {
@@ -264,6 +300,12 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       const horizonDays = pos.horizonTargetDate
         ? Math.ceil((new Date(pos.horizonTargetDate).getTime() - new Date(pos.entryTimestamp).getTime()) / 86_400_000)
         : null;
+      // Fundamentals + prochain earning pour ce symbole (si applicable)
+      const fundamentals = fundamentalsBySymbol.get(pos.symbol) ?? null;
+      const nextEarning = earningsAll
+        .filter((e) => e.symbol.toUpperCase().includes(pos.symbol.toUpperCase().split('.')[0]))
+        .sort((a, b) => new Date(a.reportDate).getTime() - new Date(b.reportDate).getTime())[0] ?? null;
+
       return {
         positionId: pos.id,
         symbol: pos.symbol,
@@ -276,6 +318,8 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         unrealizedPnlPct,
         ageDays,
         horizonDays,
+        fundamentals,
+        nextEarning,
       };
     }));
 

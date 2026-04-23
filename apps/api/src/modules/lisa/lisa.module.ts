@@ -5,11 +5,12 @@ import { LisaService } from './services/lisa.service';
 import { LisaAutopilotService } from './services/lisa-autopilot.service';
 import { DecisionLogService } from './services/decision-log.service';
 import { RealtimePriceService } from './services/realtime-price.service';
+import { EodhdEnrichmentService } from './services/eodhd-enrichment.service';
 
 @Module({
   imports: [SupabaseModule],
   controllers: [LisaController],
-  providers: [LisaService, LisaAutopilotService, DecisionLogService, RealtimePriceService],
+  providers: [LisaService, LisaAutopilotService, DecisionLogService, RealtimePriceService, EodhdEnrichmentService],
   exports: [LisaService, DecisionLogService, RealtimePriceService],
 })
 export class LisaModule {}
