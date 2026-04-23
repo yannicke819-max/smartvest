@@ -327,3 +327,21 @@ export function useResetSimulation(portfolioId: string) {
     },
   });
 }
+
+export function usePurgeOldProposals(portfolioId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (olderThanHours: number = 24) =>
+      apiFetch<{ deleted: number }>(
+        `/lisa/portfolio/${portfolioId}/proposals/purge`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ olderThanHours }),
+        },
+      ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['lisa', 'proposals', portfolioId] });
+      void qc.invalidateQueries({ queryKey: ['lisa', 'decisions', portfolioId] });
+    },
+  });
+}

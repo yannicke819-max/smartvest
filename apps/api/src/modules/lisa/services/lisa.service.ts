@@ -597,6 +597,53 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     });
   }
 
+  /**
+   * Purge en masse des propositions anciennes. Supprime celles dont le
+   * status est terminal (executed/rejected/expired) OU plus vieilles que
+   * olderThanHours (défaut 24h). Préserve les propositions "proposed"
+   * récentes en attente d'approbation utilisateur.
+   */
+  async purgeOldProposals(
+    userId: string,
+    portfolioId: string,
+    olderThanHours = 24,
+  ): Promise<{ deleted: number }> {
+    await this.assertPortfolioOwner(userId, portfolioId);
+    const cutoff = new Date(Date.now() - olderThanHours * 3600_000).toISOString();
+
+    // Comptage d'abord pour retour au user
+    const { count: beforeCount } = await this.supabase.getClient()
+      .from('lisa_proposals')
+      .select('*', { count: 'exact', head: true })
+      .eq('portfolio_id', portfolioId);
+
+    // Delete : propositions terminales peu importe l'âge OU propositions
+    // de toute status si plus vieilles que le cutoff.
+    const { error } = await this.supabase.getClient()
+      .from('lisa_proposals')
+      .delete()
+      .eq('portfolio_id', portfolioId)
+      .or(`status.in.(executed,rejected,expired),generated_at.lt.${cutoff}`);
+
+    if (error) throw new BadRequestException(`Purge failed: ${error.message}`);
+
+    const { count: afterCount } = await this.supabase.getClient()
+      .from('lisa_proposals')
+      .select('*', { count: 'exact', head: true })
+      .eq('portfolio_id', portfolioId);
+
+    const deleted = (beforeCount ?? 0) - (afterCount ?? 0);
+
+    await this.logDecision(portfolioId, 'proposals_purged', {
+      summary: `${deleted} proposition(s) ancienne(s) purgée(s)`,
+      rationale: `Cutoff : ${cutoff}. Critères : status terminal OU âge > ${olderThanHours}h.`,
+      payload: { deleted, olderThanHours, cutoff },
+      triggeredBy: 'user_manual',
+    });
+
+    return { deleted };
+  }
+
   async listProposals(userId: string, portfolioId: string, limit = 20) {
     const { data, error } = await this.supabase.getClient()
       .from('lisa_proposals')

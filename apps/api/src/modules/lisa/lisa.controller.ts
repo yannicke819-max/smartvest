@@ -179,4 +179,18 @@ export class LisaController {
   ) {
     return this.lisa.resetSimulation(extractUserId(headers), portfolioId);
   }
+
+  @Post('portfolio/:portfolioId/proposals/purge')
+  @HttpCode(200)
+  purgeOldProposals(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+    @Body('olderThanHours') olderThanHours?: number,
+  ) {
+    return this.lisa.purgeOldProposals(
+      extractUserId(headers),
+      portfolioId,
+      typeof olderThanHours === 'number' ? olderThanHours : 24,
+    );
+  }
 }

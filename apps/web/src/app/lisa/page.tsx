@@ -20,6 +20,7 @@ import { BackButton } from '@/components/ui/back-button';
 import { Button } from '@/components/ui/button';
 import { SkeletonCard } from '@/components/ui/skeleton';
 import { LisaProposalCard } from '@/components/lisa/proposal-card';
+import { LisaProposalsGroupedByDay } from '@/components/lisa/proposals-grouped-by-day';
 import { LisaPortfolioSummary } from '@/components/lisa/portfolio-summary';
 import { LisaPortfolioChart } from '@/components/lisa/portfolio-chart';
 import { LisaPositionsTable } from '@/components/lisa/positions-table';
@@ -760,25 +761,12 @@ export default function LisaPage() {
         )}
       </div>
 
-      {/* Proposals list */}
-      <div className="space-y-3">
-        <div className="flex items-center gap-2">
-          <Activity className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-medium">Propositions récentes</h2>
-        </div>
-
-        {proposalsQuery.isLoading && <SkeletonCard />}
-
-        {!proposalsQuery.isLoading && (proposalsQuery.data ?? []).length === 0 && (
-          <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-            Aucune proposition encore. Configure puis clique "Générer propositions".
-          </div>
-        )}
-
-        {(proposalsQuery.data ?? []).map((p) => (
-          <LisaProposalCard key={p.id} proposal={p} portfolioId={selectedPortfolioId ?? ''} />
-        ))}
-      </div>
+      {/* Proposals list — groupées par jour avec sections repliables */}
+      <LisaProposalsGroupedByDay
+        proposals={proposalsQuery.data ?? []}
+        portfolioId={selectedPortfolioId ?? ''}
+        isLoading={proposalsQuery.isLoading}
+      />
 
       {/* Decision log */}
       {selectedPortfolioId && <LisaDecisionLog portfolioId={selectedPortfolioId} />}
