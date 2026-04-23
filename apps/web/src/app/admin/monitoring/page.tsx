@@ -68,7 +68,7 @@ export default function MonitoringPage() {
     claudeMonth: { requests: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, costEur: 0 },
     claudeAll: { requests: 0, costUsd: 0, costEur: 0 },
     eodhdToday: { total: 0, success: 0, failures: 0, fallbacks: 0, avgLatencyMs: 0 },
-    eodhdMonth: { calls: 0, subscriptionUsd: 19.99, subscriptionEur: 18.59 },
+    eodhdMonth: { calls: 0, subscriptionUsd: 99.99, subscriptionEur: 92.99 },
     eodhdAll: { total: 0, success: 0 },
     eodhdLastCallAsOf: null,
     usdEurRate: 0.93,

@@ -1210,9 +1210,10 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     const latencies = eodhdRows.map((r) => r.latency_ms).filter((n): n is number => typeof n === 'number' && n > 0);
 
     // Abonnement EODHD (fixe mensuel, payé peu importe le nb d'appels).
-    // Configurable via env var EODHD_MONTHLY_COST_USD, défaut 19.99 (plan standard 100k/j).
+    // Configurable via env var EODHD_MONTHLY_COST_USD, défaut 99.99 (plan
+    // All-In-One avec quota 100k appels/jour).
     const subRaw = this.config.get<string>('EODHD_MONTHLY_COST_USD');
-    const subscriptionUsd = subRaw && !isNaN(parseFloat(subRaw)) ? parseFloat(subRaw) : 19.99;
+    const subscriptionUsd = subRaw && !isNaN(parseFloat(subRaw)) ? parseFloat(subRaw) : 99.99;
     const rate = this.usdToEurRate();
 
     return {
