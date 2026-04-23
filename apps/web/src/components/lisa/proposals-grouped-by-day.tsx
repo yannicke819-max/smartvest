@@ -31,10 +31,14 @@ export function LisaProposalsGroupedByDay({
   // État déplié : set de day keys. "Aujourd'hui" est déplié par défaut
   // sauf si le user l'a explicitement replié (stocké séparément).
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [todayCollapsed, setTodayCollapsed] = useState(false);
+  // Par défaut "Aujourd'hui" est REPLIÉE comme les autres jours.
+  // L'utilisateur déplie manuellement ce qu'il veut consulter.
+  const [todayCollapsed, setTodayCollapsed] = useState(true);
   const [hydrated, setHydrated] = useState(false);
 
-  // Hydrate depuis localStorage au mount (côté client uniquement)
+  // Hydrate depuis localStorage au mount (côté client uniquement).
+  // Par défaut TOUT est replié — l'utilisateur déplie ce qui l'intéresse,
+  // ses choix sont conservés au refresh suivant.
   useEffect(() => {
     try {
       const rawExpanded = localStorage.getItem(STORAGE_KEY_EXPANDED);
@@ -42,8 +46,10 @@ export function LisaProposalsGroupedByDay({
         const arr = JSON.parse(rawExpanded) as string[];
         if (Array.isArray(arr)) setExpanded(new Set(arr));
       }
+      // todayCollapsed défaut true (tout replié au refresh par défaut).
+      // Si l'utilisateur a explicitement marqué "déplié" en localStorage, on respecte.
       const rawCollapsed = localStorage.getItem(STORAGE_KEY_COLLAPSED_TODAY);
-      if (rawCollapsed === 'true') setTodayCollapsed(true);
+      setTodayCollapsed(rawCollapsed === 'false' ? false : true);
     } catch { /* ignore */ }
     setHydrated(true);
   }, []);

@@ -92,6 +92,10 @@ export default function LisaPage() {
   const [autopilotCycleMin, setAutopilotCycleMin] = useState(15);
   const [autopilotAutoApprove, setAutopilotAutoApprove] = useState(false);
   const [autopilotExpiresAt, setAutopilotExpiresAt] = useState<string | null>(null);
+  // Buffer string libre pour le champ "durée du sniper" — découplé de
+  // autopilotExpiresAt pour que l'utilisateur puisse taper "10" sans que
+  // la valeur recalculée à partir du timestamp ne le bloque à "1.0".
+  const [autopilotDurationHoursInput, setAutopilotDurationHoursInput] = useState<string>('');
   const [autopilotAggressive, setAutopilotAggressive] = useState(false);
   const [autopilotMarketHoursOnly, setAutopilotMarketHoursOnly] = useState(false);
   // Risk constraints — exposés dans l'UI (section avancée)
@@ -123,7 +127,13 @@ export default function LisaPage() {
     if (typeof config.autopilot_enabled === 'boolean') setAutopilotEnabled(config.autopilot_enabled);
     if (typeof config.autopilot_cycle_minutes === 'number') setAutopilotCycleMin(config.autopilot_cycle_minutes);
     if (typeof config.autopilot_auto_approve === 'boolean') setAutopilotAutoApprove(config.autopilot_auto_approve);
-    if (config.autopilot_expires_at) setAutopilotExpiresAt(config.autopilot_expires_at);
+    if (config.autopilot_expires_at) {
+      setAutopilotExpiresAt(config.autopilot_expires_at);
+      const remaining = new Date(config.autopilot_expires_at).getTime() - Date.now();
+      if (remaining > 0) {
+        setAutopilotDurationHoursInput((remaining / 3_600_000).toFixed(1));
+      }
+    }
     if (typeof config.autopilot_aggressive === 'boolean') setAutopilotAggressive(config.autopilot_aggressive);
     if (typeof config.autopilot_market_hours_only === 'boolean') setAutopilotMarketHoursOnly(config.autopilot_market_hours_only);
     const rc = config.risk_constraints ?? {};
@@ -165,7 +175,15 @@ export default function LisaPage() {
       autopilot_aggressive: autopilotAggressive,
       autopilot_market_hours_only: autopilotMarketHoursOnly,
       // Pas d'expiration par défaut — l'utilisateur veut "no-touch" sans limite
-      autopilot_expires_at: autopilotAutoApprove ? (autopilotExpiresAt ?? null) : null,
+      autopilot_expires_at: (() => {
+        if (!autopilotAutoApprove) return null;
+        const trimmed = autopilotDurationHoursInput.trim();
+        if (trimmed === '') return null; // sans limite
+        const h = parseFloat(trimmed);
+        if (!Number.isFinite(h) || h <= 0) return null;
+        const clamped = Math.min(h, 24);
+        return new Date(Date.now() + clamped * 3_600_000).toISOString();
+      })(),
       risk_constraints: {
         targetDeploymentPct,
         maxPositionSizePct,
@@ -258,6 +276,7 @@ export default function LisaPage() {
     });
     setAutopilotAutoApprove(false);
     setAutopilotExpiresAt(null);
+    setAutopilotDurationHoursInput('');
     setAutopilotAggressive(false);
   }
 
@@ -465,33 +484,29 @@ export default function LisaPage() {
                   <div className="flex items-center gap-2 text-xs">
                     <input
                       type="number"
-                      min="1"
+                      min="0.5"
                       max="24"
                       step="0.5"
                       placeholder="vide = sans limite"
-                      value={(() => {
-                        if (!autopilotExpiresAt) return '';
-                        const remaining = new Date(autopilotExpiresAt).getTime() - Date.now();
-                        if (remaining <= 0) return '';
-                        return (remaining / 3_600_000).toFixed(1);
-                      })()}
-                      onChange={(e) => {
-                        const h = parseFloat(e.target.value);
-                        if (!Number.isFinite(h) || h <= 0) {
-                          setAutopilotExpiresAt(null);
-                        } else {
-                          const clamped = Math.min(h, 24);
-                          setAutopilotExpiresAt(new Date(Date.now() + clamped * 3_600_000).toISOString());
-                        }
-                      }}
+                      value={autopilotDurationHoursInput}
+                      onChange={(e) => setAutopilotDurationHoursInput(e.target.value)}
                       className="h-7 w-24 rounded-md border bg-background px-2 text-xs"
                     />
                     <span className="text-muted-foreground">heures</span>
-                    {autopilotExpiresAt && new Date(autopilotExpiresAt).getTime() > Date.now() && (
-                      <span className="text-[10px] text-amber-600">
-                        → expire {new Date(autopilotExpiresAt).toLocaleString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                    )}
+                    {(() => {
+                      const trimmed = autopilotDurationHoursInput.trim();
+                      if (trimmed === '') return null;
+                      const h = parseFloat(trimmed);
+                      if (!Number.isFinite(h) || h <= 0) return null;
+                      const clamped = Math.min(h, 24);
+                      const expiry = new Date(Date.now() + clamped * 3_600_000);
+                      return (
+                        <span className="text-[10px] text-amber-600">
+                          → expirera {expiry.toLocaleString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                          {h > 24 && <span className="ml-1 text-red-500">(plafonné à 24 h)</span>}
+                        </span>
+                      );
+                    })()}
                   </div>
                   <p className="text-[10px] text-muted-foreground italic">
                     Laisse vide pour tourner indéfiniment. Sinon l'auto-approbation se coupe
