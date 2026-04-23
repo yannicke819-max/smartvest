@@ -365,7 +365,7 @@ export const DecisionLogEntry = z.object({
   hashChainPrev: z.string().nullable(),
   hashChainCurrent: z.string(),
   /** Qui a déclenché : user_manual, autopilot, risk_monitor, corpus_trigger */
-  triggeredBy: z.enum(['user_manual', 'autopilot_cron', 'risk_monitor', 'corpus_trigger', 'market_event']),
+  triggeredBy: z.enum(['user_manual', 'autopilot_cron', 'risk_monitor', 'corpus_trigger', 'market_event', 'mechanical_cron']),
   timestamp: z.string().datetime(),
 });
 export type DecisionLogEntry = z.infer<typeof DecisionLogEntry>;

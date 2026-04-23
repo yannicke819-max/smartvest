@@ -29,7 +29,7 @@ export class DecisionLogService {
     summary: string;
     rationale: string;
     payload: Record<string, unknown>;
-    triggeredBy: 'user_manual' | 'autopilot_cron' | 'risk_monitor' | 'corpus_trigger' | 'market_event';
+    triggeredBy: 'user_manual' | 'autopilot_cron' | 'risk_monitor' | 'corpus_trigger' | 'market_event' | 'mechanical_cron';
   }): Promise<{ id: string; hashChainCurrent: string; hashChainPrev: string | null }> {
     // 1. Fetch previous hash for this portfolio
     const { data: prev } = await this.supabase.getClient()

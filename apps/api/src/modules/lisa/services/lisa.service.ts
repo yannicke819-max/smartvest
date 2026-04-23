@@ -523,7 +523,99 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       triggeredBy: 'user_manual',
     });
 
+    // Écrire la directive mécanique — l'agent sans-LLM l'utilise pendant 35 min
+    await this.writeDirective(portfolioId, finalProposal, result.closeRecommendations ?? []).catch(
+      (e) => this.logger.warn(`writeDirective failed (non-blocking): ${String(e)}`),
+    );
+
     return finalProposal;
+  }
+
+  /**
+   * Extrait et persiste une directive mécanique depuis la proposal Claude.
+   * L'agent MechanicalTradingService consomme cette directive toutes les minutes
+   * pour ouvrir/fermer des positions sans appel LLM.
+   */
+  private async writeDirective(
+    portfolioId: string,
+    proposal: AllocationProposal,
+    closeRecommendations: Array<{ positionId: string; reason: string }>,
+  ): Promise<void> {
+    // Extraire les thèmes depuis favored_pockets
+    const activeThemes = proposal.favoredPockets.map((p) => p.assetClass);
+    const favoredAssetClasses = [...new Set(proposal.favoredPockets.map((p) => p.assetClass))];
+    const avoidedAssetClasses = [...new Set(proposal.avoidedPockets.map((p) => p.assetClass))];
+
+    // Posture de risque selon momentum
+    const riskPosture =
+      proposal.marketMomentum === 'bullish_strong' ? 'aggressive' :
+      proposal.marketMomentum === 'bearish' ? 'defensive' : 'normal';
+
+    // Construire target_symbols depuis les thèses + allocations
+    const targetSymbols = proposal.theses.flatMap((thesis) => {
+      const alloc = proposal.allocations.find((a) => a.thesisId === thesis.id);
+      if (!alloc) return [];
+      const expr = thesis.expressions[thesis.preferredExpressionIndex];
+      if (!expr) return [];
+
+      const stopPct = Math.abs(thesis.riskReward.adverseScenarioReturnPct ?? 2);
+      const tpPct = thesis.riskReward.centralScenarioReturnPct?.mid ?? stopPct * 2;
+
+      return [{
+        symbol: expr.symbol,
+        assetClass: expr.assetClass,
+        direction: expr.direction === 'long' || expr.direction === 'short'
+          ? expr.direction : 'long',
+        stopLossPct: Math.max(stopPct, 0.5),
+        takeProfitPct: Math.max(tpPct, 0.5),
+        convictionScore: Math.round(thesis.confidenceScore / 10),
+        horizonDays: thesis.riskReward.horizonDays ?? 3,
+        venue: expr.preferredVenue,
+        thesisId: thesis.id,
+      }];
+    });
+
+    // close_conditions depuis les closeRecommendations de Lisa
+    const closeConditions = closeRecommendations.map((r) => ({
+      positionId: r.positionId,
+      reason: r.reason,
+      urgency: 'immediate' as const,
+    }));
+
+    const validUntil = new Date(Date.now() + 35 * 60_000).toISOString();
+
+    const { error } = await this.supabase.getClient()
+      .from('lisa_mechanical_directives')
+      .insert({
+        portfolio_id: portfolioId,
+        market_momentum: proposal.marketMomentum ?? 'neutral',
+        active_themes: activeThemes,
+        favored_asset_classes: favoredAssetClasses,
+        avoided_asset_classes: avoidedAssetClasses,
+        target_symbols: targetSymbols,
+        close_conditions: closeConditions,
+        risk_posture: riskPosture,
+        source_proposal_id: proposal.id,
+        generated_at: new Date().toISOString(),
+        valid_until: validUntil,
+      });
+
+    if (error) {
+      // Ignorer si la migration 0051 n'est pas encore appliquée
+      if (!/lisa_mechanical_directives/.test(error.message) && !/does not exist/i.test(error.message)) {
+        this.logger.warn(`writeDirective DB error: ${error.message}`);
+      }
+      return;
+    }
+
+    // Purger les directives > 2h pour ce portfolio
+    void this.supabase.getClient()
+      .from('lisa_mechanical_directives')
+      .delete()
+      .eq('portfolio_id', portfolioId)
+      .lt('generated_at', new Date(Date.now() - 2 * 3_600_000).toISOString());
+
+    this.logger.log(`Directive mécanique écrite — ${targetSymbols.length} symboles cibles, validité 35 min`);
   }
 
   async approveProposal(userId: string, proposalId: string): Promise<{ openedPositions: PaperPosition[]; skipped: number; closedRecommended: number }> {
@@ -1039,6 +1131,11 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
   /** Public wrapper for the price warmer (autopilot cron). */
   async warmPrice(symbol: string): Promise<void> {
     await this.fetchLivePrice(symbol);
+  }
+
+  /** Public price fetch — used by MechanicalTradingService (no Claude cost). */
+  async getLivePrice(symbol: string): Promise<{ symbol: string; price: string; asOf: string; source: string }> {
+    return this.fetchLivePrice(symbol);
   }
 
   private async fetchLivePrice(symbol: string): Promise<{ symbol: string; price: string; asOf: string; source: string }> {
