@@ -159,6 +159,17 @@ export const PROPOSAL_TOOL = {
           regime: { type: 'string', enum: MARKET_REGIME_ENUM },
           regimeSummary: { type: 'string', description: 'Synthèse macro 3-7 lignes' },
           regimeDrivers: { type: 'array', items: { type: 'string' } },
+          marketMomentum: {
+            type: 'string',
+            enum: ['bullish_strong', 'neutral', 'bearish'],
+            description: 'Momentum directionnel détecté sur ce cycle. '
+              + 'bullish_strong = ≥2 positions existantes en gain latent ≥+1% dans le même sens régime '
+              + 'OU catalyseur réalisé (Fed dovish confirmée, earnings beat majeur, breakout multi-actifs). '
+              + 'bearish = positions en drawdown coordonné, VIX en hausse, flight-to-quality visible. '
+              + 'neutral = pas de signal directionnel clair. '
+              + 'Gouverne les garde-fous dynamiques (cap ouvertures / cooldown). '
+              + 'DOIT être justifié dans warnings si non-neutral.',
+          },
           vix: { type: 'number' },
           usdDxy: { type: 'number' },
           us10yYield: { type: 'number' },

@@ -442,6 +442,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       capital_usd: finalProposal.capitalUsd,
       base_currency: finalProposal.baseCurrency,
       detected_regime: finalProposal.detectedRegime,
+      market_momentum: finalProposal.marketMomentum,
       regime_summary: finalProposal.regimeSummary,
       favored_pockets: finalProposal.favoredPockets,
       avoided_pockets: finalProposal.avoidedPockets,
@@ -486,16 +487,48 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
 
     const portfolioId = proposal.portfolio_id as string;
     const theses = proposal.theses as Array<Record<string, unknown>>;
-    const allocations = proposal.allocations as Array<{ thesisId: string; pctCapital: number; amountUsd: string }>;
+    const allocationsRaw = proposal.allocations as Array<{ thesisId: string; pctCapital: number; amountUsd: string }>;
     const closeRecommendations = (proposal.close_recommendations as Array<{ positionId: string; reason: string }> | null) ?? [];
+    const marketMomentum = (proposal.market_momentum as 'bullish_strong' | 'neutral' | 'bearish' | null) ?? 'neutral';
 
     // Stop-loss plus serré si le portefeuille est en mode agressif (chasseuse EV+)
+    // + cap d'ouvertures par cycle modulé par le marketMomentum.
     const { data: sessionCfg } = await this.supabase.getClient()
       .from('lisa_session_configs')
-      .select('autopilot_aggressive')
+      .select('*')
       .eq('portfolio_id', portfolioId)
       .maybeSingle();
     const aggressive = sessionCfg?.autopilot_aggressive === true;
+
+    // Cap effectif par régime. Base vient du config (default 2).
+    // Appliqué UNIQUEMENT en mode autopilot (auto_approve) pour ne pas
+    // restreindre les approbations manuelles volontaires de l'utilisateur.
+    const capBase = Math.max(1, Math.min(7, Number(sessionCfg?.autopilot_max_opens_per_cycle ?? 2)));
+    const autopilotActive = sessionCfg?.autopilot_enabled === true && sessionCfg?.autopilot_auto_approve === true;
+    let effectiveCap = allocationsRaw.length;
+    if (autopilotActive) {
+      if (marketMomentum === 'bullish_strong') effectiveCap = capBase * 2;
+      else if (marketMomentum === 'bearish') effectiveCap = Math.max(1, Math.floor(capBase / 2));
+      else effectiveCap = capBase;
+    }
+
+    // On garde les N allocations à plus haute conviction (pctCapital desc
+    // = sizing Claude, proxy de sa conviction relative). Les rejetées sont
+    // loggées pour traçabilité.
+    const allocations = allocationsRaw.length > effectiveCap
+      ? [...allocationsRaw].sort((a, b) => b.pctCapital - a.pctCapital).slice(0, effectiveCap)
+      : allocationsRaw;
+    const cappedOut = allocationsRaw.length - allocations.length;
+    if (cappedOut > 0) {
+      const keptIds = new Set(allocations.map((a) => a.thesisId));
+      const rejected = allocationsRaw.filter((a) => !keptIds.has(a.thesisId));
+      await this.logDecision(portfolioId, 'proposal_capped_by_cycle_limit', {
+        summary: `Cap d'ouvertures : ${cappedOut} thèse(s) écartée(s) ce cycle (momentum=${marketMomentum}, cap=${effectiveCap})`,
+        rationale: `Garde-fou anti-burst : le cycle ne peut pas ouvrir plus de ${effectiveCap} position(s) selon le momentum détecté. Les thèses écartées sont les moins sized par Claude. Le prochain cycle (après cooldown) pourra les reprendre si elles restent pertinentes.`,
+        payload: { marketMomentum, effectiveCap, capBase, rejectedThesisIds: rejected.map((a) => a.thesisId) },
+        triggeredBy: 'user_manual',
+      });
+    }
 
     // 1. D'abord on exécute les fermetures recommandées par Lisa — libère du
     //    cash avant d'ouvrir les nouvelles positions.
@@ -527,16 +560,56 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       }
     }
 
+    // 1bis. Cooldown check — bloque les nouvelles ouvertures si une position
+    // vient d'être ouverte récemment ET que le momentum n'est pas bullish_strong.
+    // Bullish_strong bypasse le cooldown pour garder la réactivité maximale
+    // en fenêtre haussière confirmée. Ne s'applique qu'en mode autopilot.
+    // Les fermetures ont déjà été exécutées ci-dessus : elles ne sont jamais
+    // bloquées par le cooldown.
+    const opened: PaperPosition[] = [];
+    let skipped = 0;
+    let cooldownSkipped = false;
+
+    if (autopilotActive && marketMomentum !== 'bullish_strong' && allocations.length > 0) {
+      const cooldownBase = Math.max(0, Math.min(240, Number(sessionCfg?.autopilot_opening_cooldown_minutes ?? 15)));
+      const cooldownMultiplier = marketMomentum === 'bearish' ? 1.33 : 1;
+      const effectiveCooldownMs = Math.round(cooldownBase * cooldownMultiplier) * 60_000;
+
+      if (effectiveCooldownMs > 0) {
+        const { data: lastOpen } = await this.supabase.getClient()
+          .from('lisa_decision_log')
+          .select('timestamp')
+          .eq('portfolio_id', portfolioId)
+          .eq('kind', 'position_opened')
+          .order('timestamp', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (lastOpen) {
+          const elapsedMs = Date.now() - new Date(lastOpen.timestamp as string).getTime();
+          if (elapsedMs < effectiveCooldownMs) {
+            const remaining = Math.ceil((effectiveCooldownMs - elapsedMs) / 60_000);
+            await this.logDecision(portfolioId, 'proposal_cooldown_active', {
+              summary: `Cooldown ouvertures actif — ${allocations.length} thèse(s) ignorée(s) (${remaining}min restants, momentum=${marketMomentum})`,
+              rationale: `Garde-fou anti-burst : une position a été ouverte il y a ${Math.round(elapsedMs / 60_000)}min ; cooldown effectif = ${Math.round(effectiveCooldownMs / 60_000)}min pour momentum "${marketMomentum}". Seul marketMomentum='bullish_strong' bypasse ce cooldown. Fermetures restent actives.`,
+              payload: { marketMomentum, effectiveCooldownMinutes: Math.round(effectiveCooldownMs / 60_000), remainingMinutes: remaining, skippedAllocations: allocations.length },
+              triggeredBy: 'user_manual',
+            });
+            skipped = allocations.length;
+            cooldownSkipped = true;
+          }
+        }
+      }
+    }
+
     // 2. Récupère le cash disponible avant d'ouvrir des nouvelles positions.
     //    Gate STRICT : pas de leverage implicite, pas de cash négatif.
     const snapshot = await this.paperBroker.computeSnapshot(portfolioId);
     let availableCash = new Decimal(snapshot.cashUsd);
     const CASH_BUFFER_USD = new Decimal('50'); // marge de sécurité (slippage + frais)
 
-    const opened: PaperPosition[] = [];
-    let skipped = 0;
-
-    for (const alloc of allocations) {
+    const allocationsToOpen = cooldownSkipped ? [] : allocations;
+    for (const alloc of allocationsToOpen) {
       const thesis = theses.find((t) => t.id === alloc.thesisId);
       if (!thesis) continue;
 

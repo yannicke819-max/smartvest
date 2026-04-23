@@ -220,16 +220,21 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
         }
       }
 
+      const momentumTag = proposal.marketMomentum === 'bullish_strong'
+        ? ' · ▲ bullish_strong'
+        : proposal.marketMomentum === 'bearish' ? ' · ▼ bearish' : '';
+
       await this.decisionLog.append({
         portfolioId,
         kind: 'autopilot_cycle_completed',
         summary: autoApproveResult
-          ? `Cycle completed: ${proposal.theses.length} theses, ${autoApproveResult.openedPositions} positions auto-ouvertes`
-          : `Cycle completed: proposal generated (${proposal.theses.length} theses)`,
+          ? `Cycle completed: ${proposal.theses.length} theses, ${autoApproveResult.openedPositions} positions auto-ouvertes${momentumTag}`
+          : `Cycle completed: proposal generated (${proposal.theses.length} theses)${momentumTag}`,
         rationale: proposal.regimeSummary,
         payload: {
           proposalId: proposal.id,
           regime: proposal.detectedRegime,
+          marketMomentum: proposal.marketMomentum,
           thesesCount: proposal.theses.length,
           riskStatus: riskResult.status,
           autoApproved: autoApproveResult !== null,

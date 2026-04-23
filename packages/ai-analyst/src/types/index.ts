@@ -246,6 +246,15 @@ export const AllocationProposal = z.object({
   baseCurrency: z.string().length(3),
   /** Régime de marché identifié au moment de la proposition */
   detectedRegime: MarketRegime,
+  /**
+   * Momentum directionnel détecté sur le cycle courant.
+   * Gouverne les garde-fous dynamiques (cap d'ouvertures / cooldown) :
+   *   - bullish_strong → cap relâché, cooldown bypass (réactivité max)
+   *   - neutral        → cap + cooldown par défaut
+   *   - bearish        → cap serré, cooldown rallongé (protection)
+   * Claude doit justifier ce flag dans `warnings` quand il est non-neutral.
+   */
+  marketMomentum: z.enum(['bullish_strong', 'neutral', 'bearish']).default('neutral'),
   /** Synthèse du régime en texte */
   regimeSummary: z.string(),
   /** Poches favorisées (3 max) */

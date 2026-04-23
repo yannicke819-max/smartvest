@@ -56,6 +56,7 @@ export interface LisaProposalRow {
   capital_usd: string;
   base_currency: string;
   detected_regime: string;
+  market_momentum?: 'bullish_strong' | 'neutral' | 'bearish';
   regime_summary: string;
   favored_pockets: Array<{ assetClass: string; rationale: string }>;
   avoided_pockets: Array<{ assetClass: string; rationale: string }>;

@@ -114,10 +114,26 @@ export function LisaProposalCard({
               </span>
             )}
           </div>
-          <div className="mt-2 flex items-center gap-2">
+          <div className="mt-2 flex items-center gap-2 flex-wrap">
             <span className="text-xs rounded bg-primary/10 text-primary px-2 py-0.5 font-medium uppercase tracking-wide">
               {proposal.detected_regime}
             </span>
+            {proposal.market_momentum && proposal.market_momentum !== 'neutral' && (
+              <span
+                className={`text-xs rounded px-2 py-0.5 font-medium uppercase tracking-wide ${
+                  proposal.market_momentum === 'bullish_strong'
+                    ? 'bg-emerald-100 text-emerald-700'
+                    : 'bg-rose-100 text-rose-700'
+                }`}
+                title={
+                  proposal.market_momentum === 'bullish_strong'
+                    ? 'Momentum haussier confirmé — cap d\'ouvertures élargi, cooldown levé'
+                    : 'Momentum baissier — cap serré, cooldown rallongé'
+                }
+              >
+                {proposal.market_momentum === 'bullish_strong' ? '▲ bullish strong' : '▼ bearish'}
+              </span>
+            )}
             <span className="text-xs text-muted-foreground">
               {theses.length} thèse(s) · Capital {proposal.capital_usd} {proposal.base_currency}
             </span>

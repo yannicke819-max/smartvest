@@ -286,6 +286,31 @@ ${this.formatOpenPositionsBlock(req.openPositions, req.availableCashUsd)}
 
 ${req.userFocus ? `\n# USER FOCUS\n${req.userFocus}\n` : ''}
 
+# MARKET MOMENTUM — flag obligatoire \`marketContext.marketMomentum\`
+Tu DOIS classer le momentum du cycle parmi :
+
+- \`bullish_strong\` → au moins 2 positions existantes sont en gain latent
+  ≥ +1 % dans le même sens régime (ex. risk-on broad), OU un catalyseur
+  majeur vient d'être réalisé (Fed dovish confirmée, earnings beat
+  significatif, breakout multi-actifs coordonné). Dans ce cas tu dois
+  JUSTIFIER le flag dans \`warnings\` en citant les positions ou le
+  catalyseur concernés — pas de justification = pas de \`bullish_strong\`.
+
+- \`bearish\` → positions en drawdown coordonné, VIX en hausse franche,
+  flight-to-quality visible (USD/JPY ou bons du Trésor en bid, or en
+  rally défensif). Justifie aussi dans \`warnings\`.
+
+- \`neutral\` → aucun signal directionnel clair ; c'est la valeur par
+  défaut, pas besoin de justification spéciale.
+
+**Ce flag gouverne les garde-fous serveur (cap d'ouvertures + cooldown) :**
+- \`bullish_strong\` : cap d'ouvertures élargi (4 vs 2), cooldown bypass.
+- \`neutral\` : cap par défaut (2), cooldown 15 min.
+- \`bearish\` : cap serré (1), cooldown rallongé (20 min).
+
+Tu restes libre de proposer 0 thèse quelle que soit la valeur — le flag
+autorise la réactivité, il ne l'impose pas.
+
 # REQUEST
 Applique TA méthode Lisa complète. Renvoie UNIQUEMENT le JSON au format
 défini, sans markdown, sans explications hors JSON.
@@ -624,11 +649,16 @@ thèse initiale tient toujours (respect du plan, pas de panic-sell).
     const mc = (root.marketContext as Record<string, unknown>) ?? {};
     const poolsScan = (root.poolsScan as Record<string, unknown>) ?? {};
 
+    const rawMomentum = typeof mc.marketMomentum === 'string' ? mc.marketMomentum : '';
+    const marketMomentum: AllocationProposal['marketMomentum'] =
+      rawMomentum === 'bullish_strong' || rawMomentum === 'bearish' ? rawMomentum : 'neutral';
+
     const proposal: AllocationProposal = {
       id: randomUUID(),
       capitalUsd: config.capitalUsd,
       baseCurrency: config.baseCurrency,
       detectedRegime: (mc.regime as MarketRegime) ?? 'fragmented_no_consensus',
+      marketMomentum,
       regimeSummary: (mc.regimeSummary as string) ?? '',
       favoredPockets: ((poolsScan.favored as Array<Record<string, unknown>>) ?? []).map((p) => ({
         assetClass: p.assetClass as AllocationProposal['favoredPockets'][number]['assetClass'],
