@@ -73,6 +73,13 @@ export default function MonitoringPage() {
     error?: string;
     loading: boolean;
   }>({ configured: false, balances: [], totalUsd: '0.00', lastSyncAt: null, loading: true });
+  const [quota, setQuota] = useState<{
+    count24h: number;
+    hardCap: number;
+    warnThreshold: number;
+    wsConnected: boolean;
+    activeCryptoCount: number;
+  }>({ count24h: 0, hardCap: 95000, warnThreshold: 80000, wsConnected: false, activeCryptoCount: 0 });
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -318,6 +325,29 @@ export default function MonitoringPage() {
       setBinance({ configured: false, balances: [], totalUsd: '0.00', lastSyncAt: null, error: String(e).slice(0, 120), loading: false });
     }
 
+    // 11. Quota EODHD + état WebSocket Binance (depuis /lisa/realtime/price-cache)
+    try {
+      const token = (await supabase.auth.getSession()).data.session?.access_token;
+      const qRes = await fetch(`${API}/lisa/realtime/price-cache`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        signal: AbortSignal.timeout(5000),
+      });
+      if (qRes.ok) {
+        const body = await qRes.json() as {
+          wsConnected: boolean;
+          activeCryptoCount: number;
+          quota: { count24h: number; hardCap: number; warnThreshold: number; lastCheckAsOf: string | null };
+        };
+        setQuota({
+          count24h: body.quota.count24h,
+          hardCap: body.quota.hardCap,
+          warnThreshold: body.quota.warnThreshold,
+          wsConnected: body.wsConnected,
+          activeCryptoCount: body.activeCryptoCount,
+        });
+      }
+    } catch { /* keep defaults */ }
+
     setLastRefresh(new Date());
     setRefreshing(false);
   }, []);
@@ -463,9 +493,56 @@ export default function MonitoringPage() {
                 <p className={`font-mono font-medium tabular-nums ${usage.eodhd24h.avgLatencyMs > 1000 ? 'text-amber-500' : ''}`}>
                   {usage.eodhd24h.avgLatencyMs} ms
                 </p>
-                <p className="text-[10px] text-muted-foreground">quota : 100k/j</p>
+                <p className="text-[10px] text-muted-foreground">cap : 95 k/j ↓</p>
               </div>
             </div>
+
+            {/* Jauge quota journalier — hard cap 95k, warn 80k */}
+            {(() => {
+              const pct = Math.min(100, (quota.count24h / quota.hardCap) * 100);
+              const warnPct = (quota.warnThreshold / quota.hardCap) * 100;
+              let fillColor = 'bg-emerald-500';
+              let label = 'OK';
+              if (quota.count24h >= quota.hardCap) { fillColor = 'bg-red-500'; label = 'CAP ATTEINT — appels EODHD bloqués'; }
+              else if (quota.count24h >= quota.warnThreshold) { fillColor = 'bg-amber-500'; label = 'Proche du cap — ralentissement préventif'; }
+              return (
+                <div className="rounded-md border p-2 space-y-1.5">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="font-medium">Quota journalier EODHD</span>
+                    <span className="font-mono tabular-nums">
+                      {quota.count24h.toLocaleString('fr-FR')} / {quota.hardCap.toLocaleString('fr-FR')}
+                      <span className="text-muted-foreground"> ({pct.toFixed(1)}%)</span>
+                    </span>
+                  </div>
+                  <div className="relative h-2 rounded-full bg-muted overflow-hidden">
+                    <div className={`h-full ${fillColor} transition-all`} style={{ width: `${pct}%` }} />
+                    {/* Marqueur du seuil d'avertissement */}
+                    <div
+                      className="absolute top-0 h-full w-[1px] bg-amber-600/70"
+                      style={{ left: `${warnPct}%` }}
+                      title={`Seuil warn : ${quota.warnThreshold.toLocaleString('fr-FR')}`}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                    <span>{label}</span>
+                    <span>Hard cap = 95 k/j (marge 5 k vs quota 100 k)</span>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* WebSocket Binance status */}
+            <div className="rounded-md border p-2 flex items-center justify-between text-[11px]">
+              <div className="flex items-center gap-2">
+                <span className={`inline-block h-2 w-2 rounded-full ${quota.wsConnected ? 'bg-emerald-500' : 'bg-red-500'}`} />
+                <span className="font-medium">Binance WebSocket</span>
+                <span className="text-muted-foreground">
+                  {quota.wsConnected ? 'connecté' : 'déconnecté'} · {quota.activeCryptoCount} crypto(s) suivie(s)
+                </span>
+              </div>
+              <span className="text-[10px] text-muted-foreground">prix crypto temps réel gratuits</span>
+            </div>
+
             <p className="text-[10px] text-muted-foreground italic">
               Compteur précis depuis la table <code className="rounded bg-muted px-1">eodhd_request_log</code> (1 ligne par appel).
               Les fallbacks (cache Supabase ou prix statique) ne consomment pas le quota EODHD.
