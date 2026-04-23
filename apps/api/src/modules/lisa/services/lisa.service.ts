@@ -294,6 +294,39 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       // retourne une erreur 400 explicite avec contexte lisible (pas un 500
       // qui fait croire à une panne d'infra).
       const msg = e instanceof Error ? e.message : String(e);
+
+      // Détection spéciale : crédit Anthropic épuisé. Messages typiques :
+      //   "credit_balance_too_low"
+      //   "invalid_request_error" + "credit"
+      //   HTTP 400 avec type "invalid_request_error"
+      const isCreditExhausted = /credit.*too.?low|insufficient.*credit|credit.*balance/i.test(msg)
+        || /\b400\b.*invalid_request_error.*credit/i.test(msg);
+
+      if (isCreditExhausted) {
+        // Auto-pause TOUT l'autopilot (pas juste auto_approve) pour arrêter
+        // d'essayer en boucle et empirer la facture.
+        await this.supabase.getClient()
+          .from('lisa_session_configs')
+          .update({
+            autopilot_enabled: false,
+            autopilot_auto_approve: false,
+            autopilot_aggressive: false,
+            autopilot_expires_at: null,
+          })
+          .eq('portfolio_id', portfolioId);
+
+        await this.logDecision(portfolioId, 'anthropic_credit_exhausted', {
+          summary: '⚠️ Crédit Anthropic épuisé — autopilot désactivé automatiquement',
+          rationale: `Erreur API reçue : ${msg.slice(0, 500)}. L'autopilot a été coupé pour éviter d'autres appels qui échoueraient. Recharger le crédit sur console.anthropic.com, puis réactiver manuellement l'autopilot.`,
+          payload: { source: 'thesis_generator', errorType: 'credit_exhausted' },
+          triggeredBy: 'user_manual',
+        });
+
+        throw new BadRequestException(
+          `⚠️ CRÉDIT ANTHROPIC ÉPUISÉ — L'autopilot a été désactivé automatiquement pour éviter d'autres tentatives coûteuses. Recharge le crédit sur console.anthropic.com, puis réactive l'autopilot depuis la page Lisa.`,
+        );
+      }
+
       await this.logDecision(portfolioId, 'proposal_failed', {
         summary: 'Génération proposition échouée',
         rationale: msg.slice(0, 2000),

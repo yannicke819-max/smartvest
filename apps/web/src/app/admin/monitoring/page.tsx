@@ -88,6 +88,11 @@ export default function MonitoringPage() {
     wsConnected: boolean;
     activeCryptoCount: number;
   }>({ count24h: 0, hardCap: 95000, warnThreshold: 80000, wsConnected: false, activeCryptoCount: 0 });
+  const [creditAlert, setCreditAlert] = useState<{ active: boolean; loggedAt: string | null; rationale: string | null }>({
+    active: false,
+    loggedAt: null,
+    rationale: null,
+  });
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -340,6 +345,29 @@ export default function MonitoringPage() {
       }
     } catch { /* keep defaults */ }
 
+    // 12. Alerte crédit Anthropic épuisé — cherche un événement récent
+    //     (< 7 jours) dans lisa_decision_log de kind='anthropic_credit_exhausted'
+    try {
+      const sevenDaysAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
+      const { data } = await supabase
+        .from('lisa_decision_log')
+        .select('timestamp, rationale')
+        .eq('kind', 'anthropic_credit_exhausted')
+        .gte('timestamp', sevenDaysAgo)
+        .order('timestamp', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (data) {
+        setCreditAlert({
+          active: true,
+          loggedAt: data.timestamp as string,
+          rationale: (data.rationale as string | null) ?? null,
+        });
+      } else {
+        setCreditAlert({ active: false, loggedAt: null, rationale: null });
+      }
+    } catch { /* non bloquant */ }
+
     setLastRefresh(new Date());
     setRefreshing(false);
   }, []);
@@ -367,6 +395,33 @@ export default function MonitoringPage() {
           Rafraîchir
         </Button>
       </div>
+
+      {/* Alerte crédit Anthropic épuisé (prioritaire au-dessus de tout) */}
+      {creditAlert.active && (
+        <div className="rounded-lg border-2 border-red-500 bg-red-50 dark:bg-red-950/40 p-4 space-y-2">
+          <div className="flex items-center gap-2 text-red-700 dark:text-red-300">
+            <AlertTriangle className="h-5 w-5" />
+            <h2 className="text-sm font-bold">⚠️ CRÉDIT ANTHROPIC ÉPUISÉ — Autopilot désactivé</h2>
+          </div>
+          <p className="text-xs text-red-800 dark:text-red-200">
+            L'autopilot a été automatiquement désactivé pour stopper les tentatives d'appels Claude qui
+            échouent faute de crédit. Pour redémarrer :
+          </p>
+          <ol className="text-xs text-red-800 dark:text-red-200 list-decimal pl-5 space-y-0.5">
+            <li>Recharger ton crédit sur <code className="rounded bg-red-100 dark:bg-red-900 px-1">console.anthropic.com/settings/billing</code></li>
+            <li>Revenir sur la page <code className="rounded bg-red-100 dark:bg-red-900 px-1">/lisa</code></li>
+            <li>Re-cocher <strong>Autopilot</strong> (et Auto-approbation / Persona agressive si désiré) → Sauvegarder</li>
+          </ol>
+          {creditAlert.loggedAt && (
+            <p className="text-[10px] text-red-700 dark:text-red-300 italic">
+              Détecté le {new Date(creditAlert.loggedAt).toLocaleString('fr-FR')}.
+              {creditAlert.rationale && (
+                <span className="block mt-1 font-mono">Détail : {creditAlert.rationale.slice(0, 300)}</span>
+              )}
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Global status banner */}
       <div className={`rounded-lg border p-4 ${hasError ? 'border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/30' : allOk ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950/30' : 'border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/30'}`}>
