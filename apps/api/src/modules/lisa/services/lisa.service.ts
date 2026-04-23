@@ -1134,4 +1134,60 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       };
     }
   }
+
+  /**
+   * Statistiques EODHD agrégées depuis eodhd_request_log.
+   * Lu via service role (bypass RLS) — la lecture directe depuis le front
+   * avec clé anon peut être bloquée par les policies Supabase.
+   */
+  async fetchEodhdStats(): Promise<{
+    total24h: number;
+    success24h: number;
+    failures24h: number;
+    fallbacks24h: number;
+    avgLatencyMs24h: number;
+    totalAll: number;
+    successAll: number;
+    lastCallAsOf: string | null;
+  }> {
+    const client = this.supabase.getClient();
+    const since24h = new Date(Date.now() - 86_400_000).toISOString();
+
+    const [rows24h, allCount, allSuccessCount, lastCall] = await Promise.all([
+      client
+        .from('eodhd_request_log')
+        .select('source, success, latency_ms')
+        .gte('timestamp', since24h),
+      client
+        .from('eodhd_request_log')
+        .select('*', { count: 'exact', head: true }),
+      client
+        .from('eodhd_request_log')
+        .select('*', { count: 'exact', head: true })
+        .eq('success', true),
+      client
+        .from('eodhd_request_log')
+        .select('timestamp')
+        .order('timestamp', { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    ]);
+
+    const rows = (rows24h.data ?? []) as Array<{ source: string; success: boolean; latency_ms: number | null }>;
+    const eodhdRows = rows.filter((r) => r.source === 'eodhd');
+    const latencies = eodhdRows.map((r) => r.latency_ms).filter((n): n is number => typeof n === 'number' && n > 0);
+
+    return {
+      total24h: eodhdRows.length,
+      success24h: eodhdRows.filter((r) => r.success).length,
+      failures24h: eodhdRows.filter((r) => !r.success).length,
+      fallbacks24h: rows.filter((r) => r.source !== 'eodhd').length,
+      avgLatencyMs24h: latencies.length > 0
+        ? Math.round(latencies.reduce((s, n) => s + n, 0) / latencies.length)
+        : 0,
+      totalAll: allCount.count ?? 0,
+      successAll: allSuccessCount.count ?? 0,
+      lastCallAsOf: (lastCall.data?.timestamp as string | undefined) ?? null,
+    };
+  }
 }

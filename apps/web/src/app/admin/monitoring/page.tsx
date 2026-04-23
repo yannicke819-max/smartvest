@@ -244,11 +244,13 @@ export default function MonitoringPage() {
       // keep unknown
     }
 
-    // 8. Claude quotas — agrégation lisa_proposals
-    // 9. EODHD quotas — agrégation eodhd_request_log (précis)
+    // 8. Claude stats : agrégation depuis lisa_proposals (RLS permissive OK)
+    // 9. EODHD stats : via API backend (bypass RLS — sinon frontent ne voit rien)
     try {
       const since24h = new Date(Date.now() - 86_400_000).toISOString();
-      const [p24h, pAll, eodhd24hRows, eodhdAllCount, eodhdAllSuccessCount] = await Promise.all([
+      const token = (await supabase.auth.getSession()).data.session?.access_token;
+
+      const [p24h, pAll, eodhdStatsRes] = await Promise.all([
         supabase
           .from('lisa_proposals')
           .select('claude_input_tokens, claude_output_tokens, claude_cost_usd')
@@ -256,17 +258,10 @@ export default function MonitoringPage() {
         supabase
           .from('lisa_proposals')
           .select('claude_input_tokens, claude_output_tokens, claude_cost_usd'),
-        supabase
-          .from('eodhd_request_log')
-          .select('source, success, latency_ms')
-          .gte('timestamp', since24h),
-        supabase
-          .from('eodhd_request_log')
-          .select('*', { count: 'exact', head: true }),
-        supabase
-          .from('eodhd_request_log')
-          .select('*', { count: 'exact', head: true })
-          .eq('success', true),
+        fetch(`${API}/lisa/eodhd/stats`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          signal: AbortSignal.timeout(5000),
+        }),
       ]);
 
       const aggClaude = (rows: Array<{ claude_input_tokens: number | null; claude_output_tokens: number | null; claude_cost_usd: number | null }> | null) => {
@@ -282,20 +277,23 @@ export default function MonitoringPage() {
       const claude24h = aggClaude(p24h.data as never);
       const claudeAll = aggClaude(pAll.data as never);
 
-      const eodhdRows = (eodhd24hRows.data ?? []) as Array<{ source: string; success: boolean; latency_ms: number | null }>;
-      const eodhdReal = eodhdRows.filter((r) => r.source === 'eodhd');
-      const latencies = eodhdReal.map((r) => r.latency_ms).filter((n): n is number => typeof n === 'number' && n > 0);
-      const eodhd24h = {
-        total: eodhdReal.length,
-        success: eodhdReal.filter((r) => r.success).length,
-        failures: eodhdReal.filter((r) => !r.success).length,
-        fallbacks: eodhdRows.filter((r) => r.source !== 'eodhd').length,
-        avgLatencyMs: latencies.length > 0 ? Math.round(latencies.reduce((s, n) => s + n, 0) / latencies.length) : 0,
-      };
-      const eodhdAll = {
-        total: eodhdAllCount.count ?? 0,
-        success: eodhdAllSuccessCount.count ?? 0,
-      };
+      let eodhd24h = { total: 0, success: 0, failures: 0, fallbacks: 0, avgLatencyMs: 0 };
+      let eodhdAll = { total: 0, success: 0 };
+      if (eodhdStatsRes.ok) {
+        const stats = await eodhdStatsRes.json() as {
+          total24h: number; success24h: number; failures24h: number;
+          fallbacks24h: number; avgLatencyMs24h: number;
+          totalAll: number; successAll: number;
+        };
+        eodhd24h = {
+          total: stats.total24h,
+          success: stats.success24h,
+          failures: stats.failures24h,
+          fallbacks: stats.fallbacks24h,
+          avgLatencyMs: stats.avgLatencyMs24h,
+        };
+        eodhdAll = { total: stats.totalAll, success: stats.successAll };
+      }
 
       setUsage({ claude24h, claudeAll, eodhd24h, eodhdAll });
     } catch {

@@ -28,6 +28,12 @@ export class LisaController {
     return this.lisa.fetchBinanceBalance();
   }
 
+  @Get('eodhd/stats')
+  getEodhdStats(@Headers() headers: Record<string, string>) {
+    extractUserId(headers);
+    return this.lisa.fetchEodhdStats();
+  }
+
   @Get('audit/verify/:portfolioId')
   async verifyAuditChain(
     @Headers() headers: Record<string, string>,
