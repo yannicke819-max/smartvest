@@ -13,6 +13,7 @@ import {
   useLisaSnapshot,
   useTriggerKillSwitch,
   useResetSimulation,
+  useAgentStatus,
   type SessionProfile,
 } from '@/hooks/use-lisa';
 import { DisclaimerBanner } from '@/components/disclaimer-banner';
@@ -25,6 +26,7 @@ import { LisaPortfolioSummary } from '@/components/lisa/portfolio-summary';
 import { LisaPortfolioChart } from '@/components/lisa/portfolio-chart';
 import { LisaPositionsTable } from '@/components/lisa/positions-table';
 import { LisaDecisionLog } from '@/components/lisa/decision-log';
+import { MechanicalAgentCard } from '@/components/lisa/mechanical-agent-card';
 
 const PROFILE_LABELS: Record<SessionProfile, { label: string; description: string }> = {
   long_term_investor: {
@@ -77,6 +79,7 @@ export default function LisaPage() {
   const [killReason, setKillReason] = useState('');
 
   const configQuery = useLisaConfig(selectedPortfolioId);
+  const agentStatusQuery = useAgentStatus(selectedPortfolioId);
   const upsertConfig = useUpsertLisaConfig(selectedPortfolioId ?? '');
   const generateProposal = useGenerateProposal(selectedPortfolioId ?? '');
   const proposalsQuery = useLisaProposals(selectedPortfolioId);
@@ -926,6 +929,12 @@ export default function LisaPage() {
         proposals={proposalsQuery.data ?? []}
         portfolioId={selectedPortfolioId ?? ''}
         isLoading={proposalsQuery.isLoading}
+      />
+
+      {/* Agent mécanique */}
+      <MechanicalAgentCard
+        data={agentStatusQuery.data}
+        isLoading={agentStatusQuery.isLoading}
       />
 
       {/* Decision log */}

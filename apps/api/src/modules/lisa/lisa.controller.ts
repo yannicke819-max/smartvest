@@ -139,6 +139,16 @@ export class LisaController {
     return this.lisa.getSnapshotHistory(extractUserId(headers), portfolioId, windowDays);
   }
 
+  // ── Agent mécanique — statut temps réel ─────────────────────────────────────
+
+  @Get('agent/:portfolioId')
+  getAgentStatus(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    return this.lisa.getAgentStatus(extractUserId(headers), portfolioId);
+  }
+
   // ── Decision log ────────────────────────────────────────────────────────────
 
   @Get('decisions/:portfolioId')

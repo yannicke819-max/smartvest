@@ -1667,6 +1667,44 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     };
   }
 
+  async getAgentStatus(_userId: string, portfolioId: string) {
+    const client = this.supabase.getClient();
+
+    const [directiveRes, cyclesRes, actionsRes] = await Promise.all([
+      // Directive active
+      client
+        .from('lisa_mechanical_directives')
+        .select('generated_at, valid_until, market_momentum, trajectory_status, risk_posture, target_symbols, favored_asset_classes, avoided_asset_classes, tactical_overrides')
+        .eq('portfolio_id', portfolioId)
+        .order('generated_at', { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+
+      // Derniers cycles mécaniques
+      client
+        .from('lisa_mechanical_cycle_summary')
+        .select('cycle_at, directive_age_minutes, opens_count, closes_stop_count, closes_target_count, closes_invalidated_count, net_pnl_since_proposal_usd, win_rate_pct, avg_hold_minutes, largest_win_pct, largest_loss_pct, stops_cluster_flag, exposure_pct, cash_usd, open_positions_count, drawdown_since_directive_pct, vix_level, dxy_level')
+        .eq('portfolio_id', portfolioId)
+        .order('cycle_at', { ascending: false })
+        .limit(20),
+
+      // Actions récentes de l'agent dans le decision log
+      client
+        .from('decision_log')
+        .select('created_at, kind, summary, payload')
+        .eq('portfolio_id', portfolioId)
+        .in('kind', ['mechanical_open', 'mechanical_close_stop', 'mechanical_close_target', 'mechanical_close_invalidated', 'mechanical_skip', 'autopilot_cycle_completed', 'mechanical_override_applied'])
+        .order('created_at', { ascending: false })
+        .limit(30),
+    ]);
+
+    return {
+      directive: directiveRes.data ?? null,
+      cycles: cyclesRes.data ?? [],
+      recentActions: actionsRes.data ?? [],
+    };
+  }
+
   /**
    * Dérive le statut d'avancement vs la trajectoire cible sur l'horizon
    * configuré. Utilise netReturn dans la fenêtre 7j (proxy) comparée à
