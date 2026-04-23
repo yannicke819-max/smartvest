@@ -519,17 +519,30 @@ thèse initiale tient toujours (respect du plan, pas de panic-sell).
     const root = parsed as Record<string, unknown>;
     const now = new Date().toISOString();
 
-    // Extract theses, ensure IDs are valid UUIDs, attach claude meta
+    // Extract theses, ensure IDs are valid UUIDs, attach claude meta.
+    //
+    // Double mapping pour résoudre les allocation.thesisId quelle que soit la
+    // forme utilisée par Claude :
+    //   - idMap : Claude's original id string → nouvel UUID (si Claude a mis un id)
+    //   - positionMap : index numérique de la thèse → nouvel UUID (fallback
+    //     quand Claude met un thesisId texte qu'on ne trouve nulle part, on
+    //     présume une correspondance 1-à-1 avec allocations dans l'ordre).
     const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const thesesRaw = (root.theses as Array<Record<string, unknown>>) ?? [];
     const idMap = new Map<string, string>();
-    for (const t of thesesRaw) {
+    const positionMap = new Map<number, string>();
+    for (let i = 0; i < thesesRaw.length; i++) {
+      const t = thesesRaw[i];
       const origId = typeof t.id === 'string' ? t.id : '';
-      if (!UUID_RE.test(origId)) {
-        const newId = randomUUID();
+      let newId: string;
+      if (UUID_RE.test(origId)) {
+        newId = origId; // déjà un UUID valide — on garde
+      } else {
+        newId = randomUUID();
         if (origId) idMap.set(origId, newId);
         t.id = newId;
       }
+      positionMap.set(i, newId);
       // Normalize common assetClass aliases Claude invents despite the prompt
       const exprs = t.expressions as Array<Record<string, unknown>> | undefined;
       if (Array.isArray(exprs)) {
@@ -548,12 +561,29 @@ thèse initiale tient toujours (respect du plan, pas de panic-sell).
       }
     }
 
-    // Allocation suggestion (read before theses map so we can patch thesisId refs)
+    // Allocation suggestion (read before theses map so we can patch thesisId refs).
+    //
+    // Stratégie de résolution pour chaque a.thesisId, en cascade :
+    //   1. Si c'est déjà un UUID valide qui matche une thèse → rien à faire
+    //   2. Sinon, si présent dans idMap (Claude a mis un id texte qu'on a mappé) → remplacer
+    //   3. Sinon, fallback sur l'index de l'allocation dans perThesis (présume
+    //      correspondance 1-à-1 avec theses dans l'ordre) — c'est le cas le plus
+    //      fréquent quand Claude utilise des refs type "t1", "thesis-001", etc.
     const allocSug = (root.allocationSuggestion as Record<string, unknown>) ?? {};
     const perThesisRaw = (allocSug.perThesis as Array<Record<string, unknown>>) ?? [];
-    for (const a of perThesisRaw) {
-      const mapped = idMap.get(a.thesisId as string);
-      if (mapped) a.thesisId = mapped;
+    const validThesisIds = new Set(Array.from(positionMap.values()));
+    for (let i = 0; i < perThesisRaw.length; i++) {
+      const a = perThesisRaw[i];
+      const current = String(a.thesisId ?? '');
+      if (validThesisIds.has(current)) continue; // déjà bon
+      const mappedFromId = idMap.get(current);
+      if (mappedFromId) {
+        a.thesisId = mappedFromId;
+        continue;
+      }
+      // Fallback position-based : allocation[i] → thesis[i]
+      const byPosition = positionMap.get(i);
+      if (byPosition) a.thesisId = byPosition;
     }
 
     const theses: LisaThesis[] = thesesRaw.map((t) => {
