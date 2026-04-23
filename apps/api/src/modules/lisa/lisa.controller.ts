@@ -21,6 +21,12 @@ export class LisaController {
     };
   }
 
+  @Get('binance/balance')
+  getBinanceBalance(@Headers() headers: Record<string, string>) {
+    extractUserId(headers); // throws si non authentifié
+    return this.lisa.fetchBinanceBalance();
+  }
+
   @Get('audit/verify/:portfolioId')
   async verifyAuditChain(
     @Headers() headers: Record<string, string>,

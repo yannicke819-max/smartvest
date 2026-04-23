@@ -65,6 +65,14 @@ export default function MonitoringPage() {
     eodhd24h: { total: 0, success: 0, failures: 0, fallbacks: 0, avgLatencyMs: 0 },
     eodhdAll: { total: 0, success: 0 },
   });
+  const [binance, setBinance] = useState<{
+    configured: boolean;
+    balances: Array<{ asset: string; free: string; locked: string; total: string; usdPrice: string; usdValue: string }>;
+    totalUsd: string;
+    lastSyncAt: string | null;
+    error?: string;
+    loading: boolean;
+  }>({ configured: false, balances: [], totalUsd: '0.00', lastSyncAt: null, loading: true });
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -287,6 +295,29 @@ export default function MonitoringPage() {
       // keep defaults (zeros)
     }
 
+    // 10. Balance Binance réelle
+    try {
+      const token = (await supabase.auth.getSession()).data.session?.access_token;
+      const bRes = await fetch(`${API}/lisa/binance/balance`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (bRes.ok) {
+        const body = await bRes.json() as {
+          configured: boolean;
+          balances: Array<{ asset: string; free: string; locked: string; total: string; usdPrice: string; usdValue: string }>;
+          totalUsd: string;
+          lastSyncAt: string | null;
+          error?: string;
+        };
+        setBinance({ ...body, loading: false });
+      } else {
+        setBinance({ configured: false, balances: [], totalUsd: '0.00', lastSyncAt: null, error: `HTTP ${bRes.status}`, loading: false });
+      }
+    } catch (e) {
+      setBinance({ configured: false, balances: [], totalUsd: '0.00', lastSyncAt: null, error: String(e).slice(0, 120), loading: false });
+    }
+
     setLastRefresh(new Date());
     setRefreshing(false);
   }, []);
@@ -440,6 +471,61 @@ export default function MonitoringPage() {
               Les fallbacks (cache Supabase ou prix statique) ne consomment pas le quota EODHD.
             </p>
           </div>
+        </div>
+      </div>
+
+      {/* Balance Binance réelle (compte utilisateur, lecture seule) */}
+      <div className="rounded-lg border">
+        <div className="flex items-center gap-2 border-b px-4 py-2.5 bg-muted/30">
+          <Zap className="h-4 w-4 text-muted-foreground" />
+          <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Binance — compte réel (lecture seule)</span>
+          {binance.configured && binance.balances.length > 0 && (
+            <span className="ml-auto text-xs font-mono tabular-nums">
+              Total : <span className="font-medium">${parseFloat(binance.totalUsd).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+            </span>
+          )}
+        </div>
+        <div className="px-4 py-3">
+          {binance.loading && (
+            <p className="text-xs text-muted-foreground">Chargement du solde…</p>
+          )}
+          {!binance.loading && !binance.configured && (
+            <p className="text-xs text-muted-foreground">
+              Clés Binance non configurées. Ajoute <code className="rounded bg-muted px-1">BINANCE_API_KEY</code> et <code className="rounded bg-muted px-1">BINANCE_SECRET_KEY</code> dans les secrets Fly.
+            </p>
+          )}
+          {!binance.loading && binance.configured && binance.error && (
+            <p className="text-xs text-red-500">
+              Erreur Binance : <code className="rounded bg-muted px-1">{binance.error}</code>
+            </p>
+          )}
+          {!binance.loading && binance.configured && !binance.error && binance.balances.length === 0 && (
+            <p className="text-xs text-muted-foreground">Compte Binance vide (aucun asset avec solde &gt; 0).</p>
+          )}
+          {!binance.loading && binance.balances.length > 0 && (
+            <div className="divide-y">
+              {binance.balances.map((b) => (
+                <div key={b.asset} className="grid grid-cols-5 gap-2 py-2 text-xs items-center">
+                  <span className="font-medium font-mono">{b.asset}</span>
+                  <span className="text-right font-mono tabular-nums text-muted-foreground">
+                    {parseFloat(b.total).toLocaleString('fr-FR', { maximumFractionDigits: 8 })}
+                  </span>
+                  <span className="text-right font-mono tabular-nums text-muted-foreground">
+                    ${parseFloat(b.usdPrice).toLocaleString('fr-FR', { maximumFractionDigits: 4 })}
+                  </span>
+                  <span className="col-span-2 text-right font-mono tabular-nums font-medium">
+                    ${parseFloat(b.usdValue).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+              ))}
+              {binance.lastSyncAt && (
+                <p className="pt-2 text-[10px] text-muted-foreground italic">
+                  Dernière sync Binance : {new Date(binance.lastSyncAt).toLocaleString('fr-FR')}.
+                  Lecture seule — SmartVest ne peut ni trader ni retirer.
+                </p>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

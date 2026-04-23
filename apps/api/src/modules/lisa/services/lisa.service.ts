@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { createHmac } from 'node:crypto';
 import Decimal from 'decimal.js';
 import {
   CorpusQueryService,
@@ -996,5 +997,110 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
   // Helper exposé pour le log d'une petite valeur numérique
   private roundDecimal(v: string | number, precision = 2): string {
     return new Decimal(v).toFixed(precision);
+  }
+
+  /**
+   * Récupère le solde RÉEL du compte Binance de l'utilisateur via l'API
+   * privée signed (/api/v3/account). Lecture seule — ne peut rien trader.
+   *
+   * Retourne une vue enrichie : par asset, solde libre + bloqué, prix USD
+   * courant, valeur totale en USD. Les stablecoins valent 1$ par défaut.
+   *
+   * Si BINANCE_API_KEY n'est pas configuré → retourne configured: false.
+   */
+  async fetchBinanceBalance(): Promise<{
+    configured: boolean;
+    balances: Array<{ asset: string; free: string; locked: string; total: string; usdPrice: string; usdValue: string }>;
+    totalUsd: string;
+    lastSyncAt: string | null;
+    error?: string;
+  }> {
+    const apiKey = this.config.get<string>('BINANCE_API_KEY') ?? this.config.get<string>('smartvest-lisa');
+    const secretKey = this.config.get<string>('BINANCE_SECRET_KEY');
+
+    if (!apiKey || !secretKey) {
+      return { configured: false, balances: [], totalUsd: '0.00', lastSyncAt: null };
+    }
+
+    try {
+      const timestamp = Date.now();
+      const queryString = `timestamp=${timestamp}&recvWindow=5000`;
+      const signature = createHmac('sha256', secretKey).update(queryString).digest('hex');
+      const url = `https://api.binance.com/api/v3/account?${queryString}&signature=${signature}`;
+
+      const res = await fetch(url, {
+        headers: { 'X-MBX-APIKEY': apiKey },
+        signal: AbortSignal.timeout(8000),
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        return {
+          configured: true,
+          balances: [],
+          totalUsd: '0.00',
+          lastSyncAt: null,
+          error: `Binance API ${res.status}: ${body.slice(0, 200)}`,
+        };
+      }
+
+      const data = await res.json() as {
+        balances: Array<{ asset: string; free: string; locked: string }>;
+        updateTime: number;
+      };
+
+      const STABLECOINS = new Set(['USDT', 'USDC', 'BUSD', 'FDUSD', 'TUSD', 'DAI', 'USDP']);
+
+      const nonZero = data.balances
+        .map((b) => ({
+          asset: b.asset,
+          free: new Decimal(b.free),
+          locked: new Decimal(b.locked),
+          total: new Decimal(b.free).plus(b.locked),
+        }))
+        .filter((b) => b.total.gt(0));
+
+      const enriched = await Promise.all(nonZero.map(async (b) => {
+        let usdPrice = new Decimal(0);
+        if (STABLECOINS.has(b.asset)) {
+          usdPrice = new Decimal(1);
+        } else {
+          try {
+            const quote = await this.fetchLivePrice(b.asset);
+            usdPrice = new Decimal(quote.price);
+          } catch {
+            usdPrice = new Decimal(0);
+          }
+        }
+        return {
+          asset: b.asset,
+          free: b.free.toFixed(8),
+          locked: b.locked.toFixed(8),
+          total: b.total.toFixed(8),
+          usdPrice: usdPrice.toFixed(8),
+          usdValue: b.total.mul(usdPrice).toFixed(2),
+        };
+      }));
+
+      enriched.sort((a, b) => new Decimal(b.usdValue).minus(a.usdValue).toNumber());
+
+      const totalUsd = enriched.reduce((s, b) => s.plus(b.usdValue), new Decimal(0));
+
+      return {
+        configured: true,
+        balances: enriched,
+        totalUsd: totalUsd.toFixed(2),
+        lastSyncAt: new Date(data.updateTime).toISOString(),
+      };
+    } catch (e) {
+      this.logger.warn(`Binance balance fetch failed: ${String(e)}`);
+      return {
+        configured: true,
+        balances: [],
+        totalUsd: '0.00',
+        lastSyncAt: null,
+        error: String(e).slice(0, 200),
+      };
+    }
   }
 }
