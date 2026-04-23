@@ -1690,7 +1690,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
 
       // Actions récentes de l'agent dans le decision log
       client
-        .from('decision_log')
+        .from('lisa_decision_log')
         .select('created_at, kind, summary, payload')
         .eq('portfolio_id', portfolioId)
         .in('kind', ['mechanical_open', 'mechanical_close_stop', 'mechanical_close_target', 'mechanical_close_invalidated', 'mechanical_skip', 'autopilot_cycle_completed', 'mechanical_override_applied'])
