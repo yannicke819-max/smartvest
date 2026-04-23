@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { randomUUID } from 'crypto';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { LisaService } from './lisa.service';
 import { DecisionLogService } from './decision-log.service';
@@ -31,10 +32,14 @@ const BOOT_WARMUP_TICKERS = [
  */
 @Injectable()
 export class LisaAutopilotService implements OnApplicationBootstrap {
+  /** UUID unique par process. Permet au mutex Postgres d'identifier
+   *  quelle instance Fly tient le lock. Généré une fois au démarrage. */
+  private readonly instanceId = randomUUID();
+
   /** Pre-warmer : au démarrage de l'app, alimente le cache avec les tickers
    *  macro essentiels. Coût : ~14 appels EODHD one-shot (0.014% du quota). */
   async onApplicationBootstrap(): Promise<void> {
-    this.logger.log(`Pre-warming ${BOOT_WARMUP_TICKERS.length} macro tickers...`);
+    this.logger.log(`Instance ${this.instanceId.slice(0, 8)} — Pre-warming ${BOOT_WARMUP_TICKERS.length} macro tickers...`);
     try {
       await Promise.all(BOOT_WARMUP_TICKERS.map((t) =>
         this.lisa.warmPrice(t).catch(() => { /* ignore individual failures */ }),
@@ -54,11 +59,62 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
     private readonly realtimePrice: RealtimePriceService,
   ) {}
 
+  /**
+   * Tente d'acquérir le mutex distribué (table lisa_cron_locks).
+   * Retourne true si ce process tient le lock, false si une autre instance
+   * le détient déjà. Le lock expire après 180s pour gérer les crashs.
+   */
+  private async acquireCronLock(lockName: string, timeoutSeconds = 180): Promise<boolean> {
+    try {
+      const { data, error } = await this.supabase.getClient()
+        .rpc('acquire_cron_lock', {
+          p_name: lockName,
+          p_instance_id: this.instanceId,
+          p_timeout_seconds: timeoutSeconds,
+        });
+      if (error) {
+        // Si la migration 0049 n'est pas encore appliquée, on laisse passer
+        // pour ne pas bloquer le service au démarrage.
+        this.logger.debug(`acquire_cron_lock RPC unavailable (migration pending?): ${error.message}`);
+        return true;
+      }
+      return data === true;
+    } catch {
+      return true; // fail-open plutôt que de bloquer tous les cycles
+    }
+  }
+
+  private async releaseCronLock(lockName: string): Promise<void> {
+    try {
+      await this.supabase.getClient()
+        .from('lisa_cron_locks')
+        .delete()
+        .eq('name', lockName)
+        .eq('instance_id', this.instanceId);
+    } catch { /* ignore release errors */ }
+  }
+
   /** Tick toutes les 60 secondes. Chaque portfolio a son propre cycle_minutes
    *  (min 1 min) qui détermine s'il est dû — permet aux users en hyper-trading
    *  de tourner toutes les 1-2 min alors que les longs-termistes restent à 60. */
   @Cron(CronExpression.EVERY_MINUTE, { name: 'lisa-autopilot' })
   async runAutopilotCycle() {
+    // Mutex distribué : une seule instance Fly exécute le cycle à la fois.
+    // Les 15 autres éventuelles instances skippent proprement → 0 Claude / 0 EODHD.
+    const locked = await this.acquireCronLock('autopilot_cycle');
+    if (!locked) {
+      this.logger.debug(`[${this.instanceId.slice(0, 8)}] autopilot_cycle skipped — autre instance active`);
+      return;
+    }
+
+    try {
+      await this.runAutopilotCycleInner();
+    } finally {
+      await this.releaseCronLock('autopilot_cycle');
+    }
+  }
+
+  private async runAutopilotCycleInner() {
     // SELECT * plutôt que liste explicite : si la migration 0047 n'est pas
     // encore appliquée et que autopilot_market_hours_only n'existe pas en DB,
     // Supabase ne plante pas sur la colonne manquante — toutes les colonnes
@@ -265,6 +321,16 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
    */
   @Cron(CronExpression.EVERY_MINUTE, { name: 'lisa-fast-risk-monitor' })
   async runFastRiskMonitor() {
+    const locked = await this.acquireCronLock('fast_risk_monitor', 90);
+    if (!locked) return;
+    try {
+      await this.runFastRiskMonitorInner();
+    } finally {
+      await this.releaseCronLock('fast_risk_monitor');
+    }
+  }
+
+  private async runFastRiskMonitorInner() {
     const { data: configs, error } = await this.supabase.getClient()
       .from('lisa_session_configs')
       .select('user_id, portfolio_id')
@@ -297,6 +363,16 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
    */
   @Cron('*/30 * * * * *', { name: 'lisa-price-warmer' })
   async runPriceWarmer() {
+    const locked = await this.acquireCronLock('price_warmer', 45);
+    if (!locked) return;
+    try {
+      await this.runPriceWarmerInner();
+    } finally {
+      await this.releaseCronLock('price_warmer');
+    }
+  }
+
+  private async runPriceWarmerInner() {
     // 1. Récupère toutes les positions ouvertes des portfolios en autopilot
     const { data: configs } = await this.supabase.getClient()
       .from('lisa_session_configs')
