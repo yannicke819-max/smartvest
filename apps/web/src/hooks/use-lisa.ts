@@ -117,6 +117,52 @@ export interface LisaSnapshot {
   drawdown_from_peak_pct: number;
 }
 
+export interface MechanicalCycleSummary {
+  cycle_at: string;
+  directive_age_minutes: number | null;
+  opens_count: number;
+  closes_stop_count: number;
+  closes_target_count: number;
+  closes_invalidated_count: number;
+  net_pnl_since_proposal_usd: number;
+  win_rate_pct: number | null;
+  avg_hold_minutes: number | null;
+  largest_win_pct: number | null;
+  largest_loss_pct: number | null;
+  stops_cluster_flag: boolean;
+  exposure_pct: number | null;
+  cash_usd: number | null;
+  open_positions_count: number;
+  drawdown_since_directive_pct: number | null;
+  vix_level: number | null;
+  dxy_level: number | null;
+}
+
+export interface MechanicalDirective {
+  generated_at: string;
+  valid_until: string | null;
+  market_momentum: string;
+  trajectory_status: string;
+  risk_posture: string;
+  target_symbols: string[];
+  favored_asset_classes: string[];
+  avoided_asset_classes: string[];
+  tactical_overrides: Record<string, unknown>;
+}
+
+export interface AgentAction {
+  timestamp: string;
+  kind: string;
+  summary: string;
+  payload: Record<string, unknown>;
+}
+
+export interface LisaAgentStatus {
+  directive: MechanicalDirective | null;
+  cycles: MechanicalCycleSummary[];
+  recentActions: AgentAction[];
+}
+
 export interface LisaDecisionLogRow {
   id: string;
   portfolio_id: string;
@@ -232,6 +278,20 @@ export function useRejectProposal(portfolioId: string) {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['lisa', 'proposals', portfolioId] });
     },
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Agent mécanique
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function useAgentStatus(portfolioId: string | null) {
+  return useQuery({
+    queryKey: ['lisa', 'agent', portfolioId],
+    queryFn: () => apiFetch<LisaAgentStatus>(`/lisa/agent/${portfolioId}`),
+    enabled: !!portfolioId,
+    refetchInterval: 30_000, // rafraîchit toutes les 30s (cycle agent = 1 min)
+    ...LISA_QUERY_OPTIONS,
   });
 }
 
