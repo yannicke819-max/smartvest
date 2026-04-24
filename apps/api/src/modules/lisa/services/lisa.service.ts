@@ -25,6 +25,7 @@ import { SupabaseService } from '../../supabase/supabase.service';
 import { DecisionLogService } from './decision-log.service';
 import { RealtimePriceService } from './realtime-price.service';
 import { EodhdEnrichmentService } from './eodhd-enrichment.service';
+import { EodhdTechnicalService } from './eodhd-technical.service';
 
 /**
  * LisaService — orchestrateur principal du module AI analyst.
@@ -52,6 +53,7 @@ export class LisaService {
     private readonly decisionLog: DecisionLogService,
     private readonly realtimePrice: RealtimePriceService,
     private readonly eodhdEnrichment: EodhdEnrichmentService,
+    private readonly eodhdTechnical: EodhdTechnicalService,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
     this.claudeClient = anthropicKey
@@ -416,6 +418,23 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     const { status: trajectoryStatus, targetExtrapolatedPct: targetExtrapolated7dPct } =
       this.computeTrajectoryStatus(objectives, historyMetrics);
 
+    // Fetch les indicateurs techniques EODHD pour chaque position ouverte en
+    // parallèle — permet à Lisa de décider quand clôturer (RSI overbought,
+    // ATR spike, MACD bearish cross) et de proposer des stops ATR-based.
+    const technicalBySymbol: Record<string, import('./eodhd-technical.service').TechnicalIndicators> = {};
+    if (openPositions.length > 0) {
+      await Promise.all(openPositions.map(async (pos) => {
+        try {
+          const eodhdTicker = this.toEodhdTicker(pos.symbol);
+          const currentPrice = Number(pos.currentPrice);
+          const ind = await this.eodhdTechnical.getIndicators(eodhdTicker, currentPrice);
+          technicalBySymbol[pos.symbol] = ind;
+        } catch (e) {
+          this.logger.debug(`technical indicators failed for ${pos.symbol}: ${String(e).slice(0, 80)}`);
+        }
+      }));
+    }
+
     let result: Awaited<ReturnType<ThesisGeneratorService['generateTheses']>>;
     try {
       result = await this.thesisGenerator.generateTheses({
@@ -429,6 +448,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         historyMetrics,
         trajectoryStatus,
         targetExtrapolated7dPct,
+        technicalBySymbol,
       });
     } catch (e) {
       // Parse failure ou erreur Claude : on log dans le decision log et on

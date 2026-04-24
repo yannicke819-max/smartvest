@@ -119,6 +119,21 @@ export interface GenerateThesesRequest {
   trajectoryStatus?: TrajectoryStatus | null;
   /** Cible extrapolée sur 7 j (issue des objectifs). */
   targetExtrapolated7dPct?: number | null;
+  /** Indicateurs techniques EODHD par symbole ouvert (RSI14/MACD/ATR14/BB20).
+   *  Permet à Lisa de décider gestion active (RSI overbought → take profit)
+   *  et à l'agent de dimensionner les stops ATR-based. */
+  technicalBySymbol?: Record<string, {
+    rsi14: number | null;
+    macd: number | null;
+    macdSignal: number | null;
+    macdHist: number | null;
+    atr14: number | null;
+    atr14Pct: number | null;
+    bbUpper: number | null;
+    bbMiddle: number | null;
+    bbLower: number | null;
+    bbPctB: number | null;
+  }>;
 }
 
 export interface GenerateThesesResponse {
@@ -265,7 +280,7 @@ ${upcomingEventsBlock || '- (no upcoming events provided)'}
 ${corpusBlock || '(no corpus events loaded for this query)'}
 
 # POSITIONS ACTUELLEMENT OUVERTES
-${this.formatOpenPositionsBlock(req.openPositions, req.availableCashUsd)}
+${this.formatOpenPositionsBlock(req.openPositions, req.availableCashUsd, req.technicalBySymbol)}
 
 # SESSION CONFIG
 - Profile: ${config.profile}
@@ -526,6 +541,7 @@ défini, sans markdown, sans explications hors JSON.
   private formatOpenPositionsBlock(
     positions: OpenPositionSummary[] | undefined,
     availableCash: string | undefined,
+    technicalBySymbol?: GenerateThesesRequest['technicalBySymbol'],
   ): string {
     if (!positions || positions.length === 0) {
       return `(aucune position ouverte — marge de manœuvre maximale pour ouvrir)
@@ -589,6 +605,26 @@ Biais du cycle : **${bias}** — ${biasRationale}`;
           const est = e.epsEstimate !== null ? ` (EPS est ${e.epsEstimate.toFixed(2)})` : '';
           extras.push(`  ⚠️ Earnings dans ${daysTo}j : ${e.reportDate}${est}`);
         }
+      }
+      // Indicateurs techniques EODHD — base pour gestion active et stops ATR
+      const ind = technicalBySymbol?.[p.symbol];
+      if (ind) {
+        const techParts: string[] = [];
+        if (ind.rsi14 != null) {
+          const tag = ind.rsi14 < 30 ? ' OVERSOLD' : ind.rsi14 > 70 ? ' OVERBOUGHT' : '';
+          techParts.push(`RSI14=${ind.rsi14.toFixed(1)}${tag}`);
+        }
+        if (ind.macdHist != null) {
+          techParts.push(`MACD_hist=${ind.macdHist >= 0 ? '+' : ''}${ind.macdHist.toFixed(3)}`);
+        }
+        if (ind.atr14Pct != null) {
+          techParts.push(`ATR14=${ind.atr14Pct.toFixed(2)}%`);
+        }
+        if (ind.bbPctB != null) {
+          const tag = ind.bbPctB > 1 ? ' ABOVE_UPPER' : ind.bbPctB < 0 ? ' BELOW_LOWER' : '';
+          techParts.push(`BB_%B=${ind.bbPctB.toFixed(2)}${tag}`);
+        }
+        if (techParts.length > 0) extras.push(`  Technical: ${techParts.join(' · ')}`);
       }
       return extras.length > 0 ? `${base}\n${extras.join('\n')}` : base;
     });
