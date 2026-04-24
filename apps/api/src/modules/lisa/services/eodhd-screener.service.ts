@@ -1,0 +1,181 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { SupabaseService } from '../../supabase/supabase.service';
+
+/**
+ * EodhdScreenerService — wrap /api/screener pour que Lisa découvre
+ * quotidiennement des candidats au-delà de son univers mental habituel.
+ *
+ * Endpoint : POST /api/screener?api_token=X&fmt=json avec filters JSON.
+ *
+ * 3 scans pré-définis adaptés au style Lisa :
+ *
+ *  1. "momentum_mid_cap" : mid-caps US en breakout récent
+ *     (market cap 2-50B, change_1d > +3%, avg_vol > 500k)
+ *
+ *  2. "oversold_quality" : qualité survendue (RSI oversold sur largecap)
+ *     (market cap > 10B, rsi_14 < 35, P/E raisonnable < 25)
+ *
+ *  3. "volume_anomaly" : spike de volume vs moyenne (signal discret)
+ *     (volume > 3× avg_volume, change positif, cap > 1B)
+ *
+ * Cache 1h par scan. Fire-and-forget log eodhd_request_log.
+ */
+
+export interface ScreenerResult {
+  code: string;         // AAPL
+  exchange: string;     // US
+  name: string;
+  sector: string | null;
+  industry: string | null;
+  marketCapUsd: number | null;
+  lastDayChangePct: number | null;
+  avgVolume: number | null;
+  rsi14: number | null;
+  peRatio: number | null;
+  epsYoyGrowthPct: number | null;
+}
+
+export type ScreenerPreset = 'momentum_mid_cap' | 'oversold_quality' | 'volume_anomaly';
+
+const SCAN_FILTERS: Record<ScreenerPreset, string> = {
+  momentum_mid_cap: JSON.stringify([
+    ['market_capitalization', '>', 2_000_000_000],
+    ['market_capitalization', '<', 50_000_000_000],
+    ['last_day_change_perc', '>', 3],
+    ['avgvol_200d', '>', 500_000],
+    ['exchange', '=', 'us'],
+  ]),
+  oversold_quality: JSON.stringify([
+    ['market_capitalization', '>', 10_000_000_000],
+    ['rsi_14', '<', 35],
+    ['pe_ratio', '<', 25],
+    ['pe_ratio', '>', 0],
+    ['exchange', '=', 'us'],
+  ]),
+  volume_anomaly: JSON.stringify([
+    ['market_capitalization', '>', 1_000_000_000],
+    ['volume_vs_avgvol_200d', '>', 3],
+    ['last_day_change_perc', '>', 0],
+    ['exchange', '=', 'us'],
+  ]),
+};
+
+@Injectable()
+export class EodhdScreenerService {
+  private readonly logger = new Logger(EodhdScreenerService.name);
+  private cache = new Map<ScreenerPreset, { data: ScreenerResult[]; asOf: number }>();
+  private readonly CACHE_MS = 60 * 60_000;
+
+  constructor(
+    private readonly config: ConfigService,
+    private readonly supabase: SupabaseService,
+  ) {}
+
+  private apiKey(): string | null {
+    const k = this.config.get<string>('EODHD_API_KEY');
+    return k && k !== 'demo' ? k : null;
+  }
+
+  private logCall(row: { ticker: string; success: boolean; statusCode?: number; latencyMs?: number; errorMessage?: string }): void {
+    (async () => {
+      try {
+        await this.supabase.getClient().from('eodhd_request_log').insert({
+          ticker: row.ticker,
+          eodhd_ticker: row.ticker,
+          source: 'eodhd',
+          success: row.success,
+          status_code: row.statusCode ?? null,
+          latency_ms: row.latencyMs ?? null,
+          called_by: 'screener',
+          error_message: row.errorMessage ?? null,
+        });
+      } catch { /* swallow */ }
+    })();
+  }
+
+  async runScan(preset: ScreenerPreset, limit = 10): Promise<ScreenerResult[]> {
+    const cached = this.cache.get(preset);
+    if (cached && Date.now() - cached.asOf < this.CACHE_MS) return cached.data;
+
+    const key = this.apiKey();
+    if (!key) return [];
+
+    const tStart = Date.now();
+    try {
+      const url = `https://eodhd.com/api/screener?api_token=${key}&fmt=json&limit=${limit}&sort=market_capitalization.desc&filters=${encodeURIComponent(SCAN_FILTERS[preset])}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      const latencyMs = Date.now() - tStart;
+      if (!res.ok) {
+        this.logCall({ ticker: `screener_${preset}`, success: false, statusCode: res.status, latencyMs, errorMessage: `HTTP_${res.status}` });
+        return [];
+      }
+      const body = await res.json() as Record<string, unknown>;
+      const data = (body.data ?? body) as Array<Record<string, unknown>>;
+      this.logCall({ ticker: `screener_${preset}`, success: true, statusCode: res.status, latencyMs });
+
+      if (!Array.isArray(data)) return [];
+      const results: ScreenerResult[] = data.slice(0, limit).map((r) => ({
+        code: String(r.code ?? r.Code ?? ''),
+        exchange: String(r.exchange ?? r.Exchange ?? 'US'),
+        name: String(r.name ?? r.Name ?? ''),
+        sector: r.sector ? String(r.sector) : null,
+        industry: r.industry ? String(r.industry) : null,
+        marketCapUsd: r.market_capitalization ? Number(r.market_capitalization) : null,
+        lastDayChangePct: r.last_day_change_perc ? Number(r.last_day_change_perc) : null,
+        avgVolume: r.avgvol_200d ? Number(r.avgvol_200d) : null,
+        rsi14: r.rsi_14 ? Number(r.rsi_14) : null,
+        peRatio: r.pe_ratio ? Number(r.pe_ratio) : null,
+        epsYoyGrowthPct: r.eps_yoy_growth_perc ? Number(r.eps_yoy_growth_perc) : null,
+      }));
+
+      this.cache.set(preset, { data: results, asOf: Date.now() });
+      return results;
+    } catch (e) {
+      this.logger.warn(`Screener ${preset} failed: ${String(e).slice(0, 80)}`);
+      this.logCall({ ticker: `screener_${preset}`, success: false, latencyMs: Date.now() - tStart, errorMessage: String(e).slice(0, 200) });
+      return [];
+    }
+  }
+
+  /**
+   * Résumé texte compact des 3 scans pour le briefing Lisa — elle peut
+   * utiliser ces candidats comme points de départ pour ses thèses sans
+   * se limiter à son univers mental.
+   */
+  async summarizeAllScans(): Promise<string> {
+    const [momentum, oversold, volume] = await Promise.all([
+      this.runScan('momentum_mid_cap', 5),
+      this.runScan('oversold_quality', 5),
+      this.runScan('volume_anomaly', 5),
+    ]);
+
+    const lines: string[] = [];
+    const formatLine = (r: ScreenerResult) => {
+      const parts: string[] = [r.code];
+      if (r.sector) parts.push(r.sector.slice(0, 20));
+      if (r.lastDayChangePct != null) parts.push(`${r.lastDayChangePct >= 0 ? '+' : ''}${r.lastDayChangePct.toFixed(1)}%`);
+      if (r.rsi14 != null) parts.push(`RSI=${r.rsi14.toFixed(0)}`);
+      if (r.marketCapUsd != null) {
+        const b = r.marketCapUsd / 1e9;
+        parts.push(`cap=${b >= 1000 ? (b / 1000).toFixed(1) + 'T' : b.toFixed(1) + 'B'}$`);
+      }
+      return `    - ${parts.join(' · ')}`;
+    };
+
+    if (momentum.length > 0) {
+      lines.push(`  MOMENTUM mid-cap US (change_1d > +3% · cap 2-50B · vol > 500k)`);
+      lines.push(momentum.map(formatLine).join('\n'));
+    }
+    if (oversold.length > 0) {
+      lines.push(`  OVERSOLD quality (cap > 10B · RSI14 < 35 · P/E < 25)`);
+      lines.push(oversold.map(formatLine).join('\n'));
+    }
+    if (volume.length > 0) {
+      lines.push(`  VOLUME anomaly (vol > 3× avg 200d · cap > 1B · change > 0)`);
+      lines.push(volume.map(formatLine).join('\n'));
+    }
+
+    return lines.length > 0 ? lines.join('\n') : '(screener unavailable or no matches)';
+  }
+}

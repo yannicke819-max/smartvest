@@ -29,6 +29,7 @@ import { EodhdTechnicalService } from './eodhd-technical.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
 import { BinanceMarketService } from './binance-market.service';
 import { EodhdMacroService } from './eodhd-macro.service';
+import { EodhdScreenerService } from './eodhd-screener.service';
 
 /**
  * LisaService — orchestrateur principal du module AI analyst.
@@ -60,6 +61,7 @@ export class LisaService {
     private readonly eodhdIntraday: EodhdIntradayService,
     private readonly binanceMarket: BinanceMarketService,
     private readonly eodhdMacro: EodhdMacroService,
+    private readonly eodhdScreener: EodhdScreenerService,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
     this.claudeClient = anthropicKey
@@ -269,11 +271,15 @@ export class LisaService {
     // dans le MarketSnapshot pour que Lisa voie les catalyseurs récents et
     // à venir (sinon elle raisonne à l'aveugle côté news).
     try {
-      const [news, econEvents, macro] = await Promise.all([
+      const [news, econEvents, macro, screenerSummary] = await Promise.all([
         this.eodhdEnrichment.fetchRecentNews(undefined, 15),
         this.eodhdEnrichment.fetchUpcomingEconomicEvents(7, 1),
         this.eodhdMacro.getMacroContext('USA').catch(() => null),
+        this.eodhdScreener.summarizeAllScans().catch(() => ''),
       ]);
+      if (screenerSummary) {
+        marketSnapshot.screenerCandidates = screenerSummary;
+      }
       if (macro) {
         marketSnapshot.macroContext = {
           country: macro.country,

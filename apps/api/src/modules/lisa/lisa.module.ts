@@ -12,12 +12,13 @@ import { EodhdIntradayService } from './services/eodhd-intraday.service';
 import { ExchangeHoursService } from './services/exchange-hours.service';
 import { BinanceMarketService } from './services/binance-market.service';
 import { EodhdMacroService } from './services/eodhd-macro.service';
+import { EodhdScreenerService } from './services/eodhd-screener.service';
 import { MechanicalTradingService } from './services/mechanical-trading.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule],
   controllers: [LisaController],
-  providers: [LisaService, LisaAutopilotService, DecisionLogService, RealtimePriceService, EodhdEnrichmentService, EodhdTechnicalService, EodhdIntradayService, ExchangeHoursService, BinanceMarketService, EodhdMacroService, MechanicalTradingService],
-  exports: [LisaService, DecisionLogService, RealtimePriceService, EodhdTechnicalService, EodhdIntradayService, ExchangeHoursService, BinanceMarketService, EodhdMacroService],
+  providers: [LisaService, LisaAutopilotService, DecisionLogService, RealtimePriceService, EodhdEnrichmentService, EodhdTechnicalService, EodhdIntradayService, ExchangeHoursService, BinanceMarketService, EodhdMacroService, EodhdScreenerService, MechanicalTradingService],
+  exports: [LisaService, DecisionLogService, RealtimePriceService, EodhdTechnicalService, EodhdIntradayService, ExchangeHoursService, BinanceMarketService, EodhdMacroService, EodhdScreenerService],
 })
 export class LisaModule {}

@@ -75,6 +75,9 @@ export interface MarketSnapshot {
     unemploymentPct: number | null;
     gdpYoyPct: number | null;
   };
+  /** Candidats du screener EODHD (momentum / oversold / volume anomaly).
+   *  Permet à Lisa de découvrir des tickers au-delà de son univers mental. */
+  screenerCandidates?: string; // texte pré-formaté
 }
 
 export interface OpenPositionSummary {
@@ -312,6 +315,7 @@ ${m.macroContext.gdpYoyPct != null ? `- GDP YoY : ${m.macroContext.gdpYoyPct >= 
 
 ## Recent news (24-72h)
 ${recentNewsBlock || '- (no recent news provided)'}${sentimentLine}
+${m.screenerCandidates ? `\n## Screener candidates (scans de découverte EODHD)\n${m.screenerCandidates}\n` : ''}
 
 ## Upcoming events (7 days)
 ${upcomingEventsBlock || '- (no upcoming events provided)'}
