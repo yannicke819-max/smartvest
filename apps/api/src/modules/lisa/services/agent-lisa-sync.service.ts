@@ -29,7 +29,10 @@ import { EodhdTechnicalService } from './eodhd-technical.service';
  * Persistence : lisa_decision_log (source de vérité, robuste aux redeploys).
  */
 
-const DAILY_WAKE_BUDGET = 8;
+// Budget journalier de wake-ups Agent → Lisa. Dimensionné pour usage personnel
+// intensif (sniper/actif). 20 × ~$0.2 = ~$4/jour max en coûts LLM déclenchés
+// par les triggers event-driven — à additionner aux coûts des cycles réguliers.
+const DAILY_WAKE_BUDGET = 20;
 const TIER_1_COOLDOWN_MS = 5 * 60 * 1000;
 const TIER_2_COOLDOWN_MS = 30 * 60 * 1000;
 const INSIDER_BULK_BUY_THRESHOLD_USD = 10_000_000;

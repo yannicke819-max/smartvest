@@ -306,6 +306,55 @@ export class MechanicalTradingService {
       exposureByClass.set(cls, (exposureByClass.get(cls) ?? 0) + readNotionalPos(p));
     }
 
+    // P4.3 (2-way) — enforcement sur positions EXISTANTES : si une classe
+    // dépasse déjà le cap, on ferme la plus petite position de cette classe
+    // (proxy plus basse conviction). Ceci complète l'enforcement pre-open :
+    // avant ce patch, une classe en dépassement restait hors-cap indéfiniment
+    // (bug asymétrique). Maintenant le cap agit dans les deux sens.
+    const capitalForClass = capitalUsd.toNumber();
+    if (capitalForClass > 0) {
+      for (const [cls, exposureUsd] of exposureByClass.entries()) {
+        const classExposurePct = (exposureUsd / capitalForClass) * 100;
+        if (classExposurePct <= maxAssetClassPct) continue;
+
+        const candidates = activePositions.filter((p) => readAssetClass(p) === cls);
+        if (candidates.length === 0) continue;
+
+        // Ferme la plus petite (notional = proxy conviction) pour revenir sous le cap
+        const weakest = [...candidates].sort(
+          (a, b) => readNotionalPos(a) - readNotionalPos(b),
+        )[0];
+        const quote = await this.lisa.getLivePrice(weakest.symbol).catch(() => null);
+        if (!quote) continue;
+
+        const weakestNotional = readNotionalPos(weakest);
+        await this.closePosition(
+          weakest.id,
+          quote.price,
+          'closed_invalidated',
+          `[P4.3 2-way] Classe "${cls}" à ${classExposurePct.toFixed(1)}% > cap ${maxAssetClassPct}% — fermeture ${weakest.symbol} ($${weakestNotional.toFixed(0)}) pour revenir sous cap`,
+        );
+
+        await this.decisionLog.append({
+          portfolioId,
+          kind: 'risk_limit_breached',
+          summary: `[P4.3 2-way] Cap asset class violé : ${cls} ${classExposurePct.toFixed(1)}% > ${maxAssetClassPct}% — fermeture ${weakest.symbol}`,
+          rationale: `Enforcement post-agrégation : avant ce cycle, la classe "${cls}" cumulait ${exposureUsd.toFixed(0)}$ sur ${capitalForClass.toFixed(0)}$ de capital (${classExposurePct.toFixed(1)}%), au-dessus du seuil ${maxAssetClassPct}%. Fermeture de la position la plus petite (${weakest.symbol}, ${weakestNotional.toFixed(0)}$) pour ramener la classe sous le cap. Les prochaines ouvertures sur cette classe resteront bloquées tant que l'exposition n'est pas revenue sous le seuil.`,
+          payload: {
+            asset_class: cls,
+            exposure_pct: Number(classExposurePct.toFixed(2)),
+            cap_pct: maxAssetClassPct,
+            closed_symbol: weakest.symbol,
+            closed_notional_usd: weakestNotional,
+          },
+          triggeredBy: 'risk_monitor',
+        });
+
+        // Met à jour la map locale pour ne pas retraiter cette classe ce cycle
+        exposureByClass.set(cls, exposureUsd - weakestNotional);
+      }
+    }
+
     // Override : fermer la plus basse conviction si exposition > seuil
     if (overrides.closeLowestConvictionIfExposureAbovePct != null && activePositions.length > 0) {
       // Note: le runtime Supabase renvoie snake_case, on accède via bracket (l'interface OpenPosition est partielle)
