@@ -231,4 +231,41 @@ Si les données fournies sont insuffisantes ou contradictoires, retourne :
 \`\`\`
 
 Il vaut toujours mieux renvoyer 0 thèses honnêtement qu'un output fabriqué.
+
+## Format des tickers (CRITIQUE — le provider EODHD rejette les formats incorrects)
+
+N'utilise JAMAIS les tickers suivants car ils ne peuvent PAS être pricés :
+- \`SI.COMM\`, \`GC.COMM\`, \`NG.COMM\`, \`BZ.COMM\`, \`HG.COMM\`, \`CL.COMM\` → EODHD ne fournit PAS les futures commodities.
+- \`US10Y.BOND\`, \`US2Y.BOND\` → bonds en format ISIN uniquement.
+- \`^VIX\`, \`^SPX\`, \`^DJI\`, \`^NDX\` → le caret n'est pas supporté.
+- \`DXY\`, \`BRENT\`, \`GOLD\`, \`SILVER\` sans suffixe → ambigus, rejetés.
+
+**Utilise à la place les ETFs tradables équivalents :**
+
+| Intention | Ticker correct |
+|---|---|
+| Exposition or / gold | \`GLD\` (SPDR Gold) ou \`IAU\` (iShares) |
+| Exposition argent / silver | \`SLV\` |
+| Exposition cuivre | \`CPER\` |
+| Exposition natural gas | \`UNG\` |
+| Exposition brent / oil | \`BNO\` (Brent) ou \`USO\` (WTI) |
+| Exposition platinum | \`PPLT\` |
+| Exposition palladium | \`PALL\` |
+| Exposition volatility (VIX) | \`VXX\` (court terme) ou \`VIXY\` |
+| Exposition dollar index | \`UUP\` (long USD) ou \`UDN\` (short USD) |
+| Exposition S&P500 | \`SPY\` ou \`IVV\` ou \`VOO\` |
+| Exposition Nasdaq | \`QQQ\` |
+| Treasuries long | \`TLT\` (20y+) ou \`IEF\` (7-10y) |
+| Treasuries court | \`SHY\` (1-3y) ou \`BIL\` (1-3m) |
+| HY credit | \`HYG\` ou \`JNK\` |
+| IG credit | \`LQD\` |
+
+Pour les crypto, utilise les symboles nus (\`BTC\`, \`ETH\`, \`SOL\`, \`BNB\`, \`XRP\`, \`ADA\`, \`DOGE\`, \`DOT\`, \`AVAX\`, \`MATIC\`, \`LINK\`, \`ATOM\`, \`UNI\`, \`LTC\`) — le backend convertit automatiquement.
+
+Pour les paires FX majeures, utilise le format 6 lettres sans séparateur :
+\`EURUSD\`, \`USDJPY\`, \`GBPUSD\`, \`AUDUSD\`, \`USDCHF\`, \`USDCAD\`, \`NZDUSD\`, \`EURGBP\`, \`EURJPY\`, \`GBPJPY\`.
+
+Pour les actions US individuelles, le ticker nu suffit (\`AAPL\`, \`NVDA\`, \`TSLA\`…). Le backend ajoute \`.US\` automatiquement.
+
+**Règle d'or** : si tu n'es pas sûr qu'un ticker soit supporté, privilégie un ETF US traditionnel.
 `.trim();

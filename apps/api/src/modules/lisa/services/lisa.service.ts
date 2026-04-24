@@ -1342,8 +1342,47 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       'LTC': 'LTC-USD.CC', 'LTCUSDT': 'LTC-USD.CC',
     };
     if (cryptoMap[s]) return cryptoMap[s];
+
+    // Commodities futures → remplacer par ETFs US tradables (EODHD ne couvre
+    // pas les futures .COMM, mais les ETFs équivalents ont une liquidité OK).
+    const commodityMap: Record<string, string> = {
+      'GC.COMM': 'GLD.US', 'GOLD': 'GLD.US', 'GC': 'GLD.US', 'XAU': 'GLD.US',
+      'SI.COMM': 'SLV.US', 'SILVER': 'SLV.US', 'SI': 'SLV.US', 'XAG': 'SLV.US',
+      'HG.COMM': 'CPER.US', 'COPPER': 'CPER.US', 'HG': 'CPER.US',
+      'NG.COMM': 'UNG.US', 'NATGAS': 'UNG.US', 'NG': 'UNG.US',
+      'BZ.COMM': 'BNO.US', 'BRENT': 'BNO.US', 'BZ': 'BNO.US',
+      'CL.COMM': 'USO.US', 'WTI': 'USO.US', 'CL': 'USO.US', 'OIL': 'USO.US',
+      'PL.COMM': 'PPLT.US', 'PLATINUM': 'PPLT.US',
+      'PA.COMM': 'PALL.US', 'PALLADIUM': 'PALL.US',
+    };
+    if (commodityMap[s]) return commodityMap[s];
+
+    // Indices & volatility — utiliser l'ETF tradable quand dispo, sinon .INDX
+    const indexMap: Record<string, string> = {
+      'VIX': 'VXX.US', 'VIX.US': 'VXX.US', 'VIX.INDX': 'VXX.US',
+      '^VIX': 'VXX.US', '^VIX.INDX': 'VXX.US',
+      'DXY': 'UUP.US', 'DXY.US': 'UUP.US', 'DX-Y.NYB': 'UUP.US',
+      'DX-Y.NYB.FOREX': 'UUP.US', '^DXY': 'UUP.US',
+      'SPX': 'SPY.US', '^SPX': 'SPY.US', 'SPX.INDX': 'SPY.US',
+      'NDX': 'QQQ.US', '^NDX': 'QQQ.US', 'NDX.INDX': 'QQQ.US',
+      'DJI': 'DIA.US', '^DJI': 'DIA.US',
+      'RUT': 'IWM.US', '^RUT': 'IWM.US',
+    };
+    if (indexMap[s]) return indexMap[s];
+
+    // Bonds & yields — ETFs ou indices yield EODHD
+    const bondMap: Record<string, string> = {
+      'US10Y': 'TNX.INDX', 'US10Y.BOND': 'TNX.INDX',
+      'US2Y': 'IRX.INDX', 'US2Y.BOND': 'IRX.INDX',
+      'US5Y': 'FVX.INDX', 'US5Y.BOND': 'FVX.INDX',
+      'US30Y': 'TYX.INDX', 'US30Y.BOND': 'TYX.INDX',
+      'TLT': 'TLT.US', 'IEF': 'IEF.US', 'SHY': 'SHY.US',
+    };
+    if (bondMap[s]) return bondMap[s];
+
     // Already EODHD format (contains a dot)
     if (s.includes('.')) return s;
+
     // FX pairs: USDJPY → USDJPY.FOREX, EUR-USD → EURUSD.FOREX
     const cleanFx = s.replace('-', '');
     const fxPairs = new Set([
@@ -1352,8 +1391,10 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       'USDCNH', 'USDBRL', 'USDTRY', 'USDZAR', 'EURCAD', 'EURCHF',
     ]);
     if (fxPairs.has(cleanFx)) return `${cleanFx}.FOREX`;
+
     // VIX / volatility products
     if (s === 'VXX' || s === 'UVXY' || s === 'SVXY') return `${s}.US`;
+
     // Default: US equity/ETF
     return `${s}.US`;
   }
