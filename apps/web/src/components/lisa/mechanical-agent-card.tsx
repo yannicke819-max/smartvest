@@ -190,10 +190,10 @@ function DirectiveSection({ directive }: { directive: LisaAgentStatus['directive
           <div className="mt-1 flex flex-wrap gap-1.5">
             {directive.target_symbols.map((sym) => (
               <span
-                key={sym}
+                key={sym.symbol}
                 className="inline-flex items-center rounded-md bg-muted/60 px-2 py-0.5 text-xs font-mono font-medium text-foreground/80"
               >
-                {sym}
+                {sym.symbol}
               </span>
             ))}
           </div>
