@@ -177,6 +177,13 @@ export class MechanicalTradingService {
 
     const openPositions: OpenPosition[] = positions ?? [];
 
+    // Step 0 — P4.1 Portfolio Drawdown Guard (protection capital niveau portefeuille)
+    // Vérifie le drawdown intraday AVANT toute autre action. Si franchi :
+    //   - kill-switch auto (default -1.0%) → ferme TOUTES les positions + désactive autopilot
+    //   - close-weakest (default -0.5%) → ferme la position plus faible, bloque les ouvertures
+    const guard = await this.checkPortfolioDrawdownGuard(cfg, openPositions);
+    if (guard === 'kill_switch_triggered') return;  // tout fermé, fin de cycle
+
     // Step 1 — Explicit close requests from Lisa
     if (directive) {
       for (const cond of directive.closeConditions) {
@@ -203,6 +210,10 @@ export class MechanicalTradingService {
     for (const pos of currentPositions) {
       await this.checkStopTarget(pos);
     }
+
+    // Si le guard a fermé la plus faible → on bloque les nouvelles ouvertures
+    // mais on laisse les stops/targets tourner (déjà fait ci-dessus).
+    if (guard === 'weakest_closed_block_opens') return;
 
     // Step 3 — Open new positions (seulement si directive valide + trajectoire permet)
     if (!directive || directive.validUntil <= new Date()) {
@@ -484,6 +495,157 @@ export class MechanicalTradingService {
       this.writeCycleSummary(portfolioId, directive, capitalUsd)
         .catch((e) => this.logger.warn(`cycle summary failed: ${String(e)}`)),
     ]);
+  }
+
+  /**
+   * P4.1 — Portfolio Drawdown Guard
+   *
+   * Calcule le drawdown intraday du portefeuille (peak-to-current sur les
+   * snapshots depuis 00:00 UTC) et déclenche une action de protection si
+   * les seuils configurables sont franchis.
+   *
+   * Niveaux (lus depuis cfg.risk_constraints, defaults conservateurs) :
+   *   - killSwitchIntradayDrawdownPct (default 1.0%) →
+   *       kill-switch armé (autopilot désactivé) + fermeture de TOUTES les
+   *       positions au marché. Protection capital absolue.
+   *   - closeWeakestIntradayDrawdownPct (default 0.5%) →
+   *       fermeture de la position au plus petit notional (proxy de plus
+   *       basse conviction) + blocage des ouvertures pour le cycle courant.
+   *
+   * Philosophie golden-trader : "cut losers fast", appliqué au niveau
+   * portefeuille et pas juste position. Rejoint la discipline de
+   * Druckenmiller (5 trimestres perdants sur 120 en 30 ans) — on préfère
+   * réaliser une petite perte contrôlée plutôt que laisser courir.
+   */
+  private async checkPortfolioDrawdownGuard(
+    cfg: SessionConfig,
+    openPositions: OpenPosition[],
+  ): Promise<'ok' | 'weakest_closed_block_opens' | 'kill_switch_triggered'> {
+    const client = this.supabase.getClient();
+    const portfolioId = cfg.portfolio_id;
+
+    // Seuils configurables (defaults conservateurs golden-trader)
+    const rc = (cfg.risk_constraints ?? {}) as Record<string, unknown>;
+    const killDD = Number(rc['killSwitchIntradayDrawdownPct'] ?? 1.0);
+    const weakestDD = Number(rc['closeWeakestIntradayDrawdownPct'] ?? 0.5);
+
+    // Snapshots depuis 00:00 UTC aujourd'hui
+    const todayStart = new Date();
+    todayStart.setUTCHours(0, 0, 0, 0);
+    const { data: snaps } = await client
+      .from('lisa_portfolio_snapshots')
+      .select('total_value_usd, timestamp')
+      .eq('portfolio_id', portfolioId)
+      .gte('timestamp', todayStart.toISOString())
+      .order('timestamp', { ascending: true });
+
+    if (!snaps || snaps.length < 2) return 'ok';  // historique insuffisant, pas de jugement
+
+    const values = snaps
+      .map((s) => Number(s.total_value_usd))
+      .filter((v) => Number.isFinite(v) && v > 0);
+    if (values.length < 2) return 'ok';
+
+    const peak = Math.max(...values);
+    const current = values[values.length - 1];
+    const drawdownPct = peak > 0 ? ((peak - current) / peak) * 100 : 0;
+
+    // ── Kill-switch : drawdown critique → tout fermer ──
+    if (drawdownPct > killDD) {
+      this.logger.warn(
+        `[P4.1] ${portfolioId.slice(0, 8)} KILL-SWITCH armed: dd=${drawdownPct.toFixed(2)}% > ${killDD.toFixed(2)}%`,
+      );
+
+      // 1. Désactive l'autopilot (kill-switch)
+      await client
+        .from('lisa_session_configs')
+        .update({ kill_switch_active: true, autopilot_enabled: false })
+        .eq('portfolio_id', portfolioId);
+
+      // 2. Ferme toutes les positions au marché
+      let closedCount = 0;
+      for (const pos of openPositions) {
+        const quote = await this.lisa.getLivePrice(pos.symbol).catch(() => null);
+        if (!quote) continue;
+        try {
+          await this.closePosition(
+            pos.id,
+            quote.price,
+            'closed_invalidated',
+            `[P4.1 KILL-SWITCH] Drawdown intraday ${drawdownPct.toFixed(2)}% > ${killDD.toFixed(2)}% — fermeture auto`,
+          );
+          closedCount++;
+        } catch (e) {
+          this.logger.error(`[P4.1] Close failed on ${pos.symbol}: ${String(e).slice(0, 100)}`);
+        }
+      }
+
+      // 3. Trace hash-chaînée
+      await this.decisionLog.append({
+        portfolioId,
+        kind: 'kill_switch_triggered',
+        summary: `[P4.1] Kill-switch auto-armé : drawdown intraday ${drawdownPct.toFixed(2)}% > seuil ${killDD.toFixed(2)}% (${closedCount}/${openPositions.length} positions fermées)`,
+        rationale: 'Portfolio Drawdown Guard P4.1 — protection capital niveau portefeuille. Autopilot désactivé jusqu\'à réactivation explicite.',
+        payload: {
+          drawdown_pct: drawdownPct,
+          threshold_pct: killDD,
+          peak_value_usd: peak,
+          current_value_usd: current,
+          positions_total: openPositions.length,
+          positions_closed: closedCount,
+        },
+        triggeredBy: 'risk_monitor',
+      });
+
+      return 'kill_switch_triggered';
+    }
+
+    // ── Close-weakest : drawdown modéré → trim la plus faible ──
+    if (drawdownPct > weakestDD && openPositions.length > 0) {
+      const readNotional = (p: OpenPosition) =>
+        Number((p as unknown as Record<string, unknown>)['entry_notional_usd'] ?? 0);
+      const weakest = [...openPositions].sort(
+        (a, b) => readNotional(a) - readNotional(b),
+      )[0];
+      if (!weakest) return 'ok';
+
+      const quote = await this.lisa.getLivePrice(weakest.symbol).catch(() => null);
+      if (!quote) return 'ok';
+
+      this.logger.warn(
+        `[P4.1] ${portfolioId.slice(0, 8)} close-weakest ${weakest.symbol}: dd=${drawdownPct.toFixed(2)}% > ${weakestDD.toFixed(2)}%`,
+      );
+
+      try {
+        await this.closePosition(
+          weakest.id,
+          quote.price,
+          'closed_invalidated',
+          `[P4.1] Drawdown intraday ${drawdownPct.toFixed(2)}% > ${weakestDD.toFixed(2)}% — fermeture position plus faible (${weakest.symbol})`,
+        );
+      } catch (e) {
+        this.logger.error(`[P4.1] Close-weakest failed on ${weakest.symbol}: ${String(e).slice(0, 100)}`);
+        return 'ok';  // échec propre → on laisse le cycle continuer normalement
+      }
+
+      await this.decisionLog.append({
+        portfolioId,
+        kind: 'risk_limit_breached',
+        summary: `[P4.1] Close-weakest déclenché : drawdown ${drawdownPct.toFixed(2)}% > ${weakestDD.toFixed(2)}% — ${weakest.symbol} fermée, ouvertures bloquées ce cycle`,
+        rationale: 'Portfolio Drawdown Guard P4.1 — trim position plus faible pour stopper l\'hémorragie avant kill-switch.',
+        payload: {
+          drawdown_pct: drawdownPct,
+          threshold_pct: weakestDD,
+          closed_symbol: weakest.symbol,
+          closed_notional_usd: readNotional(weakest),
+        },
+        triggeredBy: 'risk_monitor',
+      });
+
+      return 'weakest_closed_block_opens';
+    }
+
+    return 'ok';
   }
 
   private async checkStopTarget(pos: OpenPosition): Promise<void> {
