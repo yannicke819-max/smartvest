@@ -142,8 +142,22 @@ export class ExchangeHoursService implements OnModuleInit {
     }
 
     // Semaine, ouverture US selon asset class
-    // Equity/ETF/Commodities ETFs : 14:30-21:00 UTC
-    if (cls.includes('equity') || cls.includes('etf') || cls.includes('commodities') || cls.includes('stock') || cls === 'index') {
+    // Equity/ETF/Commodities ETFs + dérivés vol (VIXY/UVXY) + hedge : 14:30-21:00 UTC
+    // La liste couvre les classes que Lisa émet régulièrement (equity_us_small,
+    // commodities_metals_precious, derivatives_vol, etc.).
+    const isUsHoursClass =
+      cls.includes('equity') ||
+      cls.includes('etf') ||
+      cls.includes('commodities') ||
+      cls.includes('commodity') ||
+      cls.includes('stock') ||
+      cls === 'index' ||
+      cls.includes('derivatives') ||
+      cls.includes('volatility') ||
+      cls.includes('vol') ||
+      cls.includes('hedge') ||
+      cls.includes('option');
+    if (isUsHoursClass) {
       const openMin = 14 * 60 + 30;
       const closeMin = 21 * 60;
       if (minuteOfDay >= openMin && minuteOfDay < closeMin) {
@@ -168,8 +182,19 @@ export class ExchangeHoursService implements OnModuleInit {
       return { symbol, assetClass, isOpen: false, reason: 'afterhours', nextOpenMinutes: this.minutesUntilNextUsEquityOpen(now), nextCloseMinutes: null };
     }
 
-    // Default : on considère ouvert (classe inconnue, ne bloque pas)
-    return { symbol, assetClass, isOpen: true, reason: 'open', nextOpenMinutes: null, nextCloseMinutes: null };
+    // Default DÉFENSIF : classe inconnue → on suppose US equity hours (14:30-21:00 UTC).
+    // Avant, on retournait "ouvert 24/7", ce qui laissait passer derivatives_vol
+    // (VIXY) afterhours sur prix stale → ouverture dans le vide. Maintenant,
+    // tout ce qui n'est pas explicitement crypto/fx/bond est aligné US equity.
+    const openMin = 14 * 60 + 30;
+    const closeMin = 21 * 60;
+    if (minuteOfDay >= openMin && minuteOfDay < closeMin) {
+      return { symbol, assetClass, isOpen: true, reason: 'open', nextOpenMinutes: null, nextCloseMinutes: closeMin - minuteOfDay };
+    }
+    if (minuteOfDay < openMin) {
+      return { symbol, assetClass, isOpen: false, reason: 'premarket', nextOpenMinutes: openMin - minuteOfDay, nextCloseMinutes: null };
+    }
+    return { symbol, assetClass, isOpen: false, reason: 'afterhours', nextOpenMinutes: this.minutesUntilNextUsEquityOpen(now), nextCloseMinutes: null };
   }
 
   isTradable(symbol: string, assetClass: string): boolean {
