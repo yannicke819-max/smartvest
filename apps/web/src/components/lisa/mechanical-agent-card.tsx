@@ -20,14 +20,16 @@ function pnlColor(n: number | null | undefined) {
   return n >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500';
 }
 
-const KIND_LABELS: Record<string, { label: string; color: string }> = {
-  mechanical_open: { label: 'OPEN', color: 'text-blue-600 dark:text-blue-400' },
-  mechanical_close_stop: { label: 'STOP', color: 'text-red-500' },
-  mechanical_close_target: { label: 'TARGET', color: 'text-emerald-600 dark:text-emerald-400' },
-  mechanical_close_invalidated: { label: 'INVALIDE', color: 'text-orange-500' },
-  mechanical_skip: { label: 'SKIP', color: 'text-muted-foreground' },
-  autopilot_cycle_completed: { label: 'CYCLE', color: 'text-muted-foreground' },
-  mechanical_override_applied: { label: 'OVERRIDE', color: 'text-purple-600 dark:text-purple-400' },
+const KIND_LABELS: Record<string, { label: string; color: string; bg: string }> = {
+  mechanical_open: { label: 'OPEN', color: 'text-blue-700 dark:text-blue-300', bg: 'bg-blue-50 dark:bg-blue-950/40' },
+  mechanical_close_stop: { label: 'STOP', color: 'text-red-700 dark:text-red-300', bg: 'bg-red-50 dark:bg-red-950/40' },
+  mechanical_close_target: { label: 'TARGET', color: 'text-emerald-700 dark:text-emerald-300', bg: 'bg-emerald-50 dark:bg-emerald-950/40' },
+  mechanical_close_invalidated: { label: 'INVALIDE', color: 'text-orange-700 dark:text-orange-300', bg: 'bg-orange-50 dark:bg-orange-950/40' },
+  mechanical_skip: { label: 'SKIP', color: 'text-slate-600 dark:text-slate-400', bg: 'bg-slate-50 dark:bg-slate-900/40' },
+  autopilot_cycle_started: { label: 'CYCLE', color: 'text-slate-600 dark:text-slate-400', bg: 'bg-slate-50 dark:bg-slate-900/40' },
+  autopilot_cycle_completed: { label: 'CYCLE', color: 'text-slate-600 dark:text-slate-400', bg: 'bg-slate-50 dark:bg-slate-900/40' },
+  autopilot_cycle_completed_error: { label: 'ERROR', color: 'text-red-700 dark:text-red-300', bg: 'bg-red-50 dark:bg-red-950/40' },
+  mechanical_override_applied: { label: 'OVERRIDE', color: 'text-purple-700 dark:text-purple-300', bg: 'bg-purple-50 dark:bg-purple-950/40' },
 };
 
 type BadgeSpec = {
@@ -293,16 +295,22 @@ function CycleRow({ cycle }: { cycle: MechanicalCycleSummary }) {
 }
 
 function ActionRow({ action }: { action: AgentAction }) {
-  const info = KIND_LABELS[action.kind] ?? { label: action.kind, color: 'text-muted-foreground' };
+  const info = KIND_LABELS[action.kind] ?? {
+    label: action.kind.replace(/^(mechanical_|autopilot_)/, '').toUpperCase().slice(0, 10),
+    color: 'text-slate-600 dark:text-slate-400',
+    bg: 'bg-slate-50 dark:bg-slate-900/40',
+  };
   const ago = Math.round((Date.now() - new Date(action.timestamp).getTime()) / 60000);
 
   return (
-    <div className="flex items-start gap-2 py-1.5 border-b border-border/40 text-xs">
-      <span className="text-muted-foreground whitespace-nowrap w-10 shrink-0">
+    <div className="flex items-center gap-3 py-1.5 border-b border-border/40 text-xs">
+      <span className="text-muted-foreground whitespace-nowrap w-12 shrink-0 text-right tabular-nums">
         {ago < 60 ? `${ago}m` : `${Math.round(ago / 60)}h`}
       </span>
-      <span className={`font-mono font-semibold w-16 shrink-0 ${info.color}`}>{info.label}</span>
-      <span className="text-foreground/80 leading-snug">{action.summary}</span>
+      <span className={`inline-flex items-center justify-center rounded-md px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide w-20 shrink-0 ${info.bg} ${info.color}`}>
+        {info.label}
+      </span>
+      <span className="text-foreground/80 leading-snug truncate min-w-0">{action.summary}</span>
     </div>
   );
 }
