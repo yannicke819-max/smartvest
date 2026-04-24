@@ -23,6 +23,7 @@ import { DecisionLogService } from './decision-log.service';
 import { LisaService } from './lisa.service';
 import { EodhdTechnicalService } from './eodhd-technical.service';
 import { ExchangeHoursService } from './exchange-hours.service';
+import { PortfolioCorrelationService } from './portfolio-correlation.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types internes
@@ -104,7 +105,22 @@ export class MechanicalTradingService {
     private readonly performance: PerformanceService,
     private readonly technical: EodhdTechnicalService,
     private readonly exchangeHours: ExchangeHoursService,
+    private readonly correlation: PortfolioCorrelationService,
   ) {}
+
+  /**
+   * Mappe un ticker "natif" (AAPL, BTC, EURUSD) vers un ticker EODHD
+   * (AAPL.US). Pour les crypto/FX on retombe sur le ticker brut — EODHD
+   * /eod supporte EURUSD.FOREX et BTC-USD.CC mais la corrélation fonctionne
+   * mieux sur actions/ETF. Pour ce commit on se concentre sur equity/ETF.
+   */
+  private toEodhdForCorrelation(symbol: string, assetClass: string): string {
+    const cls = assetClass.toLowerCase();
+    if (cls.includes('crypto')) return `${symbol.toUpperCase()}-USD.CC`;
+    if (cls.includes('fx') || cls.includes('forex')) return `${symbol.toUpperCase()}.FOREX`;
+    // equity / etf / commodity ETF / bond ETF → suffixe .US si pas déjà présent
+    return symbol.includes('.') ? symbol : `${symbol.toUpperCase()}.US`;
+  }
 
   /**
    * Dérive un stopPct basé sur l'ATR14 (volatilité réelle) plutôt qu'un
@@ -250,11 +266,27 @@ export class MechanicalTradingService {
     const activePositions: OpenPosition[] = positionsForOpen ?? [];
 
     const constraints = cfg.risk_constraints ?? {};
-    const maxPositions = (constraints['maxOpenPositions'] as number) ?? 10;
-    const maxPositionPct = (constraints['maxPositionSizePct'] as number) ?? 25;
+    // P4.3 — Defaults golden-trader diversifiés :
+    //   - Plus de positions (20 vs 10) → réduit la variance idiosyncratique
+    //   - Positions unitaires plus petites (8% vs 25%) → cap la perte par ticker
+    //   - Plafond par classe d'actif (25%) → évite la concentration sectorielle
+    const maxPositions = (constraints['maxOpenPositions'] as number) ?? 20;
+    const maxPositionPct = (constraints['maxPositionSizePct'] as number) ?? 8;
+    const maxAssetClassPct = (constraints['maxAssetClassExposurePct'] as number) ?? 25;
     const capitalUsd = new Decimal(cfg.capital_usd || '10000');
 
     if (activePositions.length >= maxPositions) return;
+
+    // Calcul de l'exposition courante par classe d'actif (pour enforcement P4.3)
+    const readNotionalPos = (p: OpenPosition) =>
+      Number((p as unknown as Record<string, unknown>)['entry_notional_usd'] ?? 0);
+    const readAssetClass = (p: OpenPosition) =>
+      String((p as unknown as Record<string, unknown>)['asset_class'] ?? '').toLowerCase();
+    const exposureByClass = new Map<string, number>();
+    for (const p of activePositions) {
+      const cls = readAssetClass(p);
+      exposureByClass.set(cls, (exposureByClass.get(cls) ?? 0) + readNotionalPos(p));
+    }
 
     // Override : fermer la plus basse conviction si exposition > seuil
     if (overrides.closeLowestConvictionIfExposureAbovePct != null && activePositions.length > 0) {
@@ -336,6 +368,50 @@ export class MechanicalTradingService {
       ? new Set(overrides.preferredAssetClasses)
       : null;
 
+    // P4.4 — Crisis regime detection : on calcule la corrélation moyenne
+    // des positions ouvertes actuellement avec SPY. Si > 0.85, c'est que
+    // "correlation goes to 1 in a crisis" → on refuse toutes les nouvelles
+    // ouvertures ce cycle pour ne pas empiler du beta risk.
+    const crisisCorrThreshold = Number((constraints['crisisCorrelationThreshold'] as number | undefined) ?? 0.85);
+    let crisisRegimeActive = false;
+    if (activePositions.length >= 3) {
+      const eodhdTickers = activePositions
+        .map((p) => this.toEodhdForCorrelation(p.symbol, readAssetClass(p)))
+        .filter((t) => t.endsWith('.US'));  // uniquement actions/ETF US pour bench SPY
+      if (eodhdTickers.length >= 3) {
+        const { avg, n } = await this.correlation.getAvgCorrelationWithBenchmark(eodhdTickers, 'SPY.US', 30);
+        if (avg != null && avg > crisisCorrThreshold) {
+          crisisRegimeActive = true;
+          this.logger.warn(
+            `[P4.4] ${portfolioId.slice(0, 8)} CRISIS REGIME detected: avg_corr_vs_SPY=${avg.toFixed(2)} > ${crisisCorrThreshold} (n=${n}) — ouvertures bloquées`,
+          );
+          await this.decisionLog.append({
+            portfolioId,
+            kind: 'market_regime_changed',
+            summary: `[P4.4] Regime crisis détecté : corrélation moyenne positions ↔ SPY = ${avg.toFixed(2)} > seuil ${crisisCorrThreshold} — ouvertures bloquées ce cycle`,
+            rationale: 'Correlation regime shock : en crise, toutes corrélations convergent vers 1, la diversification ne protège plus. Mode défensif.',
+            payload: {
+              avg_correlation_vs_spy: avg,
+              threshold: crisisCorrThreshold,
+              sample_size: n,
+              positions_scanned: eodhdTickers.length,
+            },
+            triggeredBy: 'risk_monitor',
+          });
+        }
+      }
+    }
+
+    // Si crisis regime → on sort immédiatement (pas d'ouvertures)
+    if (crisisRegimeActive) return;
+
+    // P4.2 — Pré-calcul des tickers EODHD des positions existantes pour
+    // vérifier la corrélation des nouvelles propositions contre elles.
+    const existingEodhdTickers = activePositions.map((p) =>
+      this.toEodhdForCorrelation(p.symbol, readAssetClass(p)),
+    );
+    const maxPairwiseCorrThreshold = Number((constraints['maxPairwiseCorrelation'] as number | undefined) ?? 0.7);
+
     let slotsUsed = 0;
 
     for (const target of directive.targetSymbols) {
@@ -367,6 +443,24 @@ export class MechanicalTradingService {
         continue;
       }
 
+      // P4.2 — Filtre corrélation : refuse l'ouverture si fortement corrélée
+      // avec une position existante (défault 0.7). Évite la concentration
+      // cachée (AMD + NVDA + INTC = 1 cluster "semi" en réalité).
+      if (existingEodhdTickers.length > 0) {
+        const newEodhd = this.toEodhdForCorrelation(target.symbol, target.assetClass);
+        const { max: maxCorr, withTicker } = await this.correlation.getMaxCorrelationAgainst(
+          newEodhd,
+          existingEodhdTickers,
+          30,
+        );
+        if (maxCorr != null && maxCorr > maxPairwiseCorrThreshold) {
+          this.logger.debug(
+            `[P4.2] Skip ${target.symbol} — corrélation ${maxCorr.toFixed(2)} > ${maxPairwiseCorrThreshold} avec ${withTicker}`,
+          );
+          continue;
+        }
+      }
+
       // Prix live
       const quote = await this.lisa.getLivePrice(target.symbol).catch(() => null);
       if (!quote || Number(quote.price) <= 0) continue;
@@ -377,6 +471,20 @@ export class MechanicalTradingService {
       const maxNotional = capitalUsd.mul(maxPositionPct).div(100).mul(sizingMultiplier);
       const notional = Decimal.min(maxNotional, cashUsd.mul(0.9));
       if (notional.lt(10)) continue;
+
+      // P4.3 — Plafond par classe d'actif : refuse l'ouverture si elle
+      // pousserait l'exposition de la classe au-delà du seuil (default 25%).
+      const classKey = target.assetClass.toLowerCase();
+      const currentClassExposure = exposureByClass.get(classKey) ?? 0;
+      const projectedClassExposurePct = capitalUsd.gt(0)
+        ? ((currentClassExposure + notional.toNumber()) / capitalUsd.toNumber()) * 100
+        : 0;
+      if (projectedClassExposurePct > maxAssetClassPct) {
+        this.logger.debug(
+          `[P4.3] Skip ${target.symbol} — exposition classe "${classKey}" projetée ${projectedClassExposurePct.toFixed(1)}% > cap ${maxAssetClassPct}%`,
+        );
+        continue;
+      }
 
       // Stop / target prices — stop dynamique ATR-based avec override Lisa
       // applicable par-dessus (tightenStopsMultiplier < 1 = stops plus serrés).
@@ -461,6 +569,10 @@ export class MechanicalTradingService {
         });
 
       slotsUsed++;
+      // P4.3 — Cumule l'exposition de la classe pour les itérations suivantes
+      exposureByClass.set(classKey, currentClassExposure + notional.toNumber());
+      // P4.2 — Cumule le ticker pour les prochains checks de corrélation
+      existingEodhdTickers.push(this.toEodhdForCorrelation(target.symbol, target.assetClass));
 
       const overridesTag = Object.keys(overrides).length > 0
         ? ` · overrides=[${Object.entries(overrides).map(([k, v]) => `${k}=${JSON.stringify(v)}`).slice(0, 4).join(', ')}]`
@@ -488,6 +600,11 @@ export class MechanicalTradingService {
       this.logger.log(`[MÉCANIQUE] ${portfolioId.slice(0, 8)} — OPEN ${target.direction} ${target.symbol} @ ${price.toFixed(4)}`);
     }
 
+    // P4.5 — Hedge recommendation (alerte seule, aucune exécution)
+    // Non-bloquant ; rate-limité à une alerte par 24h par portefeuille.
+    await this.checkHedgeRecommendation(cfg, activePositions, capitalUsd)
+      .catch((e) => this.logger.warn(`hedge recommendation check failed: ${String(e)}`));
+
     // Snapshot daily performance + résumé cycle pour Lisa (non-bloquants)
     await Promise.all([
       this.performance.takeSnapshot(portfolioId)
@@ -495,6 +612,78 @@ export class MechanicalTradingService {
       this.writeCycleSummary(portfolioId, directive, capitalUsd)
         .catch((e) => this.logger.warn(`cycle summary failed: ${String(e)}`)),
     ]);
+  }
+
+  /**
+   * P4.5 — Hedge Recommendation (alerte passive, pas d'exécution)
+   *
+   * Si l'exposition long equity dépasse 40% du portefeuille, on émet une
+   * recommandation de hedge dans le decision log. La recommandation est
+   * lisible par Lisa au prochain cycle ou par l'utilisateur via l'UI.
+   *
+   * Rate limit : 1 alerte par 24h par portefeuille (évite le spam).
+   * Aucune exécution automatique — conforme à CLAUDE.md § 2 (MANUAL_EXPLICIT).
+   *
+   * Pourquoi 40% : au-delà, un choc -5% sur les equities coûte > 2% au
+   * portefeuille, ce qui déclenche déjà close-weakest (P4.1). Un hedge
+   * préventif (SH, VIXY, put protecteur) aurait absorbé cette baisse.
+   */
+  private async checkHedgeRecommendation(
+    cfg: SessionConfig,
+    positions: OpenPosition[],
+    capitalUsd: Decimal,
+  ): Promise<void> {
+    const constraints = (cfg.risk_constraints ?? {}) as Record<string, unknown>;
+    const threshold = Number(constraints['hedgeRecommendationThresholdPct'] ?? 40);
+
+    // Calcul exposition long equity (equity + etf long)
+    const readNotional = (p: OpenPosition) =>
+      Number((p as unknown as Record<string, unknown>)['entry_notional_usd'] ?? 0);
+    const readAssetClass = (p: OpenPosition) =>
+      String((p as unknown as Record<string, unknown>)['asset_class'] ?? '').toLowerCase();
+    const readDirection = (p: OpenPosition) =>
+      String((p as unknown as Record<string, unknown>)['direction'] ?? '').toLowerCase();
+
+    const longEquityNotional = positions
+      .filter((p) => {
+        const cls = readAssetClass(p);
+        return readDirection(p) === 'long' && (cls.includes('equity') || cls.includes('etf') || cls.includes('stock'));
+      })
+      .reduce((s, p) => s + readNotional(p), 0);
+
+    const longEquityPct = capitalUsd.gt(0) ? (longEquityNotional / capitalUsd.toNumber()) * 100 : 0;
+    if (longEquityPct <= threshold) return;  // exposition sous seuil, rien à faire
+
+    // Rate limit : pas d'alerte si une existe déjà < 24h
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { data: recent } = await this.supabase.getClient()
+      .from('lisa_decision_log')
+      .select('timestamp')
+      .eq('portfolio_id', cfg.portfolio_id)
+      .eq('kind', 'hedge_recommendation')
+      .gte('timestamp', since)
+      .limit(1)
+      .maybeSingle();
+    if (recent) return;
+
+    // Émet l'alerte
+    await this.decisionLog.append({
+      portfolioId: cfg.portfolio_id,
+      kind: 'hedge_recommendation',
+      summary: `[P4.5] Hedge recommandé : exposition long equity ${longEquityPct.toFixed(1)}% > seuil ${threshold}%. Envisager SH/VIXY/put protecteur.`,
+      rationale: 'Protection passive suggérée. Pas d\'exécution automatique — l\'utilisateur valide manuellement toute action. Conforme MANUAL_EXPLICIT.',
+      payload: {
+        long_equity_notional_usd: longEquityNotional,
+        long_equity_pct: longEquityPct,
+        threshold_pct: threshold,
+        hedge_candidates: ['SH', 'VIXY', 'UVXY', 'protective_put_SPY'],
+      },
+      triggeredBy: 'risk_monitor',
+    });
+
+    this.logger.log(
+      `[P4.5] ${cfg.portfolio_id.slice(0, 8)} hedge_recommendation émise : longEq=${longEquityPct.toFixed(1)}% > ${threshold}%`,
+    );
   }
 
   /**
