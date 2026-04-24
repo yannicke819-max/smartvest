@@ -13,12 +13,47 @@ import { ExchangeHoursService } from './services/exchange-hours.service';
 import { BinanceMarketService } from './services/binance-market.service';
 import { EodhdMacroService } from './services/eodhd-macro.service';
 import { EodhdScreenerService } from './services/eodhd-screener.service';
+import { EodhdInsiderService } from './services/eodhd-insider.service';
+import { EodhdOptionsService } from './services/eodhd-options.service';
+import { BinanceLiquidationsService } from './services/binance-liquidations.service';
+import { EodhdFxWsService } from './services/eodhd-fx-ws.service';
 import { MechanicalTradingService } from './services/mechanical-trading.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule],
   controllers: [LisaController],
-  providers: [LisaService, LisaAutopilotService, DecisionLogService, RealtimePriceService, EodhdEnrichmentService, EodhdTechnicalService, EodhdIntradayService, ExchangeHoursService, BinanceMarketService, EodhdMacroService, EodhdScreenerService, MechanicalTradingService],
-  exports: [LisaService, DecisionLogService, RealtimePriceService, EodhdTechnicalService, EodhdIntradayService, ExchangeHoursService, BinanceMarketService, EodhdMacroService, EodhdScreenerService],
+  providers: [
+    LisaService,
+    LisaAutopilotService,
+    DecisionLogService,
+    RealtimePriceService,
+    EodhdEnrichmentService,
+    EodhdTechnicalService,
+    EodhdIntradayService,
+    ExchangeHoursService,
+    BinanceMarketService,
+    EodhdMacroService,
+    EodhdScreenerService,
+    EodhdInsiderService,
+    EodhdOptionsService,
+    BinanceLiquidationsService,
+    EodhdFxWsService,
+    MechanicalTradingService,
+  ],
+  exports: [
+    LisaService,
+    DecisionLogService,
+    RealtimePriceService,
+    EodhdTechnicalService,
+    EodhdIntradayService,
+    ExchangeHoursService,
+    BinanceMarketService,
+    EodhdMacroService,
+    EodhdScreenerService,
+    EodhdInsiderService,
+    EodhdOptionsService,
+    BinanceLiquidationsService,
+    EodhdFxWsService,
+  ],
 })
 export class LisaModule {}

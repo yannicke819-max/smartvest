@@ -19,8 +19,9 @@ import { LISA_FLOW_THESIS } from './03-flow-thesis';
 import { LISA_MODES_OUTPUT } from './04-modes-output';
 import { getProfileOverride } from './05-profile-overrides';
 import { LISA_GOLDEN_TRADER } from './06-golden-trader';
+import { LISA_EODHD_API_KNOWLEDGE } from './07-eodhd-api';
 
-export { LISA_MISSION, LISA_PERSONA_CORE, LISA_ANTI_CONSENSUS, LISA_FLOW_THESIS, LISA_MODES_OUTPUT, LISA_GOLDEN_TRADER };
+export { LISA_MISSION, LISA_PERSONA_CORE, LISA_ANTI_CONSENSUS, LISA_FLOW_THESIS, LISA_MODES_OUTPUT, LISA_GOLDEN_TRADER, LISA_EODHD_API_KNOWLEDGE };
 export { getProfileOverride, LISA_PROFILE_OVERRIDES } from './05-profile-overrides';
 
 /**
@@ -42,6 +43,7 @@ export const LISA_SYSTEM_PROMPT_CACHEABLE = [
   LISA_FLOW_THESIS,
   LISA_MODES_OUTPUT,
   LISA_GOLDEN_TRADER,
+  LISA_EODHD_API_KNOWLEDGE,
 ].join('\n\n---\n\n');
 
 /**

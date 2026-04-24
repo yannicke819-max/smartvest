@@ -30,6 +30,9 @@ import { EodhdIntradayService } from './eodhd-intraday.service';
 import { BinanceMarketService } from './binance-market.service';
 import { EodhdMacroService } from './eodhd-macro.service';
 import { EodhdScreenerService } from './eodhd-screener.service';
+import { EodhdInsiderService } from './eodhd-insider.service';
+import { EodhdOptionsService } from './eodhd-options.service';
+import { BinanceLiquidationsService } from './binance-liquidations.service';
 
 /**
  * LisaService — orchestrateur principal du module AI analyst.
@@ -62,6 +65,9 @@ export class LisaService {
     private readonly binanceMarket: BinanceMarketService,
     private readonly eodhdMacro: EodhdMacroService,
     private readonly eodhdScreener: EodhdScreenerService,
+    private readonly eodhdInsider: EodhdInsiderService,
+    private readonly eodhdOptions: EodhdOptionsService,
+    private readonly binanceLiquidations: BinanceLiquidationsService,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
     this.claudeClient = anthropicKey
@@ -448,11 +454,15 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     // price action (20 bougies 5m = 1h40 de contexte).
     const technicalBySymbol: Record<string, import('./eodhd-technical.service').TechnicalIndicators> = {};
     const intradayBySymbol: Record<string, string> = {}; // symbol → résumé texte
+    const insiderLines: string[] = [];
+    const optionsLines: string[] = [];
+    const liquidationsLines: string[] = [];
     if (openPositions.length > 0) {
       await Promise.all(openPositions.flatMap((pos) => {
         const eodhdTicker = this.toEodhdTicker(pos.symbol);
         const currentPrice = Number(pos.currentPrice);
         const isCrypto = pos.assetClass?.toLowerCase().includes('crypto');
+        const isEquity = pos.assetClass?.toLowerCase().includes('equit') || pos.assetClass?.toLowerCase().includes('stock');
         const tasks: Promise<unknown>[] = [
           this.eodhdTechnical.getIndicators(eodhdTicker, currentPrice)
             .then((ind) => { technicalBySymbol[pos.symbol] = ind; })
@@ -464,6 +474,12 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
             this.binanceMarket.summarize(pos.symbol)
               .then((s) => { if (s) intradayBySymbol[pos.symbol] = s; })
               .catch((e) => this.logger.debug(`binance summary failed for ${pos.symbol}: ${String(e).slice(0, 80)}`)),
+            this.binanceLiquidations.getSnapshot(pos.symbol)
+              .then((snap) => {
+                const line = this.binanceLiquidations.summarize(snap);
+                if (line) liquidationsLines.push(line);
+              })
+              .catch((e) => this.logger.debug(`liquidations failed for ${pos.symbol}: ${String(e).slice(0, 80)}`)),
           );
         } else {
           tasks.push(
@@ -473,9 +489,29 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
               })
               .catch((e) => this.logger.debug(`intraday fetch failed for ${pos.symbol}: ${String(e).slice(0, 80)}`)),
           );
+          if (isEquity) {
+            tasks.push(
+              this.eodhdInsider.getInsiderSignal(pos.symbol, 30)
+                .then((sig) => {
+                  const line = this.eodhdInsider.summarize(sig);
+                  if (line) insiderLines.push(`${pos.symbol} ${line}`);
+                })
+                .catch((e) => this.logger.debug(`insider failed for ${pos.symbol}: ${String(e).slice(0, 80)}`)),
+              this.eodhdOptions.getSnapshot(pos.symbol)
+                .then((snap) => {
+                  const line = this.eodhdOptions.summarize(snap);
+                  if (line) optionsLines.push(line);
+                })
+                .catch((e) => this.logger.debug(`options failed for ${pos.symbol}: ${String(e).slice(0, 80)}`)),
+            );
+          }
         }
         return tasks;
       }));
+
+      if (insiderLines.length > 0) marketSnapshot.insiderSignals = insiderLines.join('\n');
+      if (optionsLines.length > 0) marketSnapshot.optionsSignals = optionsLines.join('\n');
+      if (liquidationsLines.length > 0) marketSnapshot.liquidationsSignals = liquidationsLines.join('\n');
     }
 
     let result: Awaited<ReturnType<ThesisGeneratorService['generateTheses']>>;

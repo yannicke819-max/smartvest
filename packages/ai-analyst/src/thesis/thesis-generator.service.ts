@@ -78,6 +78,15 @@ export interface MarketSnapshot {
   /** Candidats du screener EODHD (momentum / oversold / volume anomaly).
    *  Permet à Lisa de découvrir des tickers au-delà de son univers mental. */
   screenerCandidates?: string; // texte pré-formaté
+  /** Signaux insider SEC Form 4 par ticker (positions ouvertes + watchlist).
+   *  Texte pré-formaté type "TSLA INSIDER(30d): net=+2.4M$ · C-suite=+2.4M$". */
+  insiderSignals?: string;
+  /** Snapshot options IV + put/call ratio par ticker.
+   *  Texte pré-formaté type "AAPL OPTS: IV ATM=28% · P/C=0.82 (bullish)". */
+  optionsSignals?: string;
+  /** Liquidations crypto (1h / 24h) avec détection de wave.
+   *  Texte pré-formaté type "LIQ wave BTC long $42M/1h → reversal probable". */
+  liquidationsSignals?: string;
 }
 
 export interface OpenPositionSummary {
@@ -315,7 +324,7 @@ ${m.macroContext.gdpYoyPct != null ? `- GDP YoY : ${m.macroContext.gdpYoyPct >= 
 
 ## Recent news (24-72h)
 ${recentNewsBlock || '- (no recent news provided)'}${sentimentLine}
-${m.screenerCandidates ? `\n## Screener candidates (scans de découverte EODHD)\n${m.screenerCandidates}\n` : ''}
+${m.screenerCandidates ? `\n## Screener candidates (scans de découverte EODHD)\n${m.screenerCandidates}\n` : ''}${m.insiderSignals ? `\n## Insider signals (SEC Form 4, 30j)\n${m.insiderSignals}\n` : ''}${m.optionsSignals ? `\n## Options flow (IV ATM · put/call ratio)\n${m.optionsSignals}\n` : ''}${m.liquidationsSignals ? `\n## Crypto liquidations (waves reversal)\n${m.liquidationsSignals}\n` : ''}
 
 ## Upcoming events (7 days)
 ${upcomingEventsBlock || '- (no upcoming events provided)'}
