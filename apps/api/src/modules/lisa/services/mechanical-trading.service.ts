@@ -21,6 +21,8 @@ import { SupabaseService } from '../../supabase/supabase.service';
 import { PerformanceService } from '../../performance/performance.service';
 import { DecisionLogService } from './decision-log.service';
 import { LisaService } from './lisa.service';
+import { EodhdTechnicalService } from './eodhd-technical.service';
+import { ExchangeHoursService } from './exchange-hours.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types internes
@@ -100,8 +102,8 @@ export class MechanicalTradingService {
     private readonly decisionLog: DecisionLogService,
     private readonly lisa: LisaService,
     private readonly performance: PerformanceService,
-    private readonly technical: import('./eodhd-technical.service').EodhdTechnicalService,
-    private readonly exchangeHours: import('./exchange-hours.service').ExchangeHoursService,
+    private readonly technical: EodhdTechnicalService,
+    private readonly exchangeHours: ExchangeHoursService,
   ) {}
 
   /**
