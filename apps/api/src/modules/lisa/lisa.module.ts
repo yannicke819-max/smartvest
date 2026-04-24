@@ -18,6 +18,7 @@ import { EodhdOptionsService } from './services/eodhd-options.service';
 import { BinanceLiquidationsService } from './services/binance-liquidations.service';
 import { EodhdFxWsService } from './services/eodhd-fx-ws.service';
 import { PortfolioCorrelationService } from './services/portfolio-correlation.service';
+import { AgentLisaSyncService } from './services/agent-lisa-sync.service';
 import { MechanicalTradingService } from './services/mechanical-trading.service';
 
 @Module({
@@ -40,6 +41,7 @@ import { MechanicalTradingService } from './services/mechanical-trading.service'
     BinanceLiquidationsService,
     EodhdFxWsService,
     PortfolioCorrelationService,
+    AgentLisaSyncService,
     MechanicalTradingService,
   ],
   exports: [
@@ -57,6 +59,7 @@ import { MechanicalTradingService } from './services/mechanical-trading.service'
     BinanceLiquidationsService,
     EodhdFxWsService,
     PortfolioCorrelationService,
+    AgentLisaSyncService,
   ],
 })
 export class LisaModule {}
