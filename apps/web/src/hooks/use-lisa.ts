@@ -144,7 +144,7 @@ export interface MechanicalDirective {
   market_momentum: string;
   trajectory_status: string;
   risk_posture: string;
-  target_symbols: string[];
+  target_symbols: Array<{ symbol: string; assetClass?: string; direction?: string; convictionScore?: number; horizonDays?: number; stopLossPct?: number; takeProfitPct?: number; venue?: string }>;
   favored_asset_classes: string[];
   avoided_asset_classes: string[];
   tactical_overrides: Record<string, unknown>;
