@@ -100,7 +100,39 @@ export class MechanicalTradingService {
     private readonly decisionLog: DecisionLogService,
     private readonly lisa: LisaService,
     private readonly performance: PerformanceService,
+    private readonly technical: import('./eodhd-technical.service').EodhdTechnicalService,
   ) {}
+
+  /**
+   * Dérive un stopPct basé sur l'ATR14 (volatilité réelle) plutôt qu'un
+   * pourcentage fixe arbitraire. Objectif : le stop s'adapte à la dynamique
+   * propre de chaque actif — BTC (σ élevée) aura un stop plus large que
+   * SPY (σ faible), donc moins de "stops sur bruit normal".
+   *
+   * Formule :
+   *   stopATR% = MULTIPLIER × ATR14% du prix actuel
+   *   stopFinal% = clamp(stopATR%, FLOOR, CEILING)
+   *   si ATR indispo → fallback sur stopPct "Lisa" (propagé)
+   *
+   * MULTIPLIER=1.5 → classique (distance "1.5 ATR" = 1σ sur horizon court).
+   * FLOOR=1.0%     → évite stops trop serrés même sur actifs très calmes.
+   * CEILING=5.0%   → limite l'exposition max par position.
+   */
+  private async deriveAtrStopPct(
+    eodhdTicker: string,
+    currentPrice: number,
+    fallbackPct: number,
+  ): Promise<{ stopPct: number; atr14Pct: number | null; source: 'atr' | 'fallback' }> {
+    try {
+      const ind = await this.technical.getIndicators(eodhdTicker, currentPrice);
+      if (ind.atr14Pct != null && ind.atr14Pct > 0) {
+        const raw = 1.5 * ind.atr14Pct;
+        const clamped = Math.max(1.0, Math.min(5.0, raw));
+        return { stopPct: clamped, atr14Pct: ind.atr14Pct, source: 'atr' };
+      }
+    } catch { /* fall through */ }
+    return { stopPct: fallbackPct, atr14Pct: null, source: 'fallback' };
+  }
 
   @Cron(CronExpression.EVERY_MINUTE, { name: 'mechanical-trading' })
   async runMechanicalCycle(): Promise<void> {
@@ -322,9 +354,15 @@ export class MechanicalTradingService {
       const notional = Decimal.min(maxNotional, cashUsd.mul(0.9));
       if (notional.lt(10)) continue;
 
-      // Stop / target prices — override Lisa peut resserrer les stops
-      const stopPct = Math.max((target.stopLossPct ?? 2) * stopsMult, 0.3);
-      const tpPct = Math.max(target.takeProfitPct ?? 4, 0.5);
+      // Stop / target prices — stop dynamique ATR-based avec override Lisa
+      // applicable par-dessus (tightenStopsMultiplier < 1 = stops plus serrés).
+      const fallbackStopPct = target.stopLossPct ?? 2;
+      const eodhdTicker = this.lisa['toEodhdTicker']
+        ? (this.lisa as unknown as { toEodhdTicker(s: string): string }).toEodhdTicker(target.symbol)
+        : target.symbol;
+      const atrDerived = await this.deriveAtrStopPct(eodhdTicker, price.toNumber(), fallbackStopPct);
+      const stopPct = Math.max(atrDerived.stopPct * stopsMult, 0.3);
+      const tpPct = Math.max(target.takeProfitPct ?? Math.max(atrDerived.stopPct * 2, 4), 0.5);
 
       const stopPrice = target.direction === 'long'
         ? price.mul(1 - stopPct / 100).toFixed(6)
@@ -332,6 +370,11 @@ export class MechanicalTradingService {
       const takeProfitPrice = target.direction === 'long'
         ? price.mul(1 + tpPct / 100).toFixed(6)
         : price.mul(1 - tpPct / 100).toFixed(6);
+
+      this.logger.log(
+        `[MÉCANIQUE] ${target.symbol} stop=${stopPct.toFixed(2)}% tp=${tpPct.toFixed(2)}% ` +
+        `(source=${atrDerived.source}, ATR14=${atrDerived.atr14Pct?.toFixed(2) ?? 'n/a'}%, override×${stopsMult})`,
+      );
 
       const horizonDays = target.horizonDays ?? 3;
       const horizonTargetDate = new Date(Date.now() + horizonDays * 86_400_000).toISOString();
