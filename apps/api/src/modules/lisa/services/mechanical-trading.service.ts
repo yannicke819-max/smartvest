@@ -270,9 +270,17 @@ export class MechanicalTradingService {
     //   - Plus de positions (20 vs 10) → réduit la variance idiosyncratique
     //   - Positions unitaires plus petites (8% vs 25%) → cap la perte par ticker
     //   - Plafond par classe d'actif (25%) → évite la concentration sectorielle
+    // On supporte les deux conventions de clé pour le cap par classe :
+    //   - maxExposurePerAssetClassPct (ancienne convention SmartVest, déjà
+    //     présente dans les configs existantes)
+    //   - maxAssetClassExposurePct (nouvelle convention P4.3)
+    // La nouvelle prend priorité si présente, sinon on lit l'ancienne, sinon default.
     const maxPositions = (constraints['maxOpenPositions'] as number) ?? 20;
     const maxPositionPct = (constraints['maxPositionSizePct'] as number) ?? 8;
-    const maxAssetClassPct = (constraints['maxAssetClassExposurePct'] as number) ?? 25;
+    const maxAssetClassPct =
+      (constraints['maxAssetClassExposurePct'] as number) ??
+      (constraints['maxExposurePerAssetClassPct'] as number) ??
+      25;
     const capitalUsd = new Decimal(cfg.capital_usd || '10000');
 
     if (activePositions.length >= maxPositions) return;
