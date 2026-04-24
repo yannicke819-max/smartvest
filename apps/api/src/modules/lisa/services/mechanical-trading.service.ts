@@ -101,6 +101,7 @@ export class MechanicalTradingService {
     private readonly lisa: LisaService,
     private readonly performance: PerformanceService,
     private readonly technical: import('./eodhd-technical.service').EodhdTechnicalService,
+    private readonly exchangeHours: import('./exchange-hours.service').ExchangeHoursService,
   ) {}
 
   /**
@@ -342,6 +343,16 @@ export class MechanicalTradingService {
         (p) => p.symbol.toUpperCase() === target.symbol.toUpperCase(),
       );
       if (alreadyOpen) continue;
+
+      // Skip si le marché n'est pas ouvert — évite les ouvertures à prix
+      // stale en afterhours/weekend/holiday qui gappent au réveil.
+      const marketState = this.exchangeHours.getMarketState(target.symbol, target.assetClass);
+      if (!marketState.isOpen) {
+        this.logger.debug(
+          `[MÉCANIQUE] Skip ${target.symbol} — marché ${this.exchangeHours.summarize(marketState)}`,
+        );
+        continue;
+      }
 
       // Prix live
       const quote = await this.lisa.getLivePrice(target.symbol).catch(() => null);
