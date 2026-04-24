@@ -256,7 +256,18 @@ export class MechanicalTradingService {
     }
 
     // === Overrides tactiques de Lisa (golden-trader) — s'appliquent AVANT le flow trajectoire ===
-    const overrides = directive.tacticalOverrides ?? {};
+    const rawOverrides = directive.tacticalOverrides ?? {};
+
+    // Auto-relax : si N cycles consécutifs ont ouvert 0 position ET que des
+    // overrides défensifs sont actifs, on les relâche progressivement pour
+    // éviter qu'un wake-up ponctuel paralyse le système indéfiniment.
+    const consecutiveZeroOpens = await this.countConsecutiveZeroOpenCycles(portfolioId);
+    const overrides = await this.relaxDefensiveOverrides(
+      rawOverrides,
+      consecutiveZeroOpens,
+      directive.trajectoryStatus,
+      portfolioId,
+    );
 
     // Lisa a explicitement demandé une pause → aucune ouverture ce cycle
     if (overrides.pauseOpens === true) {
@@ -1429,5 +1440,113 @@ export class MechanicalTradingService {
       generatedAt: new Date(data.generated_at as string),
       validUntil: new Date(data.valid_until as string),
     };
+  }
+
+  /**
+   * Compte le nombre de cycles consécutifs (depuis le plus récent) ayant
+   * opens_count = 0. Utilisé pour détecter une paralysie défensive.
+   */
+  private async countConsecutiveZeroOpenCycles(portfolioId: string): Promise<number> {
+    const { data } = await this.supabase.getClient()
+      .from('lisa_mechanical_cycle_summary')
+      .select('opens_count')
+      .eq('portfolio_id', portfolioId)
+      .order('cycle_at', { ascending: false })
+      .limit(20);
+
+    if (!data || data.length === 0) return 0;
+
+    let count = 0;
+    for (const row of data) {
+      if ((row.opens_count as number) === 0) count++;
+      else break;
+    }
+    return count;
+  }
+
+  /**
+   * Relâche progressivement les overrides défensifs après N cycles inactifs,
+   * pour éviter qu'un wake-up ponctuel paralyse le système indéfiniment.
+   *
+   * Seuils (en cycles, 1 cycle = 1 min) :
+   *   ≥ 5  → relax léger  : pauseOpens retiré si EN_RETARD, minConviction → 7, stops → 0.90
+   *   ≥ 10 → relax moyen  : minConviction → 6, stops → 0.95
+   *   ≥ 15 → reset complet : tous les overrides défensifs retirés
+   *
+   * Aucune action si la trajectoire est HORS_TRAJECTOIRE (posture défensive justifiée).
+   */
+  private async relaxDefensiveOverrides(
+    overrides: TacticalOverrides,
+    consecutiveZeroCycles: number,
+    trajectoryStatus: string,
+    portfolioId: string,
+  ): Promise<TacticalOverrides> {
+    if (consecutiveZeroCycles < 5) return overrides;
+    if (trajectoryStatus === 'HORS_TRAJECTOIRE') return overrides;
+
+    const hasDefensiveOverrides =
+      overrides.pauseOpens === true ||
+      (overrides.minConvictionOverride != null && overrides.minConvictionOverride >= 7) ||
+      (overrides.tightenStopsMultiplier != null && overrides.tightenStopsMultiplier < 0.95);
+
+    if (!hasDefensiveOverrides) return overrides;
+
+    const relaxed: TacticalOverrides = { ...overrides };
+
+    if (consecutiveZeroCycles >= 15) {
+      delete relaxed.pauseOpens;
+      delete relaxed.pauseOpensReason;
+      delete relaxed.minConvictionOverride;
+      delete relaxed.tightenStopsMultiplier;
+    } else if (consecutiveZeroCycles >= 10) {
+      delete relaxed.pauseOpens;
+      delete relaxed.pauseOpensReason;
+      if (relaxed.minConvictionOverride != null && relaxed.minConvictionOverride > 6) {
+        relaxed.minConvictionOverride = 6;
+      }
+      if (relaxed.tightenStopsMultiplier != null && relaxed.tightenStopsMultiplier < 0.95) {
+        relaxed.tightenStopsMultiplier = 0.95;
+      }
+    } else {
+      // 5–9 cycles
+      if (relaxed.pauseOpens === true && trajectoryStatus === 'EN_RETARD') {
+        delete relaxed.pauseOpens;
+        delete relaxed.pauseOpensReason;
+      }
+      if (relaxed.minConvictionOverride != null && relaxed.minConvictionOverride > 7) {
+        relaxed.minConvictionOverride = 7;
+      }
+      if (relaxed.tightenStopsMultiplier != null && relaxed.tightenStopsMultiplier < 0.90) {
+        relaxed.tightenStopsMultiplier = 0.90;
+      }
+    }
+
+    this.logger.log(
+      `[OVERRIDE RESET] ${portfolioId.slice(0, 8)} — ${consecutiveZeroCycles} cycles inactifs` +
+      ` → minConv=${relaxed.minConvictionOverride ?? 'off'}` +
+      ` stops=${relaxed.tightenStopsMultiplier ?? 1.0}` +
+      ` pauseOpens=${relaxed.pauseOpens ?? false}`,
+    );
+
+    await this.decisionLog.append({
+      portfolioId,
+      kind: 'autopilot_cycle_completed',
+      summary: `[OVERRIDE RESET] Relâchement overrides défensifs après ${consecutiveZeroCycles} cycles inactifs (trajectoire=${trajectoryStatus})`,
+      rationale:
+        consecutiveZeroCycles >= 15
+          ? 'Reset complet : wake-up défensif résorbé, aucune action depuis 15+ cycles.'
+          : consecutiveZeroCycles >= 10
+            ? 'Relax moyen : minConviction→6, stops→0.95, pauseOpens retiré.'
+            : 'Relax léger : minConviction→7, stops→0.90, pauseOpens retiré si EN_RETARD.',
+      payload: {
+        consecutive_zero_cycles: consecutiveZeroCycles,
+        original_overrides: overrides,
+        relaxed_overrides: relaxed,
+        trajectory_status: trajectoryStatus,
+      },
+      triggeredBy: 'mechanical_trading',
+    });
+
+    return relaxed;
   }
 }
