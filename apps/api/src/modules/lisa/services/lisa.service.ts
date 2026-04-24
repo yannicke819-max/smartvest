@@ -27,6 +27,7 @@ import { RealtimePriceService } from './realtime-price.service';
 import { EodhdEnrichmentService } from './eodhd-enrichment.service';
 import { EodhdTechnicalService } from './eodhd-technical.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
+import { BinanceMarketService } from './binance-market.service';
 
 /**
  * LisaService — orchestrateur principal du module AI analyst.
@@ -56,6 +57,7 @@ export class LisaService {
     private readonly eodhdEnrichment: EodhdEnrichmentService,
     private readonly eodhdTechnical: EodhdTechnicalService,
     private readonly eodhdIntraday: EodhdIntradayService,
+    private readonly binanceMarket: BinanceMarketService,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
     this.claudeClient = anthropicKey
@@ -431,16 +433,29 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       await Promise.all(openPositions.flatMap((pos) => {
         const eodhdTicker = this.toEodhdTicker(pos.symbol);
         const currentPrice = Number(pos.currentPrice);
-        return [
+        const isCrypto = pos.assetClass?.toLowerCase().includes('crypto');
+        const tasks: Promise<unknown>[] = [
           this.eodhdTechnical.getIndicators(eodhdTicker, currentPrice)
             .then((ind) => { technicalBySymbol[pos.symbol] = ind; })
             .catch((e) => this.logger.debug(`tech indicators failed for ${pos.symbol}: ${String(e).slice(0, 80)}`)),
-          this.eodhdIntraday.getCandles(eodhdTicker, '5m', 20)
-            .then((series) => {
-              if (series) intradayBySymbol[pos.symbol] = this.eodhdIntraday.summarize(series);
-            })
-            .catch((e) => this.logger.debug(`intraday fetch failed for ${pos.symbol}: ${String(e).slice(0, 80)}`)),
         ];
+        if (isCrypto) {
+          // Crypto → Binance direct (plus frais que EODHD + 24h stats gratuit)
+          tasks.push(
+            this.binanceMarket.summarize(pos.symbol)
+              .then((s) => { if (s) intradayBySymbol[pos.symbol] = s; })
+              .catch((e) => this.logger.debug(`binance summary failed for ${pos.symbol}: ${String(e).slice(0, 80)}`)),
+          );
+        } else {
+          tasks.push(
+            this.eodhdIntraday.getCandles(eodhdTicker, '5m', 20)
+              .then((series) => {
+                if (series) intradayBySymbol[pos.symbol] = this.eodhdIntraday.summarize(series);
+              })
+              .catch((e) => this.logger.debug(`intraday fetch failed for ${pos.symbol}: ${String(e).slice(0, 80)}`)),
+          );
+        }
+        return tasks;
       }));
     }
 
