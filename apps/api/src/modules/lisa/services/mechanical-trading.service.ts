@@ -723,6 +723,12 @@ export class MechanicalTradingService {
     await this.agentLisaSync.evaluateTriggers({
       portfolioId,
       userId,
+      openPositions: openPositions.map((p) => ({
+        symbol: p.symbol,
+        assetClass: (p as unknown as Record<string, unknown>)['asset_class'] as string ?? '',
+        direction: p.direction,
+        entryPrice: p.entryPrice,
+      })),
       portfolioDrawdownPct,
       worstPositionPnlPct,
       worstPositionSymbol,
