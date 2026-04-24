@@ -56,6 +56,9 @@ export interface MarketSnapshot {
     source: string;
     timestamp: string;
     relevance: 'high' | 'medium' | 'low';
+    /** Score sentiment EODHD : -1 (très négatif) → +1 (très positif).
+     *  null si non fourni. Lisa s'en sert pour pondérer le narrative. */
+    sentiment?: number | null;
   }>;
   /** Economic calendar 7 jours à venir */
   upcomingEvents: Array<{
@@ -243,8 +246,26 @@ export class ThesisGeneratorService {
 
     const recentNewsBlock = m.recentNews
       .slice(0, 10)
-      .map((n) => `- [${n.timestamp}] (${n.source}, ${n.relevance}) ${n.headline}`)
+      .map((n) => {
+        const sent = n.sentiment;
+        const sentTag = sent != null
+          ? ` · sent=${sent >= 0 ? '+' : ''}${sent.toFixed(2)}${sent > 0.3 ? ' 🟢' : sent < -0.3 ? ' 🔴' : ''}`
+          : '';
+        return `- [${n.timestamp}] (${n.source}, ${n.relevance}${sentTag}) ${n.headline}`;
+      })
       .join('\n');
+
+    // Agrégat sentiment global sur les 10 dernières news pour lecture rapide
+    const sentScores = m.recentNews
+      .slice(0, 10)
+      .map((n) => n.sentiment)
+      .filter((s): s is number => typeof s === 'number');
+    const avgSentiment = sentScores.length > 0
+      ? sentScores.reduce((a, b) => a + b, 0) / sentScores.length
+      : null;
+    const sentimentLine = avgSentiment != null
+      ? `\nSentiment agrégé 10 dernières news : ${avgSentiment >= 0 ? '+' : ''}${avgSentiment.toFixed(2)} (${avgSentiment > 0.15 ? 'bullish tilt' : avgSentiment < -0.15 ? 'bearish tilt' : 'neutre'}, n=${sentScores.length})`
+      : '';
 
     const upcomingEventsBlock = m.upcomingEvents
       .slice(0, 10)
@@ -275,7 +296,7 @@ Timestamp: ${m.timestamp}
 - Nasdaq: ${m.nasdaq}
 
 ## Recent news (24-72h)
-${recentNewsBlock || '- (no recent news provided)'}
+${recentNewsBlock || '- (no recent news provided)'}${sentimentLine}
 
 ## Upcoming events (7 days)
 ${upcomingEventsBlock || '- (no upcoming events provided)'}

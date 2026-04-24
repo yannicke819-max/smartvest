@@ -276,6 +276,7 @@ export class LisaService {
         source: n.symbols.length > 0 ? n.symbols.slice(0, 3).join(', ') : 'general',
         timestamp: n.date,
         relevance: (n.sentiment !== null && Math.abs(n.sentiment) >= 0.5) ? 'high' : 'medium',
+        sentiment: n.sentiment ?? null,
       }));
       // Trie les events : importance desc (3→1), puis date asc — les plus
       // critiques en premier. Cap à 20 pour éviter bloat du prompt.
