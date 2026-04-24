@@ -849,7 +849,16 @@ thèse initiale tient toujours (respect du plan, pas de panic-sell).
     //     quand Claude met un thesisId texte qu'on ne trouve nulle part, on
     //     présume une correspondance 1-à-1 avec allocations dans l'ordre).
     const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    const thesesRaw = (root.theses as Array<Record<string, unknown>>) ?? [];
+    // Filtre les éléments non-objets que Claude glisse parfois dans le tableau
+    // (strings orphelines, null, artefacts de parsing). Sans ça, `t.id = …`
+    // jette "Cannot create property 'id' on string '['" et casse le cycle.
+    const thesesRawUnfiltered = (root.theses as Array<unknown>) ?? [];
+    const thesesRaw = thesesRawUnfiltered.filter(
+      (t): t is Record<string, unknown> => t !== null && typeof t === 'object' && !Array.isArray(t),
+    );
+    if (thesesRaw.length !== thesesRawUnfiltered.length) {
+      root.theses = thesesRaw;
+    }
     const idMap = new Map<string, string>();
     const positionMap = new Map<number, string>();
     for (let i = 0; i < thesesRaw.length; i++) {
