@@ -1,19 +1,20 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 
 /**
  * ExchangeHoursService — détermine si un symbole peut être tradé à un
  * instant donné, en fonction de la classe d'actif et du marché d'origine.
  *
- * Implémentation pragmatique (sans dépendance EODHD live) :
+ * Horaires :
  * - Crypto : 24/7, toujours ouvert.
  * - FX majeurs : dimanche 21:00 UTC → vendredi 22:00 UTC (fermé weekend).
  * - Equity/ETF US : lundi-vendredi 14:30-21:00 UTC (regular session NYSE/NASDAQ).
  * - Bonds US : lundi-vendredi 13:00-22:00 UTC.
  * - Commodities ETFs : alignés sur US equity (traités comme ETF US).
  *
- * Couvre les jours fériés US les plus courants (MLK, Memorial, Juillet 4,
- * Labor, Thanksgiving, Noël). Pas granularité "early close" (13:00) car
- * l'impact prix est marginal — on reste long market hours.
+ * Jours fériés US : rafraîchis dynamiquement au boot et toutes les 24h
+ * via /api/exchange-details/US (EODHD). Fallback sur une liste hardcodée
+ * 2026 si l'API indispo (offline safe).
  *
  * Fournit aussi une estimation "minutes avant ouverture/fermeture" pour
  * que Lisa puisse anticiper un catalyseur (ex : éviter d'ouvrir SPY à
@@ -29,9 +30,10 @@ export interface MarketState {
   nextCloseMinutes: number | null; // minutes avant prochaine clôture, null si fermé
 }
 
-// Jours fériés US observés (fermeture NYSE + bond market). Format YYYY-MM-DD.
-// Mis à jour manuellement par année — liste 2026.
-const US_HOLIDAYS_2026 = new Set([
+// Jours fériés US — liste hardcodée 2026 utilisée en fallback si l'API
+// EODHD /exchange-details/US est indispo. Le loader dynamique remplit
+// `usHolidays` au boot ; si ça échoue on utilise cette liste.
+const US_HOLIDAYS_FALLBACK_2026 = new Set([
   '2026-01-01', // New Year
   '2026-01-19', // MLK Day
   '2026-02-16', // Presidents Day
@@ -45,8 +47,62 @@ const US_HOLIDAYS_2026 = new Set([
 ]);
 
 @Injectable()
-export class ExchangeHoursService {
+export class ExchangeHoursService implements OnModuleInit {
   private readonly logger = new Logger(ExchangeHoursService.name);
+  private usHolidays: Set<string> = new Set(US_HOLIDAYS_FALLBACK_2026);
+  private holidaysLoadedFromApi = false;
+
+  constructor(private readonly config: ConfigService) {}
+
+  onModuleInit(): void {
+    // Non-bloquant : chargement au boot + refresh toutes les 24h
+    setImmediate(() => this.refreshHolidays().catch(() => void 0));
+    setInterval(() => this.refreshHolidays().catch(() => void 0), 24 * 60 * 60 * 1000).unref();
+  }
+
+  private apiKey(): string | null {
+    const k = this.config.get<string>('EODHD_API_KEY');
+    return k && k !== 'demo' ? k : null;
+  }
+
+  /**
+   * Charge les jours fériés US depuis EODHD /exchange-details/US.
+   * Format de réponse (condensé) :
+   *   { ExchangeHolidays: { Holiday_1: { Date: "2026-01-01", Type: "public_holiday", ... }, ... } }
+   * En cas d'échec, on garde le fallback hardcodé — pas de downgrade de sécurité.
+   */
+  private async refreshHolidays(): Promise<void> {
+    const key = this.apiKey();
+    if (!key) return;
+    try {
+      const url = `https://eodhd.com/api/exchange-details/US?api_token=${encodeURIComponent(key)}&fmt=json`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) {
+        this.logger.warn(`exchange-details/US HTTP ${res.status} — fallback holidays restent actifs`);
+        return;
+      }
+      const data = await res.json() as { ExchangeHolidays?: Record<string, { Date?: string }> };
+      const map = data?.ExchangeHolidays;
+      if (!map || typeof map !== 'object') return;
+
+      const fresh = new Set<string>();
+      for (const h of Object.values(map)) {
+        const d = h?.Date;
+        if (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)) fresh.add(d);
+      }
+      if (fresh.size > 0) {
+        this.usHolidays = fresh;
+        this.holidaysLoadedFromApi = true;
+        this.logger.log(`Holidays US refreshed from EODHD: ${fresh.size} entries`);
+      }
+    } catch (e) {
+      this.logger.warn(`exchange-details/US fetch failed: ${String(e).slice(0, 100)} — fallback actif`);
+    }
+  }
+
+  private isUsHoliday(dateStr: string): boolean {
+    return this.usHolidays.has(dateStr);
+  }
 
   getMarketState(symbol: string, assetClass: string): MarketState {
     const now = new Date();
@@ -76,7 +132,7 @@ export class ExchangeHoursService {
     }
 
     // Jours fériés US → equities/ETFs/bonds fermés
-    if (US_HOLIDAYS_2026.has(dateStr)) {
+    if (this.isUsHoliday(dateStr)) {
       return { symbol, assetClass, isOpen: false, reason: 'holiday', nextOpenMinutes: this.minutesUntilNextUsEquityOpen(now), nextCloseMinutes: null };
     }
 
@@ -153,7 +209,7 @@ export class ExchangeHoursService {
       }
       const d = target.getUTCDay();
       const dateStr = target.toISOString().slice(0, 10);
-      if (d !== 0 && d !== 6 && !US_HOLIDAYS_2026.has(dateStr)) {
+      if (d !== 0 && d !== 6 && !this.isUsHoliday(dateStr)) {
         return Math.max(0, Math.floor((target.getTime() - now.getTime()) / 60000));
       }
     }
