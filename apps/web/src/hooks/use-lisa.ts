@@ -157,10 +157,30 @@ export interface AgentAction {
   payload: Record<string, unknown>;
 }
 
+export interface AgentWakeUp {
+  timestamp: string;
+  summary: string;
+  payload: {
+    trigger_type: string;
+    tier?: 'tier_1' | 'tier_2';
+    trigger_value?: number;
+    threshold?: number;
+    symbol?: string | null;
+    wake_count_today?: number;
+    daily_budget?: number;
+    extra?: Record<string, unknown> | null;
+  };
+}
+
 export interface LisaAgentStatus {
   directive: MechanicalDirective | null;
   cycles: MechanicalCycleSummary[];
   recentActions: AgentAction[];
+  agentWakeUps?: {
+    today: AgentWakeUp[];
+    countToday: number;
+    dailyBudget: number;
+  };
 }
 
 export interface LisaDecisionLogRow {

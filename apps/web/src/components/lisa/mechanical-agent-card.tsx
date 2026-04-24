@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Activity, ChevronDown, ChevronUp, Zap, AlertTriangle, TrendingUp, TrendingDown, Minus, Clock, Eye, Rocket, CheckCircle2, Hourglass, XCircle, ShieldAlert, Target, Ban } from 'lucide-react';
+import { Activity, ChevronDown, ChevronUp, Zap, AlertTriangle, TrendingUp, TrendingDown, Minus, Clock, Eye, Rocket, CheckCircle2, Hourglass, XCircle, ShieldAlert, Target, Ban, Radio } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import type { LisaAgentStatus, MechanicalCycleSummary, AgentAction } from '@/hooks/use-lisa';
 
@@ -315,6 +315,90 @@ function ActionRow({ action }: { action: AgentAction }) {
   );
 }
 
+// P5.5 — Section Wake-Ups agent → Lisa
+// Montre combien de fois l'agent a réveillé Lisa aujourd'hui, avec quels
+// triggers. Vide si aucun wake-up (= comportement sain, pas de stress).
+const WAKE_UP_TRIGGER_LABELS: Record<string, { label: string; color: string; bg: string; Icon: typeof Zap }> = {
+  vix_spike: { label: 'VIX spike', color: 'text-red-700 dark:text-red-300', bg: 'bg-red-50 dark:bg-red-950/40', Icon: AlertTriangle },
+  portfolio_drawdown: { label: 'Drawdown portfolio', color: 'text-orange-700 dark:text-orange-300', bg: 'bg-orange-50 dark:bg-orange-950/40', Icon: TrendingDown },
+  position_pnl: { label: 'Position en souffrance', color: 'text-red-700 dark:text-red-300', bg: 'bg-red-50 dark:bg-red-950/40', Icon: TrendingDown },
+  news_sentiment_shock: { label: 'News choc', color: 'text-purple-700 dark:text-purple-300', bg: 'bg-purple-50 dark:bg-purple-950/40', Icon: Zap },
+  liquidation_wave: { label: 'Liquidation wave', color: 'text-amber-700 dark:text-amber-300', bg: 'bg-amber-50 dark:bg-amber-950/40', Icon: Activity },
+  insider_bulk_buy: { label: 'Insider bulk buy', color: 'text-emerald-700 dark:text-emerald-300', bg: 'bg-emerald-50 dark:bg-emerald-950/40', Icon: TrendingUp },
+  adx_regime_shift: { label: 'Régime range', color: 'text-slate-700 dark:text-slate-300', bg: 'bg-slate-50 dark:bg-slate-900/40', Icon: Minus },
+};
+
+function WakeUpSection({ wakeUps }: { wakeUps: LisaAgentStatus['agentWakeUps'] }) {
+  if (!wakeUps) return null;
+  const { today, countToday, dailyBudget } = wakeUps;
+  const budgetPct = Math.min(100, (countToday / dailyBudget) * 100);
+  const budgetColor = countToday === 0
+    ? 'bg-slate-300 dark:bg-slate-700'
+    : countToday < dailyBudget * 0.5
+    ? 'bg-emerald-500'
+    : countToday < dailyBudget * 0.875
+    ? 'bg-amber-500'
+    : 'bg-red-500';
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <p className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+          <Radio className="h-3 w-3" />
+          Agent → Lisa wake-ups
+        </p>
+        <span className="text-[10px] text-muted-foreground tabular-nums">
+          {countToday} / {dailyBudget} aujourd'hui
+        </span>
+      </div>
+
+      {/* Budget bar */}
+      <div className="mb-2 h-1.5 w-full rounded-full bg-muted/40 overflow-hidden">
+        <div className={`h-full transition-all ${budgetColor}`} style={{ width: `${Math.max(2, budgetPct)}%` }} />
+      </div>
+
+      {today.length === 0 ? (
+        <p className="text-xs text-muted-foreground italic">
+          Aucun réveil Lisa aujourd'hui — conditions calmes (VIX normal, drawdown contenu, positions saines). ✅
+        </p>
+      ) : (
+        <div className="max-h-32 overflow-y-auto space-y-1">
+          {today.slice(0, 6).map((w, i) => {
+            const info = WAKE_UP_TRIGGER_LABELS[w.payload.trigger_type] ?? {
+              label: w.payload.trigger_type,
+              color: 'text-slate-600 dark:text-slate-400',
+              bg: 'bg-slate-50 dark:bg-slate-900/40',
+              Icon: Zap,
+            };
+            const ago = Math.round((Date.now() - new Date(w.timestamp).getTime()) / 60000);
+            const agoLabel = ago < 60 ? `${ago}m` : `${Math.round(ago / 60)}h`;
+            const Icon = info.Icon;
+            return (
+              <div key={i} className="flex items-center gap-2 py-1 text-xs">
+                <span className="text-muted-foreground whitespace-nowrap w-10 shrink-0 text-right tabular-nums">
+                  {agoLabel}
+                </span>
+                <span className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide shrink-0 ${info.bg} ${info.color}`}>
+                  <Icon className="h-3 w-3" />
+                  {info.label}
+                </span>
+                {w.payload.symbol && (
+                  <span className="font-mono text-[11px] text-foreground/70">{w.payload.symbol}</span>
+                )}
+                {w.payload.tier && (
+                  <span className={`text-[9px] uppercase px-1 rounded ${w.payload.tier === 'tier_1' ? 'bg-red-100 text-red-700 dark:bg-red-950/50 dark:text-red-400' : 'bg-blue-100 text-blue-700 dark:bg-blue-950/50 dark:text-blue-400'}`}>
+                    {w.payload.tier === 'tier_1' ? 'T1' : 'T2'}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function MechanicalAgentCard({ data, isLoading }: Props) {
   const [showCycles, setShowCycles] = useState(false);
   const [showActions, setShowActions] = useState(true);
@@ -414,6 +498,9 @@ export function MechanicalAgentCard({ data, isLoading }: Props) {
             )}
           </div>
         )}
+
+        {/* P5.5 — Wake-Ups Agent → Lisa */}
+        <WakeUpSection wakeUps={data?.agentWakeUps} />
 
         {/* Actions récentes */}
         <div>
