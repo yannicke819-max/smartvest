@@ -1472,12 +1472,14 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     };
     if (commodityMap[s]) return commodityMap[s];
 
-    // Indices & volatility — utiliser l'ETF tradable quand dispo, sinon .INDX
+    // Indices & volatility — pour VIX et DXY on veut la VALEUR de l'indice,
+    // pas le prix d'un ETF proxy (VXX ≠ VIX spot, UUP ≈ 27 vs DXY ≈ 102).
+    // Les ETFs d'actions (SPY, QQQ, DIA, IWM) restent OK comme proxy tradable.
     const indexMap: Record<string, string> = {
-      'VIX': 'VXX.US', 'VIX.US': 'VXX.US', 'VIX.INDX': 'VXX.US',
-      '^VIX': 'VXX.US', '^VIX.INDX': 'VXX.US',
-      'DXY': 'UUP.US', 'DXY.US': 'UUP.US', 'DX-Y.NYB': 'UUP.US',
-      'DX-Y.NYB.FOREX': 'UUP.US', '^DXY': 'UUP.US',
+      'VIX': '^VIX.INDX', 'VIX.US': '^VIX.INDX', 'VIX.INDX': '^VIX.INDX',
+      '^VIX': '^VIX.INDX', '^VIX.INDX': '^VIX.INDX',
+      'DXY': 'DX-Y.NYB.FOREX', 'DXY.US': 'DX-Y.NYB.FOREX', 'DX-Y.NYB': 'DX-Y.NYB.FOREX',
+      'DX-Y.NYB.FOREX': 'DX-Y.NYB.FOREX', '^DXY': 'DX-Y.NYB.FOREX',
       'SPX': 'SPY.US', '^SPX': 'SPY.US', 'SPX.INDX': 'SPY.US',
       'NDX': 'QQQ.US', '^NDX': 'QQQ.US', 'NDX.INDX': 'QQQ.US',
       'DJI': 'DIA.US', '^DJI': 'DIA.US',
