@@ -56,6 +56,9 @@ export interface MarketSnapshot {
     source: string;
     timestamp: string;
     relevance: 'high' | 'medium' | 'low';
+    /** Score sentiment EODHD : -1 (très négatif) → +1 (très positif).
+     *  null si non fourni. Lisa s'en sert pour pondérer le narrative. */
+    sentiment?: number | null;
   }>;
   /** Economic calendar 7 jours à venir */
   upcomingEvents: Array<{
@@ -63,6 +66,18 @@ export interface MarketSnapshot {
     date: string;
     importance: 'high' | 'medium' | 'low';
   }>;
+  /** Contexte macro structurant (réels fournis par /api/macro-indicator).
+   *  Optionnel — si absent, Lisa opère sur VIX/DXY only. */
+  macroContext?: {
+    country: string;
+    realRateUsPct: number | null;
+    inflationYoyPct: number | null;
+    unemploymentPct: number | null;
+    gdpYoyPct: number | null;
+  };
+  /** Candidats du screener EODHD (momentum / oversold / volume anomaly).
+   *  Permet à Lisa de découvrir des tickers au-delà de son univers mental. */
+  screenerCandidates?: string; // texte pré-formaté
 }
 
 export interface OpenPositionSummary {
@@ -243,8 +258,26 @@ export class ThesisGeneratorService {
 
     const recentNewsBlock = m.recentNews
       .slice(0, 10)
-      .map((n) => `- [${n.timestamp}] (${n.source}, ${n.relevance}) ${n.headline}`)
+      .map((n) => {
+        const sent = n.sentiment;
+        const sentTag = sent != null
+          ? ` · sent=${sent >= 0 ? '+' : ''}${sent.toFixed(2)}${sent > 0.3 ? ' 🟢' : sent < -0.3 ? ' 🔴' : ''}`
+          : '';
+        return `- [${n.timestamp}] (${n.source}, ${n.relevance}${sentTag}) ${n.headline}`;
+      })
       .join('\n');
+
+    // Agrégat sentiment global sur les 10 dernières news pour lecture rapide
+    const sentScores = m.recentNews
+      .slice(0, 10)
+      .map((n) => n.sentiment)
+      .filter((s): s is number => typeof s === 'number');
+    const avgSentiment = sentScores.length > 0
+      ? sentScores.reduce((a, b) => a + b, 0) / sentScores.length
+      : null;
+    const sentimentLine = avgSentiment != null
+      ? `\nSentiment agrégé 10 dernières news : ${avgSentiment >= 0 ? '+' : ''}${avgSentiment.toFixed(2)} (${avgSentiment > 0.15 ? 'bullish tilt' : avgSentiment < -0.15 ? 'bearish tilt' : 'neutre'}, n=${sentScores.length})`
+      : '';
 
     const upcomingEventsBlock = m.upcomingEvents
       .slice(0, 10)
@@ -266,7 +299,13 @@ Timestamp: ${m.timestamp}
 - Credit IG OAS: ${m.creditIgOasBps}bps
 - Credit HY OAS: ${m.creditHyOasBps}bps
 - Brent: $${m.brentUsd}
-- Gold: $${m.goldUsd}
+- Gold: $${m.goldUsd}${m.macroContext ? `
+
+### Macro context (${m.macroContext.country}, dernière publication)
+${m.macroContext.realRateUsPct != null ? `- Real rate : ${m.macroContext.realRateUsPct >= 0 ? '+' : ''}${m.macroContext.realRateUsPct.toFixed(2)}%` : ''}
+${m.macroContext.inflationYoyPct != null ? `- CPI YoY : ${m.macroContext.inflationYoyPct.toFixed(2)}%` : ''}
+${m.macroContext.unemploymentPct != null ? `- Unemployment : ${m.macroContext.unemploymentPct.toFixed(2)}%` : ''}
+${m.macroContext.gdpYoyPct != null ? `- GDP YoY : ${m.macroContext.gdpYoyPct >= 0 ? '+' : ''}${m.macroContext.gdpYoyPct.toFixed(2)}%` : ''}` : ''}
 - BTC: $${m.btcUsd}
 - ETH: $${m.ethUsd}
 - EUR/USD: ${m.eurUsd}
@@ -275,7 +314,8 @@ Timestamp: ${m.timestamp}
 - Nasdaq: ${m.nasdaq}
 
 ## Recent news (24-72h)
-${recentNewsBlock || '- (no recent news provided)'}
+${recentNewsBlock || '- (no recent news provided)'}${sentimentLine}
+${m.screenerCandidates ? `\n## Screener candidates (scans de découverte EODHD)\n${m.screenerCandidates}\n` : ''}
 
 ## Upcoming events (7 days)
 ${upcomingEventsBlock || '- (no upcoming events provided)'}

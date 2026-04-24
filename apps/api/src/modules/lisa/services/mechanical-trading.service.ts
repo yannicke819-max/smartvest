@@ -501,10 +501,143 @@ export class MechanicalTradingService {
     if (hitStop) {
       await this.closePosition(pos.id, quote.price, 'closed_stop',
         `[MÉCANIQUE] Stop-loss atteint ${pos.symbol} @ ${currentPrice.toFixed(4)} (stop=${pos.stopLossPrice})`);
-    } else if (hitTarget) {
+      return;
+    }
+    if (hitTarget) {
       await this.closePosition(pos.id, quote.price, 'closed_target',
         `[MÉCANIQUE] Take-profit atteint ${pos.symbol} @ ${currentPrice.toFixed(4)} (target=${pos.takeProfitPrice})`);
+      return;
     }
+
+    // AUCUN stop/target atteint → checker les signaux réactifs (indicateurs
+    // techniques) pour potentiellement clôturer plus tôt OU trailer le stop.
+    await this.checkReactiveSignals(pos, currentPrice);
+  }
+
+  /**
+   * Agent réactif : à chaque cycle 1 min, analyse les indicateurs techniques
+   * courants pour décider d'actions proactives SANS attendre Lisa :
+   *
+   *  a) Close anticipé sur signal de reversal :
+   *     - LONG + RSI14 > 80 ET P&L > +1% → take profit (overbought exit)
+   *     - SHORT + RSI14 < 20 ET P&L > +1% → take profit
+   *     - LONG + MACD_hist bearish cross (passe + → -) ET P&L > 0 → exit momentum
+   *     - SHORT + MACD_hist bullish cross (passe - → +) ET P&L > 0 → exit momentum
+   *     - LONG + close < BB_lower (BB_%B < 0) sur un asset non-contrarian → exit
+   *
+   *  b) Trailing stop : ratchet le stop quand le P&L latent dépasse des paliers
+   *     - P&L > +1.5% → stop monté à breakeven (entry price)
+   *     - P&L > +3% → stop monté à +0.5% du entry
+   *     - P&L > +5% → stop trailing à -1× ATR14 du prix courant
+   *
+   * Règle absolue : le trailing ne peut QUE resserrer le stop (jamais le
+   * relâcher). Et ne jamais trailer un stop qui résulterait en P&L négatif.
+   */
+  private async checkReactiveSignals(pos: OpenPosition, currentPrice: Decimal): Promise<void> {
+    const entryPx = new Decimal(pos.entryPrice);
+    if (entryPx.lte(0)) return;
+
+    const isLong = pos.direction === 'long';
+    const pnlPct = isLong
+      ? currentPrice.minus(entryPx).div(entryPx).mul(100).toNumber()
+      : entryPx.minus(currentPrice).div(entryPx).mul(100).toNumber();
+
+    // Pas de signal réactif si position fraîche (< 2 min) — évite les close
+    // sur bougie de formation pendant l'ouverture
+    const ageMs = Date.now() - new Date((pos as unknown as Record<string, unknown>)['entry_timestamp'] as string || Date.now()).getTime();
+    if (ageMs < 2 * 60_000) return;
+
+    // Récupère les indicateurs techniques (cache 5 min, donc appels réels ~12/h)
+    const eodhdTicker = (this.lisa as unknown as { toEodhdTicker(s: string): string }).toEodhdTicker(pos.symbol);
+    let ind: import('./eodhd-technical.service').TechnicalIndicators | null = null;
+    try {
+      ind = await this.technical.getIndicators(eodhdTicker, currentPrice.toNumber());
+    } catch { /* indicators unavailable — skip reactive, keep baseline stops */ }
+
+    if (!ind) return;
+
+    // ─── a) Close anticipé sur signal de reversal ───────────────────────────
+    let reactiveCloseReason: string | null = null;
+
+    // RSI extreme + P&L positif → lock in profits
+    if (pnlPct > 1) {
+      if (isLong && ind.rsi14 != null && ind.rsi14 > 80) {
+        reactiveCloseReason = `RSI14=${ind.rsi14.toFixed(1)} > 80 (overbought) + P&L=+${pnlPct.toFixed(2)}% → take profit`;
+      } else if (!isLong && ind.rsi14 != null && ind.rsi14 < 20) {
+        reactiveCloseReason = `RSI14=${ind.rsi14.toFixed(1)} < 20 (oversold) + P&L=+${pnlPct.toFixed(2)}% → take profit short`;
+      }
+    }
+
+    // MACD cross contre-direction + P&L positif → exit momentum
+    if (!reactiveCloseReason && pnlPct > 0 && ind.macdHist != null) {
+      if (isLong && ind.macdHist < 0 && Math.abs(ind.macdHist) > 0.01) {
+        reactiveCloseReason = `MACD_hist=${ind.macdHist.toFixed(3)} bearish sur LONG + P&L=+${pnlPct.toFixed(2)}% → exit momentum`;
+      } else if (!isLong && ind.macdHist > 0 && Math.abs(ind.macdHist) > 0.01) {
+        reactiveCloseReason = `MACD_hist=+${ind.macdHist.toFixed(3)} bullish sur SHORT + P&L=+${pnlPct.toFixed(2)}% → exit momentum`;
+      }
+    }
+
+    if (reactiveCloseReason) {
+      await this.closePosition(pos.id, currentPrice.toString(), 'closed_target',
+        `[MÉCANIQUE] Exit réactif ${pos.symbol} @ ${currentPrice.toFixed(4)} : ${reactiveCloseReason}`);
+      return;
+    }
+
+    // ─── b) Trailing stop ──────────────────────────────────────────────────
+    if (pnlPct <= 1.5) return; // pas encore assez de marge
+
+    let newStopPct: number | null = null;
+    if (pnlPct >= 5 && ind.atr14Pct != null && ind.atr14Pct > 0) {
+      // Trail à -1× ATR du prix actuel
+      newStopPct = ind.atr14Pct;
+    } else if (pnlPct >= 3) {
+      // Stop à +0.5% du entry
+      newStopPct = -0.5;
+    } else if (pnlPct >= 1.5) {
+      // Stop à breakeven (0% vs entry)
+      newStopPct = 0;
+    }
+
+    if (newStopPct === null) return;
+
+    // Calcul du nouveau prix de stop. newStopPct est :
+    //  - distance en % DU PRIX ACTUEL si pnlPct >= 5 (trailing ATR)
+    //  - distance en % DU ENTRY si 1.5 <= pnlPct < 5 (breakeven / lock)
+    let newStopPrice: Decimal;
+    let stopLabel: string;
+    if (pnlPct >= 5) {
+      newStopPrice = isLong
+        ? currentPrice.mul(1 - newStopPct / 100)
+        : currentPrice.mul(1 + newStopPct / 100);
+      stopLabel = `trailing ATR (-${newStopPct.toFixed(2)}% vs prix)`;
+    } else {
+      newStopPrice = isLong
+        ? entryPx.mul(1 + newStopPct / 100)
+        : entryPx.mul(1 - newStopPct / 100);
+      stopLabel = newStopPct === 0 ? 'breakeven' : `lock +${newStopPct}% vs entry`;
+    }
+
+    // Règle absolue : le nouveau stop ne peut QUE resserrer (jamais relâcher)
+    const currentStop = pos.stopLossPrice ? new Decimal(pos.stopLossPrice) : null;
+    if (currentStop) {
+      const tightens = isLong ? newStopPrice.gt(currentStop) : newStopPrice.lt(currentStop);
+      if (!tightens) return; // stop actuel déjà plus strict
+    }
+
+    // Persist le nouveau stop
+    const { error } = await this.supabase.getClient()
+      .from('lisa_positions')
+      .update({ stop_loss_price: newStopPrice.toFixed(6) })
+      .eq('id', pos.id);
+
+    if (error) {
+      this.logger.warn(`trailing stop update failed ${pos.symbol}: ${error.message}`);
+      return;
+    }
+
+    this.logger.log(
+      `[MÉCANIQUE] Trailing stop ${pos.symbol} → ${newStopPrice.toFixed(4)} (${stopLabel}, P&L=+${pnlPct.toFixed(2)}%)`,
+    );
   }
 
   private async closePosition(

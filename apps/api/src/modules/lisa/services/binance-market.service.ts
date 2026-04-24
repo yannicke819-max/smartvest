@@ -42,12 +42,24 @@ export interface BinanceTicker24h {
   count: number;        // number of trades
 }
 
+export interface BinanceFutureStats {
+  symbol: string;
+  fundingRate: number;       // taux actuel (8h period, ex: 0.0001 = 0.01%)
+  fundingRatePct: number;    // en pourcentage
+  fundingAnnualizedPct: number; // annualisé (× 3 × 365)
+  nextFundingTime: number;   // unix ms
+  openInterestUsd: number;   // OI × mark price (USD)
+  asOf: number;
+}
+
 @Injectable()
 export class BinanceMarketService {
   private readonly logger = new Logger(BinanceMarketService.name);
   private readonly BASE_URL = 'https://api.binance.com';
+  private readonly FAPI_URL = 'https://fapi.binance.com';
   private klinesCache = new Map<string, { data: BinanceCandle[]; asOf: number }>();
   private tickerCache = new Map<string, { data: BinanceTicker24h; asOf: number }>();
+  private futuresCache = new Map<string, { data: BinanceFutureStats; asOf: number }>();
 
   /**
    * Convertit un symbole SmartVest en symbole Binance. Retourne null si
@@ -142,6 +154,51 @@ export class BinanceMarketService {
   }
 
   /**
+   * Récupère le funding rate courant et l'open interest pour un perpétuel
+   * Binance Futures USD-Margined (fapi).
+   *
+   * Signal "golden-boy" :
+   *   - Funding rate extrême (> +0.05% ou < -0.05% sur 8h) = positionnement
+   *     très one-sided → short squeeze / long squeeze imminent
+   *   - OI qui grimpe rapidement = positionnement fort (confirmation trend
+   *     si prix monte, divergence si prix stagne)
+   */
+  async getFutureStats(binanceSymbol: string): Promise<BinanceFutureStats | null> {
+    const cached = this.futuresCache.get(binanceSymbol);
+    if (cached && Date.now() - cached.asOf < 60_000) return cached.data;
+
+    try {
+      const [pIdx, oi] = await Promise.all([
+        fetch(`${this.FAPI_URL}/fapi/v1/premiumIndex?symbol=${binanceSymbol}`, { signal: AbortSignal.timeout(5000) }),
+        fetch(`${this.FAPI_URL}/fapi/v1/openInterest?symbol=${binanceSymbol}`, { signal: AbortSignal.timeout(5000) }),
+      ]);
+      if (!pIdx.ok || !oi.ok) return null;
+
+      const pData = await pIdx.json() as Record<string, unknown>;
+      const oData = await oi.json() as Record<string, unknown>;
+
+      const fundingRate = Number(pData.lastFundingRate ?? 0);
+      const markPrice = Number(pData.markPrice ?? 0);
+      const oiNative = Number(oData.openInterest ?? 0);
+
+      const stats: BinanceFutureStats = {
+        symbol: binanceSymbol,
+        fundingRate,
+        fundingRatePct: fundingRate * 100,
+        fundingAnnualizedPct: fundingRate * 3 * 365 * 100,
+        nextFundingTime: Number(pData.nextFundingTime ?? 0),
+        openInterestUsd: oiNative * markPrice,
+        asOf: Date.now(),
+      };
+      this.futuresCache.set(binanceSymbol, { data: stats, asOf: Date.now() });
+      return stats;
+    } catch (e) {
+      this.logger.debug(`Binance futures failed ${binanceSymbol}: ${String(e).slice(0, 80)}`);
+      return null;
+    }
+  }
+
+  /**
    * Résumé compact 24h + klines 5m pour injection dans le briefing Lisa.
    * Ex : "24h: +4.32% · $58.2B vol · range 87k-92k · intraday 5m: bullish momentum · VOL SURGE"
    */
@@ -149,9 +206,10 @@ export class BinanceMarketService {
     const bs = this.toBinanceSymbol(symbol);
     if (!bs) return null;
 
-    const [ticker, klines] = await Promise.all([
+    const [ticker, klines, futures] = await Promise.all([
       this.getTicker24h(bs),
       this.getKlines(bs, '5m', 20),
+      this.getFutureStats(bs),
     ]);
 
     const parts: string[] = [];
@@ -179,6 +237,21 @@ export class BinanceMarketService {
       if (avgVol > 0 && last.volume > avgVol * 1.5) {
         parts.push('VOL SURGE');
       }
+    }
+
+    if (futures) {
+      // Tag signal golden-boy : funding extrême (> ±0.05% sur 8h = ±55%/an)
+      const fundingTag = futures.fundingRatePct > 0.05
+        ? ' 🔴 LONG SQUEEZE RISK'
+        : futures.fundingRatePct < -0.05
+          ? ' 🟢 SHORT SQUEEZE RISK'
+          : '';
+      parts.push(
+        `funding=${futures.fundingRatePct >= 0 ? '+' : ''}${futures.fundingRatePct.toFixed(4)}%/8h ` +
+        `(~${futures.fundingAnnualizedPct >= 0 ? '+' : ''}${futures.fundingAnnualizedPct.toFixed(1)}%/an)${fundingTag}`,
+      );
+      const oiBn = futures.openInterestUsd / 1e9;
+      parts.push(`OI=${oiBn >= 1 ? oiBn.toFixed(2) + 'B' : (futures.openInterestUsd / 1e6).toFixed(0) + 'M'}$`);
     }
 
     return parts.length > 0 ? parts.join(' · ') : null;

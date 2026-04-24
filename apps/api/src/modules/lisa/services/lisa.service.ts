@@ -28,6 +28,8 @@ import { EodhdEnrichmentService } from './eodhd-enrichment.service';
 import { EodhdTechnicalService } from './eodhd-technical.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
 import { BinanceMarketService } from './binance-market.service';
+import { EodhdMacroService } from './eodhd-macro.service';
+import { EodhdScreenerService } from './eodhd-screener.service';
 
 /**
  * LisaService — orchestrateur principal du module AI analyst.
@@ -58,6 +60,8 @@ export class LisaService {
     private readonly eodhdTechnical: EodhdTechnicalService,
     private readonly eodhdIntraday: EodhdIntradayService,
     private readonly binanceMarket: BinanceMarketService,
+    private readonly eodhdMacro: EodhdMacroService,
+    private readonly eodhdScreener: EodhdScreenerService,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
     this.claudeClient = anthropicKey
@@ -267,15 +271,30 @@ export class LisaService {
     // dans le MarketSnapshot pour que Lisa voie les catalyseurs récents et
     // à venir (sinon elle raisonne à l'aveugle côté news).
     try {
-      const [news, econEvents] = await Promise.all([
+      const [news, econEvents, macro, screenerSummary] = await Promise.all([
         this.eodhdEnrichment.fetchRecentNews(undefined, 15),
         this.eodhdEnrichment.fetchUpcomingEconomicEvents(7, 1),
+        this.eodhdMacro.getMacroContext('USA').catch(() => null),
+        this.eodhdScreener.summarizeAllScans().catch(() => ''),
       ]);
+      if (screenerSummary) {
+        marketSnapshot.screenerCandidates = screenerSummary;
+      }
+      if (macro) {
+        marketSnapshot.macroContext = {
+          country: macro.country,
+          realRateUsPct: macro.realRate?.value ?? null,
+          inflationYoyPct: macro.inflationYoY?.value ?? null,
+          unemploymentPct: macro.unemployment?.value ?? null,
+          gdpYoyPct: macro.gdpGrowth?.value ?? null,
+        };
+      }
       marketSnapshot.recentNews = news.slice(0, 10).map((n) => ({
         headline: n.title,
         source: n.symbols.length > 0 ? n.symbols.slice(0, 3).join(', ') : 'general',
         timestamp: n.date,
         relevance: (n.sentiment !== null && Math.abs(n.sentiment) >= 0.5) ? 'high' : 'medium',
+        sentiment: n.sentiment ?? null,
       }));
       // Trie les events : importance desc (3→1), puis date asc — les plus
       // critiques en premier. Cap à 20 pour éviter bloat du prompt.
