@@ -117,7 +117,21 @@ export class EodhdScreenerService {
       const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
       const latencyMs = Date.now() - tStart;
       if (!res.ok) {
-        this.logCall({ ticker: `screener_${preset}`, success: false, statusCode: res.status, latencyMs, errorMessage: `HTTP_${res.status}` });
+        // On capture le body d'erreur EODHD pour diagnostic (souvent un JSON
+        // { "errors": "filter 'X' is not supported" }). Stocké dans error_message
+        // pour être consultable depuis la DB sans accès terminal.
+        let bodySnippet = '';
+        try {
+          const bodyText = await res.text();
+          bodySnippet = bodyText.slice(0, 400);
+        } catch { /* ignore */ }
+        this.logCall({
+          ticker: `screener_${preset}`,
+          success: false,
+          statusCode: res.status,
+          latencyMs,
+          errorMessage: `HTTP_${res.status} · ${bodySnippet || 'no body'}`,
+        });
         return [];
       }
       const body = await res.json() as Record<string, unknown>;
