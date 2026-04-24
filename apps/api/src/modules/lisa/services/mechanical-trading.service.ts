@@ -24,6 +24,7 @@ import { LisaService } from './lisa.service';
 import { EodhdTechnicalService } from './eodhd-technical.service';
 import { ExchangeHoursService } from './exchange-hours.service';
 import { PortfolioCorrelationService } from './portfolio-correlation.service';
+import { AgentLisaSyncService } from './agent-lisa-sync.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types internes
@@ -106,6 +107,7 @@ export class MechanicalTradingService {
     private readonly technical: EodhdTechnicalService,
     private readonly exchangeHours: ExchangeHoursService,
     private readonly correlation: PortfolioCorrelationService,
+    private readonly agentLisaSync: AgentLisaSyncService,
   ) {}
 
   /**
@@ -199,6 +201,14 @@ export class MechanicalTradingService {
     //   - close-weakest (default -0.5%) → ferme la position plus faible, bloque les ouvertures
     const guard = await this.checkPortfolioDrawdownGuard(cfg, openPositions);
     if (guard === 'kill_switch_triggered') return;  // tout fermé, fin de cycle
+
+    // Step 0.5 — P5.1 Agent ↔ Lisa interactive loop
+    // Détecte les triggers Tier 1 (drawdown proche kill-switch, position en
+    // souffrance, VIX spike) et réveille Lisa pour ré-analyse contextuelle.
+    // Non-bloquant : échec Lisa n'interrompt pas le cycle mécanique.
+    // Budget 8 wake-ups/jour + cooldown 5min par trigger pour éviter le spam.
+    await this.triggerAgentLisaSyncIfNeeded(cfg, openPositions)
+      .catch((e) => this.logger.warn(`[P5.1] Agent sync eval failed: ${String(e).slice(0, 120)}`));
 
     // Step 1 — Explicit close requests from Lisa
     if (directive) {
@@ -636,6 +646,90 @@ export class MechanicalTradingService {
    * portefeuille, ce qui déclenche déjà close-weakest (P4.1). Un hedge
    * préventif (SH, VIXY, put protecteur) aurait absorbé cette baisse.
    */
+
+  /**
+   * P5.1 — Agent ↔ Lisa interactive loop (trigger wake-up if Tier 1 signal).
+   *
+   * Agrège les metrics nécessaires (drawdown portfolio, P&L position la plus
+   * faible, VIX live) et délègue la décision à AgentLisaSyncService qui gère
+   * la détection de trigger + budget + cooldown + invocation Lisa.
+   */
+  private async triggerAgentLisaSyncIfNeeded(
+    cfg: SessionConfig,
+    openPositions: OpenPosition[],
+  ): Promise<void> {
+    const portfolioId = cfg.portfolio_id;
+
+    // Récupérer l'userId propriétaire du portefeuille (requis pour generateProposal)
+    const { data: portfolio } = await this.supabase.getClient()
+      .from('portfolios')
+      .select('user_id')
+      .eq('id', portfolioId)
+      .maybeSingle();
+    const userId = (portfolio?.user_id as string | undefined) ?? null;
+    if (!userId) return;  // pas de propriétaire, on ne peut pas invoquer
+
+    // 1. Drawdown portefeuille intraday (peak-to-current depuis 00:00 UTC)
+    const todayStart = new Date();
+    todayStart.setUTCHours(0, 0, 0, 0);
+    const { data: snaps } = await this.supabase.getClient()
+      .from('lisa_portfolio_snapshots')
+      .select('total_value_usd')
+      .eq('portfolio_id', portfolioId)
+      .gte('timestamp', todayStart.toISOString())
+      .order('timestamp', { ascending: true });
+    let portfolioDrawdownPct: number | null = null;
+    if (snaps && snaps.length >= 2) {
+      const values = snaps
+        .map((s) => Number(s.total_value_usd))
+        .filter((v) => Number.isFinite(v) && v > 0);
+      if (values.length >= 2) {
+        const peak = Math.max(...values);
+        const current = values[values.length - 1];
+        portfolioDrawdownPct = peak > 0 ? ((peak - current) / peak) * 100 : null;
+      }
+    }
+
+    // 2. Position avec le pire P&L live (si positions ouvertes)
+    let worstPositionPnlPct: number | null = null;
+    let worstPositionSymbol: string | null = null;
+    if (openPositions.length > 0) {
+      const pnlChecks = await Promise.all(
+        openPositions.map(async (p) => {
+          const quote = await this.lisa.getLivePrice(p.symbol).catch(() => null);
+          if (!quote) return null;
+          const entry = Number(p.entryPrice);
+          const current = Number(quote.price);
+          if (!Number.isFinite(entry) || entry <= 0 || !Number.isFinite(current)) return null;
+          const raw = ((current - entry) / entry) * 100;
+          const signed = p.direction === 'short' ? -raw : raw;
+          return { symbol: p.symbol, pnlPct: signed };
+        }),
+      );
+      for (const check of pnlChecks) {
+        if (!check) continue;
+        if (worstPositionPnlPct == null || check.pnlPct < worstPositionPnlPct) {
+          worstPositionPnlPct = check.pnlPct;
+          worstPositionSymbol = check.symbol;
+        }
+      }
+    }
+
+    // 3. VIX live (pour détecter un choc marché)
+    const vixQuote = await this.lisa.getLivePrice('VIX').catch(() => null);
+    const vixLevel = vixQuote ? Number(vixQuote.price) : null;
+
+    // Délégation à AgentLisaSyncService
+    await this.agentLisaSync.evaluateTriggers({
+      portfolioId,
+      userId,
+      portfolioDrawdownPct,
+      worstPositionPnlPct,
+      worstPositionSymbol,
+      vixLevel: vixLevel != null && Number.isFinite(vixLevel) ? vixLevel : null,
+    });
+  }
+
   private async checkHedgeRecommendation(
     cfg: SessionConfig,
     positions: OpenPosition[],
