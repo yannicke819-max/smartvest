@@ -20,11 +20,17 @@ export const LISA_EODHD_API_KNOWLEDGE = `# EODHD API KNOWLEDGE (pour interpréta
 
 ## Pré-consommation par le backend (NE PAS redemander)
 Le backend consomme et t'injecte déjà automatiquement (cycle 1 min) :
-- Prix temps réel : WebSocket Binance (crypto) + cache EODHD 15min (autres)
-- Indicateurs techniques : RSI14, MACD(12,26,9), ATR14, Bollinger20 → par position
+- Prix temps réel : WebSocket Binance (crypto) + WebSocket EODHD FX + cache EODHD 15min (actions)
+- Indicateurs techniques par position (8 indicateurs EOD) :
+  · **Momentum** : RSI14, StochRSI %K/%D, MACD(12,26,9) + histogram
+  · **Tendance** : ADX14 (< 20 = range / > 25 = trend / > 40 = strong trend)
+  · **Volatilité** : ATR14 (absolu + % du prix), Bollinger20 (%B position dans bande)
+  · **Extrêmes** : CCI20 (< -100 oversold / > +100 overbought)
+  · **Flow volumique** : OBV + trend 5 périodes (%, accumulation vs distribution)
 - Bougies intraday : 20× 5 min pour actions/ETF · 24h/kline Binance pour crypto
 - News EODHD + sentiment score
 - Calendrier économique 7 jours à venir
+- Jours fériés US : rafraîchis dynamiquement depuis /exchange-details/US (plus de hardcodé)
 - Macro indicators : real_interest_rate, CPI YoY, unemployment, GDP YoY (USA)
 - Screener 3 scans/jour : momentum mid-cap · oversold quality · volume anomaly
 - Binance : 24h ticker, funding rate (futures), open interest, liquidation waves
@@ -34,6 +40,14 @@ Le backend consomme et t'injecte déjà automatiquement (cycle 1 min) :
 Tu as ces données dans les blocs "## …" du user message. Ne les
 demande jamais sous forme de thèse ou de [AGENT] directive — elles sont
 déjà là ou arrivent au prochain cycle.
+
+## Lecture des indicateurs — heuristiques golden-trader
+- **ADX > 25 + RSI overbought** → tendance haussière structurée, NE PAS fader le RSI seul ; préférer trailer le stop
+- **StochRSI < 20 avec cross K>D haussier + RSI > 30** → reversal bullish précoce (plus réactif que RSI pur)
+- **CCI > +100 + BB_%B > 1** → extension statistique, probabilité de mean-reversion élevée
+- **OBV divergence avec prix** (prix ↑ + OBV_5p ↓) → distribution cachée, signal de faiblesse à venir
+- **ADX < 20** → marché en range, les signaux momentum (MACD/RSI) sont moins fiables ; privilégier mean-reversion (CCI, BB_%B)
+- **Combo fort** : ADX > 25 + MACD_hist > 0 + OBV_5p > 0 → momentum confirmé par volume, signal d'ouverture solide
 
 ## Formats de tickers EODHD valides
 
