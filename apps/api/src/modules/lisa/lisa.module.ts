@@ -8,12 +8,13 @@ import { DecisionLogService } from './services/decision-log.service';
 import { RealtimePriceService } from './services/realtime-price.service';
 import { EodhdEnrichmentService } from './services/eodhd-enrichment.service';
 import { EodhdTechnicalService } from './services/eodhd-technical.service';
+import { EodhdIntradayService } from './services/eodhd-intraday.service';
 import { MechanicalTradingService } from './services/mechanical-trading.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule],
   controllers: [LisaController],
-  providers: [LisaService, LisaAutopilotService, DecisionLogService, RealtimePriceService, EodhdEnrichmentService, EodhdTechnicalService, MechanicalTradingService],
-  exports: [LisaService, DecisionLogService, RealtimePriceService, EodhdTechnicalService],
+  providers: [LisaService, LisaAutopilotService, DecisionLogService, RealtimePriceService, EodhdEnrichmentService, EodhdTechnicalService, EodhdIntradayService, MechanicalTradingService],
+  exports: [LisaService, DecisionLogService, RealtimePriceService, EodhdTechnicalService, EodhdIntradayService],
 })
 export class LisaModule {}

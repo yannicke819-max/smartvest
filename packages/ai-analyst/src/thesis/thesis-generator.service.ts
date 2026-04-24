@@ -134,6 +134,10 @@ export interface GenerateThesesRequest {
     bbLower: number | null;
     bbPctB: number | null;
   }>;
+  /** Résumés intraday 5m (20 bougies, ~1h40 de contexte) par symbole ouvert.
+   *  Format texte prêt à injecter dans le briefing Lisa : momentum, range,
+   *  volume surge. Permet à Lisa de distinguer breakout vs fakeout. */
+  intradayBySymbol?: Record<string, string>;
 }
 
 export interface GenerateThesesResponse {
@@ -280,7 +284,7 @@ ${upcomingEventsBlock || '- (no upcoming events provided)'}
 ${corpusBlock || '(no corpus events loaded for this query)'}
 
 # POSITIONS ACTUELLEMENT OUVERTES
-${this.formatOpenPositionsBlock(req.openPositions, req.availableCashUsd, req.technicalBySymbol)}
+${this.formatOpenPositionsBlock(req.openPositions, req.availableCashUsd, req.technicalBySymbol, req.intradayBySymbol)}
 
 # SESSION CONFIG
 - Profile: ${config.profile}
@@ -542,6 +546,7 @@ défini, sans markdown, sans explications hors JSON.
     positions: OpenPositionSummary[] | undefined,
     availableCash: string | undefined,
     technicalBySymbol?: GenerateThesesRequest['technicalBySymbol'],
+    intradayBySymbol?: GenerateThesesRequest['intradayBySymbol'],
   ): string {
     if (!positions || positions.length === 0) {
       return `(aucune position ouverte — marge de manœuvre maximale pour ouvrir)
@@ -625,6 +630,11 @@ Biais du cycle : **${bias}** — ${biasRationale}`;
           techParts.push(`BB_%B=${ind.bbPctB.toFixed(2)}${tag}`);
         }
         if (techParts.length > 0) extras.push(`  Technical: ${techParts.join(' · ')}`);
+      }
+      // Résumé bougies 5m — price action réel des ~100 dernières minutes
+      const intradaySummary = intradayBySymbol?.[p.symbol];
+      if (intradaySummary) {
+        extras.push(`  Intraday 5m: ${intradaySummary}`);
       }
       return extras.length > 0 ? `${base}\n${extras.join('\n')}` : base;
     });

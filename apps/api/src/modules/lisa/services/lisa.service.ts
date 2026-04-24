@@ -26,6 +26,7 @@ import { DecisionLogService } from './decision-log.service';
 import { RealtimePriceService } from './realtime-price.service';
 import { EodhdEnrichmentService } from './eodhd-enrichment.service';
 import { EodhdTechnicalService } from './eodhd-technical.service';
+import { EodhdIntradayService } from './eodhd-intraday.service';
 
 /**
  * LisaService — orchestrateur principal du module AI analyst.
@@ -54,6 +55,7 @@ export class LisaService {
     private readonly realtimePrice: RealtimePriceService,
     private readonly eodhdEnrichment: EodhdEnrichmentService,
     private readonly eodhdTechnical: EodhdTechnicalService,
+    private readonly eodhdIntraday: EodhdIntradayService,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
     this.claudeClient = anthropicKey
@@ -418,20 +420,27 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     const { status: trajectoryStatus, targetExtrapolatedPct: targetExtrapolated7dPct } =
       this.computeTrajectoryStatus(objectives, historyMetrics);
 
-    // Fetch les indicateurs techniques EODHD pour chaque position ouverte en
-    // parallèle — permet à Lisa de décider quand clôturer (RSI overbought,
-    // ATR spike, MACD bearish cross) et de proposer des stops ATR-based.
+    // Fetch les indicateurs techniques + bougies intraday 5m pour chaque
+    // position ouverte en parallèle — permet à Lisa de décider quand
+    // clôturer (RSI overbought, ATR spike, MACD bearish cross) et à l'agent
+    // de dimensionner les stops ATR-based, et donne une vue réelle du
+    // price action (20 bougies 5m = 1h40 de contexte).
     const technicalBySymbol: Record<string, import('./eodhd-technical.service').TechnicalIndicators> = {};
+    const intradayBySymbol: Record<string, string> = {}; // symbol → résumé texte
     if (openPositions.length > 0) {
-      await Promise.all(openPositions.map(async (pos) => {
-        try {
-          const eodhdTicker = this.toEodhdTicker(pos.symbol);
-          const currentPrice = Number(pos.currentPrice);
-          const ind = await this.eodhdTechnical.getIndicators(eodhdTicker, currentPrice);
-          technicalBySymbol[pos.symbol] = ind;
-        } catch (e) {
-          this.logger.debug(`technical indicators failed for ${pos.symbol}: ${String(e).slice(0, 80)}`);
-        }
+      await Promise.all(openPositions.flatMap((pos) => {
+        const eodhdTicker = this.toEodhdTicker(pos.symbol);
+        const currentPrice = Number(pos.currentPrice);
+        return [
+          this.eodhdTechnical.getIndicators(eodhdTicker, currentPrice)
+            .then((ind) => { technicalBySymbol[pos.symbol] = ind; })
+            .catch((e) => this.logger.debug(`tech indicators failed for ${pos.symbol}: ${String(e).slice(0, 80)}`)),
+          this.eodhdIntraday.getCandles(eodhdTicker, '5m', 20)
+            .then((series) => {
+              if (series) intradayBySymbol[pos.symbol] = this.eodhdIntraday.summarize(series);
+            })
+            .catch((e) => this.logger.debug(`intraday fetch failed for ${pos.symbol}: ${String(e).slice(0, 80)}`)),
+        ];
       }));
     }
 
@@ -449,6 +458,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         trajectoryStatus,
         targetExtrapolated7dPct,
         technicalBySymbol,
+        intradayBySymbol,
       });
     } catch (e) {
       // Parse failure ou erreur Claude : on log dans le decision log et on
