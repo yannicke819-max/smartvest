@@ -38,25 +38,35 @@ export interface ScreenerResult {
 
 export type ScreenerPreset = 'momentum_mid_cap' | 'oversold_quality' | 'volume_anomaly';
 
+// EODHD screener utilise des noms de champs spécifiques (docs officielles) :
+//   - refund_1d_p        : return 1 day %
+//   - refund_5d_p        : return 5 days %
+//   - market_capitalization
+//   - earnings_share     : EPS
+//   - dividend_yield
+//   - avgvol_200d        : volume moyen 200j
+//   - adjusted_close     : clôture ajustée
+// Les champs "last_day_change_perc", "volume_vs_avgvol_200d", "rsi_14" et
+// "pe_ratio" n'existent PAS dans le screener EODHD et déclenchent HTTP 422.
+// Pour oversold_quality on approxime via refund_5d_p < -10 (proxy oversold).
 const SCAN_FILTERS: Record<ScreenerPreset, string> = {
   momentum_mid_cap: JSON.stringify([
     ['market_capitalization', '>', 2_000_000_000],
     ['market_capitalization', '<', 50_000_000_000],
-    ['last_day_change_perc', '>', 3],
+    ['refund_1d_p', '>', 3],
     ['avgvol_200d', '>', 500_000],
     ['exchange', '=', 'us'],
   ]),
   oversold_quality: JSON.stringify([
     ['market_capitalization', '>', 10_000_000_000],
-    ['rsi_14', '<', 35],
-    ['pe_ratio', '<', 25],
-    ['pe_ratio', '>', 0],
+    ['refund_5d_p', '<', -10],
+    ['earnings_share', '>', 0],
     ['exchange', '=', 'us'],
   ]),
   volume_anomaly: JSON.stringify([
     ['market_capitalization', '>', 1_000_000_000],
-    ['volume_vs_avgvol_200d', '>', 3],
-    ['last_day_change_perc', '>', 0],
+    ['avgvol_200d', '>', 1_000_000],
+    ['refund_1d_p', '>', 5],
     ['exchange', '=', 'us'],
   ]),
 };

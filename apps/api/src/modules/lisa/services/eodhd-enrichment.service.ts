@@ -186,13 +186,23 @@ export class EodhdEnrichmentService {
 
     if (toFetch.length === 0) return cached;
 
+    // EODHD /calendar/earnings n'existe que pour des actions individuelles.
+    // On skip crypto (.CC), FX (.FOREX), indices (.INDX), commodities (.COMM).
+    // Les ETFs (.US) passent (certains ont des earnings liés aux holdings mais
+    // le endpoint renvoie vide sans 404).
+    const equityOnly = toFetch.filter((s) => {
+      const t = this.toEodhdTicker(s);
+      return !t.endsWith('.CC') && !t.endsWith('.FOREX') && !t.endsWith('.INDX') && !t.endsWith('.COMM');
+    });
+    if (equityOnly.length === 0) return cached;
+
     const fromStr = new Date(now).toISOString().slice(0, 10);
     const toStr = new Date(now + daysAhead * 86_400_000).toISOString().slice(0, 10);
 
     const tStart = Date.now();
     try {
       this.realtimePrice.recordEodhdCall();
-      const symList = toFetch.map((s) => encodeURIComponent(this.toEodhdTicker(s))).join(',');
+      const symList = equityOnly.map((s) => encodeURIComponent(this.toEodhdTicker(s))).join(',');
       const url = `https://eodhd.com/api/calendar/earnings?api_token=${key}&symbols=${symList}&from=${fromStr}&to=${toStr}&fmt=json`;
       const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
       const latencyMs = Date.now() - tStart;
@@ -247,10 +257,18 @@ export class EodhdEnrichmentService {
     const key = this.apiKey();
     if (!key) return null;
 
+    const ticker = this.toEodhdTicker(s);
+    // EODHD /fundamentals n'existe pas pour crypto/FX/indices/commodities.
+    // On short-circuit pour éviter des 404s systématiques qui polluent les logs
+    // et consomment inutilement le quota.
+    if (ticker.endsWith('.CC') || ticker.endsWith('.FOREX') || ticker.endsWith('.INDX') || ticker.endsWith('.COMM')) {
+      this.fundamentalsCache.set(s, { data: null, asOf: Date.now() });
+      return null;
+    }
+
     const tStart = Date.now();
       this.realtimePrice.recordEodhdCall();
     try {
-      const ticker = this.toEodhdTicker(s);
       const url = `https://eodhd.com/api/fundamentals/${encodeURIComponent(ticker)}?api_token=${key}&fmt=json`;
       const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
       const latencyMs = Date.now() - tStart;
