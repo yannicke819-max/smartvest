@@ -66,6 +66,15 @@ export interface MarketSnapshot {
     date: string;
     importance: 'high' | 'medium' | 'low';
   }>;
+  /** Contexte macro structurant (réels fournis par /api/macro-indicator).
+   *  Optionnel — si absent, Lisa opère sur VIX/DXY only. */
+  macroContext?: {
+    country: string;
+    realRateUsPct: number | null;
+    inflationYoyPct: number | null;
+    unemploymentPct: number | null;
+    gdpYoyPct: number | null;
+  };
 }
 
 export interface OpenPositionSummary {
@@ -287,7 +296,13 @@ Timestamp: ${m.timestamp}
 - Credit IG OAS: ${m.creditIgOasBps}bps
 - Credit HY OAS: ${m.creditHyOasBps}bps
 - Brent: $${m.brentUsd}
-- Gold: $${m.goldUsd}
+- Gold: $${m.goldUsd}${m.macroContext ? `
+
+### Macro context (${m.macroContext.country}, dernière publication)
+${m.macroContext.realRateUsPct != null ? `- Real rate : ${m.macroContext.realRateUsPct >= 0 ? '+' : ''}${m.macroContext.realRateUsPct.toFixed(2)}%` : ''}
+${m.macroContext.inflationYoyPct != null ? `- CPI YoY : ${m.macroContext.inflationYoyPct.toFixed(2)}%` : ''}
+${m.macroContext.unemploymentPct != null ? `- Unemployment : ${m.macroContext.unemploymentPct.toFixed(2)}%` : ''}
+${m.macroContext.gdpYoyPct != null ? `- GDP YoY : ${m.macroContext.gdpYoyPct >= 0 ? '+' : ''}${m.macroContext.gdpYoyPct.toFixed(2)}%` : ''}` : ''}
 - BTC: $${m.btcUsd}
 - ETH: $${m.ethUsd}
 - EUR/USD: ${m.eurUsd}
