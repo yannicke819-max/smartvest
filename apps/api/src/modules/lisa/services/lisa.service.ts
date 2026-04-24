@@ -239,6 +239,15 @@ export class LisaService {
 
   // ── Proposal generation ────────────────────────────────────────────────────
 
+  /**
+   * P5.4 — Détecte si le userFocus vient d'un wake-up agent (AgentLisaSyncService).
+   * En wake-up mode, on réduit max_theses pour que Lisa réponde vite et cible
+   * ses tactical_overrides plutôt que régénérer 5 nouvelles thèses.
+   */
+  private isWakeUpMode(userFocus?: string): boolean {
+    return !!userFocus && userFocus.startsWith('WAKE-UP');
+  }
+
   async generateProposal(userId: string, portfolioId: string, userFocus?: string): Promise<AllocationProposal> {
     if (!this.thesisGenerator) {
       throw new BadRequestException('Thesis generator unavailable: ANTHROPIC_API_KEY not configured on backend');
@@ -265,7 +274,13 @@ export class LisaService {
         ...(config.risk_constraints as Partial<LisaSessionConfig['riskConstraints']> ?? {}),
       },
       antiConsensusStrength: (config.anti_consensus_strength as number) ?? 7,
-      maxTheses: (config.max_theses as number) ?? 5,
+      // P5.4 — Wake-up mode : l'agent a détecté un signal urgent. Lisa doit
+      // répondre vite avec un focus sur les tactical_overrides plutôt que
+      // régénérer 5 thèses complètes. On baisse max_theses à 2 pour réduire
+      // les tokens output (~70% de coût en moins, ~50% de latence en moins).
+      maxTheses: this.isWakeUpMode(userFocus)
+        ? 2
+        : ((config.max_theses as number) ?? 5),
       enableCrypto: (config.enable_crypto as boolean) ?? true,
       enableDerivatives: (config.enable_derivatives as boolean) ?? false,
       enableLeverage: (config.enable_leverage as boolean) ?? false,
@@ -1810,8 +1825,10 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
 
   async getAgentStatus(_userId: string, portfolioId: string) {
     const client = this.supabase.getClient();
+    const todayStart = new Date();
+    todayStart.setUTCHours(0, 0, 0, 0);
 
-    const [directiveRes, cyclesRes, actionsRes] = await Promise.all([
+    const [directiveRes, cyclesRes, actionsRes, wakeupsRes] = await Promise.all([
       // Directive active
       client
         .from('lisa_mechanical_directives')
@@ -1837,12 +1854,28 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         .in('kind', ['autopilot_cycle_completed', 'autopilot_cycle_started', 'position_opened', 'position_closed'])
         .order('timestamp', { ascending: false })
         .limit(30),
+
+      // P5.5 — Wake-ups agent → Lisa du jour (pour affichage UI dashboard)
+      client
+        .from('lisa_decision_log')
+        .select('timestamp, summary, payload')
+        .eq('portfolio_id', portfolioId)
+        .eq('kind', 'agent_wake_up_triggered')
+        .gte('timestamp', todayStart.toISOString())
+        .order('timestamp', { ascending: false })
+        .limit(20),
     ]);
 
     return {
       directive: directiveRes.data ?? null,
       cycles: cyclesRes.data ?? [],
       recentActions: actionsRes.data ?? [],
+      // P5.5 — Wake-ups agent → Lisa (dashboard UI)
+      agentWakeUps: {
+        today: wakeupsRes.data ?? [],
+        countToday: wakeupsRes.data?.length ?? 0,
+        dailyBudget: 8,
+      },
     };
   }
 
