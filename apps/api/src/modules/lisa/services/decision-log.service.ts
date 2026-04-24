@@ -3,6 +3,28 @@ import { createHash } from 'node:crypto';
 import { SupabaseService } from '../../supabase/supabase.service';
 
 /**
+ * Canonical JSON : sérialisation déterministe, clés triées alphabétiquement.
+ * Postgres jsonb ne préserve pas l'ordre des clés — sans ça le hash calculé
+ * à l'insertion ne correspondrait plus à celui recalculé à la vérification.
+ */
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return '[' + value.map(canonicalJson).join(',') + ']';
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return '{' + keys.map((k) => JSON.stringify(k) + ':' + canonicalJson(obj[k])).join(',') + '}';
+}
+
+/**
+ * Normalise un timestamp en ISO-8601 canonique (`YYYY-MM-DDTHH:mm:ss.sssZ`).
+ * Supabase renvoie les `timestamptz` avec suffixe `+00:00` alors que l'insertion
+ * envoie du `Z` — sans normalisation le hash diverge entre append et verify.
+ */
+function canonicalTimestamp(ts: string): string {
+  return new Date(ts).toISOString();
+}
+
+/**
  * DecisionLogService — audit trail hash-chaîné pour Lisa.
  *
  * Chaque entrée référence le hash de l'entrée précédente (même portfolio)
@@ -43,14 +65,15 @@ export class DecisionLogService {
     const prevHash = (prev?.hash_chain_current as string | undefined) ?? null;
     const timestamp = new Date().toISOString();
 
-    // 2. Compute current hash
+    // 2. Compute current hash — canonical stringification pour stabilité
+    //    (jsonb reordering + timestamptz formatting)
     const input = [
       prevHash ?? 'GENESIS',
       entry.kind,
       entry.summary,
       entry.rationale,
-      JSON.stringify(entry.payload),
-      timestamp,
+      canonicalJson(entry.payload),
+      canonicalTimestamp(timestamp),
     ].join('|');
     const hashChainCurrent = createHash('sha256').update(input).digest('hex');
 
@@ -111,8 +134,8 @@ export class DecisionLogService {
         e.kind as string,
         e.summary as string,
         e.rationale as string,
-        JSON.stringify(e.payload),
-        e.timestamp as string,
+        canonicalJson(e.payload),
+        canonicalTimestamp(e.timestamp as string),
       ].join('|');
       const expected = createHash('sha256').update(input).digest('hex');
 
