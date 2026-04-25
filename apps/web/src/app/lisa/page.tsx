@@ -136,6 +136,11 @@ export default function LisaPage() {
   const [maxExposurePerAssetClassPct, setMaxExposurePerAssetClassPct] = useState(40);
   const [maxOpenPositions, setMaxOpenPositions] = useState(10);
   const [maxDrawdown2DaysPct, setMaxDrawdown2DaysPct] = useState(10);
+  // Avancé : levier + stop-loss par défaut + derivatives
+  const [enableLeverage, setEnableLeverage] = useState(false);
+  const [maxLeverage, setMaxLeverage] = useState(1.5);
+  const [defaultStopLossPct, setDefaultStopLossPct] = useState(2);
+  const [enableDerivatives, setEnableDerivatives] = useState(false);
   const [localConfigSaved, setLocalConfigSaved] = useState(false);
   const [selectedScenarios, setSelectedScenarios] = useState<Set<string>>(new Set());
   const [scenariosExpanded, setScenariosExpanded] = useState(true);
@@ -179,6 +184,10 @@ export default function LisaPage() {
     if (typeof rc.maxExposurePerAssetClassPct === 'number') setMaxExposurePerAssetClassPct(rc.maxExposurePerAssetClassPct);
     if (typeof rc.maxOpenPositions === 'number') setMaxOpenPositions(rc.maxOpenPositions);
     if (typeof rc.maxDrawdown2DaysPct === 'number') setMaxDrawdown2DaysPct(rc.maxDrawdown2DaysPct);
+    if (typeof rc.maxLeverage === 'number') setMaxLeverage(rc.maxLeverage);
+    if (typeof rc.defaultStopLossPct === 'number') setDefaultStopLossPct(rc.defaultStopLossPct);
+    if (typeof config.enable_leverage === 'boolean') setEnableLeverage(config.enable_leverage);
+    if (typeof config.enable_derivatives === 'boolean') setEnableDerivatives(config.enable_derivatives);
     setSyncedForPortfolio(selectedPortfolioId);
   }, [config, selectedPortfolioId, syncedForPortfolio]);
 
@@ -242,12 +251,16 @@ export default function LisaPage() {
         autopilot_expires_at: (!autopilotAutoApprove || autopilotComputedExpiryMs === null)
           ? null
           : new Date(autopilotComputedExpiryMs).toISOString(),
+        enable_leverage: enableLeverage,
+        enable_derivatives: enableDerivatives,
         risk_constraints: {
           targetDeploymentPct,
           maxPositionSizePct,
           maxExposurePerAssetClassPct,
           maxOpenPositions,
           maxDrawdown2DaysPct,
+          maxLeverage,
+          defaultStopLossPct,
         },
       });
       setLocalConfigSaved(true);
@@ -765,6 +778,75 @@ export default function LisaPage() {
                 onChange={(e) => setMaxDrawdown2DaysPct(parseFloat(e.target.value))}
                 className="h-8 w-full rounded-md border bg-background px-2 text-xs"
               />
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/20 p-4 space-y-3">
+            <div>
+              <h3 className="text-sm font-semibold">Avancé — Levier &amp; stop-loss</h3>
+              <p className="text-xs text-muted-foreground mt-1">
+                Amplifie la sensibilité du portefeuille. Levier 2× = profits ET pertes ×2.
+                Activer seulement après backtest et Monte Carlo conclants.
+              </p>
+            </div>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={enableLeverage}
+                onChange={(e) => setEnableLeverage(e.target.checked)}
+                className="mt-0.5"
+              />
+              <div className="text-xs">
+                <strong>Activer le levier</strong>
+                <p className="text-muted-foreground">
+                  Lisa peut sizinger jusqu'au multiple ci-dessous. Coché = effective leverage autorisé.
+                </p>
+              </div>
+            </label>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="space-y-1">
+                <label className="text-xs font-medium">Levier max (×)</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="5"
+                  step="0.1"
+                  value={maxLeverage}
+                  onChange={(e) => setMaxLeverage(parseFloat(e.target.value))}
+                  disabled={!enableLeverage}
+                  className="h-8 w-full rounded-md border bg-background px-2 text-xs disabled:opacity-50"
+                />
+                <p className="text-[10px] text-muted-foreground">1.0 = pas de levier · 2.0 = ×2 sur l'exposition · 3.0 = aggressif</p>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium">Stop-loss par défaut (%)</label>
+                <input
+                  type="number"
+                  min="0.5"
+                  max="20"
+                  step="0.5"
+                  value={defaultStopLossPct}
+                  onChange={(e) => setDefaultStopLossPct(parseFloat(e.target.value))}
+                  className="h-8 w-full rounded-md border bg-background px-2 text-xs"
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  Utilisé quand Lisa ne spécifie pas dans la thèse. 2 = serré · 3 = laisser respirer · 5 = large.
+                </p>
+              </div>
+              <label className="flex items-start gap-2 cursor-pointer pt-5">
+                <input
+                  type="checkbox"
+                  checked={enableDerivatives}
+                  onChange={(e) => setEnableDerivatives(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <div className="text-xs">
+                  <strong>Derivatives (info only)</strong>
+                  <p className="text-muted-foreground">
+                    Lisa reçoit IV ATM + put/call ratio dans son briefing. <em>Exécution options pas encore supportée.</em>
+                  </p>
+                </div>
+              </label>
             </div>
           </div>
         </div>

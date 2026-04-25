@@ -24,6 +24,8 @@ export interface LisaRiskConstraints {
   maxDrawdown7DaysPct?: number;
   maxDrawdown30DaysPct?: number;
   maxLeverage?: number;
+  /** Stop-loss par défaut quand Lisa ne spécifie pas dans la thèse (en %). */
+  defaultStopLossPct?: number;
   maxPortfolioVolatilityPct?: number;
   autoLiquidateOnKill?: boolean;
 }

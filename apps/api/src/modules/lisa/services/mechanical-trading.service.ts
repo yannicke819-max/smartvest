@@ -581,7 +581,12 @@ export class MechanicalTradingService {
 
       // Stop / target prices — stop dynamique ATR-based avec override Lisa
       // applicable par-dessus (tightenStopsMultiplier < 1 = stops plus serrés).
-      const fallbackStopPct = target.stopLossPct ?? 2;
+      // Le fallback (quand Lisa ne spécifie pas dans la thèse) est lu
+      // dans risk_constraints.defaultStopLossPct, sinon 2%.
+      const sessionDefaultStop = Number(
+        (constraints['defaultStopLossPct'] as number | undefined) ?? 2,
+      );
+      const fallbackStopPct = target.stopLossPct ?? sessionDefaultStop;
       const eodhdTicker = this.lisa['toEodhdTicker']
         ? (this.lisa as unknown as { toEodhdTicker(s: string): string }).toEodhdTicker(target.symbol)
         : target.symbol;
