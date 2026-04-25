@@ -26,6 +26,7 @@ import { ExchangeHoursService } from './exchange-hours.service';
 import { PortfolioCorrelationService } from './portfolio-correlation.service';
 import { AgentLisaSyncService } from './agent-lisa-sync.service';
 import { OptionBrokerService } from './option-broker.service';
+import { EodhdCalendarService } from './eodhd-calendar.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types internes
@@ -133,6 +134,7 @@ export class MechanicalTradingService {
     private readonly correlation: PortfolioCorrelationService,
     private readonly agentLisaSync: AgentLisaSyncService,
     private readonly optionBroker: OptionBrokerService,
+    private readonly earningsCalendar: EodhdCalendarService,
   ) {}
 
   /**
@@ -594,6 +596,28 @@ export class MechanicalTradingService {
           `[MÉCANIQUE] Skip ${target.symbol} — marché ${this.exchangeHours.summarize(marketState)}`,
         );
         continue;
+      }
+
+      // EARNINGS FILTER — refuse les ouvertures equity dont les earnings
+      // tombent dans la fenêtre d'horizon de la position. Un earnings est
+      // un évènement binaire (gap ±5-15% possible) qui détruit le R/R sniper.
+      // Pour une thèse 5j horizon, on bloque si earnings < 5+1 jours.
+      // Skip pour les options (jouées explicitement event-driven en option).
+      // Skip pour ETF/FX/crypto via isEarningsRelevant() interne.
+      if (!target.optionStructure) {
+        const horizonBufferDays = (target.horizonDays ?? 3) + 1;
+        const hasEarnings = await this.earningsCalendar
+          .hasEarningsWithinDays(target.symbol, horizonBufferDays)
+          .catch(() => false);
+        if (hasEarnings) {
+          const nextDate = await this.earningsCalendar
+            .getNextEarningsDate(target.symbol, horizonBufferDays)
+            .catch(() => null);
+          this.logger.log(
+            `[MÉCANIQUE] Skip ${target.symbol} — earnings ${nextDate ?? '?'} dans la fenêtre horizon ${target.horizonDays}j (event binaire à éviter)`,
+          );
+          continue;
+        }
       }
 
       // P4.2 — Filtre corrélation : refuse l'ouverture si fortement corrélée

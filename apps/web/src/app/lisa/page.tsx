@@ -192,6 +192,60 @@ export default function LisaPage() {
     setSyncedForPortfolio(selectedPortfolioId);
   }, [config, selectedPortfolioId, syncedForPortfolio]);
 
+  /**
+   * Pré-remplit tous les knobs risque/levier selon un preset.
+   * L'utilisateur doit ensuite cliquer "Sauvegarder la config" pour appliquer.
+   * Pas de save automatique — on évite les surprises et permet d'ajuster
+   * un knob individuel après le preset.
+   */
+  function applyPreset(name: 'conservateur' | 'modere' | 'aggressive' | 'kamikaze') {
+    if (name === 'conservateur') {
+      setProfile('long_term_investor');
+      setReturnTargetDaily('0.05');
+      setTargetDeploymentPct(60);
+      setMaxPositionSizePct(5);
+      setMaxExposurePerAssetClassPct(15);
+      setMaxOpenPositions(10);
+      setMaxDrawdown2DaysPct(5);
+      setEnableLeverage(false);
+      setMaxLeverage(1.0);
+      setDefaultStopLossPct(3);
+    } else if (name === 'modere') {
+      setProfile('sniper_mode');
+      setReturnTargetDaily('0.10');
+      setTargetDeploymentPct(80);
+      setMaxPositionSizePct(8);
+      setMaxExposurePerAssetClassPct(20);
+      setMaxOpenPositions(12);
+      setMaxDrawdown2DaysPct(10);
+      setEnableLeverage(false);
+      setMaxLeverage(1.5);
+      setDefaultStopLossPct(2);
+    } else if (name === 'aggressive') {
+      setProfile('hyper_active');
+      setReturnTargetDaily('0.20');
+      setTargetDeploymentPct(90);
+      setMaxPositionSizePct(25);
+      setMaxExposurePerAssetClassPct(50);
+      setMaxOpenPositions(8);
+      setMaxDrawdown2DaysPct(15);
+      setEnableLeverage(true);
+      setMaxLeverage(2.0);
+      setDefaultStopLossPct(2.5);
+    } else if (name === 'kamikaze') {
+      setProfile('hyper_active');
+      setReturnTargetDaily('0.30');
+      setTargetDeploymentPct(95);
+      setMaxPositionSizePct(80);
+      setMaxExposurePerAssetClassPct(100);
+      setMaxOpenPositions(3);
+      setMaxDrawdown2DaysPct(25);
+      setEnableLeverage(true);
+      setMaxLeverage(3.0);
+      setDefaultStopLossPct(1);
+    }
+  }
+
   async function handleSaveConfig() {
     if (!selectedPortfolioId) return;
 
@@ -715,6 +769,50 @@ export default function LisaPage() {
             Pilotent combien Lisa déploie et comment elle sizing. Respectées par
             le risk-enforcer au moment de la génération.
           </p>
+
+          <div className="rounded-md border border-dashed p-3 space-y-2 bg-muted/30">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium">Presets risque · 1 clic</span>
+              <span className="text-[10px] text-muted-foreground">cliquer puis « Sauvegarder la config »</span>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              <button
+                type="button"
+                onClick={() => applyPreset('conservateur')}
+                className="rounded-md border px-2 py-2 text-xs hover:bg-muted text-left transition-colors"
+              >
+                <div className="font-medium">🛡️ Conservateur</div>
+                <div className="text-[10px] text-muted-foreground">5% pos · pas levier · stop 3%</div>
+              </button>
+              <button
+                type="button"
+                onClick={() => applyPreset('modere')}
+                className="rounded-md border px-2 py-2 text-xs hover:bg-muted text-left transition-colors"
+              >
+                <div className="font-medium">⚖️ Modéré</div>
+                <div className="text-[10px] text-muted-foreground">8% pos · pas levier · stop 2%</div>
+              </button>
+              <button
+                type="button"
+                onClick={() => applyPreset('aggressive')}
+                className="rounded-md border px-2 py-2 text-xs hover:bg-muted text-left transition-colors"
+              >
+                <div className="font-medium">🔥 Aggressive</div>
+                <div className="text-[10px] text-muted-foreground">25% pos · ×2 · stop 2.5%</div>
+              </button>
+              <button
+                type="button"
+                onClick={() => applyPreset('kamikaze')}
+                className="rounded-md border-2 border-red-300 dark:border-red-800 px-2 py-2 text-xs hover:bg-red-50 dark:hover:bg-red-950/20 text-left transition-colors"
+              >
+                <div className="font-medium">💀 Kamikaze</div>
+                <div className="text-[10px] text-muted-foreground">80% pos · ×3 · stop 1%</div>
+              </button>
+            </div>
+            <p className="text-[10px] text-muted-foreground italic">
+              ⚠️ Kamikaze : drawdown 25% possible en 2 jours. Activer seulement après backtest et Monte Carlo conclants.
+            </p>
+          </div>
 
           <div className="space-y-1.5">
             <label className="text-xs font-medium">

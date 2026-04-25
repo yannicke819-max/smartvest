@@ -21,6 +21,7 @@ import { PortfolioCorrelationService } from './services/portfolio-correlation.se
 import { AgentLisaSyncService } from './services/agent-lisa-sync.service';
 import { MechanicalTradingService } from './services/mechanical-trading.service';
 import { OptionBrokerService } from './services/option-broker.service';
+import { EodhdCalendarService } from './services/eodhd-calendar.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule],
@@ -45,6 +46,7 @@ import { OptionBrokerService } from './services/option-broker.service';
     AgentLisaSyncService,
     MechanicalTradingService,
     OptionBrokerService,
+    EodhdCalendarService,
   ],
   exports: [
     LisaService,
@@ -63,6 +65,7 @@ import { OptionBrokerService } from './services/option-broker.service';
     PortfolioCorrelationService,
     AgentLisaSyncService,
     OptionBrokerService,
+    EodhdCalendarService,
   ],
 })
 export class LisaModule {}
