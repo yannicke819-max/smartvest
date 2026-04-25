@@ -262,7 +262,14 @@ export class OptimizerService {
     };
 
     const result = runBacktest({
-      config: { ...baseConfig, ...current },
+      config: {
+        ...baseConfig,
+        enableOptions: false,
+        defaultIv: 0.30,
+        optionsDte: 14,
+        strikeOtmPct: 2,
+        ...current,
+      },
       histories,
       warnings: [],
     });

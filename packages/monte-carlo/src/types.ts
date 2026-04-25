@@ -54,6 +54,10 @@ export const MonteCarloConfigSchema = z.object({
   stopLossPct: z.number().min(0.5).max(20).default(2),
   takeProfitPct: z.number().min(0.5).max(50).default(4),
   maxHorizonDays: z.number().int().min(1).max(60).default(5),
+  /** Activer les options dans la simulation. */
+  enableOptions: z.boolean().default(false),
+  /** IV moyenne implicite si options activé. */
+  defaultIv: z.number().min(0.05).max(2).default(0.30),
   /** Seuil cible pour calculer P(equity_final > target). */
   targetEquityUsd: z.number().positive().optional(),
   /** Seed RNG pour reproductibilité (optionnel). */

@@ -44,6 +44,14 @@ export const BacktestConfigSchema = z.object({
   takeProfitPct: z.number().min(0.1).max(50).default(4),
   /** Horizon max en jours (au-delà, fermeture forcée). */
   maxHorizonDays: z.number().int().min(1).max(60).default(5),
+  /** Activer les options : Lisa peut proposer long calls / puts. */
+  enableOptions: z.boolean().default(false),
+  /** Volatilité implicite par défaut (utilisée à défaut de surface réelle). */
+  defaultIv: z.number().min(0.05).max(2).default(0.30),
+  /** Days-to-expiry pour les options proposées (DTE). */
+  optionsDte: z.number().int().min(1).max(120).default(14),
+  /** Strike OTM percentage : 0 = ATM, 5 = +5% OTM (call) / -5% (put). */
+  strikeOtmPct: z.number().min(0).max(50).default(2),
 });
 
 export type BacktestConfig = z.infer<typeof BacktestConfigSchema>;
@@ -102,8 +110,16 @@ export interface BacktestTrade {
   pnlUsd: number;
   pnlPct: number;
   /** Raison de fermeture. */
-  exitReason: 'stop_loss' | 'take_profit' | 'horizon_expired' | 'cap_violation' | 'forced_eob';
+  exitReason: 'stop_loss' | 'take_profit' | 'horizon_expired' | 'cap_violation' | 'forced_eob' | 'option_expired' | 'option_target_hit';
   convictionScore: number;
+  /** Si la position était une option. */
+  optionInfo?: {
+    kind: 'call' | 'put';
+    strike: number;
+    expiry: string;
+    contracts: number;
+    premiumPaid: number;
+  };
 }
 
 export interface EquityPoint {

@@ -28,6 +28,13 @@ export interface MockProposal {
   stopLossPct: number;
   /** Take-profit suggéré en %. */
   takeProfitPct: number;
+  /** Si proposé comme option : type + strike OTM. */
+  optionStructure?: {
+    kind: 'call' | 'put';
+    /** Décalage par rapport au spot pour le strike (en %). */
+    strikeOtmPct: number;
+    dteDays: number;
+  };
 }
 
 export interface MockSignals {
@@ -165,17 +172,38 @@ export function scoreSetup(
 /**
  * Génère les propositions du jour pour tout l'univers.
  * Trie par conviction décroissante.
+ *
+ * Si `optionsConfig.enableOptions` est true, les propositions de TRÈS haute
+ * conviction (≥ 8/10) sont rebascuLées en options (long calls pour direction
+ * long, long puts pour direction short). Asymétrie : max upside, downside
+ * borné au premium.
  */
 export function generateProposals(
   histories: TickerHistory[],
   asOfDate: string,
   antiConsensusStrength: number,
   minConviction: number = 6,
+  optionsConfig?: {
+    enableOptions: boolean;
+    optionsDte: number;
+    strikeOtmPct: number;
+  },
 ): MockProposal[] {
   const proposals: MockProposal[] = [];
   for (const h of histories) {
     const p = scoreSetup(h, asOfDate, antiConsensusStrength);
-    if (p && p.convictionScore >= minConviction) proposals.push(p);
+    if (!p || p.convictionScore < minConviction) continue;
+
+    if (optionsConfig?.enableOptions && p.convictionScore >= 8) {
+      // Conviction très haute → bascule en options (asymétrie)
+      p.optionStructure = {
+        kind: p.direction === 'long' ? 'call' : 'put',
+        strikeOtmPct: optionsConfig.strikeOtmPct,
+        dteDays: optionsConfig.optionsDte,
+      };
+      p.rationale = `[OPTION] ${p.rationale}`;
+    }
+    proposals.push(p);
   }
   proposals.sort((a, b) => b.convictionScore - a.convictionScore);
   return proposals;

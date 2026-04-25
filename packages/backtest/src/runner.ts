@@ -14,6 +14,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { markOption } from '@smartvest/options';
 import { applyFee, applySlippage } from './slippage';
 import { candleAt, generateProposals, closeAt } from './lisa-mock';
 import { extractTradingDates } from './data-replay';
@@ -25,6 +26,24 @@ import type {
   EquityPoint,
   TickerHistory,
 } from './types';
+
+/** Position option simulée — séparée des positions equity classiques. */
+interface OptionPositionSim {
+  id: string;
+  symbol: string;
+  assetClass: string;
+  kind: 'call' | 'put';
+  strike: number;
+  expiry: string;
+  contracts: number;
+  premiumPaid: number;
+  entryDate: string;
+  entryUnderlyingPrice: number;
+  iv: number;
+  convictionScore: number;
+  /** Notional cash mobilisé = premium payé. */
+  notionalUsd: number;
+}
 
 interface RunnerInput {
   config: BacktestConfig;
@@ -67,12 +86,60 @@ export function runBacktest(input: RunnerInput): BacktestResult {
   // État interne
   let cashUsd = config.initialCapitalUsd;
   const openPositions: BacktestPosition[] = [];
+  const openOptions: OptionPositionSim[] = [];
   const trades: BacktestTrade[] = [];
   const equityCurve: EquityPoint[] = [];
   let totalCostsUsd = 0;
 
   const historyBySymbol = new Map<string, TickerHistory>();
   for (const h of histories) historyBySymbol.set(h.symbol, h);
+
+  /** Helper : ferme une option à la date donnée, calcule P&L, ajoute trade. */
+  const closeOption = (
+    opt: OptionPositionSim,
+    date: string,
+    underlyingClose: number,
+    reason: 'option_expired' | 'option_target_hit' | 'forced_eob',
+  ) => {
+    const mark = markOption({
+      spot: underlyingClose,
+      strike: opt.strike,
+      expiryDate: opt.expiry,
+      asOfDate: date,
+      iv: opt.iv,
+      kind: opt.kind,
+      contracts: opt.contracts,
+      premiumPaid: opt.premiumPaid,
+    });
+    // Pas de slippage sur options pour la sim (modèle BS = théorique pur).
+    const fee = applyFee(mark.totalValueUsd, config.feeBps);
+    const proceeds = mark.totalValueUsd - fee;
+    const pnl = proceeds - opt.premiumPaid;
+    cashUsd += proceeds;
+    totalCostsUsd += fee;
+    trades.push({
+      symbol: opt.symbol,
+      assetClass: opt.assetClass,
+      direction: 'long', // long call/put
+      entryDate: opt.entryDate,
+      exitDate: date,
+      entryPrice: opt.entryUnderlyingPrice,
+      exitPrice: underlyingClose,
+      quantity: opt.contracts,
+      notionalUsd: opt.notionalUsd,
+      pnlUsd: pnl,
+      pnlPct: opt.notionalUsd > 0 ? (pnl / opt.notionalUsd) * 100 : 0,
+      exitReason: reason,
+      convictionScore: opt.convictionScore,
+      optionInfo: {
+        kind: opt.kind,
+        strike: opt.strike,
+        expiry: opt.expiry,
+        contracts: opt.contracts,
+        premiumPaid: opt.premiumPaid,
+      },
+    });
+  };
 
   // Boucle principale
   for (const date of tradingDates) {
@@ -156,8 +223,61 @@ export function runBacktest(input: RunnerInput): BacktestResult {
     openPositions.length = 0;
     openPositions.push(...stillOpen);
 
+    // 1bis. Check exits options : expirées ou take-profit (×2 sur premium)
+    const stillOpenOpt: OptionPositionSim[] = [];
+    for (const opt of openOptions) {
+      const hist = historyBySymbol.get(opt.symbol);
+      if (!hist) {
+        stillOpenOpt.push(opt);
+        continue;
+      }
+      const candle = candleAt(hist, date);
+      if (!candle) {
+        stillOpenOpt.push(opt);
+        continue;
+      }
+
+      // Expiration ?
+      if (date >= opt.expiry) {
+        closeOption(opt, date, candle.close, 'option_expired');
+        continue;
+      }
+
+      // Take-profit : si valeur courante > 2× premium initial
+      const mark = markOption({
+        spot: candle.close,
+        strike: opt.strike,
+        expiryDate: opt.expiry,
+        asOfDate: date,
+        iv: opt.iv,
+        kind: opt.kind,
+        contracts: opt.contracts,
+        premiumPaid: opt.premiumPaid,
+      });
+      if (mark.totalValueUsd >= opt.premiumPaid * 2) {
+        closeOption(opt, date, candle.close, 'option_target_hit');
+        continue;
+      }
+
+      stillOpenOpt.push(opt);
+    }
+    openOptions.length = 0;
+    openOptions.push(...stillOpenOpt);
+
     // 2. Génère les propositions du jour
-    const proposals = generateProposals(histories, date, config.antiConsensusStrength);
+    const proposals = generateProposals(
+      histories,
+      date,
+      config.antiConsensusStrength,
+      6,
+      config.enableOptions
+        ? {
+            enableOptions: true,
+            optionsDte: config.optionsDte,
+            strikeOtmPct: config.strikeOtmPct,
+          }
+        : undefined,
+    );
 
     // 3. Filtre selon caps + budget cash + positions max
     if (openPositions.length < config.maxOpenPositions) {
@@ -176,9 +296,10 @@ export function runBacktest(input: RunnerInput): BacktestResult {
 
       // Pour chaque proposition triée par conviction, tenter d'ouvrir
       for (const prop of proposals) {
-        if (openPositions.length >= config.maxOpenPositions) break;
+        if (openPositions.length + openOptions.length >= config.maxOpenPositions) break;
         // Skip si déjà détenu (pas de double-position sur le même symbol)
         if (openPositions.some((p) => p.symbol === prop.symbol)) continue;
+        if (openOptions.some((o) => o.symbol === prop.symbol)) continue;
 
         // Cap par classe
         const classExposure = exposureByClass.get(prop.assetClass) ?? 0;
@@ -196,6 +317,61 @@ export function runBacktest(input: RunnerInput): BacktestResult {
         const availCash = cashUsd * 0.95;
         const notional = Math.min(targetNotional, availCash);
         if (notional < 50) continue; // trop petit, skip
+
+        // Si proposition option : ouvrir une option à la place du sous-jacent.
+        // Premium payé = ~5-15% du notional cible (selon DTE et OTM).
+        if (prop.optionStructure) {
+          const hist = historyBySymbol.get(prop.symbol);
+          if (!hist) continue;
+          const candle = candleAt(hist, date);
+          if (!candle) continue;
+          const spot = candle.close;
+          const otm = prop.optionStructure.strikeOtmPct / 100;
+          const strike =
+            prop.optionStructure.kind === 'call' ? spot * (1 + otm) : spot * (1 - otm);
+          const expiry = addDays(date, prop.optionStructure.dteDays);
+          const iv = config.defaultIv;
+          // Pricer pour le premium (theorique)
+          const mark = markOption({
+            spot,
+            strike,
+            expiryDate: expiry,
+            asOfDate: date,
+            iv,
+            kind: prop.optionStructure.kind,
+            contracts: 1, // calcul pour 1 contrat
+            premiumPaid: 0,
+          });
+          if (mark.totalValueUsd <= 0) continue;
+          // Combien de contrats on peut acheter avec notional cible ?
+          const contracts = Math.floor(notional / mark.totalValueUsd);
+          if (contracts < 1) continue;
+          const premiumPaid = mark.totalValueUsd * contracts;
+          const fee = applyFee(premiumPaid, config.feeBps);
+          const totalCost = premiumPaid + fee;
+          if (totalCost > availCash) continue;
+
+          openOptions.push({
+            id: randomUUID(),
+            symbol: prop.symbol,
+            assetClass: prop.assetClass,
+            kind: prop.optionStructure.kind,
+            strike,
+            expiry,
+            contracts,
+            premiumPaid,
+            entryDate: date,
+            entryUnderlyingPrice: spot,
+            iv,
+            convictionScore: prop.convictionScore,
+            notionalUsd: premiumPaid,
+          });
+          cashUsd -= totalCost;
+          totalCostsUsd += fee;
+          totalExposure += premiumPaid;
+          exposureByClass.set(prop.assetClass, classExposure + premiumPaid);
+          continue;
+        }
 
         // Récupère le prix d'ouverture du jour
         const hist = historyBySymbol.get(prop.symbol);
@@ -244,7 +420,7 @@ export function runBacktest(input: RunnerInput): BacktestResult {
       }
     }
 
-    // 4. Snapshot equity
+    // 4. Snapshot equity (positions equity + options mark-to-market)
     let positionsUsd = 0;
     for (const p of openPositions) {
       const hist = historyBySymbol.get(p.symbol);
@@ -260,6 +436,22 @@ export function runBacktest(input: RunnerInput): BacktestResult {
           : (2 * p.entryPrice - mark) * p.quantity;
       positionsUsd += value;
     }
+    for (const opt of openOptions) {
+      const hist = historyBySymbol.get(opt.symbol);
+      const candle = hist ? candleAt(hist, date) : null;
+      const spot = candle ? candle.close : opt.entryUnderlyingPrice;
+      const m = markOption({
+        spot,
+        strike: opt.strike,
+        expiryDate: opt.expiry,
+        asOfDate: date,
+        iv: opt.iv,
+        kind: opt.kind,
+        contracts: opt.contracts,
+        premiumPaid: opt.premiumPaid,
+      });
+      positionsUsd += m.totalValueUsd;
+    }
     const equityUsd = cashUsd + positionsUsd;
     const peak = equityCurve.length > 0 ? Math.max(...equityCurve.map((e) => e.equityUsd), equityUsd) : equityUsd;
     const drawdownPct = peak > 0 ? ((peak - equityUsd) / peak) * 100 : 0;
@@ -268,7 +460,7 @@ export function runBacktest(input: RunnerInput): BacktestResult {
       equityUsd,
       cashUsd,
       positionsUsd,
-      openPositions: openPositions.length,
+      openPositions: openPositions.length + openOptions.length,
       drawdownPct,
     });
   }
@@ -303,6 +495,15 @@ export function runBacktest(input: RunnerInput): BacktestResult {
       exitReason: 'forced_eob',
       convictionScore: pos.convictionScore,
     });
+  }
+
+  // 5bis. Forced close des options encore ouvertes
+  for (const opt of openOptions) {
+    const hist = historyBySymbol.get(opt.symbol);
+    if (!hist) continue;
+    const lastClose = closeAt(hist, lastDate);
+    if (lastClose == null) continue;
+    closeOption(opt, lastDate, lastClose, 'forced_eob');
   }
 
   // Métriques finales

@@ -7,9 +7,5 @@
     "rootDir": "src",
     "composite": true
   },
-  "references": [
-    { "path": "../shared-types" },
-    { "path": "../options" }
-  ],
   "include": ["src/**/*"]
 }

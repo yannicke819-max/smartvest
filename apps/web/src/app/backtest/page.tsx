@@ -66,6 +66,9 @@ export default function BacktestPage() {
   const [slippageBps, setSlippageBps] = useState(10);
   const [stopLossPct, setStopLossPct] = useState(2);
   const [takeProfitPct, setTakeProfitPct] = useState(4);
+  const [enableOptions, setEnableOptions] = useState(false);
+  const [optionsDte, setOptionsDte] = useState(14);
+  const [strikeOtmPct, setStrikeOtmPct] = useState(2);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -89,6 +92,9 @@ export default function BacktestPage() {
           slippageBps,
           stopLossPct,
           takeProfitPct,
+          enableOptions,
+          optionsDte,
+          strikeOtmPct,
         }),
       });
       setResult(res);
@@ -229,6 +235,44 @@ export default function BacktestPage() {
               className="h-8 w-full rounded-md border bg-background px-2 text-xs"
             />
           </Field>
+        </div>
+
+        <div className="border-t pt-3 space-y-2">
+          <label className="flex items-center gap-2 cursor-pointer text-xs">
+            <input
+              type="checkbox"
+              checked={enableOptions}
+              onChange={(e) => setEnableOptions(e.target.checked)}
+            />
+            <strong>Activer les options</strong>
+            <span className="text-muted-foreground">
+              (long calls/puts pour conviction ≥ 8/10 — payoff asymétrique, downside borné au premium)
+            </span>
+          </label>
+          {enableOptions && (
+            <div className="grid grid-cols-2 gap-3 ml-6">
+              <Field label={`Days-to-expiry : ${optionsDte}`}>
+                <input
+                  type="range"
+                  min={3}
+                  max={60}
+                  value={optionsDte}
+                  onChange={(e) => setOptionsDte(parseInt(e.target.value, 10))}
+                  className="w-full"
+                />
+              </Field>
+              <Field label={`Strike OTM : ${strikeOtmPct}%`}>
+                <input
+                  type="range"
+                  min={0}
+                  max={20}
+                  value={strikeOtmPct}
+                  onChange={(e) => setStrikeOtmPct(parseInt(e.target.value, 10))}
+                  className="w-full"
+                />
+              </Field>
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-3">

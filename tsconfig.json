@@ -11,6 +11,7 @@
     { "path": "packages/backtest" },
     { "path": "packages/strategy-optimizer" },
     { "path": "packages/monte-carlo" },
+    { "path": "packages/options" },
     { "path": "apps/api" },
     { "path": "apps/web" }
   ]

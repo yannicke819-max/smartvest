@@ -138,6 +138,10 @@ export function candidateToBacktestConfig(
 ): BacktestConfig {
   return {
     ...base,
+    enableOptions: false,
+    defaultIv: 0.30,
+    optionsDte: 14,
+    strikeOtmPct: 2,
     antiConsensusStrength: candidate.antiConsensusStrength,
     maxPositionSizePct: candidate.maxPositionSizePct,
     maxAssetClassExposurePct: candidate.maxAssetClassExposurePct,
