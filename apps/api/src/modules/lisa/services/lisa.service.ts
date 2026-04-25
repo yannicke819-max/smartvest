@@ -658,7 +658,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     });
 
     // Écrire la directive mécanique — l'agent sans-LLM l'utilise pendant 35 min
-    await this.writeDirective(portfolioId, finalProposal, result.closeRecommendations ?? [], trajectoryStatus).catch(
+    await this.writeDirective(portfolioId, finalProposal, result.closeRecommendations ?? [], trajectoryStatus, config.profile as SessionProfile).catch(
       (e) => this.logger.warn(`writeDirective failed (non-blocking): ${String(e)}`),
     );
 
@@ -675,20 +675,26 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     proposal: AllocationProposal,
     closeRecommendations: Array<{ positionId: string; reason: string }>,
     trajectoryStatus: TrajectoryStatus | null,
+    profile: SessionProfile,
   ): Promise<void> {
     // Extraire les thèmes depuis favored_pockets
     const activeThemes = proposal.favoredPockets.map((p) => p.assetClass);
     const favoredAssetClasses = [...new Set(proposal.favoredPockets.map((p) => p.assetClass))];
     const avoidedAssetClasses = [...new Set(proposal.avoidedPockets.map((p) => p.assetClass))];
 
+    const isHyperActive = profile === 'hyper_active';
+
     // Posture de risque : trajectoire PRIME sur momentum
     //  - HORS_TRAJECTOIRE → defensive (protège le capital, pas de nouvelles ouvertures)
+    //    SAUF si profile=hyper_active : l'utilisateur a explicitement choisi
+    //    haute fréquence + cible ambitieuse — defensive paralyserait tout.
+    //    On passe alors en 'aggressive' pour forcer le rattrapage actif.
     //  - EN_RETARD + momentum bullish → aggressive (rattrape le retard)
     //  - EN_AVANCE → normal (pas besoin de forcer)
     //  - DANS_LE_PLAN → basé sur momentum
     let riskPosture: 'aggressive' | 'normal' | 'defensive';
     if (trajectoryStatus === 'HORS_TRAJECTOIRE') {
-      riskPosture = 'defensive';
+      riskPosture = isHyperActive ? 'aggressive' : 'defensive';
     } else if (trajectoryStatus === 'EN_RETARD' && proposal.marketMomentum !== 'bearish') {
       riskPosture = 'aggressive';
     } else if (trajectoryStatus === 'EN_AVANCE') {
