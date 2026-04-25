@@ -35,6 +35,12 @@ export default function MonteCarloPage() {
   const [initialCapital, setInitialCapital] = useState(10_000);
   const [targetEquity, setTargetEquity] = useState(11_000);
   const [antiConsensus, setAntiConsensus] = useState(5);
+  // Caps + levier — alignés sur les paramètres de la session Lisa
+  const [maxPositionSizePct, setMaxPositionSizePct] = useState(8);
+  const [maxAssetClassExposurePct, setMaxAssetClassExposurePct] = useState(20);
+  const [enableLeverage, setEnableLeverage] = useState(false);
+  const [maxLeverage, setMaxLeverage] = useState(1.5);
+  const [stopLossPct, setStopLossPct] = useState(2);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<MCResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -53,6 +59,11 @@ export default function MonteCarloPage() {
           numPaths,
           initialCapitalUsd: initialCapital,
           antiConsensusStrength: antiConsensus,
+          maxPositionSizePct,
+          maxAssetClassExposurePct,
+          enableLeverage,
+          maxLeverage,
+          stopLossPct,
           targetEquityUsd: targetEquity > 0 ? targetEquity : undefined,
         }),
       });
@@ -137,6 +148,66 @@ export default function MonteCarloPage() {
               className="w-full"
             />
           </Field>
+        </div>
+
+        <div className="border-t pt-4 space-y-3">
+          <h3 className="text-sm font-semibold">Caps de risque (doivent matcher ta config Lisa)</h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <Field label={`Max par position : ${maxPositionSizePct}%`}>
+              <input
+                type="range"
+                min={2}
+                max={50}
+                value={maxPositionSizePct}
+                onChange={(e) => setMaxPositionSizePct(parseInt(e.target.value, 10))}
+                className="w-full"
+              />
+            </Field>
+            <Field label={`Max par classe : ${maxAssetClassExposurePct}%`}>
+              <input
+                type="range"
+                min={5}
+                max={100}
+                value={maxAssetClassExposurePct}
+                onChange={(e) => setMaxAssetClassExposurePct(parseInt(e.target.value, 10))}
+                className="w-full"
+              />
+            </Field>
+            <Field label={`Stop-loss par position : ${stopLossPct}%`}>
+              <input
+                type="range"
+                min={0.5}
+                max={10}
+                step={0.5}
+                value={stopLossPct}
+                onChange={(e) => setStopLossPct(parseFloat(e.target.value))}
+                className="w-full"
+              />
+            </Field>
+          </div>
+          <div className="flex items-center gap-4 flex-wrap">
+            <label className="flex items-center gap-2 cursor-pointer text-xs">
+              <input
+                type="checkbox"
+                checked={enableLeverage}
+                onChange={(e) => setEnableLeverage(e.target.checked)}
+              />
+              <strong>Activer le levier</strong>
+            </label>
+            {enableLeverage && (
+              <Field label={`Levier max : ×${maxLeverage}`}>
+                <input
+                  type="range"
+                  min={1}
+                  max={3}
+                  step={0.1}
+                  value={maxLeverage}
+                  onChange={(e) => setMaxLeverage(parseFloat(e.target.value))}
+                  className="w-40"
+                />
+              </Field>
+            )}
+          </div>
         </div>
 
         <div className="flex items-center gap-3">

@@ -123,8 +123,13 @@ export function simulatePath(
   };
   let totalTrades = 0;
 
-  const maxNotionalPerPosition = (ctx.config.initialCapitalUsd * ctx.config.maxPositionSizePct) / 100;
-  const maxNotionalPerClass = (ctx.config.initialCapitalUsd * ctx.config.maxAssetClassExposurePct) / 100;
+  // Caps effectifs : avec levier, l'exposition par position et par classe est
+  // amplifiée du multiple. Modèle simplifié de marge : cashImpact = notional / leverage.
+  const leverageMult = ctx.config.enableLeverage ? ctx.config.maxLeverage : 1.0;
+  const maxNotionalPerPosition =
+    (ctx.config.initialCapitalUsd * ctx.config.maxPositionSizePct * leverageMult) / 100;
+  const maxNotionalPerClass =
+    (ctx.config.initialCapitalUsd * ctx.config.maxAssetClassExposurePct * leverageMult) / 100;
 
   for (let day = 0; day < bootstrapIndices.length; day++) {
     const dayReturns = ctx.returnsTable[bootstrapIndices[day]];
@@ -162,7 +167,8 @@ export function simulatePath(
           pos.direction === 'long'
             ? (slip.effectivePrice - pos.entryPrice) * pos.quantity - fee
             : (pos.entryPrice - slip.effectivePrice) * pos.quantity - fee;
-        state.cashUsd += pos.notionalUsd + pnl;
+        // Rendre la marge engagée + PnL net.
+        state.cashUsd += pos.notionalUsd / leverageMult + pnl;
         totalTrades++;
       } else {
         stillOpen.push(pos);
@@ -186,7 +192,14 @@ export function simulatePath(
         if (remainingClass <= 0) continue;
         const maxByPosition = Math.min(maxNotionalPerPosition, remainingClass);
         const targetNotional = maxByPosition * Math.max(0.4, prop.convictionScore / 10);
-        const notional = Math.min(targetNotional, state.cashUsd * 0.95);
+        // Cash impact = notional / leverage (modèle margin simplifié).
+        // Sans levier (leverageMult=1) : cashImpact = notional.
+        // Avec levier ×2 : cashImpact = notional/2 → on peut prendre une exposition
+        // 2× plus grosse pour le même cash.
+        const targetCashImpact = targetNotional / leverageMult;
+        const cashCap = state.cashUsd * 0.95;
+        if (targetCashImpact > cashCap) continue; // pas assez de marge
+        const notional = targetNotional;
         if (notional < 50) continue;
 
         const curPrice = state.currentPrices.get(prop.symbol);
@@ -218,17 +231,28 @@ export function simulatePath(
           daysHeld: 0,
           convictionScore: Math.floor(prop.convictionScore),
         });
-        state.cashUsd -= notional;
+        // Cash impact = notional / leverage (margin model). Sans levier =
+        // notional complet. Avec levier, on consume moins de cash pour même
+        // exposition.
+        state.cashUsd -= notional / leverageMult;
         exposureByClass.set(cls, classExposure + notional);
       }
     }
 
     // 4. Snapshot equity (mark-to-market)
+    // Avec levier, l'equity = cash + (mark-to-market exposition - margin déjà mise).
+    // Pour simplifier : on tracke le P&L latent comme (current - entry) × qty,
+    // et l'equity = cashUsd + sum(margin_engagee + pnl_latent) où margin_engagee
+    // = entry_notional / leverage.
     let positionsValue = 0;
     for (const p of state.positions) {
       const cur = state.currentPrices.get(p.symbol) ?? p.entryPrice;
-      const v = p.direction === 'long' ? cur * p.quantity : (2 * p.entryPrice - cur) * p.quantity;
-      positionsValue += v;
+      const pnl =
+        p.direction === 'long'
+          ? (cur - p.entryPrice) * p.quantity
+          : (p.entryPrice - cur) * p.quantity;
+      const marginEngagee = p.notionalUsd / leverageMult;
+      positionsValue += marginEngagee + pnl;
     }
     state.equityCurve.push(state.cashUsd + positionsValue);
   }
@@ -242,7 +266,7 @@ export function simulatePath(
       pos.direction === 'long'
         ? (slip.effectivePrice - pos.entryPrice) * pos.quantity - fee
         : (pos.entryPrice - slip.effectivePrice) * pos.quantity - fee;
-    state.cashUsd += pos.notionalUsd + pnl;
+    state.cashUsd += pos.notionalUsd / leverageMult + pnl;
     totalTrades++;
   }
   const finalEquity = state.cashUsd;

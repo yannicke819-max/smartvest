@@ -45,6 +45,10 @@ export const MonteCarloConfigSchema = z.object({
   maxPositionSizePct: z.number().min(1).max(50).default(8),
   maxAssetClassExposurePct: z.number().min(1).max(100).default(20),
   maxOpenPositions: z.number().int().min(1).max(50).default(12),
+  /** Si true, le sizing peut dépasser le cash dispo jusqu'à cash × maxLeverage. */
+  enableLeverage: z.boolean().default(false),
+  /** Multiple max d'exposition vs equity. 1.0 = pas de levier, 2.0 = ×2, 3.0 = aggressif. */
+  maxLeverage: z.number().min(1).max(5).default(1.5),
   slippageBps: z.number().min(0).max(100).default(10),
   feeBps: z.number().min(0).max(100).default(10),
   stopLossPct: z.number().min(0.5).max(20).default(2),
