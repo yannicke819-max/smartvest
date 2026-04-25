@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import type { EodhdNewsItem } from './eodhd-enrichment.service';
+import type { EodhdNewsItem, NewsProvider } from './eodhd-enrichment.service';
 
 /**
  * NewsRankerService — pipeline de tri/scoring/dédup des news EODHD avant
@@ -202,11 +202,13 @@ export class NewsRankerService {
         link: n.link,
         sourceDomain: n.sourceDomain,
         contentPreview: n.contentPreview,
+        provider: n.provider ?? 'eodhd',
         scores: {
           relevance: Math.round(relevanceScore),
           impact: Math.round(impactScore),
           freshness: Math.round(freshnessScore),
           source: Math.round(sourceScore),
+          convergence: 0, // calculé après dédup
           final: Math.round(finalScore),
         },
         rationale: {
@@ -218,13 +220,33 @@ export class NewsRankerService {
           isMacro,
           directHit: directHit ?? null,
           sectorHit: sectorHit ?? null,
+          providers: [(n.provider ?? 'eodhd') as NewsProvider],
         },
         replicaCount: 1,
       };
     });
 
-    // ── Dédup par similarité titre ──────────────────────────────────
+    // ── Dédup par similarité titre + agrégation cross-source ────────
     const deduped = this.dedupByTitleSimilarity(scored, 0.7);
+
+    // ── Convergence boost : bonus si plusieurs providers distincts ──
+    //    couvrent le même thème (cluster post-dédup). +5 par provider
+    //    additionnel, capé à +20. La logique part du replicaCount + des
+    //    providers agrégés pendant la dédup.
+    for (const item of deduped) {
+      const distinctProviders = item.rationale.providers.length;
+      const convergenceBoost = Math.min(20, Math.max(0, (distinctProviders - 1) * 7));
+      item.scores.convergence = convergenceBoost;
+      // Réintégration dans le score final (re-pondération sans rouvrir
+      // les autres axes — on additionne simplement le boost capé).
+      item.scores.final = Math.min(100, Math.round(
+        0.4 * item.scores.relevance
+        + 0.25 * item.scores.impact
+        + 0.2 * item.scores.freshness
+        + 0.15 * item.scores.source
+        + convergenceBoost,
+      ));
+    }
 
     // ── Tri + cap ──────────────────────────────────────────────────
     deduped.sort((a, b) => b.scores.final - a.scores.final);
@@ -265,12 +287,16 @@ export class NewsRankerService {
         if (r.rationale.isMacro) tags.push('🌐macro');
         if (r.rationale.catalyst) tags.push(`⚡${r.rationale.catalyst}`);
         if (r.replicaCount > 1) tags.push(`📡×${r.replicaCount}`);
+        // Convergence cross-source : signal renforcé si 2+ providers
+        if (r.rationale.providers.length > 1) {
+          tags.push(`🔀${r.rationale.providers.join('+')} (+${r.scores.convergence})`);
+        }
         const sent = r.sentiment !== null
           ? (r.sentiment >= 0 ? `+${(r.sentiment * 100).toFixed(0)}` : `${(r.sentiment * 100).toFixed(0)}`)
           : '?';
         lines.push(
           `  [${r.scores.final}] ${r.title.slice(0, 110)} ` +
-          `(src=${r.sourceDomain ?? '?'} tier=${r.rationale.sourceTier} ` +
+          `(prov=${r.provider} src=${r.sourceDomain ?? '?'} tier=${r.rationale.sourceTier} ` +
           `age=${r.rationale.ageHours}h sent=${sent} ${tags.join(' ')})`,
         );
       }
@@ -323,9 +349,19 @@ export class NewsRankerService {
       if (mergedInto !== null) {
         const existing = result[mergedInto];
         existing.replicaCount += 1;
-        // Garde le meilleur score, mais update freshness à plus récent
+        // Agrège les providers distincts (pour calcul convergence)
+        const allProviders = new Set<NewsProvider>([
+          ...existing.rationale.providers,
+          ...item.rationale.providers,
+        ]);
+        existing.rationale.providers = Array.from(allProviders);
+        // Garde le meilleur score, mais préserve replicaCount + providers
         if (item.scores.final > existing.scores.final) {
-          result[mergedInto] = { ...item, replicaCount: existing.replicaCount };
+          result[mergedInto] = {
+            ...item,
+            replicaCount: existing.replicaCount,
+            rationale: { ...item.rationale, providers: existing.rationale.providers },
+          };
           ngramsCache[mergedInto] = tNgrams;
         }
       } else {
@@ -368,11 +404,15 @@ export interface RankedNewsItem {
   link: string | null;
   sourceDomain: string | null;
   contentPreview: string | null;
+  provider: NewsProvider;
   scores: {
     relevance: number;
     impact: number;
     freshness: number;
     source: number;
+    /** Boost cross-source (0-20). Calculé post-dédup en fonction du
+     *  nombre de providers distincts ayant couvert le thème. */
+    convergence: number;
     final: number;
   };
   rationale: {
@@ -384,6 +424,8 @@ export interface RankedNewsItem {
     isMacro: boolean;
     directHit: string | null;
     sectorHit: string | null;
+    /** Liste des providers distincts ayant couvert ce thème post-dédup. */
+    providers: NewsProvider[];
   };
   /** Nombre d'articles dédoublonnés sur ce thème (≥1, signal de couverture). */
   replicaCount: number;

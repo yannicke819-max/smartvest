@@ -6,6 +6,7 @@ import { RealtimePriceService } from './services/realtime-price.service';
 import { OptionBrokerService } from './services/option-broker.service';
 import { NewsRankerService } from './services/news-ranker.service';
 import { EodhdEnrichmentService } from './services/eodhd-enrichment.service';
+import { NewsAggregatorService } from './services/news-aggregator.service';
 import { SupabaseService } from '../supabase/supabase.service';
 
 @Controller('lisa')
@@ -17,6 +18,7 @@ export class LisaController {
     private readonly optionBroker: OptionBrokerService,
     private readonly newsRanker: NewsRankerService,
     private readonly enrichment: EodhdEnrichmentService,
+    private readonly newsAggregator: NewsAggregatorService,
     private readonly supabase: SupabaseService,
   ) {}
 
@@ -51,8 +53,8 @@ export class LisaController {
       : profile === 'active_trading' || profile === 'sniper_mode' ? 6
       : 12;
 
-    const rawNews = await this.enrichment.fetchRecentNews(undefined, 30);
-    const ranked = this.newsRanker.rank(rawNews, heldSymbols, halfLife, 20);
+    const aggregate = await this.newsAggregator.aggregate(heldSymbols, 30);
+    const ranked = this.newsRanker.rank(aggregate.items, heldSymbols, halfLife, 20);
     const buckets = this.newsRanker.bucket(ranked);
 
     return {
@@ -60,8 +62,11 @@ export class LisaController {
       profile,
       halfLifeHours: halfLife,
       heldSymbols,
+      providersStatus: this.newsAggregator.status(),
+      sourcesFetched: aggregate.sources,
+      elapsedMs: aggregate.elapsedMs,
       counts: {
-        rawFetched: rawNews.length,
+        rawFetched: aggregate.items.length,
         ranked: ranked.length,
         relevant: buckets.relevant.length,
         noise: buckets.noise.length,

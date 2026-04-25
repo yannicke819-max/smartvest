@@ -113,6 +113,59 @@ Sentiment ≥ +0.7 ou ≤ -0.7 sur source tier 1 + catalyseur = consensus
 établi → l'edge contrarian devient supérieur à l'edge directionnel.
 Pose-toi : "que se passe-t-il si le marché change d'avis sur cette story ?"
 
+### Convergence cross-source — le signal le plus fort que tu peux lire
+
+Le NewsRanker agrège **4 sources distinctes** : EODHD (presse pro
+agrégée), StockTwits (retail trading), Reddit (r/wsb / r/stocks /
+r/investing / r/CryptoCurrency), Twitter/X (FinTwit). Chaque news scorée
+porte un tag \`🔀provider1+provider2 (+convergence_pts)\` quand plusieurs
+plateformes couvrent le même thème post-dédup.
+
+**Hiérarchie de convergence (à lire littéralement)** :
+
+- \`🔀eodhd+twitter\` ou \`🔀eodhd+stocktwits\` (2 providers) :
+  signal solide — la story circule en presse + retail. **+7 pts** au score.
+  À traiter sérieusement, surtout si direct hit position tenue.
+
+- \`🔀eodhd+stocktwits+reddit\` (3 providers) :
+  storyflow consensus — presse + retail traders + investisseurs convergent.
+  **+14 pts**. C'est un narrative établi, l'edge directionnel est
+  probable mais le contrarian risque devient pertinent (fade le
+  consensus dans 24-48h).
+
+- \`🔀eodhd+stocktwits+reddit+twitter\` (4 providers) :
+  **saturation maximum**. **+20 pts** capés. Tout le monde en parle —
+  c'est presque toujours déjà priced-in. À ce stade tu DOIS te
+  demander : "qui est encore en face de ce trade ?" Si réponse = personne,
+  l'edge est dans le fade, pas dans le suivi.
+
+- \`📡×N\` sans \`🔀\` (1 seul provider, N réplicas) : couverture interne
+  à une plateforme, généralement EODHD relayant la même dépêche. Compte
+  comme amplification éditoriale, pas comme convergence sociale.
+
+**Cas particuliers** :
+
+- **Reddit + Twitter SANS EODHD** : signal retail pur, souvent **early**
+  (avant que la presse pro ne reprenne). Si conviction ≥ 7 sur le
+  setup technique → trade contre-trend ou ride initial OK avec sizing
+  réduit (-30%). Catalyst possible dans 12-48h.
+
+- **EODHD seul sur source tier 1 (Reuters/Bloomberg)** : signal canonique
+  même sans convergence. La convergence n'est pas obligatoire si
+  l'autorité éditoriale compense.
+
+- **StockTwits + Twitter SANS Reddit/EODHD** : bruit retail social, peu
+  d'edge. Score souvent < 50 et bucket "bruit".
+
+### Lecture du sentiment cross-source
+
+Si \`provider=stocktwits\` + sentiment +0.7 ET \`provider=reddit\` + sentiment
+-0.7 sur le même ticker → **divergence retail interne**. C'est typique
+des reversals : un camp accumule pendant que l'autre capitule. Diagnose
+en [DIAGNOSTIC] et envisage un setup contrarian (souvent du côté
+StockTwits qui regroupe plus de traders actifs vs Reddit où dominent
+les bagholders).
+
 ### Action triggers en hyper_active
 
 - **News score ≥ 80 avec direct hit + catalyseur frais (< 4h)** :

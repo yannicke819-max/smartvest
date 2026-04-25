@@ -111,6 +111,7 @@ export class EodhdEnrichmentService {
         // côté NewsRanker (Reuters/Bloomberg = tier 1, blogs = tier 3).
         sourceDomain: typeof n.link === 'string' ? extractDomain(n.link) : null,
         contentPreview: typeof n.content === 'string' ? String(n.content).slice(0, 400) : null,
+        provider: 'eodhd' as const,
       }));
 
       this.logCall({ ticker: 'NEWS', success: true, statusCode: res.status, latencyMs, calledBy: 'enrichment_news' });
@@ -314,18 +315,24 @@ export class EodhdEnrichmentService {
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
+export type NewsProvider = 'eodhd' | 'stocktwits' | 'reddit' | 'twitter';
+
 export interface EodhdNewsItem {
   title: string;
   date: string;
   symbols: string[];
   sentiment: number | null; // -1 (très négatif) → +1 (très positif), ou null si absent
   tags: string[];
-  /** URL complète de l'article (peut être null si EODHD ne le fournit pas). */
+  /** URL complète de l'article (peut être null si la source ne le fournit pas). */
   link: string | null;
   /** Domaine extrait depuis link (ex: "reuters.com"). Sert de proxy source tier. */
   sourceDomain: string | null;
-  /** Aperçu du corps de l'article si EODHD le fournit (max 400 chars). */
+  /** Aperçu du corps de l'article si fourni (max 400 chars). */
   contentPreview: string | null;
+  /** Plateforme d'origine. Utilisé par NewsRanker pour calculer la
+   *  convergence cross-source (signal renforcé si 2+ providers couvrent
+   *  le même thème). Défaut 'eodhd' pour rétrocompat. */
+  provider?: NewsProvider;
 }
 
 export interface EodhdEconomicEvent {
