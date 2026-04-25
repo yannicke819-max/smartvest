@@ -567,6 +567,22 @@ export class MechanicalTradingService {
     );
     const maxPairwiseCorrThreshold = Number((constraints['maxPairwiseCorrelation'] as number | undefined) ?? 0.7);
 
+    // Cap "first wave" en hyper_active : on limite le notional CUMULÉ
+    // ouvert dans un même cycle à 50 % du capital. Évite que 3 thèses
+    // consécutives à 30 % chacune saturent le cash en 1 cycle (puis Lisa
+    // ne peut plus rien proposer pendant 30+ min).
+    // Cap "per position" en hyper_active : on plafonne maxPositionPct à
+    // 25 % pour les ouvertures (le user peut toujours atteindre 80 % par
+    // accumulation sur plusieurs cycles, mais pas en un seul).
+    const isHyperActive = cfg.profile === 'hyper_active';
+    const cycleNotionalCap = isHyperActive
+      ? capitalUsd.mul(0.5)
+      : capitalUsd; // pas de cap cumulé hors hyper_active
+    const effectiveMaxPositionPct = isHyperActive
+      ? Math.min(maxPositionPct, 25)
+      : maxPositionPct;
+    let cycleNotionalUsed = new Decimal(0);
+
     let slotsUsed = 0;
 
     for (const target of directive.targetSymbols) {
@@ -645,9 +661,18 @@ export class MechanicalTradingService {
       const price = new Decimal(quote.price);
 
       // Taille de position (trajectoire + momentum)
-      const maxNotional = capitalUsd.mul(maxPositionPct).div(100).mul(sizingMultiplier);
-      const notional = Decimal.min(maxNotional, cashUsd.mul(0.9));
-      if (notional.lt(10)) continue;
+      // En hyper_active, effectiveMaxPositionPct cape à 25 % (cf. ci-dessus).
+      const maxNotional = capitalUsd.mul(effectiveMaxPositionPct).div(100).mul(sizingMultiplier);
+      // Cap "first wave" : si on a déjà ouvert près de cycleNotionalCap
+      // dans ce cycle, on réduit le notional restant pour ne pas dépasser.
+      const remainingCycleBudget = cycleNotionalCap.minus(cycleNotionalUsed);
+      const notional = Decimal.min(maxNotional, cashUsd.mul(0.9), remainingCycleBudget);
+      if (notional.lt(10)) {
+        if (isHyperActive && cycleNotionalUsed.gte(cycleNotionalCap.mul(0.95))) {
+          this.logger.debug(`[hyper_active] cycle budget cap reached for ${target.symbol} — saving cash for next cycle`);
+        }
+        continue;
+      }
 
       // ─── ROUTING OPTIONS ───────────────────────────────────────────────
       // Si la thèse Lisa contient optionStructure, on ouvre une option (long
@@ -687,6 +712,7 @@ export class MechanicalTradingService {
         });
         if (result) {
           slotsUsed++;
+          cycleNotionalUsed = cycleNotionalUsed.plus(notional);
           this.logger.log(
             `[OPTIONS] Ouverture ${result.kind} ${target.symbol} K=${strike.toFixed(2)} exp=${expiry} contracts=${result.contracts} premium=$${Number(result.premium_paid_usd).toFixed(2)}`,
           );
@@ -802,6 +828,7 @@ export class MechanicalTradingService {
         });
 
       slotsUsed++;
+      cycleNotionalUsed = cycleNotionalUsed.plus(notional);
       // P4.3 — Cumule l'exposition de la classe pour les itérations suivantes
       exposureByClass.set(classKey, currentClassExposure + notional.toNumber());
       // P4.2 — Cumule le ticker pour les prochains checks de corrélation

@@ -981,7 +981,11 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     let cooldownSkipped = false;
 
     if (autopilotActive && marketMomentum !== 'bullish_strong' && allocations.length > 0) {
-      const cooldownBase = Math.max(0, Math.min(240, Number(sessionCfg?.autopilot_opening_cooldown_minutes ?? 15)));
+      // Default cooldown : 5 min en hyper_active (cadence haute fréquence
+      // explicite), 15 min sinon. L'utilisateur peut surcharger via
+      // autopilot_opening_cooldown_minutes côté config.
+      const cooldownDefault = sessionCfg?.profile === 'hyper_active' ? 5 : 15;
+      const cooldownBase = Math.max(0, Math.min(240, Number(sessionCfg?.autopilot_opening_cooldown_minutes ?? cooldownDefault)));
       const cooldownMultiplier = marketMomentum === 'bearish' ? 1.33 : 1;
       const effectiveCooldownMs = Math.round(cooldownBase * cooldownMultiplier) * 60_000;
 

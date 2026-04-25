@@ -97,20 +97,34 @@ export class StockTwitsService {
       : `https://api.stocktwits.com/api/2/streams/symbol/${encodeURIComponent(symbol ?? '')}.json`;
 
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      // User-Agent obligatoire : Node fetch n'en met pas par défaut et
+      // StockTwits rate-limit / bloque les requêtes anonymes.
+      const res = await fetch(url, {
+        headers: {
+          'User-Agent': 'smartvest-news/1.0 (+personal investment simulation)',
+          Accept: 'application/json',
+        },
+        signal: AbortSignal.timeout(8000),
+      });
       if (!res.ok) {
-        // 404 fréquent pour tickers non listés — pas un warning
-        if (res.status !== 404) {
-          this.logger.debug(`stocktwits ${kind} ${symbol ?? ''} HTTP ${res.status}`);
+        // 404 = ticker pas listé sur StockTwits (ex: ETF obscur). Le reste
+        // est anormal (429 rate-limit, 403 bloqué, 5xx down). On log au
+        // niveau warn pour visibilité Fly.
+        if (res.status === 404) {
+          this.logger.debug(`stocktwits ${kind} ${symbol ?? ''} 404 (not listed)`);
+        } else {
+          this.logger.warn(`stocktwits ${kind} ${symbol ?? ''} HTTP ${res.status}`);
         }
         this.cache.set(cacheKey, { data: [], asOf: Date.now() });
         return [];
       }
       const json = await res.json() as StockTwitsResponse;
       if (json.response?.status !== 200 || !Array.isArray(json.messages)) {
+        this.logger.warn(`stocktwits ${kind} ${symbol ?? ''} bad response: status=${json.response?.status} hasMessages=${Array.isArray(json.messages)}`);
         this.cache.set(cacheKey, { data: [], asOf: Date.now() });
         return [];
       }
+      this.logger.debug(`stocktwits ${kind} ${symbol ?? ''} OK ${json.messages.length} messages`);
 
       const items: EodhdNewsItem[] = json.messages.slice(0, limit).map((m) => {
         const tickers = (m.symbols ?? []).map((s) => (s.symbol ?? '').toUpperCase()).filter((s) => s);
