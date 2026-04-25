@@ -6,9 +6,12 @@ import { usePathname } from 'next/navigation';
 import {
   BarChart3,
   Bell,
+  Brain,
+  FlaskConical,
   History,
   LayoutDashboard,
   Settings,
+  Sliders,
   Wallet,
   Activity,
 } from 'lucide-react';
@@ -19,6 +22,9 @@ const items = [
   { href: '/', label: 'Tableau de bord', icon: LayoutDashboard },
   { href: '/portfolio', label: 'Portefeuille', icon: Wallet },
   { href: '/performance', label: 'Performance', icon: BarChart3 },
+  { href: '/lisa', label: 'Lisa', icon: Brain },
+  { href: '/backtest', label: 'Backtest', icon: FlaskConical },
+  { href: '/optimizer', label: 'Optimizer', icon: Sliders },
   { href: '/alerts', label: 'Alertes', icon: Bell },
   { href: '/history', label: 'Historique', icon: History },
   { href: '/settings', label: 'Paramètres', icon: Settings },
