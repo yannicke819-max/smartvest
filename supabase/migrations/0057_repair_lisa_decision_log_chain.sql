@@ -1,0 +1,33 @@
+-- Note sur la hash chain corrompue de lisa_decision_log
+--
+-- Avant le fix code (risk-monitor.service.ts qui réécrit maintenant via
+-- hash chaîné canonique), des entrées étaient insérées avec
+-- hash_chain_prev = NULL et hash_chain_current = '' → la chaîne devenait
+-- invérifiable à partir de la première entrée corrompue.
+--
+-- Stratégie retenue : FIX-FORWARD UNIQUEMENT.
+-- Le code TS garantit désormais que toutes les NOUVELLES entrées sont
+-- correctement hashées. Les entrées legacy restent dans la table mais
+-- la chaîne reste cassée jusqu'à ce qu'on choisisse comment traiter.
+--
+-- Trois options possibles côté utilisateur (à choisir, AUCUNE n'est
+-- exécutée par défaut) :
+--
+-- (A) Tout supprimer le legacy cassé pour repartir clean :
+--     DELETE FROM lisa_decision_log
+--     WHERE hash_chain_current IS NULL OR hash_chain_current = '';
+--
+-- (B) Marquer le début d'une nouvelle chaîne en supprimant uniquement
+--     les entrées risk_monitor cassées (préserve les entrées Lisa
+--     correctement hashées) :
+--     DELETE FROM lisa_decision_log
+--     WHERE triggered_by = 'risk_monitor'
+--       AND (hash_chain_current IS NULL OR hash_chain_current = '');
+--
+-- (C) Ne rien faire, accepter que le `verifyChain` soit cassé sur les
+--     entrées legacy. Les nouvelles entrées sont audit-clean.
+--
+-- Cette migration est volontairement vide (pas d'action automatique)
+-- pour ne pas perdre de données sans validation explicite.
+
+SELECT 1;

@@ -16,10 +16,28 @@
  */
 
 import Decimal from 'decimal.js';
+import { createHash } from 'node:crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { RiskConstraints } from '../types';
 import type { PaperBrokerService } from './paper-broker.service';
 import type { PaperPosition, PortfolioSnapshot } from './types';
+
+/**
+ * Canonical JSON — clés triées récursivement pour stabilité du hash.
+ * DOIT matcher le format de DecisionLogService.append() (apps/api) sinon
+ * verifyChain() reportera la chaîne corrompue. Si tu modifies l'un, modifie l'autre.
+ */
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return '[' + value.map(canonicalJson).join(',') + ']';
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return '{' + keys.map((k) => JSON.stringify(k) + ':' + canonicalJson(obj[k])).join(',') + '}';
+}
+
+function canonicalTimestamp(ts: string): string {
+  return new Date(ts).toISOString();
+}
 
 export interface RiskCheckResult {
   portfolioId: string;
@@ -283,31 +301,68 @@ export class RiskMonitorService {
   }
 
   /**
-   * Enregistre le résultat du risk check dans la decision log (pour audit).
+   * Enregistre le résultat du risk check dans la decision log avec hash
+   * chaîné canonique. Avant ce fix, l'INSERT direct cassait la chaîne car
+   * hash_chain_prev/current restaient vides → /lisa/audit/verify reportait
+   * 'Hash chain corrompue'.
+   *
+   * Format DOIT matcher DecisionLogService.append() (apps/api), sinon le
+   * verifyChain divergera. Voir canonicalJson/canonicalTimestamp ci-dessus.
    */
   private async persistRiskCheck(result: RiskCheckResult): Promise<void> {
     if (result.violations.length === 0 && result.actionsApplied.length === 0) {
       return;  // pas de log si rien à signaler
     }
 
+    const kind =
+      result.status === 'hard_kill'
+        ? 'kill_switch_triggered'
+        : result.status === 'critical'
+          ? 'risk_limit_breached'
+          : 'autopilot_cycle_completed';
+    const summary = `Risk check: ${result.status}, ${result.violations.length} violation(s), ${result.actionsApplied.length} action(s)`;
+    const rationale = result.violations.map((v) => v.message).join(' | ');
+    const payload = {
+      status: result.status,
+      violations: result.violations,
+      actionsApplied: result.actionsApplied,
+      snapshotId: result.snapshot.id,
+    };
+    const timestamp = canonicalTimestamp(result.timestamp);
+
+    // 1. Récupère le hash de la dernière entrée pour ce portfolio
+    const { data: prev } = await this.supabase
+      .from('lisa_decision_log')
+      .select('hash_chain_current')
+      .eq('portfolio_id', result.portfolioId)
+      .order('timestamp', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const prevHash = (prev?.hash_chain_current as string | undefined) ?? null;
+
+    // 2. Calcul du hash courant (format identique à DecisionLogService.append)
+    const hashInput = [
+      prevHash ?? 'GENESIS',
+      kind,
+      summary,
+      rationale,
+      canonicalJson(payload),
+      timestamp,
+    ].join('|');
+    const hashChainCurrent = createHash('sha256').update(hashInput).digest('hex');
+
+    // 3. Insert avec hash chaîné — la chaîne reste vérifiable
     const { error } = await this.supabase.from('lisa_decision_log').insert({
       portfolio_id: result.portfolioId,
-      kind:
-        result.status === 'hard_kill'
-          ? 'kill_switch_triggered'
-          : result.status === 'critical'
-            ? 'risk_limit_breached'
-            : 'autopilot_cycle_completed',
-      summary: `Risk check: ${result.status}, ${result.violations.length} violation(s), ${result.actionsApplied.length} action(s)`,
-      rationale: result.violations.map((v) => v.message).join(' | '),
-      payload: {
-        status: result.status,
-        violations: result.violations,
-        actionsApplied: result.actionsApplied,
-        snapshotId: result.snapshot.id,
-      },
+      kind,
+      summary,
+      rationale,
+      payload,
+      hash_chain_prev: prevHash,
+      hash_chain_current: hashChainCurrent,
       triggered_by: 'risk_monitor',
-      timestamp: result.timestamp,
+      timestamp,
     });
 
     if (error) {

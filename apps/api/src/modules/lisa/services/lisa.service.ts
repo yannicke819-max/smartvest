@@ -1330,6 +1330,43 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     return this.fetchLivePrice(symbol);
   }
 
+  /**
+   * Cross-validation oracle pour les indicateurs macro (VIX, DXY).
+   *
+   * Le brief mécanique appelle `getLivePrice` qui passe par `toEodhdTicker`
+   * et un fallback générique (historique de bugs : VIX=100 si EODHD échoue).
+   * Cette méthode est un SECOND oracle indépendant qui contacte directement
+   * EODHD avec le ticker indice (^VIX.INDX, DX-Y.NYB.FOREX) et fallback
+   * sur des valeurs réalistes (18.5, 102.3). Si la valeur retournée par
+   * les deux oracles diverge au-delà du seuil, le consumer décide de
+   * traiter comme donnée non-fiable.
+   *
+   * Aucun coût Claude — appel HTTP EODHD direct (gratuit dans le quota).
+   */
+  async fetchMacroIndicator(
+    key: 'VIX' | 'DXY',
+  ): Promise<{ value: number; source: 'eodhd' | 'fallback' }> {
+    const ticker = key === 'VIX' ? '^VIX.INDX' : 'DX-Y.NYB.FOREX';
+    const fallback = key === 'VIX' ? 18.5 : 102.3;
+    const eodhKey = this.config.get<string>('EODHD_API_KEY');
+
+    if (!eodhKey || eodhKey === 'demo') {
+      return { value: fallback, source: 'fallback' };
+    }
+
+    try {
+      const url = `https://eodhd.com/api/real-time/${encodeURIComponent(ticker)}?api_token=${eodhKey}&fmt=json`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      if (!res.ok) return { value: fallback, source: 'fallback' };
+      const d = (await res.json()) as Record<string, unknown>;
+      const v = Number(d['close'] ?? d['previousClose'] ?? d['open']);
+      if (!Number.isFinite(v) || v <= 0) return { value: fallback, source: 'fallback' };
+      return { value: v, source: 'eodhd' };
+    } catch {
+      return { value: fallback, source: 'fallback' };
+    }
+  }
+
   private async fetchLivePrice(symbol: string): Promise<{ symbol: string; price: string; asOf: string; source: string }> {
     const eodhKey = this.config.get<string>('EODHD_API_KEY');
     const now = new Date().toISOString();

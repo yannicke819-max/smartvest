@@ -318,10 +318,14 @@ export class MechanicalTradingService {
     }
 
     // P4.3 (2-way) — enforcement sur positions EXISTANTES : si une classe
-    // dépasse déjà le cap, on ferme la plus petite position de cette classe
-    // (proxy plus basse conviction). Ceci complète l'enforcement pre-open :
-    // avant ce patch, une classe en dépassement restait hors-cap indéfiniment
-    // (bug asymétrique). Maintenant le cap agit dans les deux sens.
+    // dépasse déjà le cap, on ferme la position la moins convaincue
+    // (conviction_score si disponible, fallback sur notional pour les
+    // positions héritées sans score explicite).
+    const readConviction = (p: OpenPosition): number | null => {
+      const v = (p as unknown as Record<string, unknown>)['conviction_score'];
+      const n = v == null ? null : Number(v);
+      return n != null && Number.isFinite(n) ? n : null;
+    };
     const capitalForClass = capitalUsd.toNumber();
     if (capitalForClass > 0) {
       for (const [cls, exposureUsd] of exposureByClass.entries()) {
@@ -331,10 +335,17 @@ export class MechanicalTradingService {
         const candidates = activePositions.filter((p) => readAssetClass(p) === cls);
         if (candidates.length === 0) continue;
 
-        // Ferme la plus petite (notional = proxy conviction) pour revenir sous le cap
-        const weakest = [...candidates].sort(
-          (a, b) => readNotionalPos(a) - readNotionalPos(b),
-        )[0];
+        // Tri : conviction_score ASC (plus basse conviction d'abord), puis
+        // notional ASC en tie-breaker. Si conviction_score est null sur
+        // toutes, le fallback est purement notional (rétrocompatibilité).
+        const weakest = [...candidates].sort((a, b) => {
+          const ca = readConviction(a);
+          const cb = readConviction(b);
+          if (ca != null && cb != null && ca !== cb) return ca - cb;
+          if (ca != null && cb == null) return -1; // null = inconnu, on garde
+          if (ca == null && cb != null) return 1;
+          return readNotionalPos(a) - readNotionalPos(b);
+        })[0];
         const quote = await this.lisa.getLivePrice(weakest.symbol).catch(() => null);
         if (!quote) continue;
 
@@ -366,19 +377,23 @@ export class MechanicalTradingService {
       }
     }
 
-    // Override : fermer la plus basse conviction si exposition > seuil
+    // Override : fermer la plus basse conviction si exposition > seuil.
+    // Tri prioritaire sur conviction_score (vrai score Lisa), fallback
+    // sur notional pour les positions héritées sans score explicite.
     if (overrides.closeLowestConvictionIfExposureAbovePct != null && activePositions.length > 0) {
-      // Note: le runtime Supabase renvoie snake_case, on accède via bracket (l'interface OpenPosition est partielle)
       const readNotional = (p: OpenPosition) =>
         Number((p as unknown as Record<string, unknown>)['entry_notional_usd'] ?? 0);
       const totalExposure = activePositions.reduce((s, p) => s + readNotional(p), 0);
       const exposurePct = capitalUsd.gt(0) ? (totalExposure / capitalUsd.toNumber()) * 100 : 0;
       if (exposurePct > overrides.closeLowestConvictionIfExposureAbovePct) {
-        // On identifie la position avec le plus petit notional comme proxy de "plus basse conviction"
-        // (pas de colonne conviction sur lisa_positions ; notional reflète déjà le sizing par conviction)
-        const weakest = [...activePositions].sort(
-          (a, b) => readNotional(a) - readNotional(b),
-        )[0];
+        const weakest = [...activePositions].sort((a, b) => {
+          const ca = readConviction(a);
+          const cb = readConviction(b);
+          if (ca != null && cb != null && ca !== cb) return ca - cb;
+          if (ca != null && cb == null) return -1;
+          if (ca == null && cb != null) return 1;
+          return readNotional(a) - readNotional(b);
+        })[0];
         if (weakest) {
           const quote = await this.lisa.getLivePrice(weakest.symbol).catch(() => null);
           if (quote) {
@@ -614,6 +629,7 @@ export class MechanicalTradingService {
           entry_price: price.toFixed(10),
           entry_timestamp: now,
           entry_notional_usd: notional.toFixed(2),
+          conviction_score: target.convictionScore,
           status: 'open',
           stop_loss_price: stopPrice,
           take_profit_price: takeProfitPrice,
@@ -775,21 +791,46 @@ export class MechanicalTradingService {
       }
     }
 
-    // 3. VIX live (pour détecter un choc marché).
+    // 3. VIX cross-validé (pour détecter un choc marché).
     //
-    // Sanity bound : VIX historique reste entre 9 et 90. Toute valeur hors
-    // plage plausible signale presque toujours une donnée corrompue (fallback
-    // sentinel, ticker mal mappé, parser bug). On préfère passer null —
-    // l'AgentLisaSyncService skip le trigger plutôt que paniquer.
-    const vixQuote = await this.lisa.getLivePrice('VIX').catch(() => null);
+    // Defense en profondeur — DEUX oracles indépendants :
+    //   - getLivePrice('VIX') : passe par toEodhdTicker + fallback générique
+    //   - fetchMacroIndicator('VIX') : EODHD direct sur l'indice + fallback ciblé
+    //
+    // Si les deux divergent de plus de 30%, c'est un signal fort qu'au moins
+    // une source est corrompue → on traite comme donnée indisponible plutôt
+    // que paniquer. Sanity bound additionnel [5, 90] pour les valeurs
+    // intrinsèquement absurdes (ex. fallback sentinel à 100).
+    const [vixQuote, vixOracle2] = await Promise.all([
+      this.lisa.getLivePrice('VIX').catch(() => null),
+      this.lisa.fetchMacroIndicator('VIX').catch(() => null),
+    ]);
     const vixRaw = vixQuote ? Number(vixQuote.price) : null;
-    const vixLevel =
-      vixRaw != null && Number.isFinite(vixRaw) && vixRaw >= 5 && vixRaw <= 90
-        ? vixRaw
-        : null;
-    if (vixRaw != null && vixLevel == null) {
+    const vixOracle2Val = vixOracle2 ? vixOracle2.value : null;
+
+    let vixLevel: number | null = null;
+    if (
+      vixRaw != null &&
+      Number.isFinite(vixRaw) &&
+      vixRaw >= 5 &&
+      vixRaw <= 90
+    ) {
+      // Cross-validation : si oracle2 dispo, comparer
+      if (vixOracle2Val != null) {
+        const divergencePct = Math.abs((vixRaw - vixOracle2Val) / vixOracle2Val) * 100;
+        if (divergencePct > 30) {
+          this.logger.warn(
+            `[mechanical-trading] VIX divergence: live=${vixRaw} vs oracle2=${vixOracle2Val} (${divergencePct.toFixed(0)}%) — donnée non-fiable, ignorée`,
+          );
+        } else {
+          vixLevel = vixRaw;
+        }
+      } else {
+        vixLevel = vixRaw;
+      }
+    } else if (vixRaw != null) {
       this.logger.warn(
-        `[mechanical-trading] VIX=${vixRaw} hors plage plausible [5,90] — ignoré pour évaluation des triggers`,
+        `[mechanical-trading] VIX=${vixRaw} hors plage plausible [5,90] — ignoré`,
       );
     }
 
@@ -1353,35 +1394,49 @@ export class MechanicalTradingService {
       drawdownSinceDirectivePct = maxDD;
     }
 
-    // Macro en cache EODHD ($0 de coût supplémentaire).
-    //
-    // Les valeurs alimentent le briefing Lisa (champ `vix_level`/`dxy_level`)
-    // — donc tout chiffre absurde sera lu par Lisa comme un signal réel.
-    // Sanity bounds : VIX [5, 90], DXY [70, 130] (plages historiques larges).
-    // Hors plage = sentinel/parser/source corrompu → on stocke null, Lisa
-    // raisonnera sans cette donnée plutôt qu'avec une fausse alarme.
-    const [vixQuote, dxyQuote] = await Promise.all([
+    // Macro cross-validé (VIX + DXY) avec 2 oracles indépendants.
+    // Briefing Lisa lit `vix_level` / `dxy_level` — toute valeur stockée
+    // doit avoir passé : sanity bounds + cross-validation. Hors-plage ou
+    // divergence > 30% entre oracles → null (Lisa raisonne sans la donnée).
+    const [vixQuote, dxyQuote, vixOracle2, dxyOracle2] = await Promise.all([
       this.lisa.getLivePrice('VIX').catch(() => null),
       this.lisa.getLivePrice('DXY').catch(() => null),
+      this.lisa.fetchMacroIndicator('VIX').catch(() => null),
+      this.lisa.fetchMacroIndicator('DXY').catch(() => null),
     ]);
-    const vixLevelSafe = (() => {
-      if (!vixQuote) return null;
-      const v = Number(vixQuote.price);
-      if (!Number.isFinite(v) || v < 5 || v > 90) {
-        this.logger.warn(`[mechanical-trading] VIX=${v} hors plage [5,90], stocké null`);
+
+    const validateMacro = (
+      raw: number | null,
+      oracle2: number | null,
+      bounds: [number, number],
+      label: string,
+    ): number | null => {
+      if (raw == null || !Number.isFinite(raw) || raw < bounds[0] || raw > bounds[1]) {
+        if (raw != null) this.logger.warn(`[mechanical-trading] ${label}=${raw} hors plage ${bounds[0]}-${bounds[1]}, stocké null`);
         return null;
       }
-      return v;
-    })();
-    const dxyLevelSafe = (() => {
-      if (!dxyQuote) return null;
-      const v = Number(dxyQuote.price);
-      if (!Number.isFinite(v) || v < 70 || v > 130) {
-        this.logger.warn(`[mechanical-trading] DXY=${v} hors plage [70,130], stocké null`);
-        return null;
+      if (oracle2 != null) {
+        const divPct = Math.abs((raw - oracle2) / oracle2) * 100;
+        if (divPct > 30) {
+          this.logger.warn(`[mechanical-trading] ${label} divergence live=${raw} vs oracle2=${oracle2} (${divPct.toFixed(0)}%) — stocké null`);
+          return null;
+        }
       }
-      return v;
-    })();
+      return raw;
+    };
+
+    const vixLevelSafe = validateMacro(
+      vixQuote ? Number(vixQuote.price) : null,
+      vixOracle2 ? vixOracle2.value : null,
+      [5, 90],
+      'VIX',
+    );
+    const dxyLevelSafe = validateMacro(
+      dxyQuote ? Number(dxyQuote.price) : null,
+      dxyOracle2 ? dxyOracle2.value : null,
+      [70, 130],
+      'DXY',
+    );
 
     const directiveAgeMinutes = Math.round((Date.now() - directive.generatedAt.getTime()) / 60000);
 
@@ -1473,7 +1528,12 @@ export class MechanicalTradingService {
    *   ≥ 10 → relax moyen  : minConviction → 6, stops → 0.95
    *   ≥ 15 → reset complet : tous les overrides défensifs retirés
    *
-   * Aucune action si la trajectoire est HORS_TRAJECTOIRE (posture défensive justifiée).
+   * En HORS_TRAJECTOIRE : on conserve la posture défensive globalement,
+   * mais on évite le verrouillage perpétuel. Après 30 cycles inactifs
+   * (drawdown stabilisé ou simple absence d'opportunité), on retire
+   * UNIQUEMENT pauseOpens pour permettre à Lisa de re-proposer
+   * timidement — minConvictionOverride et tightenStopsMultiplier restent
+   * actifs pour limiter le risque résiduel.
    */
   private async relaxDefensiveOverrides(
     overrides: TacticalOverrides,
@@ -1482,7 +1542,36 @@ export class MechanicalTradingService {
     portfolioId: string,
   ): Promise<TacticalOverrides> {
     if (consecutiveZeroCycles < 5) return overrides;
-    if (trajectoryStatus === 'HORS_TRAJECTOIRE') return overrides;
+
+    // HORS_TRAJECTOIRE — relaxation MINIMALE après 30 cycles, pas avant
+    if (trajectoryStatus === 'HORS_TRAJECTOIRE') {
+      if (consecutiveZeroCycles < 30) return overrides;
+      if (overrides.pauseOpens !== true) return overrides;
+
+      const relaxedHt: TacticalOverrides = { ...overrides };
+      delete relaxedHt.pauseOpens;
+      delete relaxedHt.pauseOpensReason;
+
+      this.logger.log(
+        `[OVERRIDE RESET HORS_TRAJECTOIRE] ${portfolioId.slice(0, 8)} — pauseOpens retiré apres ${consecutiveZeroCycles} cycles, autres overrides conservés`,
+      );
+      await this.decisionLog.append({
+        portfolioId,
+        kind: 'autopilot_cycle_completed',
+        summary: `[OVERRIDE RESET HORS_TRAJECTOIRE] Verrou pauseOpens libéré après ${consecutiveZeroCycles} cycles inactifs (autres overrides défensifs conservés)`,
+        rationale:
+          'Évite la paralysie perpétuelle quand la trajectoire reste HORS_TRAJECTOIRE longtemps : on permet à Lisa de re-proposer timidement, mais minConvictionOverride et tightenStopsMultiplier restent actifs.',
+        payload: {
+          consecutive_zero_cycles: consecutiveZeroCycles,
+          original_overrides: overrides,
+          relaxed_overrides: relaxedHt,
+          trajectory_status: trajectoryStatus,
+          mode: 'hors_trajectoire_minimal_relax',
+        },
+        triggeredBy: 'mechanical_cron',
+      });
+      return relaxedHt;
+    }
 
     const hasDefensiveOverrides =
       overrides.pauseOpens === true ||
