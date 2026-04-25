@@ -132,6 +132,22 @@ const thesisSchema = {
     },
     analogSlugs: { type: 'array', items: { type: 'string' }, description: 'Slugs du historical_events_corpus consultés' },
     confidenceScore: { type: 'integer', minimum: 0, maximum: 100 },
+    autonomyRules: {
+      type: 'array',
+      maxItems: 5,
+      description: 'Règles évaluées toutes les 60s par le mécanique. Permettent une réactivité H24 entre cycles Lisa. Cap 5 règles par thèse pour éviter combinatoire chaotique. Métriques: vix, price, funding_annual_pct, pnl_pct. Actions: close, tighten_stop, scale_down_50pct, take_profit. Chaque règle doit être justifiée et non-redondante avec les invalidation conditions.',
+      items: {
+        type: 'object',
+        properties: {
+          metric: { type: 'string', enum: ['vix', 'price', 'funding_annual_pct', 'pnl_pct'] },
+          op: { type: 'string', enum: ['gt', 'lt', 'gte', 'lte'] },
+          value: { type: 'number' },
+          action: { type: 'string', enum: ['close', 'tighten_stop', 'scale_down_50pct', 'take_profit'] },
+          reason: { type: 'string', maxLength: 200 },
+        },
+        required: ['metric', 'op', 'value', 'action', 'reason'],
+      },
+    },
   },
   required: ['title', 'summary', 'catalyst', 'whoIsWrong', 'category', 'expressions', 'preferredExpressionIndex', 'expressionChoiceRationale', 'riskReward', 'invalidation', 'antiBullshit', 'analogSlugs', 'confidenceScore'],
 };

@@ -139,6 +139,33 @@ export const AntiBullshitCheck = z.object({
 export type AntiBullshitCheck = z.infer<typeof AntiBullshitCheck>;
 
 /**
+ * Règle d'autonomie attachée à une thèse Lisa.
+ * Évaluée toutes les 60s par AutonomyRuleEvaluatorService côté mécanique.
+ * Permet une réactivité H24 entre 2 cycles Lisa (qui ne tournent que toutes
+ * les 15-20 min).
+ *
+ * Métriques supportées V1 :
+ *  - 'vix'                  : niveau VIX live (depuis RealtimePriceService)
+ *  - 'price'                : prix live du symbole de la thèse
+ *  - 'funding_annual_pct'   : funding rate annualisé crypto (Binance perp)
+ *  - 'pnl_pct'              : P&L latent de la position en %
+ *
+ * Actions :
+ *  - 'close'              : ferme la position immédiatement
+ *  - 'tighten_stop'       : déplace le stop-loss à breakeven
+ *  - 'scale_down_50pct'   : ferme 50% de la position (prise de profit ou réduction risque)
+ *  - 'take_profit'        : ferme la position avec rationale "take_profit_rule"
+ */
+export const AutonomyRule = z.object({
+  metric: z.enum(['vix', 'price', 'funding_annual_pct', 'pnl_pct']),
+  op: z.enum(['gt', 'lt', 'gte', 'lte']),
+  value: z.number(),
+  action: z.enum(['close', 'tighten_stop', 'scale_down_50pct', 'take_profit']),
+  reason: z.string().max(200),
+});
+export type AutonomyRule = z.infer<typeof AutonomyRule>;
+
+/**
  * Thèse Lisa complète.
  * Structure identique pour toute idée, toute classe d'actifs.
  */
@@ -179,6 +206,10 @@ export const LisaThesis = z.object({
     outputTokens: z.number().int(),
     cachedTokens: z.number().int().optional(),
   }),
+  /** Règles d'autonomie évaluées toutes les 60s par le mécanique.
+   *  Permettent une réactivité H24 sans attendre nouveau cycle Lisa.
+   *  Cap 5 règles par thèse pour éviter combinatoire chaotique. */
+  autonomyRules: z.array(AutonomyRule).max(5).optional().default([]),
 });
 export type LisaThesis = z.infer<typeof LisaThesis>;
 

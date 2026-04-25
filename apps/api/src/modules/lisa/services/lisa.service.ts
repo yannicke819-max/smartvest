@@ -1167,6 +1167,22 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         openedSoFar++;
         availableCash = availableCash.minus(allocAmount);
 
+        // Phase 2 : persiste autonomy_rules + conviction_score sur la
+        // position ouverte. Ces métadonnées sont lues par le mécanique
+        // (cron 60s) pour évaluer les règles H24 entre cycles Lisa.
+        const autonomyRules = Array.isArray(thesis.autonomyRules) ? thesis.autonomyRules : [];
+        const convictionScore = Math.round(Number(thesis.confidenceScore) / 10);
+        await this.supabase.getClient()
+          .from('lisa_positions')
+          .update({
+            autonomy_rules: autonomyRules,
+            conviction_score: convictionScore,
+          })
+          .eq('id', pos.id)
+          .then(({ error }) => {
+            if (error) this.logger.warn(`Failed to persist autonomy_rules for ${pos.id}: ${error.message}`);
+          });
+
         await this.logDecision(portfolioId, 'position_opened', {
           summary: `Opened ${expression.symbol}: ${alloc.pctCapital}% (${alloc.amountUsd} USD) at ${quote.price} stop=${stopLossPrice}`,
           rationale: String(thesis.summary),

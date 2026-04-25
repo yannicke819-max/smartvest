@@ -27,6 +27,7 @@ import { PortfolioCorrelationService } from './portfolio-correlation.service';
 import { AgentLisaSyncService } from './agent-lisa-sync.service';
 import { OptionBrokerService } from './option-broker.service';
 import { EodhdCalendarService } from './eodhd-calendar.service';
+import { BinanceMarketService } from './binance-market.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types internes
@@ -99,6 +100,16 @@ interface OpenPosition {
   stopLossPrice: string | null;
   takeProfitPrice: string | null;
   status: string;
+  autonomy_rules?: AutonomyRuleDb[] | null;
+  conviction_score?: number | null;
+}
+
+interface AutonomyRuleDb {
+  metric: 'vix' | 'price' | 'funding_annual_pct' | 'pnl_pct';
+  op: 'gt' | 'lt' | 'gte' | 'lte';
+  value: number;
+  action: 'close' | 'tighten_stop' | 'scale_down_50pct' | 'take_profit';
+  reason: string;
 }
 
 interface SessionConfig {
@@ -135,6 +146,7 @@ export class MechanicalTradingService {
     private readonly agentLisaSync: AgentLisaSyncService,
     private readonly optionBroker: OptionBrokerService,
     private readonly earningsCalendar: EodhdCalendarService,
+    private readonly binance: BinanceMarketService,
   ) {}
 
   /**
@@ -228,6 +240,15 @@ export class MechanicalTradingService {
     //   - close-weakest (default -0.5%) → ferme la position plus faible, bloque les ouvertures
     const guard = await this.checkPortfolioDrawdownGuard(cfg, openPositions);
     if (guard === 'kill_switch_triggered') return;  // tout fermé, fin de cycle
+
+    // Step 0bis — Évaluation des AutonomyRules (Phase 2)
+    // Pour chaque position avec autonomy_rules, évalue les triggers en live
+    // (vix, price, funding, pnl_pct) et exécute l'action correspondante
+    // (close, tighten_stop, scale_down_50pct, take_profit).
+    // Permet une réactivité H24 entre les cycles Lisa (15-20 min).
+    // Non-bloquant : si une règle échoue, on continue avec les suivantes.
+    await this.evaluateAutonomyRules(portfolioId, openPositions)
+      .catch((e) => this.logger.warn(`AutonomyRules eval failed: ${String(e).slice(0, 120)}`));
 
     // Step 0.5 — P5.1 Agent ↔ Lisa interactive loop
     // Détecte les triggers Tier 1 (drawdown proche kill-switch, position en
@@ -1380,6 +1401,126 @@ export class MechanicalTradingService {
     this.logger.log(
       `[MÉCANIQUE] Trailing stop ${pos.symbol} → ${newStopPrice.toFixed(4)} (${stopLabel}, P&L=+${pnlPct.toFixed(2)}%)`,
     );
+  }
+
+  /**
+   * Évalue les autonomyRules attachées à chaque position ouverte.
+   * Phase 2 — réactivité H24 entre cycles Lisa.
+   *
+   * Métriques live supportées :
+   *  - vix                  : niveau VIX (RealtimePrice 'VIX')
+   *  - price                : prix live du symbole
+   *  - funding_annual_pct   : funding rate annualisé (Binance perp, crypto only)
+   *  - pnl_pct              : P&L latent en %
+   *
+   * Actions supportées V1 :
+   *  - close                : ferme la position (rationale='closed_invalidated')
+   *  - tighten_stop         : déplace le stop à breakeven (entry price)
+   *  - scale_down_50pct / take_profit : trace le trigger, action V2
+   *
+   * Trace dans lisa_decision_log kind='autonomous_rule_triggered'.
+   */
+  private async evaluateAutonomyRules(portfolioId: string, positions: OpenPosition[]): Promise<void> {
+    const positionsWithRules = positions.filter((p) =>
+      Array.isArray(p.autonomy_rules) && p.autonomy_rules.length > 0,
+    );
+    if (positionsWithRules.length === 0) return;
+
+    // Pré-fetch VIX une fois pour tous les checks (évite N appels)
+    const vixQuote = await this.lisa.getLivePrice('VIX').catch(() => null);
+    const vixLevel = vixQuote ? Number(vixQuote.price) : null;
+
+    for (const pos of positionsWithRules) {
+      for (const rule of pos.autonomy_rules ?? []) {
+        try {
+          const liveValue = await this.fetchMetricForRule(rule.metric, pos, vixLevel);
+          if (liveValue === null) continue;
+          if (!this.compareWithOp(liveValue, rule.op, rule.value)) continue;
+
+          // Trigger : règle déclenchée. On log AVANT d'exécuter pour traçabilité.
+          await this.decisionLog.append({
+            portfolioId,
+            kind: 'autonomous_rule_triggered',
+            summary: `[AUTONOMY] ${pos.symbol} rule ${rule.metric}${rule.op}${rule.value} → ${rule.action} (live=${liveValue.toFixed(4)})`,
+            rationale: rule.reason,
+            payload: {
+              positionId: pos.id,
+              symbol: pos.symbol,
+              metric: rule.metric,
+              op: rule.op,
+              threshold: rule.value,
+              liveValue,
+              action: rule.action,
+              reason: rule.reason,
+            },
+            triggeredBy: 'mechanical_cron',
+          });
+
+          // Exécution de l'action
+          if (rule.action === 'close' || rule.action === 'take_profit') {
+            const quote = await this.lisa.getLivePrice(pos.symbol).catch(() => null);
+            if (quote) {
+              await this.closePosition(
+                pos.id,
+                quote.price,
+                'closed_invalidated',
+                `AutonomyRule: ${rule.reason}`.slice(0, 500),
+              );
+              break; // position fermée, plus la peine d'évaluer ses autres règles
+            }
+          } else if (rule.action === 'tighten_stop') {
+            // Déplace le stop à breakeven (entry price)
+            await this.supabase.getClient()
+              .from('lisa_positions')
+              .update({ stop_loss_price: pos.entryPrice })
+              .eq('id', pos.id)
+              .eq('status', 'open');
+            this.logger.log(`[AUTONOMY] ${pos.symbol} stop → breakeven (${pos.entryPrice})`);
+          }
+          // scale_down_50pct : V2 (paperBroker doesn't support partial close yet)
+        } catch (e) {
+          this.logger.warn(`AutonomyRule eval failed for ${pos.symbol}: ${String(e).slice(0, 120)}`);
+        }
+      }
+    }
+  }
+
+  /** Récupère la valeur live d'une métrique selon le contexte de la position. */
+  private async fetchMetricForRule(
+    metric: AutonomyRuleDb['metric'],
+    pos: OpenPosition,
+    vixCached: number | null,
+  ): Promise<number | null> {
+    if (metric === 'vix') return vixCached;
+    if (metric === 'price') {
+      const q = await this.lisa.getLivePrice(pos.symbol).catch(() => null);
+      return q ? Number(q.price) : null;
+    }
+    if (metric === 'pnl_pct') {
+      const q = await this.lisa.getLivePrice(pos.symbol).catch(() => null);
+      if (!q) return null;
+      const entry = Number(pos.entryPrice);
+      const live = Number(q.price);
+      const isLong = pos.direction === 'long' || pos.direction === 'long_call' || pos.direction === 'long_put';
+      return isLong ? ((live - entry) / entry) * 100 : ((entry - live) / entry) * 100;
+    }
+    if (metric === 'funding_annual_pct') {
+      // Crypto only : convertit symbol → format Binance perp (BTCUSDT)
+      if (!pos.assetClass.toLowerCase().includes('crypto')) return null;
+      const binSym = `${pos.symbol.toUpperCase()}USDT`;
+      const stats = await this.binance.getFutureStats(binSym).catch(() => null);
+      return stats ? stats.fundingAnnualizedPct : null;
+    }
+    return null;
+  }
+
+  private compareWithOp(live: number, op: AutonomyRuleDb['op'], threshold: number): boolean {
+    switch (op) {
+      case 'gt':  return live >  threshold;
+      case 'gte': return live >= threshold;
+      case 'lt':  return live <  threshold;
+      case 'lte': return live <= threshold;
+    }
   }
 
   private async closePosition(
