@@ -93,6 +93,12 @@ interface SessionConfig {
   capital_usd: string;
   risk_constraints: Record<string, unknown>;
   autopilot_market_hours_only?: boolean;
+  /** Profile sniper / long_term / hyper_active. Détermine si on autorise
+   *  les overrides défensifs extrêmes (Signal A-H persona). En hyper_active
+   *  l'utilisateur a explicitement choisi le risque — on ignore les pause/
+   *  blocage totaux pour ne pas annuler son intention. */
+  profile?: string;
+  enable_leverage?: boolean;
 }
 
 @Injectable()
@@ -269,12 +275,28 @@ export class MechanicalTradingService {
       portfolioId,
     );
 
+    // BYPASS HYPER_ACTIVE — quand l'utilisateur a explicitement choisi le mode
+    // aggressive (profile=hyper_active + enable_leverage=true), on ignore les
+    // pauses TOTALES (pauseOpens, maxNewOpens=0) émises par les Signaux A-H
+    // de la persona. Sinon le mode aggressive est annulé par les garde-fous
+    // automatiques de Lisa qui le sur-protègent contre sa propre intention.
+    // Les overrides "modérés" (tightenStops, minConviction réduit) restent
+    // actifs — on cap juste les valeurs extrêmes.
+    const isHyperAggressive =
+      cfg.profile === 'hyper_active' && cfg.enable_leverage === true;
+
     // Lisa a explicitement demandé une pause → aucune ouverture ce cycle
-    if (overrides.pauseOpens === true) {
+    // (sauf en mode hyper_active où on ignore le pauseOpens auto)
+    if (overrides.pauseOpens === true && !isHyperAggressive) {
       this.logger.log(
         `[MÉCANIQUE] ${portfolioId.slice(0, 8)} — pauseOpens=true (reason=${overrides.pauseOpensReason ?? 'unspecified'}) — skip ouvertures`,
       );
       return;
+    }
+    if (overrides.pauseOpens === true && isHyperAggressive) {
+      this.logger.log(
+        `[HYPER_ACTIVE BYPASS] ${portfolioId.slice(0, 8)} — pauseOpens ignoré (mode aggressive choisi explicitement)`,
+      );
     }
 
     // Reload open positions after stop/target checks
@@ -440,21 +462,40 @@ export class MechanicalTradingService {
       directive.trajectoryStatus === 'EN_RETARD' ? 4 :
       directive.trajectoryStatus === 'EN_AVANCE' ? 1 : 2;
 
-    // Override Lisa : maxNewOpensOverride ne peut que RÉDUIRE, jamais relâcher
-    const openCap = overrides.maxNewOpensOverride != null
-      ? Math.min(openCapFromTrajectory, overrides.maxNewOpensOverride)
+    // Override Lisa : maxNewOpensOverride ne peut que RÉDUIRE, jamais relâcher.
+    // En mode hyper_active aggressive, on plancher à 1 (au lieu de 0) pour
+    // permettre AU MOINS une ouverture par cycle quand l'utilisateur a choisi
+    // explicitement ce risque.
+    const rawMaxNewOpens = overrides.maxNewOpensOverride;
+    const effectiveMaxNewOpens =
+      isHyperAggressive && rawMaxNewOpens != null && rawMaxNewOpens === 0
+        ? null // ignore le blocage total
+        : rawMaxNewOpens;
+    const openCap = effectiveMaxNewOpens != null
+      ? Math.min(openCapFromTrajectory, effectiveMaxNewOpens)
       : openCapFromTrajectory;
 
-    // Override Lisa : conviction minimum (surcharge le seuil EN_AVANCE)
+    // Override Lisa : conviction minimum (surcharge le seuil EN_AVANCE).
+    // En mode hyper_active, on cap le minConviction à 6 max — sinon Lisa
+    // peut imposer 8/10 et personne ne passe.
     const minConvictionFromTrajectory = directive.trajectoryStatus === 'EN_AVANCE' ? 7 : 0;
-    const minConviction = overrides.minConvictionOverride != null
-      ? Math.max(minConvictionFromTrajectory, overrides.minConvictionOverride)
+    const rawMinConviction = overrides.minConvictionOverride;
+    const cappedMinConviction =
+      isHyperAggressive && rawMinConviction != null && rawMinConviction > 6
+        ? 6
+        : rawMinConviction;
+    const minConviction = cappedMinConviction != null
+      ? Math.max(minConvictionFromTrajectory, cappedMinConviction)
       : minConvictionFromTrajectory;
 
     // Override Lisa : stops serrés (multiplier < 1 = stops plus proches du prix d'entrée)
-    const stopsMult = typeof overrides.tightenStopsMultiplier === 'number'
+    // En mode hyper_active, plancher le stopsMultiplier à 0.95 (stops à
+    // peine resserrés) pour ne pas laisser Lisa trop serrer (0.7-0.85)
+    // alors que l'utilisateur veut respirer.
+    const rawStopsMult = typeof overrides.tightenStopsMultiplier === 'number'
       ? overrides.tightenStopsMultiplier
       : 1.0;
+    const stopsMult = isHyperAggressive && rawStopsMult < 0.95 ? 0.95 : rawStopsMult;
 
     // Override Lisa : classes d'actifs préférées (filtrage positif, si défini)
     const preferredClasses = Array.isArray(overrides.preferredAssetClasses) && overrides.preferredAssetClasses.length > 0
