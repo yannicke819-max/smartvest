@@ -3,6 +3,7 @@ import { extractUserId } from '../../common/extract-user-id';
 import { LisaService } from './services/lisa.service';
 import { DecisionLogService } from './services/decision-log.service';
 import { RealtimePriceService } from './services/realtime-price.service';
+import { OptionBrokerService } from './services/option-broker.service';
 
 @Controller('lisa')
 export class LisaController {
@@ -10,6 +11,7 @@ export class LisaController {
     private readonly lisa: LisaService,
     private readonly decisionLog: DecisionLogService,
     private readonly realtimePrice: RealtimePriceService,
+    private readonly optionBroker: OptionBrokerService,
   ) {}
 
   @Get('realtime/price-cache')
@@ -201,6 +203,37 @@ export class LisaController {
       extractUserId(headers),
       portfolioId,
       typeof olderThanHours === 'number' ? olderThanHours : 24,
+    );
+  }
+
+  @Get('options/:portfolioId')
+  async listOpenOptions(@Param('portfolioId') portfolioId: string) {
+    const opens = await this.optionBroker.getOpenOptions(portfolioId);
+    // Mark live pour chaque position
+    return Promise.all(
+      opens.map(async (o) => {
+        const quote = await this.lisa.getLivePrice(o.underlying).catch(() => null);
+        const spot = quote ? Number(quote.price) : Number(o.entry_underlying_price);
+        const m = this.optionBroker.markOption(o, spot);
+        return {
+          id: o.id,
+          underlying: o.underlying,
+          asset_class: o.asset_class,
+          kind: o.kind,
+          strike: Number(o.strike),
+          expiry: o.expiry,
+          contracts: Number(o.contracts),
+          premium_paid_usd: Number(o.premium_paid_usd),
+          entry_underlying_price: Number(o.entry_underlying_price),
+          entry_iv: Number(o.entry_iv),
+          conviction_score: o.conviction_score != null ? Number(o.conviction_score) : null,
+          current_underlying: spot,
+          current_value_usd: m.value,
+          pnl_usd: m.pnlUsd,
+          pnl_pct: m.pnlPct,
+          delta: m.delta,
+        };
+      }),
     );
   }
 }

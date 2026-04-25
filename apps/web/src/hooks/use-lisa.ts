@@ -367,6 +367,35 @@ export function useLisaPositions(portfolioId: string | null, openOnly = false) {
   });
 }
 
+export interface LisaOptionPosition {
+  id: string;
+  underlying: string;
+  asset_class: string;
+  kind: 'call' | 'put';
+  strike: number;
+  expiry: string;
+  contracts: number;
+  premium_paid_usd: number;
+  entry_underlying_price: number;
+  entry_iv: number;
+  conviction_score: number | null;
+  current_underlying: number;
+  current_value_usd: number;
+  pnl_usd: number;
+  pnl_pct: number;
+  delta: number;
+}
+
+export function useLisaOptions(portfolioId: string | null) {
+  return useQuery({
+    queryKey: ['lisa', 'options', portfolioId],
+    queryFn: () => apiFetch<LisaOptionPosition[]>(`/lisa/options/${portfolioId}`),
+    enabled: !!portfolioId,
+    refetchInterval: 30_000,
+    ...LISA_QUERY_OPTIONS,
+  });
+}
+
 export function useLisaSnapshot(portfolioId: string | null) {
   return useQuery({
     queryKey: ['lisa', 'snapshot', portfolioId],

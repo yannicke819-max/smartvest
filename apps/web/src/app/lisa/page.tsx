@@ -28,6 +28,7 @@ import { LisaPortfolioChart } from '@/components/lisa/portfolio-chart';
 import { LisaPositionsTable } from '@/components/lisa/positions-table';
 import { LisaDecisionLog } from '@/components/lisa/decision-log';
 import { MechanicalAgentCard } from '@/components/lisa/mechanical-agent-card';
+import { OptionPositionsCard } from '@/components/lisa/option-positions-card';
 
 const PROFILE_LABELS: Record<SessionProfile, { label: string; description: string }> = {
   long_term_investor: {
@@ -1050,6 +1051,9 @@ export default function LisaPage() {
         data={agentStatusQuery.data}
         isLoading={agentStatusQuery.isLoading}
       />
+
+      {/* Options ouvertes (long calls/puts via OptionBrokerService) */}
+      <OptionPositionsCard portfolioId={selectedPortfolioId} />
 
       {/* Decision log */}
       {selectedPortfolioId && <LisaDecisionLog portfolioId={selectedPortfolioId} />}
