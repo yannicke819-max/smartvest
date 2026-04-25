@@ -1027,8 +1027,28 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     let availableCash = new Decimal(snapshot.cashUsd);
     const CASH_BUFFER_USD = new Decimal('50'); // marge de sécurité (slippage + frais)
 
+    // Cap maxOpenPositions — garde-fou utilisateur (default 10, configurable
+    // dans risk_constraints). Sans ce check, l'auto-approve pouvait ouvrir
+    // au-delà du cap (le check existait uniquement côté mécanique).
+    const constraintsForCap = (sessionCfg?.risk_constraints as Record<string, unknown> | null) ?? {};
+    const maxOpenPositions = Number(constraintsForCap['maxOpenPositions'] ?? 10);
+    const currentOpenCount = await this.paperBroker.getPositions(portfolioId, true)
+      .then((ps) => ps.length)
+      .catch(() => 0);
+    let openedSoFar = 0;
+
     const allocationsToOpen = cooldownSkipped ? [] : allocations;
     for (const alloc of allocationsToOpen) {
+      // Hard stop : si on atteint le cap maxOpenPositions, on logue + skip.
+      if (currentOpenCount + openedSoFar >= maxOpenPositions) {
+        await this.logDecision(portfolioId, 'proposal_capped_by_max_positions', {
+          summary: `Cap maxOpenPositions atteint (${currentOpenCount + openedSoFar}/${maxOpenPositions}) — ${allocationsToOpen.length - openedSoFar} thèse(s) restante(s) ignorée(s)`,
+          rationale: `Garde-fou utilisateur : le portefeuille a déjà ${currentOpenCount + openedSoFar} positions ouvertes, cap configuré ${maxOpenPositions}. Les ouvertures sont stoppées tant qu'une position ne s'est pas fermée. Pour autoriser plus de positions concurrentes, augmenter Max positions ouvertes dans /lisa.`,
+          payload: { currentOpenCount, openedSoFar, maxOpenPositions },
+          triggeredBy: 'user_manual',
+        });
+        break;
+      }
       const thesis = theses.find((t) => t.id === alloc.thesisId);
       if (!thesis) continue;
 
@@ -1088,6 +1108,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
           horizonDays: riskReward.horizonDays ?? 30,
         });
         opened.push(pos);
+        openedSoFar++;
         availableCash = availableCash.minus(allocAmount);
 
         await this.logDecision(portfolioId, 'position_opened', {
