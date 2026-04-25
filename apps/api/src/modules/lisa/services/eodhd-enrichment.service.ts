@@ -105,6 +105,12 @@ export class EodhdEnrichmentService {
         symbols: Array.isArray(n.symbols) ? (n.symbols as string[]).slice(0, 5) : [],
         sentiment: extractSentiment(n),
         tags: Array.isArray(n.tags) ? (n.tags as string[]).slice(0, 5) : [],
+        link: typeof n.link === 'string' ? n.link.slice(0, 300) : null,
+        // EODHD ne renvoie pas de "source" structurée mais le domaine de
+        // n.link sert de proxy fiable. Extrait ici pour pondération tier
+        // côté NewsRanker (Reuters/Bloomberg = tier 1, blogs = tier 3).
+        sourceDomain: typeof n.link === 'string' ? extractDomain(n.link) : null,
+        contentPreview: typeof n.content === 'string' ? String(n.content).slice(0, 400) : null,
       }));
 
       this.logCall({ ticker: 'NEWS', success: true, statusCode: res.status, latencyMs, calledBy: 'enrichment_news' });
@@ -314,6 +320,12 @@ export interface EodhdNewsItem {
   symbols: string[];
   sentiment: number | null; // -1 (très négatif) → +1 (très positif), ou null si absent
   tags: string[];
+  /** URL complète de l'article (peut être null si EODHD ne le fournit pas). */
+  link: string | null;
+  /** Domaine extrait depuis link (ex: "reuters.com"). Sert de proxy source tier. */
+  sourceDomain: string | null;
+  /** Aperçu du corps de l'article si EODHD le fournit (max 400 chars). */
+  contentPreview: string | null;
 }
 
 export interface EodhdEconomicEvent {
@@ -355,6 +367,15 @@ export interface EodhdFundamentalSummary {
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers d'extraction
 // ─────────────────────────────────────────────────────────────────────────────
+
+function extractDomain(url: string): string | null {
+  try {
+    const u = new URL(url);
+    return u.hostname.replace(/^www\./, '').toLowerCase();
+  } catch {
+    return null;
+  }
+}
 
 function extractSentiment(n: Record<string, unknown>): number | null {
   const s = n.sentiment;

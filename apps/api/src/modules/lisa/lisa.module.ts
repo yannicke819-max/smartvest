@@ -22,6 +22,7 @@ import { AgentLisaSyncService } from './services/agent-lisa-sync.service';
 import { MechanicalTradingService } from './services/mechanical-trading.service';
 import { OptionBrokerService } from './services/option-broker.service';
 import { EodhdCalendarService } from './services/eodhd-calendar.service';
+import { NewsRankerService } from './services/news-ranker.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule],
@@ -47,6 +48,7 @@ import { EodhdCalendarService } from './services/eodhd-calendar.service';
     MechanicalTradingService,
     OptionBrokerService,
     EodhdCalendarService,
+    NewsRankerService,
   ],
   exports: [
     LisaService,
@@ -66,6 +68,7 @@ import { EodhdCalendarService } from './services/eodhd-calendar.service';
     AgentLisaSyncService,
     OptionBrokerService,
     EodhdCalendarService,
+    NewsRankerService,
   ],
 })
 export class LisaModule {}

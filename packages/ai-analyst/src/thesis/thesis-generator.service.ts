@@ -88,6 +88,10 @@ export interface MarketSnapshot {
   /** Liquidations crypto (1h / 24h) avec détection de wave.
    *  Texte pré-formaté type "LIQ wave BTC long $42M/1h → reversal probable". */
   liquidationsSignals?: string;
+  /** Analyse news scorée + dédoublonnée + filtrée par pertinence (NewsRankerService).
+   *  Format texte avec score [0-100], rationale (catalyst/source tier/macro/dédup),
+   *  buckets pertinent/bruit/écarté. Remplace `recentNews` naïf en hyper_active. */
+  newsAnalysis?: string;
 }
 
 export interface OpenPositionSummary {
@@ -329,8 +333,8 @@ ${m.macroContext.gdpYoyPct != null ? `- GDP YoY : ${m.macroContext.gdpYoyPct >= 
 - S&P 500: ${m.sp500}
 - Nasdaq: ${m.nasdaq}
 
-## Recent news (24-72h)
-${recentNewsBlock || '- (no recent news provided)'}${sentimentLine}
+## Recent news (24-72h) — analyse scorée et filtrée
+${m.newsAnalysis ? m.newsAnalysis : (recentNewsBlock || '- (no recent news provided)')}${m.newsAnalysis ? '' : sentimentLine}
 ${m.screenerCandidates ? `\n## Screener candidates (scans de découverte EODHD)\n${m.screenerCandidates}\n` : ''}${m.insiderSignals ? `\n## Insider signals (SEC Form 4, 30j)\n${m.insiderSignals}\n` : ''}${m.optionsSignals ? `\n## Options flow (IV ATM · put/call ratio)\n${m.optionsSignals}\n` : ''}${m.liquidationsSignals ? `\n## Crypto liquidations (waves reversal)\n${m.liquidationsSignals}\n` : ''}
 
 ## Upcoming events (7 days)
