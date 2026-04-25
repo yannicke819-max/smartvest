@@ -216,26 +216,33 @@ export class AgentLisaSyncService {
   ): Promise<TriggerContext | null> {
     // P5.3 : on fetch les news récentes pour les tickers detenus.
     // Si sentiment très négatif (< -0.7) sur news < 2h, on wake.
-    const symbols = positions.map((p) => p.symbol);
+    if (positions.length === 0) return null;
+    const heldSet = new Set(positions.map((p) => p.symbol.toUpperCase()));
     try {
-      const news = await this.enrichment.fetchRecentNews(symbols, 30);
+      // EODHD ne filtre que sur 1 symbole (sinon news globales). On boucle
+      // par position pour garantir un strict match symbole↔article.
       const now = Date.now();
-      for (const n of news) {
-        if (n.sentiment == null || n.sentiment > NEWS_SENTIMENT_THRESHOLD) continue;
-        const ts = n.date ? new Date(n.date).getTime() : 0;
-        if (now - ts > NEWS_MAX_AGE_MS) continue;
-        // Trouve sur quel ticker la news tape (peut être shared sur plusieurs)
-        const impactedSymbol = positions.find((p) =>
-          (n.symbols ?? []).includes(p.symbol),
-        )?.symbol ?? symbols[0];
-        return {
-          trigger_type: 'news_sentiment_shock',
-          tier: 'tier_1',
-          trigger_value: n.sentiment,
-          threshold: NEWS_SENTIMENT_THRESHOLD,
-          symbol: impactedSymbol,
-          extra: { title: n.title?.slice(0, 120), date: n.date },
-        };
+      for (const pos of positions) {
+        const news = await this.enrichment.fetchRecentNews([pos.symbol], 15);
+        for (const n of news) {
+          if (n.sentiment == null || n.sentiment > NEWS_SENTIMENT_THRESHOLD) continue;
+          const ts = n.date ? new Date(n.date).getTime() : 0;
+          if (now - ts > NEWS_MAX_AGE_MS) continue;
+          // Strict : l'article doit explicitement tagger une position détenue.
+          // Pas de fallback "premier symbole de la liste" — c'était la source
+          // des faux positifs (news Netflix matchait GLD).
+          const articleSymbols = (n.symbols ?? []).map((s) => s.toUpperCase());
+          const impacted = articleSymbols.find((s) => heldSet.has(s));
+          if (!impacted) continue;
+          return {
+            trigger_type: 'news_sentiment_shock',
+            tier: 'tier_1',
+            trigger_value: n.sentiment,
+            threshold: NEWS_SENTIMENT_THRESHOLD,
+            symbol: impacted,
+            extra: { title: n.title?.slice(0, 120), date: n.date },
+          };
+        }
       }
     } catch (e) {
       this.logger.debug(`[P5.3] news fetch failed: ${String(e).slice(0, 80)}`);
