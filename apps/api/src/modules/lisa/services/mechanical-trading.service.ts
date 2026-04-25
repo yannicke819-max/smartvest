@@ -25,6 +25,7 @@ import { EodhdTechnicalService } from './eodhd-technical.service';
 import { ExchangeHoursService } from './exchange-hours.service';
 import { PortfolioCorrelationService } from './portfolio-correlation.service';
 import { AgentLisaSyncService } from './agent-lisa-sync.service';
+import { OptionBrokerService } from './option-broker.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types internes
@@ -40,6 +41,19 @@ interface TargetSymbol {
   horizonDays: number;
   venue?: string;
   thesisId?: string;
+  /** Si présent, ouvrir une option (long call/put) au lieu d'une position
+   *  equity classique. Routé vers OptionBrokerService.openOption() :
+   *   - direction 'long' → call (parie sur la hausse du sous-jacent)
+   *   - direction 'short' → put (parie sur la baisse, sans short physique)
+   *   - asymétrie naturelle : downside borné au premium payé. */
+  optionStructure?: {
+    /** Décalage strike vs spot, en %. 0 = ATM, 5 = +5% OTM call / −5% OTM put. */
+    strikeOtmPct: number;
+    /** Days-to-expiry (5-45 typiquement). */
+    dteDays: number;
+    /** IV implicite à l'achat (défaut 0.30 si non spécifié). */
+    iv?: number;
+  };
 }
 
 interface CloseCondition {
@@ -99,6 +113,10 @@ interface SessionConfig {
    *  blocage totaux pour ne pas annuler son intention. */
   profile?: string;
   enable_leverage?: boolean;
+  /** Active l'exécution des propositions options (long calls/puts) via
+   *  OptionBrokerService. Sans ce flag, les optionStructure dans les
+   *  thèses Lisa sont skippées (la position equity est ouverte à la place). */
+  enable_derivatives?: boolean;
 }
 
 @Injectable()
@@ -114,6 +132,7 @@ export class MechanicalTradingService {
     private readonly exchangeHours: ExchangeHoursService,
     private readonly correlation: PortfolioCorrelationService,
     private readonly agentLisaSync: AgentLisaSyncService,
+    private readonly optionBroker: OptionBrokerService,
   ) {}
 
   /**
@@ -605,6 +624,52 @@ export class MechanicalTradingService {
       const maxNotional = capitalUsd.mul(maxPositionPct).div(100).mul(sizingMultiplier);
       const notional = Decimal.min(maxNotional, cashUsd.mul(0.9));
       if (notional.lt(10)) continue;
+
+      // ─── ROUTING OPTIONS ───────────────────────────────────────────────
+      // Si la thèse Lisa contient optionStructure, on ouvre une option (long
+      // call/put) au lieu de la position equity. Asymétrie : downside borné
+      // au premium payé. Conditions :
+      //  - enableDerivatives doit être activé sur la session (sinon skip)
+      //  - le notional cible devient le PREMIUM target pour OptionBroker
+      // En cas d'échec d'ouverture (ex. premium > cash), on saute le ticker
+      // sans fallback en equity (intent Lisa explicite).
+      if (target.optionStructure) {
+        if (!cfg.enable_derivatives) {
+          this.logger.debug(
+            `[OPTIONS] Skip ${target.symbol} — optionStructure proposé mais enable_derivatives=false`,
+          );
+          continue;
+        }
+        const otm = target.optionStructure.strikeOtmPct / 100;
+        const strike =
+          target.direction === 'long' ? price.toNumber() * (1 + otm) : price.toNumber() * (1 - otm);
+        const expiryDate = new Date(Date.now() + target.optionStructure.dteDays * 86_400_000);
+        const expiry = expiryDate.toISOString().slice(0, 10);
+        const iv = target.optionStructure.iv ?? 0.30;
+
+        const result = await this.optionBroker.openOption({
+          portfolioId,
+          thesisId: target.thesisId ?? null,
+          underlying: target.symbol,
+          assetClass: target.assetClass,
+          kind: target.direction === 'long' ? 'call' : 'put',
+          strike,
+          expiry,
+          premiumTargetUsd: notional.toNumber(),
+          underlyingPrice: price.toNumber(),
+          iv,
+          convictionScore: target.convictionScore,
+          source: 'mechanical',
+        });
+        if (result) {
+          slotsUsed++;
+          this.logger.log(
+            `[OPTIONS] Ouverture ${result.kind} ${target.symbol} K=${strike.toFixed(2)} exp=${expiry} contracts=${result.contracts} premium=$${Number(result.premium_paid_usd).toFixed(2)}`,
+          );
+        }
+        continue; // option ouverte (ou refusée), passer au target suivant
+      }
+      // ─── FIN ROUTING OPTIONS ──────────────────────────────────────────
 
       // P4.3 — Plafond par classe d'actif : refuse l'ouverture si elle
       // pousserait l'exposition de la classe au-delà du seuil (default 25%).

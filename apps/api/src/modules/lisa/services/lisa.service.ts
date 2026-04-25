@@ -680,7 +680,12 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         proposal.marketMomentum === 'bearish' ? 'defensive' : 'normal';
     }
 
-    // Construire target_symbols depuis les thèses + allocations
+    // Construire target_symbols depuis les thèses + allocations.
+    //
+    // Si l'expression Lisa choisit une direction `long_call` ou `long_put`,
+    // on injecte un optionStructure avec defaults raisonnables (DTE 14,
+    // OTM 2%, IV 0.30). Le mechanical-trading routera vers OptionBroker
+    // si enable_derivatives=true. Sinon, fallback equity classique.
     const targetSymbols = proposal.theses.flatMap((thesis) => {
       const alloc = proposal.allocations.find((a) => a.thesisId === thesis.id);
       if (!alloc) return [];
@@ -689,18 +694,32 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
 
       const stopPct = Math.abs(thesis.riskReward.adverseScenarioReturnPct ?? 2);
       const tpPct = thesis.riskReward.centralScenarioReturnPct?.mid ?? stopPct * 2;
+      const horizonDays = thesis.riskReward.horizonDays ?? 3;
+
+      const isOptionLong = expr.direction === 'long_call' || expr.direction === 'long_put';
+      const direction: 'long' | 'short' = isOptionLong
+        ? expr.direction === 'long_call' ? 'long' : 'short'
+        : (expr.direction === 'long' || expr.direction === 'short' ? expr.direction : 'long');
 
       return [{
         symbol: expr.symbol,
         assetClass: expr.assetClass,
-        direction: expr.direction === 'long' || expr.direction === 'short'
-          ? expr.direction : 'long',
+        direction,
         stopLossPct: Math.max(stopPct, 0.5),
         takeProfitPct: Math.max(tpPct, 0.5),
         convictionScore: Math.round(thesis.confidenceScore / 10),
-        horizonDays: thesis.riskReward.horizonDays ?? 3,
+        horizonDays,
         venue: expr.preferredVenue,
         thesisId: thesis.id,
+        ...(isOptionLong
+          ? {
+              optionStructure: {
+                strikeOtmPct: 2,                              // ATM+2% par défaut
+                dteDays: Math.max(7, Math.min(45, horizonDays * 3)), // DTE = ~3× horizon, borné [7, 45]
+                iv: 0.30,                                     // IV constante
+              },
+            }
+          : {}),
       }];
     });
 

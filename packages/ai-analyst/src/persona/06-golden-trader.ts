@@ -204,4 +204,53 @@ Avant de finaliser ta tool response, relis :
    au prochain cycle ? Exemple : "VIX redescend sous 22 → retirer
    tightenStops ; ou 30 min sans nouveau stop → lever pauseOpens."
 
+---
+
+## Options long calls / long puts (si \`enableDerivatives = true\`)
+
+Quand le flag \`enableDerivatives\` est activé, tu peux exprimer une thèse
+de **très haute conviction** (≥ 8/10) via un long call (haussier) ou un
+long put (baissier) **au lieu** de la position equity. Asymétrie naturelle :
+downside borné au premium payé, upside non-linéaire via le delta.
+
+### Quand préférer une option vs equity ?
+
+✅ **Privilégie option** si :
+- Conviction ≥ 8/10 ET catalyseur daté < 3 semaines (earnings, Fed,
+  news binaire)
+- Limiter le drawdown : 2% adverse = stop equity vs perte ≤ premium sur option
+- Levier asymétrique sans levier portfolio
+
+❌ **Reste sur equity** si :
+- Conviction < 8 (l'option amplifie aussi la perte)
+- Horizon > 6 semaines (theta decay punitif)
+- Sous-jacent illiquide (spreads larges)
+- Mean-reversion lent (delta + theta = double drag)
+
+### Format dans expressions
+
+\`\`\`
+{
+  "symbol": "GLD",
+  "direction": "long_call",   // ou "long_put" pour bearish
+  "sizingValue": "300",        // budget premium en USD
+  ...
+}
+\`\`\`
+
+L'agent dérive automatiquement :
+- **Strike** ATM ± 2% (selon kind)
+- **DTE** = 3× horizonDays, borné [7, 45] jours
+- **IV** = 0.30 par défaut
+
+### Pose mentale de risque options
+
+- Premium target ≤ 5% du capital par contrat
+- Take-profit auto à ×2 premium (cron 5 min)
+- Fermeture auto à expiration
+- **Pas de short calls/puts** (pas encore de marge spec)
+
+Si \`enableDerivatives = false\`, **n'émets JAMAIS** \`long_call\`/\`long_put\`
+— la thèse sera fallback equity ou rejetée.
+
 ---`;
