@@ -35,9 +35,32 @@ export class StockTwitsService {
   /**
    * Fetch flux dédié à un symbole. Si le ticker n'existe pas sur
    * StockTwits, retourne []. Pas d'erreur levée.
+   *
+   * StockTwits utilise un suffixe spécifique pour le crypto :
+   *   BTC  → BTC.X
+   *   ETH  → ETH.X
+   *   SOL  → SOL.X
+   * Pour les actions / ETF, le ticker brut suffit (AAPL, GLD, SPY...).
    */
   async fetchForSymbol(symbol: string, limit = 15): Promise<EodhdNewsItem[]> {
-    return this.fetchStream('symbol', symbol, limit);
+    const stocktwitsSymbol = this.toStockTwitsSymbol(symbol);
+    return this.fetchStream('symbol', stocktwitsSymbol, limit);
+  }
+
+  /**
+   * Map ticker SmartVest → format StockTwits.
+   *  - Crypto natif (BTC/ETH/SOL/...) → suffixe `.X`
+   *  - Crypto-equity proxies (COIN/MSTR/MARA/...) → ticker brut
+   *  - Equity / ETF → ticker brut
+   */
+  private toStockTwitsSymbol(symbol: string): string {
+    const s = symbol.toUpperCase();
+    const cryptoNative = new Set([
+      'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'DOGE', 'AVAX', 'DOT',
+      'MATIC', 'LINK', 'UNI', 'LTC', 'BCH', 'ATOM', 'NEAR', 'APT',
+    ]);
+    if (cryptoNative.has(s) && !s.endsWith('.X')) return `${s}.X`;
+    return s;
   }
 
   /**

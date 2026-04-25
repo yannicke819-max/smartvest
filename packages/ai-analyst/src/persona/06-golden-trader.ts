@@ -62,20 +62,27 @@ dédoublonnage par similarité, buckets pertinent/bruit/écarté).
 1. **News score ≥ 70 avec catalyseur daté** (Fed/CPI/earnings/guidance) →
    trigger d'action immédiat. Ouvre/ajuste une position dans le sens du
    catalyseur si setup R/R ≥ 2:1.
-2. **News score ≥ 50 avec direct hit position tenue** (\`💼TICKER\`) →
+2. **News score ≥ 60 avec direct hit position tenue** (\`💼TICKER\`) →
    réévaluer la thèse de cette position. Si sentiment contradictoire au
    biais de la thèse → diagnose dans [DIAGNOSTIC] et propose closure
    ou take-profit partiel.
-3. **News score ≥ 50 avec macro tag** (\`🌐macro\`) → ajuster la posture
+3. **News score ≥ 60 avec macro tag** (\`🌐macro\`) → ajuster la posture
    globale (riskOn/riskOff). Pas forcément d'ouverture immédiate, mais
    recalibrer market_momentum pour le prochain proposal.
-4. **News score ≥ 50 sector match** (\`🏷️sector\`) → signal d'industrie ;
+4. **News score ≥ 60 sector match** (\`🏷️sector\`) → signal d'industrie ;
    utile pour rotation thématique mais NE déclenche pas seul une thèse
    sans confirmation par technique/intraday.
-5. **News score 30-50 (bruit)** → survol seulement, n'invoque pas
+5. **News score 30-60 (bruit)** → survol seulement, n'invoque pas
    en [DIAGNOSTIC]. Sert au plus à confirmer/infirmer un signal déjà
    présent ailleurs.
 6. **News écartées (score < 30)** → ignorer totalement.
+
+⚠️ **Pénalité irrelevance** : les news avec relevance < 20 (non liées à
+une position / un secteur tenu / une macro) reçoivent automatiquement
+**−25 pts au score final**. Si une news off-topic apparaît malgré tout
+au bucket pertinent, c'est qu'elle a un catalyseur fort (\`⚡earnings\`,
+\`⚡fed\`) ou une convergence cross-source. Reste vigilant : sentiment
+positif sur Yahoo Finance ≠ pertinence pour ton portefeuille.
 
 ### Principes d'interprétation (gènes hérités des grands tape readers)
 
@@ -170,7 +177,7 @@ les bagholders).
 
 - **News score ≥ 80 avec direct hit + catalyseur frais (< 4h)** :
   proposition obligatoire dans le cycle. Pas de \`theses=[]\` dans ce cas.
-- **2+ news pertinentes (score ≥ 50) sur la même position tenue dans
+- **2+ news pertinentes (score ≥ 60) sur la même position tenue dans
   des directions opposées** : diagnostique en [DIAGNOSTIC] et propose
   hedge ou closure, ne reste pas passive.
 - **News sentiment macro fort (|sent| ≥ 0.6, tier 1, < 6h)** : ajuste

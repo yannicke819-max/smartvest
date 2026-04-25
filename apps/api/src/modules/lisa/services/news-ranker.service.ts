@@ -165,15 +165,21 @@ export class NewsRankerService {
       }
 
       // ── Impact ────────────────────────────────────────────────────
-      const sentMag = n.sentiment !== null ? Math.abs(n.sentiment) * 100 : 30;
+      // Sentiment EODHD est très généreux (~+0.99/+1.0 sur la majorité des
+      // headlines financières "positives par framing"). On clip à 0.7 si
+      // pas de catalyst keyword pour éviter que tout passe à impact 100.
+      // Un vrai catalyseur (Fed/CPI/earnings/...) lève ce plafond.
       const titleLower = n.title.toLowerCase();
       const catalystHit = NewsRankerService.CATALYST_KEYWORDS.find((kw) =>
         titleLower.includes(kw),
       );
+      const rawSent = n.sentiment !== null ? Math.abs(n.sentiment) : 0.3;
+      const sentClipped = catalystHit ? rawSent : Math.min(0.7, rawSent);
+      const sentMag = sentClipped * 100;
       const impactScore = Math.min(100, sentMag + (catalystHit ? 30 : 0));
       const impactReason = catalystHit
         ? `sentiment ${sentMag.toFixed(0)} + catalyst "${catalystHit}"`
-        : `sentiment ${sentMag.toFixed(0)}`;
+        : `sentiment ${sentMag.toFixed(0)} (clipped)`;
 
       // ── Freshness ─────────────────────────────────────────────────
       const ageMs = n.date ? Math.max(0, now - new Date(n.date).getTime()) : 0;
@@ -233,19 +239,24 @@ export class NewsRankerService {
     //    couvrent le même thème (cluster post-dédup). +5 par provider
     //    additionnel, capé à +20. La logique part du replicaCount + des
     //    providers agrégés pendant la dédup.
+    //
+    // Pénalité relevance basse : si rel < 20 (news non liée aux positions
+    // tenues), on retire 25 pts au final même si impact/freshness sont
+    // élevés. Empêche les news off-topic de saturer le bucket pertinent
+    // juste parce que le sentiment NLP de l'agrégateur est généreux.
     for (const item of deduped) {
       const distinctProviders = item.rationale.providers.length;
       const convergenceBoost = Math.min(20, Math.max(0, (distinctProviders - 1) * 7));
       item.scores.convergence = convergenceBoost;
-      // Réintégration dans le score final (re-pondération sans rouvrir
-      // les autres axes — on additionne simplement le boost capé).
-      item.scores.final = Math.min(100, Math.round(
+      const irrelevancePenalty = item.scores.relevance < 20 ? 25 : 0;
+      item.scores.final = Math.max(0, Math.min(100, Math.round(
         0.4 * item.scores.relevance
         + 0.25 * item.scores.impact
         + 0.2 * item.scores.freshness
         + 0.15 * item.scores.source
-        + convergenceBoost,
-      ));
+        + convergenceBoost
+        - irrelevancePenalty,
+      )));
     }
 
     // ── Tri + cap ──────────────────────────────────────────────────
@@ -255,15 +266,21 @@ export class NewsRankerService {
 
   /**
    * Sépare les news rangées en 3 buckets pour le briefing :
-   *  - Pertinentes (score ≥ 50) : injectées en détail
-   *  - Bruit (score 25-50) : mentionnées en compte
-   *  - Écartées (score < 25) : silencieuses
+   *  - Pertinentes (score ≥ 60) : injectées en détail
+   *  - Bruit (score 30-60) : mentionnées en compte
+   *  - Écartées (score < 30) : silencieuses
+   *
+   * Seuils relevés (50→60, 25→30) après observation que sentiment EODHD
+   * généreux + impact 100 systématique faisait passer trop de news
+   * off-topic dans le bucket pertinent. Combiné avec la pénalité
+   * irrelevance -25, le bucket pertinent ne contient plus que les vrais
+   * direct hits / catalyseurs / convergences cross-source.
    */
   bucket(ranked: RankedNewsItem[]): NewsBuckets {
     return {
-      relevant: ranked.filter((r) => r.scores.final >= 50),
-      noise: ranked.filter((r) => r.scores.final >= 25 && r.scores.final < 50),
-      discarded: ranked.filter((r) => r.scores.final < 25),
+      relevant: ranked.filter((r) => r.scores.final >= 60),
+      noise: ranked.filter((r) => r.scores.final >= 30 && r.scores.final < 60),
+      discarded: ranked.filter((r) => r.scores.final < 30),
     };
   }
 
@@ -279,7 +296,7 @@ export class NewsRankerService {
 
     const lines: string[] = [];
     if (buckets.relevant.length > 0) {
-      lines.push(`📰 News pertinentes (${buckets.relevant.length}) — score ≥ 50/100 :`);
+      lines.push(`📰 News pertinentes (${buckets.relevant.length}) — score ≥ 60/100 :`);
       for (const r of buckets.relevant) {
         const tags: string[] = [];
         if (r.rationale.directHit) tags.push(`💼${r.rationale.directHit}`);
@@ -302,13 +319,13 @@ export class NewsRankerService {
       }
     }
     if (buckets.noise.length > 0) {
-      lines.push(`📰 Bruit (${buckets.noise.length} news, score 25-50) — survol seulement, pas un trigger d'action.`);
+      lines.push(`📰 Bruit (${buckets.noise.length} news, score 30-60) — survol seulement, pas un trigger d'action.`);
       for (const n of buckets.noise.slice(0, 5)) {
         lines.push(`  [${n.scores.final}] ${n.title.slice(0, 90)}`);
       }
     }
     if (buckets.discarded.length > 0) {
-      lines.push(`📰 ${buckets.discarded.length} news écartées (score < 25, hors-périmètre).`);
+      lines.push(`📰 ${buckets.discarded.length} news écartées (score < 30, hors-périmètre).`);
     }
     return lines.join('\n');
   }
