@@ -41,6 +41,9 @@ export default function MonteCarloPage() {
   const [enableLeverage, setEnableLeverage] = useState(false);
   const [maxLeverage, setMaxLeverage] = useState(1.5);
   const [stopLossPct, setStopLossPct] = useState(2);
+  const [enableOptions, setEnableOptions] = useState(false);
+  const [optionsDte, setOptionsDte] = useState(14);
+  const [strikeOtmPct, setStrikeOtmPct] = useState(2);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<MCResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -64,6 +67,9 @@ export default function MonteCarloPage() {
           enableLeverage,
           maxLeverage,
           stopLossPct,
+          enableOptions,
+          optionsDte,
+          strikeOtmPct,
           targetEquityUsd: targetEquity > 0 ? targetEquity : undefined,
         }),
       });
@@ -206,6 +212,42 @@ export default function MonteCarloPage() {
                   className="w-40"
                 />
               </Field>
+            )}
+          </div>
+
+          <div className="flex items-center gap-4 flex-wrap pt-2 border-t">
+            <label className="flex items-center gap-2 cursor-pointer text-xs">
+              <input
+                type="checkbox"
+                checked={enableOptions}
+                onChange={(e) => setEnableOptions(e.target.checked)}
+              />
+              <strong>Activer les options</strong>
+              <span className="text-muted-foreground">(long calls/puts pour conviction ≥ 8/10 — payoff asymétrique)</span>
+            </label>
+            {enableOptions && (
+              <>
+                <Field label={`DTE : ${optionsDte}j`}>
+                  <input
+                    type="range"
+                    min={3}
+                    max={60}
+                    value={optionsDte}
+                    onChange={(e) => setOptionsDte(parseInt(e.target.value, 10))}
+                    className="w-32"
+                  />
+                </Field>
+                <Field label={`Strike OTM : ${strikeOtmPct}%`}>
+                  <input
+                    type="range"
+                    min={0}
+                    max={20}
+                    value={strikeOtmPct}
+                    onChange={(e) => setStrikeOtmPct(parseInt(e.target.value, 10))}
+                    className="w-32"
+                  />
+                </Field>
+              </>
             )}
           </div>
         </div>

@@ -16,8 +16,23 @@
  */
 
 import { applyFee, applySlippage, type TickerHistory } from '@smartvest/backtest';
+import { markOption } from '@smartvest/options';
 import type { DailyReturns } from './bootstrap';
 import type { MonteCarloConfig } from './types';
+
+interface SyntheticOption {
+  symbol: string;
+  assetClass: string;
+  kind: 'call' | 'put';
+  strike: number;
+  expiry: string;
+  contracts: number;
+  premiumPaid: number;
+  notionalUsd: number; // = premium payé
+  iv: number;
+  /** Date d'ouverture pour DTE calcul. */
+  entryDate: string;
+}
 
 export interface SyntheticPosition {
   symbol: string;
@@ -35,10 +50,13 @@ export interface SyntheticPosition {
 export interface PathState {
   cashUsd: number;
   positions: SyntheticPosition[];
+  options: SyntheticOption[];
   /** Prix courant simulé par ticker. */
   currentPrices: Map<string, number>;
   /** Historique equity pour drawdown. */
   equityCurve: number[];
+  /** Date courante (pour calcul DTE des options). */
+  currentDate: string;
 }
 
 export interface SimulationContext {
@@ -115,11 +133,17 @@ export function simulatePath(
   bootstrapIndices: number[],
   rng: () => number,
 ): { finalEquity: number; equityCurve: number[]; trades: number; maxDrawdownPct: number } {
+  // Date initiale = asOfDate du config. On synthétise des dates suivantes
+  // en ajoutant 1 jour calendaire par tick (approximation : on ignore les
+  // weekends/jours fériés pour les options DTE — accept tradeoff).
+  const startDate = new Date(ctx.config.asOfDate);
   const state: PathState = {
     cashUsd: ctx.config.initialCapitalUsd,
     positions: [],
+    options: [],
     currentPrices: new Map(ctx.initialPrices),
     equityCurve: [ctx.config.initialCapitalUsd],
+    currentDate: ctx.config.asOfDate,
   };
   let totalTrades = 0;
 
@@ -133,12 +157,45 @@ export function simulatePath(
 
   for (let day = 0; day < bootstrapIndices.length; day++) {
     const dayReturns = ctx.returnsTable[bootstrapIndices[day]];
+    // Synthétique : avancer la date du calendrier de 1 jour
+    const dayDate = new Date(startDate.getTime() + (day + 1) * 86_400_000);
+    state.currentDate = dayDate.toISOString().slice(0, 10);
 
     // 1. Applique les rendements aux prix courants
     for (const [sym, ret] of dayReturns.returnsBySymbol) {
       const cur = state.currentPrices.get(sym);
       if (cur != null) state.currentPrices.set(sym, cur * (1 + ret));
     }
+
+    // 1bis. Check exits options (expiration ou TP×2)
+    const stillOpenOpt: SyntheticOption[] = [];
+    for (const opt of state.options) {
+      const spot = state.currentPrices.get(opt.symbol);
+      if (spot == null) {
+        stillOpenOpt.push(opt);
+        continue;
+      }
+      // Expiration : DTE calculé entre dates ISO
+      const expired = state.currentDate >= opt.expiry;
+      const mark = markOption({
+        spot,
+        strike: opt.strike,
+        expiryDate: opt.expiry,
+        asOfDate: state.currentDate,
+        iv: opt.iv,
+        kind: opt.kind,
+        contracts: opt.contracts,
+        premiumPaid: opt.premiumPaid,
+      });
+      if (expired || mark.totalValueUsd >= opt.premiumPaid * 2) {
+        const fee = applyFee(mark.totalValueUsd, ctx.config.feeBps);
+        state.cashUsd += mark.totalValueUsd - fee;
+        totalTrades++;
+      } else {
+        stillOpenOpt.push(opt);
+      }
+    }
+    state.options = stillOpenOpt;
 
     // 2. Vérifie les exits sur positions ouvertes
     const stillOpen: SyntheticPosition[] = [];
@@ -178,32 +235,74 @@ export function simulatePath(
 
     // 3. Génère propositions et ouvre si capacité dispo
     const proposals = generateSimpleProposals(state, ctx, rng);
-    if (state.positions.length < ctx.config.maxOpenPositions) {
+    if (state.positions.length + state.options.length < ctx.config.maxOpenPositions) {
       const exposureByClass = new Map<string, number>();
       for (const p of state.positions) {
         exposureByClass.set(p.assetClass, (exposureByClass.get(p.assetClass) ?? 0) + p.notionalUsd);
       }
 
       for (const prop of proposals) {
-        if (state.positions.length >= ctx.config.maxOpenPositions) break;
+        if (state.positions.length + state.options.length >= ctx.config.maxOpenPositions) break;
         const cls = ctx.assetClassBySymbol.get(prop.symbol) ?? 'unknown';
         const classExposure = exposureByClass.get(cls) ?? 0;
         const remainingClass = maxNotionalPerClass - classExposure;
         if (remainingClass <= 0) continue;
         const maxByPosition = Math.min(maxNotionalPerPosition, remainingClass);
         const targetNotional = maxByPosition * Math.max(0.4, prop.convictionScore / 10);
+
+        const curPrice = state.currentPrices.get(prop.symbol);
+        if (!curPrice || curPrice <= 0) continue;
+
+        // Si options activées ET conviction ≥ 8 : ouvrir un long call (long)
+        // ou long put (short) à la place du sous-jacent. Asymétrie naturelle :
+        // downside borné au premium, upside levier implicite par delta.
+        if (ctx.config.enableOptions && prop.convictionScore >= 8) {
+          const otm = ctx.config.strikeOtmPct / 100;
+          const optKind: 'call' | 'put' = prop.direction === 'long' ? 'call' : 'put';
+          const strike = optKind === 'call' ? curPrice * (1 + otm) : curPrice * (1 - otm);
+          const expiryDate = new Date(state.currentDate);
+          expiryDate.setUTCDate(expiryDate.getUTCDate() + ctx.config.optionsDte);
+          const expiry = expiryDate.toISOString().slice(0, 10);
+          const oneContract = markOption({
+            spot: curPrice,
+            strike,
+            expiryDate: expiry,
+            asOfDate: state.currentDate,
+            iv: ctx.config.defaultIv,
+            kind: optKind,
+            contracts: 1,
+            premiumPaid: 0,
+          });
+          if (oneContract.totalValueUsd <= 0) continue;
+          const contracts = Math.floor(targetNotional / oneContract.totalValueUsd);
+          if (contracts < 1) continue;
+          const premiumPaid = oneContract.totalValueUsd * contracts;
+          const fee = applyFee(premiumPaid, ctx.config.feeBps);
+          if (premiumPaid + fee > state.cashUsd * 0.95) continue;
+
+          state.options.push({
+            symbol: prop.symbol,
+            assetClass: cls,
+            kind: optKind,
+            strike,
+            expiry,
+            contracts,
+            premiumPaid,
+            notionalUsd: premiumPaid,
+            iv: ctx.config.defaultIv,
+            entryDate: state.currentDate,
+          });
+          state.cashUsd -= premiumPaid + fee;
+          exposureByClass.set(cls, classExposure + premiumPaid);
+          continue;
+        }
+
         // Cash impact = notional / leverage (modèle margin simplifié).
-        // Sans levier (leverageMult=1) : cashImpact = notional.
-        // Avec levier ×2 : cashImpact = notional/2 → on peut prendre une exposition
-        // 2× plus grosse pour le même cash.
         const targetCashImpact = targetNotional / leverageMult;
         const cashCap = state.cashUsd * 0.95;
         if (targetCashImpact > cashCap) continue; // pas assez de marge
         const notional = targetNotional;
         if (notional < 50) continue;
-
-        const curPrice = state.currentPrices.get(prop.symbol);
-        if (!curPrice || curPrice <= 0) continue;
 
         const slip = applySlippage(curPrice, 0, 'open', prop.direction, ctx.config.slippageBps);
         const fee = applyFee(notional, ctx.config.feeBps);
@@ -254,7 +353,40 @@ export function simulatePath(
       const marginEngagee = p.notionalUsd / leverageMult;
       positionsValue += marginEngagee + pnl;
     }
+    // Mark-to-market options
+    for (const opt of state.options) {
+      const spot = state.currentPrices.get(opt.symbol) ?? opt.strike;
+      const m = markOption({
+        spot,
+        strike: opt.strike,
+        expiryDate: opt.expiry,
+        asOfDate: state.currentDate,
+        iv: opt.iv,
+        kind: opt.kind,
+        contracts: opt.contracts,
+        premiumPaid: opt.premiumPaid,
+      });
+      positionsValue += m.totalValueUsd;
+    }
     state.equityCurve.push(state.cashUsd + positionsValue);
+  }
+
+  // Force close remaining options
+  for (const opt of state.options) {
+    const spot = state.currentPrices.get(opt.symbol) ?? opt.strike;
+    const m = markOption({
+      spot,
+      strike: opt.strike,
+      expiryDate: opt.expiry,
+      asOfDate: state.currentDate,
+      iv: opt.iv,
+      kind: opt.kind,
+      contracts: opt.contracts,
+      premiumPaid: opt.premiumPaid,
+    });
+    const fee = applyFee(m.totalValueUsd, ctx.config.feeBps);
+    state.cashUsd += m.totalValueUsd - fee;
+    totalTrades++;
   }
 
   // Force close remaining positions au prix courant final

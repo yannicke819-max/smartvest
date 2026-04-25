@@ -58,6 +58,10 @@ export const MonteCarloConfigSchema = z.object({
   enableOptions: z.boolean().default(false),
   /** IV moyenne implicite si options activé. */
   defaultIv: z.number().min(0.05).max(2).default(0.30),
+  /** Days-to-expiry des options proposées. */
+  optionsDte: z.number().int().min(1).max(120).default(14),
+  /** Strike OTM percentage. */
+  strikeOtmPct: z.number().min(0).max(50).default(2),
   /** Seuil cible pour calculer P(equity_final > target). */
   targetEquityUsd: z.number().positive().optional(),
   /** Seed RNG pour reproductibilité (optionnel). */

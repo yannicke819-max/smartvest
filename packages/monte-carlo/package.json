@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@smartvest/backtest": "*",
+    "@smartvest/options": "*",
     "zod": "^3.23.8"
   },
   "devDependencies": {
