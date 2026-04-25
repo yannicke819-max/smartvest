@@ -99,9 +99,11 @@ export default function BacktestPage() {
     }
   }
 
+  // Set both dates : "X derniers jours" = aujourd'hui-X → aujourd'hui.
+  // Backtest = données passées uniquement.
   const setQuickPeriod = (days: number) => {
     setFromDate(isoMinusDays(days));
-    setToDate(isoMinusDays(1));
+    setToDate(isoMinusDays(0));
   };
 
   return (
@@ -115,38 +117,44 @@ export default function BacktestPage() {
       </div>
 
       <div className="rounded-lg border p-5 space-y-4">
+        <p className="text-xs text-muted-foreground italic">
+          Le backtest rejoue des données <strong>passées</strong> (EODHD historique).
+          Les dates futures n'existent pas encore — toujours dans le passé jusqu'à aujourd'hui.
+        </p>
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs text-muted-foreground mr-2">Période rapide :</span>
           <Button variant="outline" size="sm" onClick={() => setQuickPeriod(7)}>
-            7 jours
+            7 derniers jours
           </Button>
           <Button variant="outline" size="sm" onClick={() => setQuickPeriod(30)}>
-            30 jours
+            30 derniers jours
           </Button>
           <Button variant="outline" size="sm" onClick={() => setQuickPeriod(90)}>
-            90 jours
+            90 derniers jours
           </Button>
           <Button variant="outline" size="sm" onClick={() => setQuickPeriod(180)}>
-            6 mois
+            6 derniers mois
           </Button>
           <Button variant="outline" size="sm" onClick={() => setQuickPeriod(365)}>
-            1 an
+            1 dernière année
           </Button>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <Field label="Du">
+          <Field label="Du (date passée)">
             <input
               type="date"
               value={fromDate}
+              max={isoMinusDays(0)}
               onChange={(e) => setFromDate(e.target.value)}
               className="h-8 w-full rounded-md border bg-background px-2 text-xs"
             />
           </Field>
-          <Field label="Au">
+          <Field label="Au (jusqu'à aujourd'hui max)">
             <input
               type="date"
               value={toDate}
+              max={isoMinusDays(0)}
               onChange={(e) => setToDate(e.target.value)}
               className="h-8 w-full rounded-md border bg-background px-2 text-xs"
             />

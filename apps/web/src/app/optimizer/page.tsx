@@ -135,6 +135,13 @@ export default function OptimizerPage() {
     }
   }
 
+  // Set both dates : "X derniers jours" = aujourd'hui-X → aujourd'hui.
+  // Backtest = données passées uniquement (pas de futur disponible).
+  const setQuickPeriod = (days: number) => {
+    setFromDate(isoMinusDays(days));
+    setToDate(isoMinusDays(0));
+  };
+
   async function handleApply(c: Candidate) {
     try {
       await apiFetch('/optimizer/apply', {
@@ -185,19 +192,25 @@ export default function OptimizerPage() {
       <div className="rounded-lg border p-5 space-y-4">
         <ModeDescription mode={tab} />
 
+        <p className="text-xs text-muted-foreground italic">
+          Le backtest rejoue des données <strong>passées</strong> (EODHD historique).
+          Les dates futures sont rejetées car aucune donnée n'existe encore.
+        </p>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <Field label="Du">
+          <Field label="Du (date passée)">
             <input
               type="date"
               value={fromDate}
+              max={isoMinusDays(0)}
               onChange={(e) => setFromDate(e.target.value)}
               className="h-8 w-full rounded-md border bg-background px-2 text-xs"
             />
           </Field>
-          <Field label="Au">
+          <Field label="Au (jusqu'à aujourd'hui max)">
             <input
               type="date"
               value={toDate}
+              max={isoMinusDays(0)}
               onChange={(e) => setToDate(e.target.value)}
               className="h-8 w-full rounded-md border bg-background px-2 text-xs"
             />
@@ -228,11 +241,12 @@ export default function OptimizerPage() {
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          <Button variant="outline" size="sm" onClick={() => setFromDate(isoMinusDays(7))}>7j</Button>
-          <Button variant="outline" size="sm" onClick={() => setFromDate(isoMinusDays(30))}>30j</Button>
-          <Button variant="outline" size="sm" onClick={() => setFromDate(isoMinusDays(90))}>90j</Button>
-          <Button variant="outline" size="sm" onClick={() => setFromDate(isoMinusDays(180))}>180j</Button>
-          <Button variant="outline" size="sm" onClick={() => setFromDate(isoMinusDays(365))}>1 an</Button>
+          <span className="text-xs text-muted-foreground mr-2">Période rapide :</span>
+          <Button variant="outline" size="sm" onClick={() => setQuickPeriod(7)}>7 derniers jours</Button>
+          <Button variant="outline" size="sm" onClick={() => setQuickPeriod(30)}>30 derniers jours</Button>
+          <Button variant="outline" size="sm" onClick={() => setQuickPeriod(90)}>90 derniers jours</Button>
+          <Button variant="outline" size="sm" onClick={() => setQuickPeriod(180)}>6 derniers mois</Button>
+          <Button variant="outline" size="sm" onClick={() => setQuickPeriod(365)}>1 dernière année</Button>
         </div>
 
         <div className="flex items-center gap-3">
