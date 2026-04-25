@@ -25,6 +25,7 @@ import { BrokersModule } from './modules/brokers/brokers.module';
 import { LisaModule } from './modules/lisa/lisa.module';
 import { BacktestModule } from './modules/backtest/backtest.module';
 import { StrategyOptimizerModule } from './modules/strategy-optimizer/optimizer.module';
+import { MonteCarloModule } from './modules/monte-carlo/monte-carlo.module';
 
 @Module({
   imports: [
@@ -60,6 +61,7 @@ import { StrategyOptimizerModule } from './modules/strategy-optimizer/optimizer.
     LisaModule,
     BacktestModule,
     StrategyOptimizerModule,
+    MonteCarloModule,
   ],
 })
 export class AppModule {}

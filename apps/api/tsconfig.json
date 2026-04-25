@@ -21,7 +21,8 @@
     { "path": "../../packages/portfolio-engine" },
     { "path": "../../packages/ai-analyst" },
     { "path": "../../packages/backtest" },
-    { "path": "../../packages/strategy-optimizer" }
+    { "path": "../../packages/strategy-optimizer" },
+    { "path": "../../packages/monte-carlo" }
   ],
   "include": ["src/**/*"],
   "ts-node": {
