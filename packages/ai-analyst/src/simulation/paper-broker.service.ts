@@ -78,6 +78,15 @@ export class PaperBrokerService {
       throw new Error(`Invalid live price: ${cmd.livePrice}`);
     }
 
+    // Reject explicitement si notional sous-significatif (évite les positions
+    // fantômes avec qty=0 et notional=0 affichés en UI). Symptôme observé
+    // quand auto-approve appelle openPosition avec amountUsd<10 (cash épuisé).
+    if (notional.lt(10)) {
+      throw new Error(
+        `openPosition rejected: notional ${notional.toFixed(2)} USD < 10 USD floor (insufficient sizing). symbol=${expression.symbol}`,
+      );
+    }
+
     // Coût entrée estimé (bps → USD)
     const costBps = (expression.estimatedCostBps as number) ?? 10;
     const estimatedCost = notional.mul(costBps).dividedBy(10000);
@@ -85,6 +94,11 @@ export class PaperBrokerService {
     // Notional net après coût
     const notionalNet = notional.minus(estimatedCost);
     const quantity = notionalNet.dividedBy(livePrice);
+    if (quantity.lte(0) || !quantity.isFinite()) {
+      throw new Error(
+        `openPosition rejected: invalid quantity ${quantity.toString()} (notional=${notional.toFixed(2)} price=${livePrice.toFixed(4)})`,
+      );
+    }
 
     const position: PaperPosition = {
       id: randomUUID(),

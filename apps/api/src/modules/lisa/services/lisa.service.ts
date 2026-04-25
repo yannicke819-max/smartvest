@@ -1049,9 +1049,14 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     // au-delà du cap (le check existait uniquement côté mécanique).
     const constraintsForCap = (sessionCfg?.risk_constraints as Record<string, unknown> | null) ?? {};
     const maxOpenPositions = Number(constraintsForCap['maxOpenPositions'] ?? 10);
-    const currentOpenCount = await this.paperBroker.getPositions(portfolioId, true)
-      .then((ps) => ps.length)
-      .catch(() => 0);
+    const currentOpenPositions = await this.paperBroker.getPositions(portfolioId, true).catch(() => []);
+    const currentOpenCount = currentOpenPositions.length;
+    // Symboles déjà ouverts : empêche la duplication (Lisa pouvait proposer
+    // 2 thèses RTX différentes et auto-approve les ouvrait toutes les 2).
+    // Le mécanique a déjà ce check ligne 623 ; on l'aligne ici.
+    const openSymbolsSet = new Set(
+      currentOpenPositions.map((p) => p.symbol.toUpperCase()),
+    );
     let openedSoFar = 0;
 
     // SWAP : quand cap atteint, on charge les positions ouvertes triées par
@@ -1078,6 +1083,18 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       if (!expression) continue;
       const newSymbol = String(expression.symbol);
       const newConviction = Number(thesis.confidenceScore) / 10; // échelle 0-10
+
+      // Skip si position déjà ouverte sur ce symbole (anti-duplication)
+      if (openSymbolsSet.has(newSymbol.toUpperCase())) {
+        await this.logDecision(portfolioId, 'position_skipped_duplicate_symbol', {
+          summary: `Skip ${newSymbol} : position déjà ouverte sur ce symbole`,
+          rationale: `Anti-duplication : une position LONG/SHORT ${newSymbol} existe déjà. Lisa peut proposer plusieurs thèses sur le même symbole — on n'en prend qu'une à la fois pour éviter de doubler l'exposition implicitement. Ferme l'existante puis re-propose si tu veux changer le sizing.`,
+          payload: { thesisId: alloc.thesisId, symbol: newSymbol },
+          triggeredBy: 'user_manual',
+        });
+        skipped++;
+        continue;
+      }
 
       // Cap atteint : tenter swap (close weakest if newConviction ≥ weakest + 1.5)
       if (currentOpenCount + openedSoFar - swappedIds.size >= maxOpenPositions) {
@@ -1107,6 +1124,8 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
             rationale: `SWAP : remplacée par ${newSymbol} (conviction ${newConviction.toFixed(1)} vs ${Number(swapTarget.conviction_score ?? 5).toFixed(1)})`.slice(0, 500),
           });
           swappedIds.add(String(swapTarget.id));
+          // Position fermée : son symbole peut être réouvert ce cycle
+          openSymbolsSet.delete(String(swapTarget.symbol).toUpperCase());
           await this.logDecision(portfolioId, 'position_swapped_for_better_thesis', {
             summary: `SWAP : ${swapTarget.symbol} fermée → ${newSymbol} (conviction ${newConviction.toFixed(1)} > ${Number(swapTarget.conviction_score ?? 5).toFixed(1)})`,
             rationale: `Rotation tactique : nouvelle thèse ${newSymbol} a conviction ${newConviction.toFixed(1)} pts vs position existante ${swapTarget.symbol} à ${Number(swapTarget.conviction_score ?? 5).toFixed(1)} pts (gap ${(newConviction - Number(swapTarget.conviction_score ?? 5)).toFixed(1)} ≥ seuil ${SWAP_MIN_GAP}). Position fermée, nouvelle ouverture en cours.`,
@@ -1182,6 +1201,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         });
         opened.push(pos);
         openedSoFar++;
+        openSymbolsSet.add(newSymbol.toUpperCase());
         availableCash = availableCash.minus(allocAmount);
 
         // Phase 2 : persiste autonomy_rules + conviction_score sur la
