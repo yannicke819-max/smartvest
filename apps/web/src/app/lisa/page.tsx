@@ -450,18 +450,26 @@ export default function LisaPage() {
   // ── Main UI ─────────────────────────────────────────────────────────────────
   return (
     <div className="mx-auto max-w-5xl space-y-6 p-6">
-      <div className="flex items-center gap-3">
-        <BackButton />
-        <div>
-          <h1 className="flex items-center gap-2 text-xl font-semibold">
-            <Sparkles className="h-5 w-5 text-primary" />
-            Lisa — AI Analyst Multi-Asset
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            Agnostique aux classes d'actifs · Anti-consensus · Corpus 25+ événements ·
-            100 % simulation
-          </p>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <BackButton />
+          <div>
+            <h1 className="flex items-center gap-2 text-xl font-semibold">
+              <Sparkles className="h-5 w-5 text-primary" />
+              Lisa — AI Analyst Multi-Asset
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              Agnostique aux classes d'actifs · Anti-consensus · Corpus 25+ événements ·
+              100 % simulation
+            </p>
+          </div>
         </div>
+        <a
+          href="/news-analysis"
+          className="inline-flex items-center gap-1.5 rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-100"
+        >
+          📰 News pipeline
+        </a>
       </div>
 
       <DisclaimerBanner />
