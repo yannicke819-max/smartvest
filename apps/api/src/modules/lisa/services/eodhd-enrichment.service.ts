@@ -24,7 +24,9 @@ export class EodhdEnrichmentService {
   private readonly logger = new Logger(EodhdEnrichmentService.name);
 
   // Caches en mémoire avec TTL par type
-  private newsCache: { data: EodhdNewsItem[]; asOf: number } | null = null;
+  // News : cache par-clé (symbole filtré ou 'GLOBAL') sinon une requête GLD
+  // squatte la cache pour BTC quand on boucle par position.
+  private newsCache: Map<string, { data: EodhdNewsItem[]; asOf: number }> = new Map();
   private eventsCache: { data: EodhdEconomicEvent[]; asOf: number } | null = null;
   private earningsCache: Map<string, { data: EodhdEarning[]; asOf: number }> = new Map();
   private fundamentalsCache: Map<string, { data: EodhdFundamentalSummary | null; asOf: number }> = new Map();
@@ -71,8 +73,12 @@ export class EodhdEnrichmentService {
    */
   async fetchRecentNews(symbols?: string[], limit = 20): Promise<EodhdNewsItem[]> {
     const CACHE_MS = 5 * 60 * 1000;
-    if (this.newsCache && Date.now() - this.newsCache.asOf < CACHE_MS) {
-      return this.newsCache.data;
+    const cacheKey = symbols && symbols.length === 1
+      ? `S:${symbols[0].toUpperCase()}:${limit}`
+      : `GLOBAL:${limit}`;
+    const cached = this.newsCache.get(cacheKey);
+    if (cached && Date.now() - cached.asOf < CACHE_MS) {
+      return cached.data;
     }
 
     const key = this.apiKey();
@@ -102,7 +108,7 @@ export class EodhdEnrichmentService {
       }));
 
       this.logCall({ ticker: 'NEWS', success: true, statusCode: res.status, latencyMs, calledBy: 'enrichment_news' });
-      this.newsCache = { data: items, asOf: Date.now() };
+      this.newsCache.set(cacheKey, { data: items, asOf: Date.now() });
       return items;
     } catch (e) {
       this.logCall({ ticker: 'NEWS', success: false, latencyMs: Date.now() - tStart, calledBy: 'enrichment_news', errorMessage: String(e).slice(0, 200) });
