@@ -162,6 +162,12 @@ export interface GenerateThesesRequest {
    *  Format texte prêt à injecter dans le briefing Lisa : momentum, range,
    *  volume surge. Permet à Lisa de distinguer breakout vs fakeout. */
   intradayBySymbol?: Record<string, string>;
+  /** Earnings calendar : prochaine date d'earnings par symbole equity dans
+   *  les 30 prochains jours. Format YYYY-MM-DD. Permet à Lisa d'éviter de
+   *  proposer une thèse equity dont le horizon couvre l'earnings (event
+   *  binaire), ou au contraire de positionner explicitement event-driven
+   *  via long_call/long_put. Nul/absent = pas d'earnings dans la fenêtre. */
+  earningsBySymbol?: Record<string, string | null>;
 }
 
 export interface GenerateThesesResponse {
@@ -333,7 +339,7 @@ ${upcomingEventsBlock || '- (no upcoming events provided)'}
 ${corpusBlock || '(no corpus events loaded for this query)'}
 
 # POSITIONS ACTUELLEMENT OUVERTES
-${this.formatOpenPositionsBlock(req.openPositions, req.availableCashUsd, req.technicalBySymbol, req.intradayBySymbol)}
+${this.formatOpenPositionsBlock(req.openPositions, req.availableCashUsd, req.technicalBySymbol, req.intradayBySymbol, req.earningsBySymbol)}
 
 # SESSION CONFIG
 - Profile: ${config.profile}
@@ -596,6 +602,7 @@ défini, sans markdown, sans explications hors JSON.
     availableCash: string | undefined,
     technicalBySymbol?: GenerateThesesRequest['technicalBySymbol'],
     intradayBySymbol?: GenerateThesesRequest['intradayBySymbol'],
+    earningsBySymbol?: GenerateThesesRequest['earningsBySymbol'],
   ): string {
     if (!positions || positions.length === 0) {
       return `(aucune position ouverte — marge de manœuvre maximale pour ouvrir)
@@ -684,6 +691,17 @@ Biais du cycle : **${bias}** — ${biasRationale}`;
       const intradaySummary = intradayBySymbol?.[p.symbol];
       if (intradaySummary) {
         extras.push(`  Intraday 5m: ${intradaySummary}`);
+      }
+      // Earnings calendar : event binaire dans la fenêtre horizon ?
+      const earningsDate = earningsBySymbol?.[p.symbol];
+      if (earningsDate) {
+        const daysToEarnings = Math.ceil(
+          (new Date(earningsDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24),
+        );
+        const tag = daysToEarnings <= 5 ? ' ⚠️ EARNINGS IMMINENT' : '';
+        extras.push(
+          `  📅 Earnings: ${earningsDate} (dans ${daysToEarnings}j)${tag} — décision : (a) close avant si horizon couvre, (b) ou positionnement event-driven option (long_call/long_put)`,
+        );
       }
       return extras.length > 0 ? `${base}\n${extras.join('\n')}` : base;
     });

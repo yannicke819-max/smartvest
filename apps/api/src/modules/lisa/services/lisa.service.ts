@@ -25,6 +25,7 @@ import { SupabaseService } from '../../supabase/supabase.service';
 import { DecisionLogService } from './decision-log.service';
 import { RealtimePriceService } from './realtime-price.service';
 import { EodhdEnrichmentService } from './eodhd-enrichment.service';
+import { EodhdCalendarService } from './eodhd-calendar.service';
 import { EodhdTechnicalService } from './eodhd-technical.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
 import { BinanceMarketService } from './binance-market.service';
@@ -68,6 +69,7 @@ export class LisaService {
     private readonly eodhdInsider: EodhdInsiderService,
     private readonly eodhdOptions: EodhdOptionsService,
     private readonly binanceLiquidations: BinanceLiquidationsService,
+    private readonly eodhdCalendar: EodhdCalendarService,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
     this.claudeClient = anthropicKey
@@ -529,6 +531,22 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       if (liquidationsLines.length > 0) marketSnapshot.liquidationsSignals = liquidationsLines.join('\n');
     }
 
+    // Earnings calendar pour les positions equity ouvertes (skip les
+    // crypto/FX/ETF via filtre interne du service). Évite que Lisa propose
+    // une thèse equity dont l'horizon couvre un earnings imminent
+    // (event binaire) — coût Claude payé pour rien si mechanical rejette.
+    const earningsBySymbol: Record<string, string | null> = {};
+    if (openPositions.length > 0) {
+      await Promise.all(
+        openPositions.map(async (pos) => {
+          const next = await this.eodhdCalendar
+            .getNextEarningsDate(pos.symbol, 30)
+            .catch(() => null);
+          if (next) earningsBySymbol[pos.symbol] = next;
+        }),
+      );
+    }
+
     let result: Awaited<ReturnType<ThesisGeneratorService['generateTheses']>>;
     try {
       result = await this.thesisGenerator.generateTheses({
@@ -544,6 +562,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         targetExtrapolated7dPct,
         technicalBySymbol,
         intradayBySymbol,
+        earningsBySymbol,
       });
     } catch (e) {
       // Parse failure ou erreur Claude : on log dans le decision log et on
