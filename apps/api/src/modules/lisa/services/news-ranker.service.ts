@@ -50,6 +50,10 @@ export class NewsRankerService {
     'investing.com': 2,
     'seekingalpha.com': 2,
     'thefly.com': 2,
+    // Plateformes retail sentiment structurées — tier 2.
+    // StockTwits agrège des votes Bullish/Bearish + cashtags structurés ;
+    // ce n'est pas Reuters mais c'est un signal mesurable, pas un blog.
+    'stocktwits.com': 2,
     'benzinga.com': 3,
     'fool.com': 3,
     'zacks.com': 3,

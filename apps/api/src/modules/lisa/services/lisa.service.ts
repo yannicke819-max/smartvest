@@ -984,8 +984,13 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       // Default cooldown : 5 min en hyper_active (cadence haute fréquence
       // explicite), 15 min sinon. L'utilisateur peut surcharger via
       // autopilot_opening_cooldown_minutes côté config.
+      // En hyper_active, on CAP le cooldown à 5 min même si l'utilisateur
+      // a configuré plus haut — la valeur explicite ne doit pas saboter
+      // la cadence du profil.
       const cooldownDefault = sessionCfg?.profile === 'hyper_active' ? 5 : 15;
-      const cooldownBase = Math.max(0, Math.min(240, Number(sessionCfg?.autopilot_opening_cooldown_minutes ?? cooldownDefault)));
+      const cooldownConfigured = Number(sessionCfg?.autopilot_opening_cooldown_minutes ?? cooldownDefault);
+      const cooldownCap = sessionCfg?.profile === 'hyper_active' ? 5 : 240;
+      const cooldownBase = Math.max(0, Math.min(cooldownCap, cooldownConfigured));
       const cooldownMultiplier = marketMomentum === 'bearish' ? 1.33 : 1;
       const effectiveCooldownMs = Math.round(cooldownBase * cooldownMultiplier) * 60_000;
 
