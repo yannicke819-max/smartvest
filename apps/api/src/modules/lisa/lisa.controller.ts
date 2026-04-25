@@ -4,6 +4,9 @@ import { LisaService } from './services/lisa.service';
 import { DecisionLogService } from './services/decision-log.service';
 import { RealtimePriceService } from './services/realtime-price.service';
 import { OptionBrokerService } from './services/option-broker.service';
+import { NewsRankerService } from './services/news-ranker.service';
+import { EodhdEnrichmentService } from './services/eodhd-enrichment.service';
+import { SupabaseService } from '../supabase/supabase.service';
 
 @Controller('lisa')
 export class LisaController {
@@ -12,7 +15,64 @@ export class LisaController {
     private readonly decisionLog: DecisionLogService,
     private readonly realtimePrice: RealtimePriceService,
     private readonly optionBroker: OptionBrokerService,
+    private readonly newsRanker: NewsRankerService,
+    private readonly enrichment: EodhdEnrichmentService,
+    private readonly supabase: SupabaseService,
   ) {}
+
+  /**
+   * Inspecte le pipeline news pour un portfolio donné : fetch raw EODHD,
+   * applique le ranker (relevance/impact/freshness/source/dedup), retourne
+   * les buckets avec scoring détaillé. Sert à valider que Lisa reçoit bien
+   * les news triées et à diagnostiquer les faux positifs.
+   *
+   *   GET /lisa/news-analysis/:portfolioId
+   */
+  @Get('news-analysis/:portfolioId')
+  async getNewsAnalysis(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    extractUserId(headers); // auth check
+    const { data: positions } = await this.supabase.getClient()
+      .from('lisa_positions')
+      .select('symbol')
+      .eq('portfolio_id', portfolioId)
+      .eq('status', 'open');
+    const heldSymbols = (positions ?? []).map((p) => p.symbol as string);
+
+    const { data: cfg } = await this.supabase.getClient()
+      .from('lisa_session_configs')
+      .select('profile')
+      .eq('portfolio_id', portfolioId)
+      .maybeSingle();
+    const profile = (cfg?.profile as string) ?? 'long_term_investor';
+    const halfLife = profile === 'hyper_active' ? 3
+      : profile === 'active_trading' || profile === 'sniper_mode' ? 6
+      : 12;
+
+    const rawNews = await this.enrichment.fetchRecentNews(undefined, 30);
+    const ranked = this.newsRanker.rank(rawNews, heldSymbols, halfLife, 20);
+    const buckets = this.newsRanker.bucket(ranked);
+
+    return {
+      portfolioId,
+      profile,
+      halfLifeHours: halfLife,
+      heldSymbols,
+      counts: {
+        rawFetched: rawNews.length,
+        ranked: ranked.length,
+        relevant: buckets.relevant.length,
+        noise: buckets.noise.length,
+        discarded: buckets.discarded.length,
+      },
+      relevant: buckets.relevant,
+      noise: buckets.noise,
+      discarded: buckets.discarded,
+      briefingPreview: this.newsRanker.formatForBriefing(buckets),
+    };
+  }
 
   @Get('realtime/price-cache')
   getPriceCache() {

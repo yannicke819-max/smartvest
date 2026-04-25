@@ -26,6 +26,7 @@ import { DecisionLogService } from './decision-log.service';
 import { RealtimePriceService } from './realtime-price.service';
 import { EodhdEnrichmentService } from './eodhd-enrichment.service';
 import { EodhdCalendarService } from './eodhd-calendar.service';
+import { NewsRankerService } from './news-ranker.service';
 import { EodhdTechnicalService } from './eodhd-technical.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
 import { BinanceMarketService } from './binance-market.service';
@@ -70,6 +71,7 @@ export class LisaService {
     private readonly eodhdOptions: EodhdOptionsService,
     private readonly binanceLiquidations: BinanceLiquidationsService,
     private readonly eodhdCalendar: EodhdCalendarService,
+    private readonly newsRanker: NewsRankerService,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
     this.claudeClient = anthropicKey
@@ -293,13 +295,15 @@ export class LisaService {
     // Enrichissement EODHD Premium : news + calendrier économique injectés
     // dans le MarketSnapshot pour que Lisa voie les catalyseurs récents et
     // à venir (sinon elle raisonne à l'aveugle côté news).
+    let rawNewsForRanking: import('./eodhd-enrichment.service').EodhdNewsItem[] = [];
     try {
       const [news, econEvents, macro, screenerSummary] = await Promise.all([
-        this.eodhdEnrichment.fetchRecentNews(undefined, 15),
+        this.eodhdEnrichment.fetchRecentNews(undefined, 30),
         this.eodhdEnrichment.fetchUpcomingEconomicEvents(7, 1),
         this.eodhdMacro.getMacroContext('USA').catch(() => null),
         this.eodhdScreener.summarizeAllScans().catch(() => ''),
       ]);
+      rawNewsForRanking = news;
       if (screenerSummary) {
         marketSnapshot.screenerCandidates = screenerSummary;
       }
@@ -312,6 +316,8 @@ export class LisaService {
           gdpYoyPct: macro.gdpGrowth?.value ?? null,
         };
       }
+      // Format legacy `recentNews` conservé pour rétrocompat — sera surchargé
+      // par newsAnalysis plus bas dès que les positions sont connues.
       marketSnapshot.recentNews = news.slice(0, 10).map((n) => ({
         headline: n.title,
         source: n.symbols.length > 0 ? n.symbols.slice(0, 3).join(', ') : 'general',
@@ -405,6 +411,30 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     ]);
     const fundamentalsBySymbol = new Map<string, typeof fundamentalsArr[number]>();
     uniqueSymbols.forEach((s, i) => fundamentalsBySymbol.set(s, fundamentalsArr[i]));
+
+    // News ranker — score+dédup+filtre les news en fonction des positions
+    // ouvertes. Substitue le dump naïf des 10 dernières headlines par un
+    // bloc analytique avec score 0-100, rationale par item, dédoublonnage
+    // par similarité de titre, et bucketing pertinent/bruit/écarté.
+    if (rawNewsForRanking.length > 0) {
+      const halfLifeHours = sessionConfig.profile === 'hyper_active' ? 3
+        : sessionConfig.profile === 'active_trading' || sessionConfig.profile === 'sniper_mode' ? 6
+        : 12;
+      const ranked = this.newsRanker.rank(rawNewsForRanking, uniqueSymbols, halfLifeHours, 15);
+      const buckets = this.newsRanker.bucket(ranked);
+      marketSnapshot.newsAnalysis = this.newsRanker.formatForBriefing(buckets);
+      // Override recentNews legacy avec uniquement les pertinentes/bruit
+      // pour éviter que Claude raisonne sur des news écartées via le
+      // fallback path (au cas où newsAnalysis ne serait pas exploité).
+      const keep = [...buckets.relevant, ...buckets.noise].slice(0, 10);
+      marketSnapshot.recentNews = keep.map((r) => ({
+        headline: r.title,
+        source: r.sourceDomain ?? (r.symbols.length > 0 ? r.symbols.slice(0, 3).join(', ') : 'general'),
+        timestamp: r.date,
+        relevance: r.scores.final >= 70 ? 'high' : r.scores.final >= 40 ? 'medium' : 'low',
+        sentiment: r.sentiment,
+      }));
+    }
 
     const openPositions = await Promise.all(openPositionsRaw.map(async (pos) => {
       let currentPrice = pos.entryPrice;
