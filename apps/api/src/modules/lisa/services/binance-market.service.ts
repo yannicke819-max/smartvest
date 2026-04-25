@@ -52,6 +52,20 @@ export interface BinanceFutureStats {
   asOf: number;
 }
 
+export interface BinanceFlowStats {
+  symbol: string;
+  /** % variation OI sur 24h (positif = positionnement croissant). */
+  oiChange24hPct: number | null;
+  /** Top trader account ratio (long/short). > 1 = comptes longs majoritaires. */
+  topTraderLongShortAccountRatio: number | null;
+  /** Top trader position ratio (long/short). > 1 = positions long majoritaires.
+   *  Ratio "position" pondère par taille — plus institutionnel que "account". */
+  topTraderLongShortPositionRatio: number | null;
+  /** Long/short ratio agrégé tous traders (retail+pro). */
+  globalLongShortAccountRatio: number | null;
+  asOf: number;
+}
+
 @Injectable()
 export class BinanceMarketService {
   private readonly logger = new Logger(BinanceMarketService.name);
@@ -198,6 +212,90 @@ export class BinanceMarketService {
     }
   }
 
+  private flowCache = new Map<string, { data: BinanceFlowStats; asOf: number }>();
+
+  /**
+   * Récupère les ratios de positionnement (open interest 24h delta + top
+   * trader long/short) depuis l'API Binance Futures Data — endpoints publics
+   * gratuits. Cache 5 min (ces ratios ne bougent pas en intraday rapide).
+   *
+   * Signaux :
+   *   - oiChange24hPct > +20% : positionnement nouveau fort (confirmation
+   *     trend si prix monte, attention divergence si stagne)
+   *   - topTraderPositionRatio > 2.0 ou < 0.5 : pros très one-sided →
+   *     soit confirmation, soit setup squeeze contraire
+   *   - global vs top trader divergence : retail dans un sens, pros dans
+   *     l'autre = signal contrarian classique
+   */
+  async getFlowStats(binanceSymbol: string): Promise<BinanceFlowStats | null> {
+    const cached = this.flowCache.get(binanceSymbol);
+    if (cached && Date.now() - cached.asOf < 5 * 60_000) return cached.data;
+
+    try {
+      // Endpoints "futures/data" — accessibles sans auth, rate limit 1000/5min
+      // Période 1h, 1 point pour valeurs courantes. limit=2 pour OI delta 24h
+      // (on prend les 2 dernières heures, mais Binance fournit aussi limit=
+      // /openInterestHist?period=1h pour 30 derniers points = 30h).
+      const [oiHist, topAccount, topPosition, globalAccount] = await Promise.all([
+        // OI history horaire — on prend les 24 derniers points pour delta 24h
+        fetch(
+          `${this.FAPI_URL}/futures/data/openInterestHist?symbol=${binanceSymbol}&period=1h&limit=24`,
+          { signal: AbortSignal.timeout(5000) },
+        ),
+        fetch(
+          `${this.FAPI_URL}/futures/data/topLongShortAccountRatio?symbol=${binanceSymbol}&period=1h&limit=1`,
+          { signal: AbortSignal.timeout(5000) },
+        ),
+        fetch(
+          `${this.FAPI_URL}/futures/data/topLongShortPositionRatio?symbol=${binanceSymbol}&period=1h&limit=1`,
+          { signal: AbortSignal.timeout(5000) },
+        ),
+        fetch(
+          `${this.FAPI_URL}/futures/data/globalLongShortAccountRatio?symbol=${binanceSymbol}&period=1h&limit=1`,
+          { signal: AbortSignal.timeout(5000) },
+        ),
+      ]);
+
+      let oiChange24hPct: number | null = null;
+      if (oiHist.ok) {
+        const arr = (await oiHist.json()) as Array<Record<string, unknown>>;
+        if (arr.length >= 2) {
+          const oldest = Number(arr[0]?.sumOpenInterestValue ?? 0);
+          const newest = Number(arr[arr.length - 1]?.sumOpenInterestValue ?? 0);
+          if (oldest > 0) {
+            oiChange24hPct = ((newest - oldest) / oldest) * 100;
+          }
+        }
+      }
+
+      const parseRatio = async (
+        res: Response,
+      ): Promise<number | null> => {
+        if (!res.ok) return null;
+        const arr = (await res.json()) as Array<Record<string, unknown>>;
+        if (arr.length === 0) return null;
+        const v = Number(arr[0]?.longShortRatio ?? 0);
+        return Number.isFinite(v) && v > 0 ? v : null;
+      };
+
+      const stats: BinanceFlowStats = {
+        symbol: binanceSymbol,
+        oiChange24hPct,
+        topTraderLongShortAccountRatio: await parseRatio(topAccount),
+        topTraderLongShortPositionRatio: await parseRatio(topPosition),
+        globalLongShortAccountRatio: await parseRatio(globalAccount),
+        asOf: Date.now(),
+      };
+      this.flowCache.set(binanceSymbol, { data: stats, asOf: Date.now() });
+      return stats;
+    } catch (e) {
+      this.logger.debug(
+        `Binance flow stats failed ${binanceSymbol}: ${String(e).slice(0, 80)}`,
+      );
+      return null;
+    }
+  }
+
   /**
    * Résumé compact 24h + klines 5m pour injection dans le briefing Lisa.
    * Ex : "24h: +4.32% · $58.2B vol · range 87k-92k · intraday 5m: bullish momentum · VOL SURGE"
@@ -206,10 +304,11 @@ export class BinanceMarketService {
     const bs = this.toBinanceSymbol(symbol);
     if (!bs) return null;
 
-    const [ticker, klines, futures] = await Promise.all([
+    const [ticker, klines, futures, flow] = await Promise.all([
       this.getTicker24h(bs),
       this.getKlines(bs, '5m', 20),
       this.getFutureStats(bs),
+      this.getFlowStats(bs),
     ]);
 
     const parts: string[] = [];
@@ -252,6 +351,43 @@ export class BinanceMarketService {
       );
       const oiBn = futures.openInterestUsd / 1e9;
       parts.push(`OI=${oiBn >= 1 ? oiBn.toFixed(2) + 'B' : (futures.openInterestUsd / 1e6).toFixed(0) + 'M'}$`);
+    }
+
+    if (flow) {
+      // OI delta 24h = positionnement net qui croît/décroit
+      if (flow.oiChange24hPct != null) {
+        const oiTag = flow.oiChange24hPct > 20
+          ? ' 🔴 OI SURGE'
+          : flow.oiChange24hPct < -20
+            ? ' 🟢 OI UNWIND'
+            : '';
+        parts.push(`OI Δ24h=${flow.oiChange24hPct >= 0 ? '+' : ''}${flow.oiChange24hPct.toFixed(1)}%${oiTag}`);
+      }
+      // Top trader position ratio = signal pros vs retail
+      if (flow.topTraderLongShortPositionRatio != null) {
+        const r = flow.topTraderLongShortPositionRatio;
+        const tag = r > 2.0
+          ? ' (pros très long)'
+          : r < 0.5
+            ? ' (pros très short)'
+            : '';
+        parts.push(`top trader L/S=${r.toFixed(2)}${tag}`);
+      }
+      // Divergence retail vs pro = signal contrarian classique
+      if (
+        flow.globalLongShortAccountRatio != null &&
+        flow.topTraderLongShortPositionRatio != null
+      ) {
+        const retail = flow.globalLongShortAccountRatio;
+        const pro = flow.topTraderLongShortPositionRatio;
+        const retailLong = retail > 1.2;
+        const proLong = pro > 1.2;
+        if (retailLong && !proLong && pro < 0.8) {
+          parts.push(' ⚠️ DIVERGENCE: retail long, pros short');
+        } else if (!retailLong && retail < 0.8 && proLong) {
+          parts.push(' ⚠️ DIVERGENCE: retail short, pros long');
+        }
+      }
     }
 
     return parts.length > 0 ? parts.join(' · ') : null;
