@@ -1516,22 +1516,44 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     return `${s}.US`;
   }
 
-  /** Approximate fallback prices (order-of-magnitude, simulation only) */
+  /** Approximate fallback prices (order-of-magnitude, simulation only).
+   *
+   * Doit couvrir tous les tickers macro que `getLivePrice` peut recevoir, sinon
+   * le default `100.00` est interprété comme valeur réelle par les briefings
+   * (ex. VIX=100 → choc marché simulé → cascade défensive en boucle).
+   *
+   * Les valeurs ici sont volontairement statiques et "plausibles", elles
+   * servent uniquement de filet de sécurité quand EODHD échoue ET le cache
+   * Supabase est vide. Un système de fallback ne doit JAMAIS retourner une
+   * valeur cohérente dans la plage de panique d'un agent en aval.
+   */
   private getFallbackPrice(symbol: string): string {
     const s = symbol.toUpperCase().replace('-', '');
     const prices: Record<string, string> = {
+      // Crypto
       'BTC': '79000', 'BTCUSDT': '79000', 'BTCSPOT': '79000', 'BTCUSD': '79000',
       'ETH': '1800', 'ETHUSDT': '1800', 'ETHSPOT': '1800',
       'SOL': '130', 'BNB': '550', 'XRP': '2.1', 'ADA': '0.7',
+      // Métaux & matières premières
       'GOLD': '3300', 'GC': '3300', 'GLD': '310', 'IAU': '50',
       'SILVER': '33', 'SLV': '31', 'SI': '33',
+      'USO': '75', 'BRENT': '78', 'CL': '78',
+      // Equity / ETFs principaux
       'SPY': '545', 'QQQ': '455', 'IWM': '195',
       'AAPL': '195', 'MSFT': '405', 'NVDA': '870', 'AMZN': '195',
+      // FX (paires sans tiret)
       'USDJPY': '155', 'EURUSD': '1.08', 'GBPUSD': '1.27',
       'USDCHF': '0.90', 'AUDUSD': '0.64', 'USDCAD': '1.38',
-      'VXX': '18', 'UVXY': '8',
+      // Volatilité
+      'VIX': '18.5', 'VXX': '18', 'UVXY': '8',
+      // FX index
+      'DXY': '102.3',
+      // Bonds / yields (approximations en %)
+      'US10Y': '4.2', 'TNX': '4.2',
+      'US2Y': '3.9', 'IRX': '3.9',
+      'US5Y': '4.1', 'FVX': '4.1',
+      'US30Y': '4.4', 'TYX': '4.4',
       'TLT': '90', 'IEF': '95', 'HYG': '76', 'LQD': '108',
-      'USO': '75', 'BRENT': '78', 'CL': '78',
     };
     return prices[s] ?? '100.00';
   }

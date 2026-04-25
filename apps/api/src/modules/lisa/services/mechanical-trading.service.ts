@@ -764,9 +764,23 @@ export class MechanicalTradingService {
       }
     }
 
-    // 3. VIX live (pour détecter un choc marché)
+    // 3. VIX live (pour détecter un choc marché).
+    //
+    // Sanity bound : VIX historique reste entre 9 et 90. Toute valeur hors
+    // plage plausible signale presque toujours une donnée corrompue (fallback
+    // sentinel, ticker mal mappé, parser bug). On préfère passer null —
+    // l'AgentLisaSyncService skip le trigger plutôt que paniquer.
     const vixQuote = await this.lisa.getLivePrice('VIX').catch(() => null);
-    const vixLevel = vixQuote ? Number(vixQuote.price) : null;
+    const vixRaw = vixQuote ? Number(vixQuote.price) : null;
+    const vixLevel =
+      vixRaw != null && Number.isFinite(vixRaw) && vixRaw >= 5 && vixRaw <= 90
+        ? vixRaw
+        : null;
+    if (vixRaw != null && vixLevel == null) {
+      this.logger.warn(
+        `[mechanical-trading] VIX=${vixRaw} hors plage plausible [5,90] — ignoré pour évaluation des triggers`,
+      );
+    }
 
     // Délégation à AgentLisaSyncService
     await this.agentLisaSync.evaluateTriggers({
@@ -781,7 +795,7 @@ export class MechanicalTradingService {
       portfolioDrawdownPct,
       worstPositionPnlPct,
       worstPositionSymbol,
-      vixLevel: vixLevel != null && Number.isFinite(vixLevel) ? vixLevel : null,
+      vixLevel,
     });
   }
 
@@ -1328,11 +1342,35 @@ export class MechanicalTradingService {
       drawdownSinceDirectivePct = maxDD;
     }
 
-    // Macro en cache EODHD ($0 de coût supplémentaire)
+    // Macro en cache EODHD ($0 de coût supplémentaire).
+    //
+    // Les valeurs alimentent le briefing Lisa (champ `vix_level`/`dxy_level`)
+    // — donc tout chiffre absurde sera lu par Lisa comme un signal réel.
+    // Sanity bounds : VIX [5, 90], DXY [70, 130] (plages historiques larges).
+    // Hors plage = sentinel/parser/source corrompu → on stocke null, Lisa
+    // raisonnera sans cette donnée plutôt qu'avec une fausse alarme.
     const [vixQuote, dxyQuote] = await Promise.all([
       this.lisa.getLivePrice('VIX').catch(() => null),
       this.lisa.getLivePrice('DXY').catch(() => null),
     ]);
+    const vixLevelSafe = (() => {
+      if (!vixQuote) return null;
+      const v = Number(vixQuote.price);
+      if (!Number.isFinite(v) || v < 5 || v > 90) {
+        this.logger.warn(`[mechanical-trading] VIX=${v} hors plage [5,90], stocké null`);
+        return null;
+      }
+      return v;
+    })();
+    const dxyLevelSafe = (() => {
+      if (!dxyQuote) return null;
+      const v = Number(dxyQuote.price);
+      if (!Number.isFinite(v) || v < 70 || v > 130) {
+        this.logger.warn(`[mechanical-trading] DXY=${v} hors plage [70,130], stocké null`);
+        return null;
+      }
+      return v;
+    })();
 
     const directiveAgeMinutes = Math.round((Date.now() - directive.generatedAt.getTime()) / 60000);
 
@@ -1357,8 +1395,8 @@ export class MechanicalTradingService {
       cash_usd: cashUsd != null ? cashUsd.toFixed(2) : null,
       open_positions_count: openCount,
       drawdown_since_directive_pct: drawdownSinceDirectivePct != null ? drawdownSinceDirectivePct.toFixed(4) : null,
-      vix_level: vixQuote ? Number(vixQuote.price).toFixed(4) : null,
-      dxy_level: dxyQuote ? Number(dxyQuote.price).toFixed(4) : null,
+      vix_level: vixLevelSafe != null ? vixLevelSafe.toFixed(4) : null,
+      dxy_level: dxyLevelSafe != null ? dxyLevelSafe.toFixed(4) : null,
       directive_age_minutes: directiveAgeMinutes,
     }).then(({ error }) => {
       if (error) this.logger.warn(`cycle summary insert failed: ${error.message}`);

@@ -143,13 +143,32 @@ export class AgentLisaSyncService {
     vixLevel: number | null;
   }): TriggerContext | null {
     // Priorité 1 : VIX spike
-    if (input.vixLevel != null && input.vixLevel > 30) {
+    //
+    // Sanity bound : VIX historique max ~89.5 (Oct 2008, mars 2020 ~85).
+    // Une valeur > 80 est quasi-certainement une donnée corrompue (fallback
+    // sentinel, parser error, source stale). Plutôt que paniquer en boucle
+    // sur une fausse alerte, on ignore et on log.
+    // Plancher VIX_LOW pour filtrer les valeurs nulles/zéro qui passeraient
+    // le check `> 30` mais signaleraient une anomalie.
+    const VIX_PLAUSIBLE_MAX = 80;
+    const VIX_PLAUSIBLE_MIN = 5;
+    if (
+      input.vixLevel != null &&
+      input.vixLevel > 30 &&
+      input.vixLevel >= VIX_PLAUSIBLE_MIN &&
+      input.vixLevel <= VIX_PLAUSIBLE_MAX
+    ) {
       return {
         trigger_type: 'vix_spike',
         tier: 'tier_1',
         trigger_value: input.vixLevel,
         threshold: 30,
       };
+    }
+    if (input.vixLevel != null && input.vixLevel > VIX_PLAUSIBLE_MAX) {
+      this.logger.warn(
+        `[P5.1] VIX=${input.vixLevel} hors plage plausible (max ${VIX_PLAUSIBLE_MAX}) — donnée corrompue, trigger ignoré`,
+      );
     }
 
     // Priorité 2 : drawdown portefeuille
