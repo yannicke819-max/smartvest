@@ -24,6 +24,7 @@ import type {
   LisaThesis,
   MarketRegime,
   PerformanceObjectives,
+  SessionProfile,
   TrajectoryStatus,
 } from '../types';
 import { LisaThesis as LisaThesisSchema, RiskConstraints } from '../types';
@@ -339,7 +340,7 @@ ${upcomingEventsBlock || '- (no upcoming events provided)'}
 ${corpusBlock || '(no corpus events loaded for this query)'}
 
 # POSITIONS ACTUELLEMENT OUVERTES
-${this.formatOpenPositionsBlock(req.openPositions, req.availableCashUsd, req.technicalBySymbol, req.intradayBySymbol, req.earningsBySymbol)}
+${this.formatOpenPositionsBlock(req.openPositions, req.availableCashUsd, req.technicalBySymbol, req.intradayBySymbol, req.earningsBySymbol, req.config.profile)}
 
 # SESSION CONFIG
 - Profile: ${config.profile}
@@ -504,6 +505,7 @@ défini, sans markdown, sans explications hors JSON.
       }
     }
 
+    const isHyperActive = req.config.profile === 'hyper_active';
     const gapLines: string[] = [];
     if (req.trajectoryStatus && req.targetExtrapolated7dPct != null && metrics?.netReturn7dPct != null) {
       const statusLabel =
@@ -513,7 +515,9 @@ défini, sans markdown, sans explications hors JSON.
             ? '**DANS LE PLAN** — régime normal, pas de changement de posture'
             : req.trajectoryStatus === 'EN_RETARD'
               ? `**EN RETARD** — examiner d'abord si le risque est sous-utilisé (drawdown ${fmtPct(metrics.drawdownFromPeakPct)} << limite), sinon envisager révision d'objectif`
-              : `**HORS TRAJECTOIRE** — objectif structurellement irréaliste dans la configuration actuelle OU coûts > 50% des gains bruts. Signale-le dans [DIAGNOSTIC] et propose révision (cible, horizon, risque)`;
+              : isHyperActive
+                ? `**HORS TRAJECTOIRE (hyper_active)** — coûts > 50% des gains 7j. En profile hyper_active, ce n'est PAS un signal de retrait : continue à proposer 1-3 setups asymétriques par cycle (R/R ≥ 2:1 conviction ≥6) pour réduire le ratio coûts/gains. La passivité n'est PAS la solution — le drift négatif des frais API empire si tu ne tradees pas. Signale en [DIAGNOSTIC] mais NE renvoie PAS theses=[].`
+                : `**HORS TRAJECTOIRE** — objectif structurellement irréaliste dans la configuration actuelle OU coûts > 50% des gains bruts. Signale-le dans [DIAGNOSTIC] et propose révision (cible, horizon, risque)`;
       const delta = metrics.netReturn7dPct - req.targetExtrapolated7dPct;
       gapLines.push(
         `- Cible 7j extrapolée : ${fmtPct(req.targetExtrapolated7dPct)} · Réalisé 7j : ${fmtPct(metrics.netReturn7dPct)}`,
@@ -603,7 +607,9 @@ défini, sans markdown, sans explications hors JSON.
     technicalBySymbol?: GenerateThesesRequest['technicalBySymbol'],
     intradayBySymbol?: GenerateThesesRequest['intradayBySymbol'],
     earningsBySymbol?: GenerateThesesRequest['earningsBySymbol'],
+    profile?: SessionProfile,
   ): string {
+    const isHyperActive = profile === 'hyper_active';
     if (!positions || positions.length === 0) {
       return `(aucune position ouverte — marge de manœuvre maximale pour ouvrir)
 ${availableCash ? `Cash disponible : ${availableCash} USD\n` : ''}
@@ -624,6 +630,12 @@ Biais du cycle : OPPORTUNISTE — toute thèse à conviction normale est bienven
     if (worstPosPnl <= -5 || weightedPnlPct <= -2) {
       bias = 'URGENCE RÉÉQUILIBRAGE';
       biasRationale = 'au moins une position dégradée (≤ −5%) ou portefeuille en perte significative — closeRecommendations prioritaires, ouvertures mesurées';
+    } else if (isHyperActive) {
+      // hyper_active : la passivité (theses=[]) est interdite par défaut.
+      // L'utilisateur a explicitement choisi un profil haute fréquence —
+      // l'absence de propositions équivaut à du gaspillage de coûts API.
+      bias = 'OPPORTUNISTE';
+      biasRationale = 'profile hyper_active — propose 1-3 thèses par cycle même si setup B+/A-, pas seulement A+. La passivité (theses=[]) n\'est PAS la réponse par défaut : si vraiment rien n\'émerge, justifie en sessionNotes pourquoi (volatilité écrasée, news en attente, etc.)';
     } else if (weightedPnlPct >= 0.5 && worstPosPnl > -3) {
       bias = 'HOLD recommandé';
       biasRationale = 'portefeuille en gain net, aucune position dégradée — n\'ouvre QUE si une nouvelle thèse a un R/R supérieur au pire R/R existant. Array `theses` vide est la bonne réponse par défaut';
