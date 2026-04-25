@@ -6,6 +6,7 @@ import { EodhdInsiderService } from './eodhd-insider.service';
 import { BinanceLiquidationsService } from './binance-liquidations.service';
 import { EodhdEnrichmentService } from './eodhd-enrichment.service';
 import { EodhdTechnicalService } from './eodhd-technical.service';
+import { RealtimePriceService } from './realtime-price.service';
 
 /**
  * AgentLisaSyncService — P5.x : boucle réflexive agent mécanique ↔ Lisa.
@@ -79,6 +80,7 @@ export class AgentLisaSyncService {
     private readonly liquidations: BinanceLiquidationsService,
     private readonly enrichment: EodhdEnrichmentService,
     private readonly technical: EodhdTechnicalService,
+    private readonly realtimePrice: RealtimePriceService,
   ) {}
 
   /**
@@ -150,6 +152,10 @@ export class AgentLisaSyncService {
     // sur une fausse alerte, on ignore et on log.
     // Plancher VIX_LOW pour filtrer les valeurs nulles/zéro qui passeraient
     // le check `> 30` mais signaleraient une anomalie.
+    //
+    // Stale check : si les 5 dernières valeurs cachées de VIX sont identiques
+    // au bit, c'est un cache fournisseur figé — on ne réveille pas Lisa sur
+    // une donnée qui ne bouge pas (sinon wake-ups en boucle sur valeur morte).
     const VIX_PLAUSIBLE_MAX = 80;
     const VIX_PLAUSIBLE_MIN = 5;
     if (
@@ -158,12 +164,18 @@ export class AgentLisaSyncService {
       input.vixLevel >= VIX_PLAUSIBLE_MIN &&
       input.vixLevel <= VIX_PLAUSIBLE_MAX
     ) {
-      return {
-        trigger_type: 'vix_spike',
-        tier: 'tier_1',
-        trigger_value: input.vixLevel,
-        threshold: 30,
-      };
+      if (this.realtimePrice.isPriceStale('VIX')) {
+        this.logger.warn(
+          `[P5.1] VIX=${input.vixLevel} stale (5 derniers samples identiques) — trigger ignoré`,
+        );
+      } else {
+        return {
+          trigger_type: 'vix_spike',
+          tier: 'tier_1',
+          trigger_value: input.vixLevel,
+          threshold: 30,
+        };
+      }
     }
     if (input.vixLevel != null && input.vixLevel > VIX_PLAUSIBLE_MAX) {
       this.logger.warn(

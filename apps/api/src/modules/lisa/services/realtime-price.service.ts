@@ -39,6 +39,13 @@ export class RealtimePriceService implements OnModuleDestroy {
   /** Cache de prix : ticker uppercase → { price, source, asOf } */
   private cache = new Map<string, { price: string; source: 'binance_ws' | 'eodhd'; asOf: string }>();
 
+  /** Historique des N dernières valeurs par ticker (pour détection figée).
+   *  Si toutes les N entrées sont strictement égales, c'est presque toujours
+   *  un cache fournisseur figé, un parser qui ré-injecte la même valeur, ou
+   *  une source bloquée — donnée à ne PAS utiliser pour décision. */
+  private priceHistory = new Map<string, Array<{ price: string; asOf: string }>>();
+  private static readonly STALE_HISTORY_DEPTH = 5;
+
   /** Symbols d'intérêt (positions ouvertes crypto). Re-resolved périodiquement. */
   private activeCryptoSymbols = new Set<string>();
 
@@ -85,11 +92,29 @@ export class RealtimePriceService implements OnModuleDestroy {
 
   /** Met à jour le cache (utilisé par le refresh EODHD). */
   setCached(symbol: string, price: string, source: 'binance_ws' | 'eodhd', asOf?: string): void {
-    this.cache.set(symbol.toUpperCase(), {
-      price,
-      source,
-      asOf: asOf ?? new Date().toISOString(),
-    });
+    const key = symbol.toUpperCase();
+    const ts = asOf ?? new Date().toISOString();
+    this.cache.set(key, { price, source, asOf: ts });
+
+    // Historique pour détection stale
+    const hist = this.priceHistory.get(key) ?? [];
+    hist.push({ price, asOf: ts });
+    if (hist.length > RealtimePriceService.STALE_HISTORY_DEPTH) {
+      hist.shift();
+    }
+    this.priceHistory.set(key, hist);
+  }
+
+  /** Détecte si les N dernières valeurs cachées sont strictement identiques.
+   *  Retourne `false` si moins de N entrées (impossible de juger).
+   *  Un consumer (ex. agent-lisa-sync) peut skipper une décision basée sur
+   *  un prix figé pour éviter d'agir sur cache fournisseur bloqué. */
+  isPriceStale(symbol: string): boolean {
+    const key = symbol.toUpperCase();
+    const hist = this.priceHistory.get(key);
+    if (!hist || hist.length < RealtimePriceService.STALE_HISTORY_DEPTH) return false;
+    const first = hist[0].price;
+    return hist.every((h) => h.price === first);
   }
 
   /** Dit au service quels symbols crypto surveiller (re-appelé après chaque cycle). */
