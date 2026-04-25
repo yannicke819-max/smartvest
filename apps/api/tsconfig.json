@@ -20,7 +20,8 @@
     { "path": "../../packages/brokers" },
     { "path": "../../packages/portfolio-engine" },
     { "path": "../../packages/ai-analyst" },
-    { "path": "../../packages/backtest" }
+    { "path": "../../packages/backtest" },
+    { "path": "../../packages/strategy-optimizer" }
   ],
   "include": ["src/**/*"],
   "ts-node": {

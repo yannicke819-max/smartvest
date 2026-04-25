@@ -9,6 +9,7 @@
     { "path": "packages/portfolio-engine" },
     { "path": "packages/ai-analyst" },
     { "path": "packages/backtest" },
+    { "path": "packages/strategy-optimizer" },
     { "path": "apps/api" },
     { "path": "apps/web" }
   ]

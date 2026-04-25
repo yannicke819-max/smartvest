@@ -24,6 +24,7 @@ import { SniperModule } from './modules/sniper/sniper.module';
 import { BrokersModule } from './modules/brokers/brokers.module';
 import { LisaModule } from './modules/lisa/lisa.module';
 import { BacktestModule } from './modules/backtest/backtest.module';
+import { StrategyOptimizerModule } from './modules/strategy-optimizer/optimizer.module';
 
 @Module({
   imports: [
@@ -58,6 +59,7 @@ import { BacktestModule } from './modules/backtest/backtest.module';
     BrokersModule,
     LisaModule,
     BacktestModule,
+    StrategyOptimizerModule,
   ],
 })
 export class AppModule {}
