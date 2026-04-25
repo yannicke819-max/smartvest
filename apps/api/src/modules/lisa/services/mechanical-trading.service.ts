@@ -1544,7 +1544,7 @@ export class MechanicalTradingService {
         relaxed_overrides: relaxed,
         trajectory_status: trajectoryStatus,
       },
-      triggeredBy: 'mechanical_trading',
+      triggeredBy: 'mechanical_cron',
     });
 
     return relaxed;
