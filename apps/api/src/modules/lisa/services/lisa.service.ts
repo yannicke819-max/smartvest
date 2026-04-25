@@ -1037,25 +1037,81 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       .catch(() => 0);
     let openedSoFar = 0;
 
+    // SWAP : quand cap atteint, on charge les positions ouvertes triées par
+    // conviction asc. Si une nouvelle thèse a conviction ≥ weakest + GAP,
+    // on ferme la weakest et on ouvre la nouvelle (rotation tactique).
+    // Sans ça, les meilleures opportunités étaient simplement ignorées
+    // une fois le cap saturé.
+    const SWAP_MIN_GAP = 1.5; // sur échelle 0-10
+    const { data: openSwapCandidates } = await this.supabase.getClient()
+      .from('lisa_positions')
+      .select('id, symbol, conviction_score, unrealized_pnl_pct, entry_price')
+      .eq('portfolio_id', portfolioId)
+      .eq('status', 'open')
+      .order('conviction_score', { ascending: true, nullsFirst: true });
+    const swappedIds = new Set<string>();
+
     const allocationsToOpen = cooldownSkipped ? [] : allocations;
     for (const alloc of allocationsToOpen) {
-      // Hard stop : si on atteint le cap maxOpenPositions, on logue + skip.
-      if (currentOpenCount + openedSoFar >= maxOpenPositions) {
-        await this.logDecision(portfolioId, 'proposal_capped_by_max_positions', {
-          summary: `Cap maxOpenPositions atteint (${currentOpenCount + openedSoFar}/${maxOpenPositions}) — ${allocationsToOpen.length - openedSoFar} thèse(s) restante(s) ignorée(s)`,
-          rationale: `Garde-fou utilisateur : le portefeuille a déjà ${currentOpenCount + openedSoFar} positions ouvertes, cap configuré ${maxOpenPositions}. Les ouvertures sont stoppées tant qu'une position ne s'est pas fermée. Pour autoriser plus de positions concurrentes, augmenter Max positions ouvertes dans /lisa.`,
-          payload: { currentOpenCount, openedSoFar, maxOpenPositions },
-          triggeredBy: 'user_manual',
-        });
-        break;
-      }
       const thesis = theses.find((t) => t.id === alloc.thesisId);
       if (!thesis) continue;
-
       const expressions = thesis.expressions as Array<Record<string, unknown>>;
       const preferredIdx = (thesis.preferredExpressionIndex as number) ?? 0;
       const expression = expressions[preferredIdx];
       if (!expression) continue;
+      const newSymbol = String(expression.symbol);
+      const newConviction = Number(thesis.confidenceScore) / 10; // échelle 0-10
+
+      // Cap atteint : tenter swap (close weakest if newConviction ≥ weakest + 1.5)
+      if (currentOpenCount + openedSoFar - swappedIds.size >= maxOpenPositions) {
+        const swapTarget = (openSwapCandidates ?? [])
+          .filter((p) => !swappedIds.has(String(p.id))
+                      && String(p.symbol) !== newSymbol)
+          .find((p) => {
+            const existingConv = Number((p.conviction_score as number | null) ?? 5);
+            return newConviction >= existingConv + SWAP_MIN_GAP;
+          });
+        if (!swapTarget) {
+          await this.logDecision(portfolioId, 'proposal_capped_by_max_positions', {
+            summary: `Cap maxOpenPositions atteint (${currentOpenCount + openedSoFar - swappedIds.size}/${maxOpenPositions}) — pas de swap candidate (gap conviction insuffisant)`,
+            rationale: `Garde-fou cap atteint. Tentative swap : nouvelle thèse ${newSymbol} conviction ${newConviction.toFixed(1)} ; aucune position existante avec conviction inférieure d'au moins ${SWAP_MIN_GAP} pts. Pour autoriser plus de positions concurrentes, augmenter Max positions ouvertes dans /lisa.`,
+            payload: { currentOpenCount, openedSoFar, maxOpenPositions, newSymbol, newConviction, swapMinGap: SWAP_MIN_GAP },
+            triggeredBy: 'user_manual',
+          });
+          break;
+        }
+        // Swap : on ferme la position weakest avant d'ouvrir la nouvelle
+        try {
+          const swapQuote = await this.fetchLivePrice(String(swapTarget.symbol));
+          await this.paperBroker.closePosition({
+            positionId: String(swapTarget.id),
+            reason: 'closed_invalidated',
+            livePrice: swapQuote.price,
+            rationale: `SWAP : remplacée par ${newSymbol} (conviction ${newConviction.toFixed(1)} vs ${Number(swapTarget.conviction_score ?? 5).toFixed(1)})`.slice(0, 500),
+          });
+          swappedIds.add(String(swapTarget.id));
+          await this.logDecision(portfolioId, 'position_swapped_for_better_thesis', {
+            summary: `SWAP : ${swapTarget.symbol} fermée → ${newSymbol} (conviction ${newConviction.toFixed(1)} > ${Number(swapTarget.conviction_score ?? 5).toFixed(1)})`,
+            rationale: `Rotation tactique : nouvelle thèse ${newSymbol} a conviction ${newConviction.toFixed(1)} pts vs position existante ${swapTarget.symbol} à ${Number(swapTarget.conviction_score ?? 5).toFixed(1)} pts (gap ${(newConviction - Number(swapTarget.conviction_score ?? 5)).toFixed(1)} ≥ seuil ${SWAP_MIN_GAP}). Position fermée, nouvelle ouverture en cours.`,
+            payload: {
+              closedSymbol: swapTarget.symbol,
+              closedPositionId: swapTarget.id,
+              closedConviction: Number(swapTarget.conviction_score ?? 5),
+              newSymbol,
+              newThesisId: alloc.thesisId,
+              newConviction,
+              gap: newConviction - Number(swapTarget.conviction_score ?? 5),
+            },
+            triggeredBy: 'user_manual',
+          });
+        } catch (e) {
+          this.logger.warn(`SWAP failed for ${swapTarget.symbol}: ${String(e).slice(0, 120)}`);
+          break; // si on n'arrive pas à fermer, on n'ouvre pas la nouvelle
+        }
+        // Recharge le compte cash après fermeture (sera réutilisé plus bas)
+        const refreshedSnapshot = await this.paperBroker.computeSnapshot(portfolioId);
+        availableCash = new Decimal(refreshedSnapshot.cashUsd);
+      }
 
       const allocAmount = new Decimal(alloc.amountUsd);
       if (availableCash.minus(allocAmount).lt(CASH_BUFFER_USD)) {
