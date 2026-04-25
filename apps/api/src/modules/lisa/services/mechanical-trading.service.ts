@@ -604,9 +604,13 @@ export class MechanicalTradingService {
       const horizonDays = target.horizonDays ?? 3;
       const horizonTargetDate = new Date(Date.now() + horizonDays * 86_400_000).toISOString();
 
-      // Coût simulé : 10 bps (mécanique, pas de négociation fine)
-      const costBps = 10;
-      const estimatedCost = notional.mul(costBps).div(10000);
+      // Coûts simulés : fees broker (10 bps) + slippage estimé (10 bps).
+      // Le slippage rend la sim plus réaliste vs un trade réel — sans lui
+      // on surestime la perf de 10-30% selon la liquidité (cf RETEX
+      // "Release It!" Nygard, et patterns Composer/QuantConnect).
+      const feeBps = 10;
+      const slippageBps = 10;
+      const estimatedCost = notional.mul(feeBps + slippageBps).div(10000);
       const notionalNet = notional.minus(estimatedCost);
       const quantity = notionalNet.div(price);
 
@@ -1237,8 +1241,12 @@ export class MechanicalTradingService {
     const isLong = (pos.direction as string) === 'long';
     const qty = new Decimal(pos.quantity as string);
 
-    const costBps = 10;
-    const exitCost = notional.mul(costBps).div(10000);
+    // Coûts symétriques à l'open : fees broker + slippage estimé.
+    // Cohérence avec les hypothèses du backtest harness — rend la sim
+    // plus pessimiste donc plus alignée avec le réel.
+    const feeBps = 10;
+    const slippageBps = 10;
+    const exitCost = notional.mul(feeBps + slippageBps).div(10000);
     const rawPnl = isLong
       ? exitPrice.minus(entryPrice).mul(qty)
       : entryPrice.minus(exitPrice).mul(qty);

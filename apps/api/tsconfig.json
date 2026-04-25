@@ -19,7 +19,8 @@
     { "path": "../../packages/audit" },
     { "path": "../../packages/brokers" },
     { "path": "../../packages/portfolio-engine" },
-    { "path": "../../packages/ai-analyst" }
+    { "path": "../../packages/ai-analyst" },
+    { "path": "../../packages/backtest" }
   ],
   "include": ["src/**/*"],
   "ts-node": {
