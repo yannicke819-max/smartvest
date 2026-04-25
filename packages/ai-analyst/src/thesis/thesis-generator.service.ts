@@ -92,6 +92,11 @@ export interface MarketSnapshot {
    *  Format texte avec score [0-100], rationale (catalyst/source tier/macro/dédup),
    *  buckets pertinent/bruit/écarté. Remplace `recentNews` naïf en hyper_active. */
   newsAnalysis?: string;
+  /** Mémoire des décisions passées de Lisa sur ce portefeuille, agrégée par
+   *  regime détecté (LisaMemoryService). Format texte : count, win rate,
+   *  return moyen par regime + dernier rationale. Permet à Lisa de calibrer
+   *  sa confiance contextuelle (regime déjà rencontré → données empiriques). */
+  lisaMemory?: string;
 }
 
 export interface OpenPositionSummary {
@@ -333,7 +338,10 @@ ${m.macroContext.gdpYoyPct != null ? `- GDP YoY : ${m.macroContext.gdpYoyPct >= 
 - S&P 500: ${m.sp500}
 - Nasdaq: ${m.nasdaq}
 
-## Recent news (24-72h) — analyse scorée et filtrée
+${m.lisaMemory ? `## YOUR PAST DECISIONS — mémoire contextuelle sur ce portefeuille
+${m.lisaMemory}
+
+` : ''}## Recent news (24-72h) — analyse scorée et filtrée
 ${m.newsAnalysis ? m.newsAnalysis : (recentNewsBlock || '- (no recent news provided)')}${m.newsAnalysis ? '' : sentimentLine}
 ${m.screenerCandidates ? `\n## Screener candidates (scans de découverte EODHD)\n${m.screenerCandidates}\n` : ''}${m.insiderSignals ? `\n## Insider signals (SEC Form 4, 30j)\n${m.insiderSignals}\n` : ''}${m.optionsSignals ? `\n## Options flow (IV ATM · put/call ratio)\n${m.optionsSignals}\n` : ''}${m.liquidationsSignals ? `\n## Crypto liquidations (waves reversal)\n${m.liquidationsSignals}\n` : ''}
 

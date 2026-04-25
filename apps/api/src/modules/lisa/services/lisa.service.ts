@@ -28,6 +28,7 @@ import { EodhdEnrichmentService } from './eodhd-enrichment.service';
 import { EodhdCalendarService } from './eodhd-calendar.service';
 import { NewsRankerService } from './news-ranker.service';
 import { NewsAggregatorService } from './news-aggregator.service';
+import { LisaMemoryService } from './lisa-memory.service';
 import { EodhdTechnicalService } from './eodhd-technical.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
 import { BinanceMarketService } from './binance-market.service';
@@ -74,6 +75,7 @@ export class LisaService {
     private readonly eodhdCalendar: EodhdCalendarService,
     private readonly newsRanker: NewsRankerService,
     private readonly newsAggregator: NewsAggregatorService,
+    private readonly lisaMemory: LisaMemoryService,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
     this.claudeClient = anthropicKey
@@ -575,6 +577,21 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         }),
       );
     }
+
+    // Phase 3 : injecte la mémoire Lisa (décisions passées par regime) dans
+    // le briefing. Le regime courant pris comme proxy = dernier regime
+    // détecté sur ce portefeuille (ou null si premier cycle).
+    const { data: lastProposal } = await this.supabase.getClient()
+      .from('lisa_proposals')
+      .select('detected_regime')
+      .eq('portfolio_id', portfolioId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const lastRegime = (lastProposal?.detected_regime as string | null) ?? null;
+    marketSnapshot.lisaMemory = await this.lisaMemory
+      .getMemoryBriefing(portfolioId, lastRegime, 30)
+      .catch(() => '(mémoire indisponible)');
 
     let result: Awaited<ReturnType<ThesisGeneratorService['generateTheses']>>;
     try {
