@@ -126,6 +126,9 @@ export default function LisaPage() {
   }, [autopilotDurationHoursInput]);
   const [autopilotAggressive, setAutopilotAggressive] = useState(false);
   const [autopilotMarketHoursOnly, setAutopilotMarketHoursOnly] = useState(false);
+  // Preset risque actuellement sélectionné (visuel uniquement). Mis à jour
+  // par applyPreset() ou dérivé depuis la config chargée si elle matche.
+  const [activePreset, setActivePreset] = useState<'conservateur' | 'modere' | 'aggressive' | 'kamikaze' | null>(null);
   // Lisa v2 — objectifs de rendement nets + budget coûts (tous optionnels)
   const [returnTargetDaily, setReturnTargetDaily] = useState<string>('');
   const [returnTargetMonthly, setReturnTargetMonthly] = useState<string>('');
@@ -189,6 +192,16 @@ export default function LisaPage() {
     if (typeof rc.defaultStopLossPct === 'number') setDefaultStopLossPct(rc.defaultStopLossPct);
     if (typeof config.enable_leverage === 'boolean') setEnableLeverage(config.enable_leverage);
     if (typeof config.enable_derivatives === 'boolean') setEnableDerivatives(config.enable_derivatives);
+    // Détecte le preset matchant la config chargée pour highlight visuel.
+    // Marqueurs uniques : maxPositionSizePct + enableLeverage + defaultStopLossPct.
+    const pos = rc.maxPositionSizePct;
+    const lev = config.enable_leverage;
+    const stop = rc.defaultStopLossPct;
+    if (pos === 5 && lev === false && stop === 3) setActivePreset('conservateur');
+    else if (pos === 8 && lev === false && stop === 2) setActivePreset('modere');
+    else if (pos === 25 && lev === true && stop === 2.5) setActivePreset('aggressive');
+    else if (pos === 80 && lev === true && stop === 1) setActivePreset('kamikaze');
+    else setActivePreset(null);
     setSyncedForPortfolio(selectedPortfolioId);
   }, [config, selectedPortfolioId, syncedForPortfolio]);
 
@@ -199,6 +212,7 @@ export default function LisaPage() {
    * un knob individuel après le preset.
    */
   function applyPreset(name: 'conservateur' | 'modere' | 'aggressive' | 'kamikaze') {
+    setActivePreset(name);
     if (name === 'conservateur') {
       setProfile('long_term_investor');
       setReturnTargetDaily('0.05');
@@ -784,38 +798,35 @@ export default function LisaPage() {
               <span className="text-[10px] text-muted-foreground">cliquer puis « Sauvegarder la config »</span>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-              <button
-                type="button"
-                onClick={() => applyPreset('conservateur')}
-                className="rounded-md border px-2 py-2 text-xs hover:bg-muted text-left transition-colors"
-              >
-                <div className="font-medium">🛡️ Conservateur</div>
-                <div className="text-[10px] text-muted-foreground">5% pos · pas levier · stop 3%</div>
-              </button>
-              <button
-                type="button"
-                onClick={() => applyPreset('modere')}
-                className="rounded-md border px-2 py-2 text-xs hover:bg-muted text-left transition-colors"
-              >
-                <div className="font-medium">⚖️ Modéré</div>
-                <div className="text-[10px] text-muted-foreground">8% pos · pas levier · stop 2%</div>
-              </button>
-              <button
-                type="button"
-                onClick={() => applyPreset('aggressive')}
-                className="rounded-md border px-2 py-2 text-xs hover:bg-muted text-left transition-colors"
-              >
-                <div className="font-medium">🔥 Aggressive</div>
-                <div className="text-[10px] text-muted-foreground">25% pos · ×2 · stop 2.5%</div>
-              </button>
-              <button
-                type="button"
-                onClick={() => applyPreset('kamikaze')}
-                className="rounded-md border-2 border-red-300 dark:border-red-800 px-2 py-2 text-xs hover:bg-red-50 dark:hover:bg-red-950/20 text-left transition-colors"
-              >
-                <div className="font-medium">💀 Kamikaze</div>
-                <div className="text-[10px] text-muted-foreground">80% pos · ×3 · stop 1%</div>
-              </button>
+              {([
+                { key: 'conservateur', icon: '🛡️', label: 'Conservateur', sub: '5% pos · pas levier · stop 3%' },
+                { key: 'modere',       icon: '⚖️', label: 'Modéré',       sub: '8% pos · pas levier · stop 2%' },
+                { key: 'aggressive',   icon: '🔥', label: 'Aggressive',   sub: '25% pos · ×2 · stop 2.5%' },
+                { key: 'kamikaze',     icon: '💀', label: 'Kamikaze',     sub: '80% pos · ×3 · stop 1%' },
+              ] as const).map((p) => {
+                const isActive = activePreset === p.key;
+                const isKamikaze = p.key === 'kamikaze';
+                const cls = isActive
+                  ? 'rounded-md border-2 border-blue-500 ring-2 ring-blue-200 dark:ring-blue-900 bg-blue-50 dark:bg-blue-950/30 px-2 py-2 text-xs text-left transition-colors'
+                  : isKamikaze
+                  ? 'rounded-md border border-red-300/60 dark:border-red-900/60 px-2 py-2 text-xs hover:bg-red-50 dark:hover:bg-red-950/20 text-left transition-colors'
+                  : 'rounded-md border px-2 py-2 text-xs hover:bg-muted text-left transition-colors';
+                return (
+                  <button
+                    key={p.key}
+                    type="button"
+                    onClick={() => applyPreset(p.key)}
+                    className={cls}
+                    aria-pressed={isActive}
+                  >
+                    <div className="font-medium flex items-center gap-1">
+                      <span>{p.icon} {p.label}</span>
+                      {isActive && <span className="text-blue-600 dark:text-blue-400">✓</span>}
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">{p.sub}</div>
+                  </button>
+                );
+              })}
             </div>
             <p className="text-[10px] text-muted-foreground italic">
               ⚠️ Kamikaze : drawdown 25% possible en 2 jours. Activer seulement après backtest et Monte Carlo conclants.
