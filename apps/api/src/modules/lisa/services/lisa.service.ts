@@ -27,6 +27,7 @@ import { RealtimePriceService } from './realtime-price.service';
 import { EodhdEnrichmentService } from './eodhd-enrichment.service';
 import { EodhdCalendarService } from './eodhd-calendar.service';
 import { NewsRankerService } from './news-ranker.service';
+import { NewsAggregatorService } from './news-aggregator.service';
 import { EodhdTechnicalService } from './eodhd-technical.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
 import { BinanceMarketService } from './binance-market.service';
@@ -72,6 +73,7 @@ export class LisaService {
     private readonly binanceLiquidations: BinanceLiquidationsService,
     private readonly eodhdCalendar: EodhdCalendarService,
     private readonly newsRanker: NewsRankerService,
+    private readonly newsAggregator: NewsAggregatorService,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
     this.claudeClient = anthropicKey
@@ -292,18 +294,16 @@ export class LisaService {
 
     const marketSnapshot = await this.fetchMarketSnapshot();
 
-    // Enrichissement EODHD Premium : news + calendrier économique injectés
-    // dans le MarketSnapshot pour que Lisa voie les catalyseurs récents et
-    // à venir (sinon elle raisonne à l'aveugle côté news).
-    let rawNewsForRanking: import('./eodhd-enrichment.service').EodhdNewsItem[] = [];
+    // Enrichissement EODHD Premium : calendrier économique + macro +
+    // screener (pas dépendants des positions). News fetchée plus bas une
+    // fois les positions connues (NewsAggregator a besoin des heldSymbols
+    // pour fetcher StockTwits/Twitter ciblés).
     try {
-      const [news, econEvents, macro, screenerSummary] = await Promise.all([
-        this.eodhdEnrichment.fetchRecentNews(undefined, 30),
+      const [econEvents, macro, screenerSummary] = await Promise.all([
         this.eodhdEnrichment.fetchUpcomingEconomicEvents(7, 1),
         this.eodhdMacro.getMacroContext('USA').catch(() => null),
         this.eodhdScreener.summarizeAllScans().catch(() => ''),
       ]);
-      rawNewsForRanking = news;
       if (screenerSummary) {
         marketSnapshot.screenerCandidates = screenerSummary;
       }
@@ -316,15 +316,6 @@ export class LisaService {
           gdpYoyPct: macro.gdpGrowth?.value ?? null,
         };
       }
-      // Format legacy `recentNews` conservé pour rétrocompat — sera surchargé
-      // par newsAnalysis plus bas dès que les positions sont connues.
-      marketSnapshot.recentNews = news.slice(0, 10).map((n) => ({
-        headline: n.title,
-        source: n.symbols.length > 0 ? n.symbols.slice(0, 3).join(', ') : 'general',
-        timestamp: n.date,
-        relevance: (n.sentiment !== null && Math.abs(n.sentiment) >= 0.5) ? 'high' : 'medium',
-        sentiment: n.sentiment ?? null,
-      }));
       // Trie les events : importance desc (3→1), puis date asc — les plus
       // critiques en premier. Cap à 20 pour éviter bloat du prompt.
       const sortedEvents = [...econEvents].sort((a, b) => {
@@ -412,28 +403,36 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     const fundamentalsBySymbol = new Map<string, typeof fundamentalsArr[number]>();
     uniqueSymbols.forEach((s, i) => fundamentalsBySymbol.set(s, fundamentalsArr[i]));
 
-    // News ranker — score+dédup+filtre les news en fonction des positions
-    // ouvertes. Substitue le dump naïf des 10 dernières headlines par un
-    // bloc analytique avec score 0-100, rationale par item, dédoublonnage
-    // par similarité de titre, et bucketing pertinent/bruit/écarté.
-    if (rawNewsForRanking.length > 0) {
-      const halfLifeHours = sessionConfig.profile === 'hyper_active' ? 3
-        : sessionConfig.profile === 'active_trading' || sessionConfig.profile === 'sniper_mode' ? 6
-        : 12;
-      const ranked = this.newsRanker.rank(rawNewsForRanking, uniqueSymbols, halfLifeHours, 15);
-      const buckets = this.newsRanker.bucket(ranked);
-      marketSnapshot.newsAnalysis = this.newsRanker.formatForBriefing(buckets);
-      // Override recentNews legacy avec uniquement les pertinentes/bruit
-      // pour éviter que Claude raisonne sur des news écartées via le
-      // fallback path (au cas où newsAnalysis ne serait pas exploité).
-      const keep = [...buckets.relevant, ...buckets.noise].slice(0, 10);
-      marketSnapshot.recentNews = keep.map((r) => ({
-        headline: r.title,
-        source: r.sourceDomain ?? (r.symbols.length > 0 ? r.symbols.slice(0, 3).join(', ') : 'general'),
-        timestamp: r.date,
-        relevance: r.scores.final >= 70 ? 'high' : r.scores.final >= 40 ? 'medium' : 'low',
-        sentiment: r.sentiment,
-      }));
+    // News pipeline complet — agrégation multi-source (EODHD + StockTwits
+    // + Reddit + Twitter), scoring 4 axes + convergence cross-source,
+    // dédup, bucketing. Substitue le dump naïf des 10 dernières headlines
+    // par un bloc analytique avec scoring détaillé par item.
+    try {
+      const aggregate = await this.newsAggregator.aggregate(uniqueSymbols, 30);
+      if (aggregate.items.length > 0) {
+        const halfLifeHours = sessionConfig.profile === 'hyper_active' ? 3
+          : sessionConfig.profile === 'active_trading' || sessionConfig.profile === 'sniper_mode' ? 6
+          : 12;
+        const ranked = this.newsRanker.rank(aggregate.items, uniqueSymbols, halfLifeHours, 15);
+        const buckets = this.newsRanker.bucket(ranked);
+        const sourcesSummary = aggregate.sources
+          .map((s) => `${s.provider}=${s.count}${s.ok ? '' : '✗'}`)
+          .join(' ');
+        marketSnapshot.newsAnalysis = `📡 Sources fetched: ${sourcesSummary} (${aggregate.elapsedMs}ms)\n\n${this.newsRanker.formatForBriefing(buckets)}`;
+        // Override recentNews legacy avec uniquement les pertinentes/bruit
+        // pour éviter que Claude raisonne sur des news écartées via le
+        // fallback path (au cas où newsAnalysis ne serait pas exploité).
+        const keep = [...buckets.relevant, ...buckets.noise].slice(0, 10);
+        marketSnapshot.recentNews = keep.map((r) => ({
+          headline: r.title,
+          source: r.sourceDomain ?? (r.symbols.length > 0 ? r.symbols.slice(0, 3).join(', ') : 'general'),
+          timestamp: r.date,
+          relevance: r.scores.final >= 70 ? 'high' : r.scores.final >= 40 ? 'medium' : 'low',
+          sentiment: r.sentiment,
+        }));
+      }
+    } catch (e) {
+      this.logger.warn(`news aggregator failure (non-blocking): ${String(e).slice(0, 200)}`);
     }
 
     const openPositions = await Promise.all(openPositionsRaw.map(async (pos) => {

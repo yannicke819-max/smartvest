@@ -23,6 +23,10 @@ import { MechanicalTradingService } from './services/mechanical-trading.service'
 import { OptionBrokerService } from './services/option-broker.service';
 import { EodhdCalendarService } from './services/eodhd-calendar.service';
 import { NewsRankerService } from './services/news-ranker.service';
+import { StockTwitsService } from './services/stocktwits.service';
+import { RedditService } from './services/reddit.service';
+import { TwitterService } from './services/twitter.service';
+import { NewsAggregatorService } from './services/news-aggregator.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule],
@@ -49,6 +53,10 @@ import { NewsRankerService } from './services/news-ranker.service';
     OptionBrokerService,
     EodhdCalendarService,
     NewsRankerService,
+    StockTwitsService,
+    RedditService,
+    TwitterService,
+    NewsAggregatorService,
   ],
   exports: [
     LisaService,
@@ -69,6 +77,10 @@ import { NewsRankerService } from './services/news-ranker.service';
     OptionBrokerService,
     EodhdCalendarService,
     NewsRankerService,
+    StockTwitsService,
+    RedditService,
+    TwitterService,
+    NewsAggregatorService,
   ],
 })
 export class LisaModule {}
