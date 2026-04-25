@@ -1,7 +1,9 @@
 'use client';
 
+import { useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
+import { createSupabaseBrowserClient } from '@/lib/supabase/client';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -241,6 +243,40 @@ export function useUpsertLisaConfig(portfolioId: string) {
       void qc.invalidateQueries({ queryKey: ['lisa', 'config', portfolioId] });
     },
   });
+}
+
+/**
+ * S'abonne aux changements Supabase Realtime sur lisa_session_configs pour
+ * ce portfolioId. Quand un autre device modifie la config (ou le backend
+ * l'écrit), le cache React Query local est invalidé → l'UI rafraîchit
+ * automatiquement sans refresh manuel.
+ *
+ * Pré-requis : la migration 0056 doit avoir activé Realtime sur la table.
+ */
+export function useLisaConfigRealtime(portfolioId: string | null): void {
+  const qc = useQueryClient();
+  useEffect(() => {
+    if (!portfolioId) return;
+    const client = createSupabaseBrowserClient();
+    const channel = client
+      .channel(`lisa_config_${portfolioId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'lisa_session_configs',
+          filter: `portfolio_id=eq.${portfolioId}`,
+        },
+        () => {
+          void qc.invalidateQueries({ queryKey: ['lisa', 'config', portfolioId] });
+        },
+      )
+      .subscribe();
+    return () => {
+      void client.removeChannel(channel);
+    };
+  }, [portfolioId, qc]);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

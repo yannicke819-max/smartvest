@@ -8,6 +8,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import {
   useLisaConfig,
   useUpsertLisaConfig,
+  useLisaConfigRealtime,
   useGenerateProposal,
   useLisaProposals,
   useLisaSnapshot,
@@ -79,8 +80,20 @@ export default function LisaPage() {
   const [killReason, setKillReason] = useState('');
 
   const configQuery = useLisaConfig(selectedPortfolioId);
+  // Sync temps réel cross-device : si la config est modifiée depuis un
+  // autre appareil, le cache React Query local est invalidé automatiquement.
+  useLisaConfigRealtime(selectedPortfolioId);
   const agentStatusQuery = useAgentStatus(selectedPortfolioId);
   const upsertConfig = useUpsertLisaConfig(selectedPortfolioId ?? '');
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'success' | 'error'>('idle');
+  const [saveError, setSaveError] = useState<string | null>(null);
+  // Auto-reset du feedback save après 4s, pour laisser le temps de lire
+  // sans laisser le toast traîner indéfiniment.
+  useEffect(() => {
+    if (saveStatus === 'idle') return;
+    const t = setTimeout(() => setSaveStatus('idle'), 4000);
+    return () => clearTimeout(t);
+  }, [saveStatus]);
   const generateProposal = useGenerateProposal(selectedPortfolioId ?? '');
   const proposalsQuery = useLisaProposals(selectedPortfolioId);
   const snapshotQuery = useLisaSnapshot(selectedPortfolioId);
@@ -208,35 +221,42 @@ export default function LisaPage() {
       return Number.isFinite(v) ? v : null;
     };
 
-    await upsertConfig.mutateAsync({
-      profile,
-      capital_usd: capital,
-      anti_consensus_strength: antiConsensus,
-      enable_crypto: enableCrypto,
-      autopilot_enabled: autopilotEnabled,
-      autopilot_cycle_minutes: autopilotCycleMin,
-      autopilot_auto_approve: autopilotAutoApprove,
-      autopilot_aggressive: autopilotAggressive,
-      autopilot_market_hours_only: autopilotMarketHoursOnly,
-      return_target_daily_pct: parseOrNull(returnTargetDaily),
-      return_target_monthly_pct: parseOrNull(returnTargetMonthly),
-      return_target_annual_pct: parseOrNull(returnTargetAnnual),
-      daily_cost_budget_usd: parseOrNull(dailyCostBudget),
-      // Pas d'expiration par défaut — l'utilisateur veut "no-touch" sans limite
-      // Utilise le timestamp figé calculé au moment de la saisie user
-      // (pas Date.now() courant qui aurait drift entre la saisie et le save).
-      autopilot_expires_at: (!autopilotAutoApprove || autopilotComputedExpiryMs === null)
-        ? null
-        : new Date(autopilotComputedExpiryMs).toISOString(),
-      risk_constraints: {
-        targetDeploymentPct,
-        maxPositionSizePct,
-        maxExposurePerAssetClassPct,
-        maxOpenPositions,
-        maxDrawdown2DaysPct,
-      },
-    });
-    setLocalConfigSaved(true);
+    try {
+      await upsertConfig.mutateAsync({
+        profile,
+        capital_usd: capital,
+        anti_consensus_strength: antiConsensus,
+        enable_crypto: enableCrypto,
+        autopilot_enabled: autopilotEnabled,
+        autopilot_cycle_minutes: autopilotCycleMin,
+        autopilot_auto_approve: autopilotAutoApprove,
+        autopilot_aggressive: autopilotAggressive,
+        autopilot_market_hours_only: autopilotMarketHoursOnly,
+        return_target_daily_pct: parseOrNull(returnTargetDaily),
+        return_target_monthly_pct: parseOrNull(returnTargetMonthly),
+        return_target_annual_pct: parseOrNull(returnTargetAnnual),
+        daily_cost_budget_usd: parseOrNull(dailyCostBudget),
+        // Pas d'expiration par défaut — l'utilisateur veut "no-touch" sans limite
+        // Utilise le timestamp figé calculé au moment de la saisie user
+        // (pas Date.now() courant qui aurait drift entre la saisie et le save).
+        autopilot_expires_at: (!autopilotAutoApprove || autopilotComputedExpiryMs === null)
+          ? null
+          : new Date(autopilotComputedExpiryMs).toISOString(),
+        risk_constraints: {
+          targetDeploymentPct,
+          maxPositionSizePct,
+          maxExposurePerAssetClassPct,
+          maxOpenPositions,
+          maxDrawdown2DaysPct,
+        },
+      });
+      setLocalConfigSaved(true);
+      setSaveStatus('success');
+      setSaveError(null);
+    } catch (err) {
+      setSaveStatus('error');
+      setSaveError(err instanceof Error ? err.message : 'Erreur réseau');
+    }
   }
 
   async function handleGenerate() {
@@ -749,9 +769,21 @@ export default function LisaPage() {
           </div>
         </div>
 
-        <Button size="sm" onClick={handleSaveConfig} disabled={upsertConfig.isPending}>
-          {upsertConfig.isPending ? 'Sauvegarde…' : 'Sauvegarder la config'}
-        </Button>
+        <div className="flex items-center gap-3 flex-wrap">
+          <Button size="sm" onClick={handleSaveConfig} disabled={upsertConfig.isPending}>
+            {upsertConfig.isPending ? 'Sauvegarde…' : 'Sauvegarder la config'}
+          </Button>
+          {saveStatus === 'success' && (
+            <span className="text-xs text-emerald-600 font-medium">
+              ✓ Configuration sauvegardée
+            </span>
+          )}
+          {saveStatus === 'error' && (
+            <span className="text-xs text-red-600 font-medium">
+              ✗ Échec de sauvegarde{saveError ? ` — ${saveError}` : ''}. Réessaie.
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Generate proposal card */}
