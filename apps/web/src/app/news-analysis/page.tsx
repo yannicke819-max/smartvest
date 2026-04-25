@@ -88,8 +88,13 @@ export default function NewsAnalysisPage() {
 
   // Auto-load when portfolio is set
   useEffect(() => {
-    if (portfolioId) load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!portfolioId) return;
+    setLoading(true);
+    setError(null);
+    apiFetch<NewsAnalysisResponse>(`/lisa/news-analysis/${portfolioId}`)
+      .then((res) => setData(res))
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setLoading(false));
   }, [portfolioId]);
 
   return (
