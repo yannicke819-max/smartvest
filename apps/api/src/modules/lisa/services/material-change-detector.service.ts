@@ -137,6 +137,13 @@ export class MaterialChangeDetectorService {
       }
     }
 
+    // Position fermée → cash libéré → réveil immédiat pour redéployer.
+    // On ne déclenche QUE sur baisse (close), pas sur hausse (open) : les
+    // ouvertures sont déjà gérées par les autres triggers (price/news/etc).
+    if (current.openPositionsCount < snapshot.openPositionsCount) {
+      reasons.push(`position(s) fermée(s) : ${snapshot.openPositionsCount} → ${current.openPositionsCount} (cash libéré, redéploiement disponible)`);
+    }
+
     // News fraîches haute pertinence
     if (current.freshHighScoreNews && current.freshHighScoreNews.length > 0) {
       // Vérifie si ces news étaient déjà connues du snapshot
@@ -218,6 +225,7 @@ export class MaterialChangeDetectorService {
       pricesHeld,
       fundingHeld,
       drawdownPct,
+      openPositionsCount: heldSymbols.length,
       topNewsHash,
       freshHighScoreNews,
       snapshotAt: new Date().toISOString(),
@@ -235,6 +243,10 @@ export interface MaterialSnapshot {
   pricesHeld: Record<string, number>;
   fundingHeld: Record<string, number>;
   drawdownPct: number | null;
+  /** Nombre de positions ouvertes au moment du snapshot. Une baisse entre
+   *  2 snapshots = une position s'est fermée → cash libéré → trigger event
+   *  pour que Lisa redéploie immédiatement, sans attendre safety_net 60min. */
+  openPositionsCount: number;
   topNewsHash: string;
   /** Présent à la capture courante, pas stocké dans lisa_proposals (texte
    *  trop volumineux et déjà capturé via news pipeline). */
