@@ -274,10 +274,13 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
     // Au lieu d'attendre l'intervalle cycle_minutes (20 min default), on
     // déclenche dès qu'un événement matériel est détecté, avec :
     //  - Rate limit min 3 min entre 2 cycles (anti-spam si VIX vacille)
-    //  - Filet de garantie 60 min (force un cycle même si calme, pour
-    //    refresh la mémoire / la trajectoire / les news cache)
+    //  - Filet de garantie 30 min (force un cycle même si calme, pour
+    //    refresh la mémoire / la trajectoire / les news cache).
+    //    Calibré 30 min plutôt que 60 : marché calme = opportunité
+    //    d'observation fine, pas excuse à la passivité. Coût ~$14/j vs $7/j
+    //    mais permet à Lisa de proposer 2x plus de setups asymétriques.
     const RATE_LIMIT_MIN = 3;
-    const SAFETY_NET_MIN = 60;
+    const SAFETY_NET_MIN = 30;
     let triggerReason = `bootstrap (premier cycle)`;
     let triggerKind: 'event' | 'safety_net' | 'bootstrap' = 'bootstrap';
 
