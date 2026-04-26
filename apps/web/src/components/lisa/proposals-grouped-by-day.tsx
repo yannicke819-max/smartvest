@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { Activity, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
+import { Activity, ChevronDown, ChevronUp, Trash2, ChevronsDown, ChevronsUp } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { SkeletonCard } from '@/components/ui/skeleton';
 import { LisaProposalCard } from '@/components/lisa/proposal-card';
@@ -62,6 +62,15 @@ export function LisaProposalsGroupedByDay({
     });
   };
 
+  const allExpanded = grouped.length > 0 && grouped.every((g) => expanded.has(g.key));
+  const toggleAll = () => {
+    if (allExpanded) {
+      setExpanded(new Set());
+    } else {
+      setExpanded(new Set(grouped.map((g) => g.key)));
+    }
+  };
+
   async function handlePurge() {
     if (!portfolioId) return;
     if (!confirm(
@@ -81,11 +90,24 @@ export function LisaProposalsGroupedByDay({
         <span className="text-xs text-muted-foreground">
           ({totalCount} au total · {grouped.length} jour{grouped.length > 1 ? 's' : ''})
         </span>
-        {totalCount > 5 && (
+        {grouped.length > 0 && (
           <Button
             variant="outline"
             size="sm"
             className="ml-auto"
+            onClick={toggleAll}
+            title={allExpanded ? 'Tout replier' : 'Tout déplier'}
+          >
+            {allExpanded
+              ? <><ChevronsUp className="mr-1.5 h-3.5 w-3.5" />Tout replier</>
+              : <><ChevronsDown className="mr-1.5 h-3.5 w-3.5" />Tout déplier</>}
+          </Button>
+        )}
+        {totalCount > 5 && (
+          <Button
+            variant="outline"
+            size="sm"
+            className={grouped.length > 0 ? '' : 'ml-auto'}
             onClick={handlePurge}
             disabled={purge.isPending}
           >
