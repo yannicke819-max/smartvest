@@ -959,9 +959,9 @@ export default function LisaPage() {
                   className="mt-0.5"
                 />
                 <div className="text-xs">
-                  <strong>Derivatives (info only)</strong>
+                  <strong>Derivatives (options long-only)</strong>
                   <p className="text-muted-foreground">
-                    Lisa reçoit IV ATM + put/call ratio dans son briefing. <em>Exécution options pas encore supportée.</em>
+                    Lisa reçoit IV ATM + put/call ratio dans son briefing. Si activé, peut proposer des <code>long_call</code> / <code>long_put</code> (30-45 DTE, ATM ou OTM léger) — exécutés en simulation via paper-broker. Pas de short naked.
                   </p>
                 </div>
               </label>
