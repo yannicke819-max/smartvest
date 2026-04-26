@@ -40,7 +40,10 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     // Supabase not configured — proceed without auth headers.
   }
 
-  const res = await fetch(`${API}${path}`, { ...init, headers });
+  // cache: 'no-store' force le navigateur à ne pas servir une réponse cachée.
+  // Sans ça, des GETs comme /lisa/snapshots peuvent renvoyer une vieille
+  // version cachée même si le SQL contient des données plus récentes.
+  const res = await fetch(`${API}${path}`, { ...init, headers, cache: 'no-store' });
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     throw new Error(body || `API error ${res.status}`);

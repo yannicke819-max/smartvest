@@ -11,7 +11,7 @@ import {
   CartesianGrid,
   ReferenceLine,
 } from 'recharts';
-import { LineChart as LineChartIcon } from 'lucide-react';
+import { LineChart as LineChartIcon, RefreshCw } from 'lucide-react';
 import { useLisaSnapshotHistory } from '@/hooks/use-lisa';
 import { SkeletonCard } from '@/components/ui/skeleton';
 
@@ -145,7 +145,17 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
           )}
         </div>
 
-        <div className="flex gap-1 rounded-md border p-0.5">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => historyQuery.refetch()}
+            disabled={historyQuery.isFetching}
+            className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
+            title="Forcer le rafraîchissement du graph"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${historyQuery.isFetching ? 'animate-spin' : ''}`} />
+          </button>
+          <div className="flex gap-1 rounded-md border p-0.5">
           {(Object.keys(WINDOW_DAYS) as TimeWindow[]).map((w) => (
             <button
               key={w}
@@ -159,6 +169,7 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
               {w.toUpperCase()}
             </button>
           ))}
+          </div>
         </div>
       </div>
 
