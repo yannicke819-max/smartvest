@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger, NotFoundException, Inject, forwardRef } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createHmac } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import Decimal from 'decimal.js';
 import {
   CorpusQueryService,
@@ -1572,6 +1572,36 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
   /** Public wrapper for the price warmer (autopilot cron). */
   async warmPrice(symbol: string): Promise<void> {
     await this.fetchLivePrice(symbol);
+  }
+
+  /**
+   * Persiste un snapshot live du portfolio dans lisa_portfolio_snapshots.
+   * Appelé par le cron lisa-portfolio-snapshot toutes les 5 min pour
+   * garantir que le graphique /lisa reste à jour même quand Lisa ne
+   * tourne pas (mode event-driven Phase 4 = cycles rares en regime calme).
+   *
+   * Utilise paperBroker.computeSnapshot() qui calcule la valeur live
+   * (cash + positions × prix live), donc le snapshot reflète exactement
+   * ce que l'UI top affiche en haut de page (Valeur totale, P&L latent).
+   */
+  async persistLivePortfolioSnapshot(portfolioId: string): Promise<void> {
+    const snap = await this.paperBroker.computeSnapshot(portfolioId);
+    const now = new Date().toISOString();
+    await this.supabase.getClient()
+      .from('lisa_portfolio_snapshots')
+      .insert({
+        id: randomUUID(),
+        portfolio_id: portfolioId,
+        timestamp: now,
+        cash_usd: snap.cashUsd,
+        open_positions_value_usd: snap.openPositionsValueUsd,
+        total_value_usd: snap.totalValueUsd,
+        realized_pnl_cumulative_usd: snap.realizedPnlCumulativeUsd ?? '0',
+        unrealized_pnl_usd: snap.unrealizedPnlUsd ?? '0',
+        return_from_inception_pct: snap.returnFromInceptionPct ?? 0,
+        open_positions_count: snap.openPositionsCount ?? 0,
+        drawdown_from_peak_pct: snap.drawdownFromPeakPct ?? 0,
+      });
   }
 
   /** Public price fetch — used by MechanicalTradingService (no Claude cost). */

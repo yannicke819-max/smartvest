@@ -436,6 +436,47 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
     }
   }
 
+  /**
+   * Cron snapshot portfolio toutes les 5 min, indépendamment de l'activité
+   * Lisa. Avant ce cron, les snapshots étaient créés UNIQUEMENT sur events
+   * (ouverture/fermeture position, fin de cycle Lisa). Avec Phase 4
+   * event-driven, si rien ne se passe pendant 30+ min, le graphique
+   * /lisa stagnait alors que la valeur live (calculée à chaque chargement)
+   * affichait des chiffres différents.
+   *
+   * Effet : graphique toujours à jour à <5 min de la valeur live.
+   * Coût : ~12 inserts/heure/portfolio (négligeable).
+   */
+  @Cron('0 */5 * * * *', { name: 'lisa-portfolio-snapshot', timeZone: 'UTC' })
+  async runPortfolioSnapshotter() {
+    const locked = await this.acquireCronLock('portfolio_snapshotter', 280);
+    if (!locked) return;
+    try {
+      await this.runPortfolioSnapshotterInner();
+    } finally {
+      await this.releaseCronLock('portfolio_snapshotter');
+    }
+  }
+
+  private async runPortfolioSnapshotterInner() {
+    const { data: configs } = await this.supabase.getClient()
+      .from('lisa_session_configs')
+      .select('portfolio_id')
+      .eq('autopilot_enabled', true);
+
+    if (!configs || configs.length === 0) return;
+
+    for (const cfg of configs) {
+      const portfolioId = cfg.portfolio_id as string;
+      try {
+        // Persiste un snapshot live via Lisa (calcul cohérent avec UI top)
+        await this.lisa.persistLivePortfolioSnapshot(portfolioId);
+      } catch (e) {
+        this.logger.debug(`snapshot failed for ${portfolioId}: ${String(e).slice(0, 80)}`);
+      }
+    }
+  }
+
   private async runFastRiskMonitorInner() {
     const { data: configs, error } = await this.supabase.getClient()
       .from('lisa_session_configs')
