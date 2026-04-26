@@ -658,23 +658,26 @@ export default function LisaPage() {
                 }
               }}
             />
-            Autopilot (génération automatique toutes les N minutes)
+            Autopilot (mode event-driven + filet de garantie)
           </label>
           {autopilotEnabled && (
             <div className="pl-6 space-y-2">
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <span>Fréquence :</span>
+                <span>Filet de garantie :</span>
                 <input
                   type="number"
-                  min="1"
-                  max="1440"
+                  min="5"
+                  max="60"
                   value={autopilotCycleMin}
                   onChange={(e) => setAutopilotCycleMin(parseInt(e.target.value, 10))}
                   className="h-7 w-20 rounded-md border bg-background px-2 text-xs"
                 />
                 <span>minutes</span>
-                <span className="text-[10px] italic">· min 1 min (mode sniper)</span>
+                <span className="text-[10px] italic">· clamp 5-60 · default 30</span>
               </div>
+              <p className="pl-0 text-[11px] text-muted-foreground italic">
+                Lisa déclenche dès qu'un event matériel est détecté (VIX/DXY shift, prix tenu ±0.5%, funding crypto, news catalyst, drawdown). Ce filet force un cycle SI rien d'autre ne s'est déclenché pendant ce délai. 5 = très réactif (cher en API), 60 = passif.
+              </p>
 
               <label className="flex items-start gap-2 text-xs">
                 <input

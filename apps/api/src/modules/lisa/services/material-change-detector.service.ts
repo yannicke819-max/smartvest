@@ -32,13 +32,17 @@ import { NewsRankerService } from './news-ranker.service';
 export class MaterialChangeDetectorService {
   private readonly logger = new Logger(MaterialChangeDetectorService.name);
 
-  // Seuils de déclenchement (calibrés conservateur — peuvent être ajustés)
-  private static readonly VIX_DELTA_THRESHOLD = 0.5;
-  private static readonly PRICE_DELTA_PCT = 0.5;
-  private static readonly FUNDING_DELTA_PCT = 0.3;
-  private static readonly DRAWDOWN_DELTA_PT = 0.5;
-  private static readonly NEWS_FRESH_MIN_SCORE = 75;
-  private static readonly NEWS_FRESH_MAX_AGE_MIN = 5;
+  // Seuils de déclenchement event-driven (calibrés hyper-trading anticipatif).
+  // Recalibrés 26/04 après retex : seuils trop élevés laissaient Lisa passive
+  // pendant des heures (mode event-driven castré sur portefeuilles vides).
+  // Trade-off : sensibilité ↑ vs bruit ↑ — la persona Lisa filtre le bruit.
+  private static readonly VIX_DELTA_THRESHOLD = 0.3;        // était 0.5 — VIX 18.5 → 1.6% du niveau
+  private static readonly DXY_DELTA_PCT = 0.3;              // (anciennement hardcodé en const)
+  private static readonly PRICE_DELTA_PCT = 0.5;            // OK : 0.5% évite le bruit intraday
+  private static readonly FUNDING_DELTA_PCT = 0.2;          // était 0.3 — capte les shifts crypto plus tôt
+  private static readonly DRAWDOWN_DELTA_PT = 0.5;          // OK : sur $10k = $50 réaction
+  private static readonly NEWS_FRESH_MIN_SCORE = 60;        // était 75 — capte la convergence cross-source
+  private static readonly NEWS_FRESH_MAX_AGE_MIN = 15;      // était 5 — la plupart des news arrivent à 10-30 min
 
   constructor(
     private readonly supabase: SupabaseService,
@@ -99,7 +103,7 @@ export class MaterialChangeDetectorService {
     // DXY
     if (current.dxy != null && snapshot.dxy != null) {
       const deltaPct = Math.abs((current.dxy - snapshot.dxy) / snapshot.dxy) * 100;
-      if (deltaPct >= 0.3) {
+      if (deltaPct >= MaterialChangeDetectorService.DXY_DELTA_PCT) {
         reasons.push(`DXY ${snapshot.dxy.toFixed(1)} → ${current.dxy.toFixed(1)} (Δ${deltaPct.toFixed(2)}%)`);
       }
     }
