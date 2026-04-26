@@ -268,6 +268,11 @@ export class MechanicalTradingService {
         if (!pos) continue;
         const quote = await this.lisa.getLivePrice(pos.symbol).catch(() => null);
         if (!quote) continue;
+        // 🛡️ Garde-fou prix fallback (cf. checkStopTarget pour rationale)
+        if (this.isFallbackSource(quote.source)) {
+          this.logger.warn(`[FALLBACK_GUARD] close_invalidated ${pos.symbol} skip — source=${quote.source}`);
+          continue;
+        }
         await this.closePosition(pos.id, quote.price, 'closed_invalidated',
           `[MÉCANIQUE] Lisa: ${cond.reason}`);
       }
@@ -425,6 +430,10 @@ export class MechanicalTradingService {
         })[0];
         const quote = await this.lisa.getLivePrice(weakest.symbol).catch(() => null);
         if (!quote) continue;
+        if (this.isFallbackSource(quote.source)) {
+          this.logger.warn(`[FALLBACK_GUARD] close_class_cap ${weakest.symbol} skip — source=${quote.source}`);
+          continue;
+        }
 
         const weakestNotional = readNotionalPos(weakest);
         await this.closePosition(
@@ -473,13 +482,15 @@ export class MechanicalTradingService {
         })[0];
         if (weakest) {
           const quote = await this.lisa.getLivePrice(weakest.symbol).catch(() => null);
-          if (quote) {
+          if (quote && !this.isFallbackSource(quote.source)) {
             await this.closePosition(
               weakest.id,
               quote.price,
               'closed_invalidated',
               `[MÉCANIQUE] Override Lisa: exposition ${exposurePct.toFixed(1)}% > seuil ${overrides.closeLowestConvictionIfExposureAbovePct}% — fermeture plus basse conviction`,
             );
+          } else if (quote) {
+            this.logger.warn(`[FALLBACK_GUARD] override_close ${weakest.symbol} skip — source=${quote.source}`);
           }
         }
       }
@@ -691,6 +702,12 @@ export class MechanicalTradingService {
       // Prix live
       const quote = await this.lisa.getLivePrice(target.symbol).catch(() => null);
       if (!quote || Number(quote.price) <= 0) continue;
+      // 🛡️ Garde-fou : ne JAMAIS ouvrir une position à un prix fallback
+      // (cf. incident 26/04 — LMT ouvert à $513 vrai puis liquidé à fallback $100).
+      if (this.isFallbackSource(quote.source)) {
+        this.logger.warn(`[FALLBACK_GUARD] open_target ${target.symbol} skip — source=${quote.source}`);
+        continue;
+      }
 
       const price = new Decimal(quote.price);
 
@@ -974,6 +991,9 @@ export class MechanicalTradingService {
         openPositions.map(async (p) => {
           const quote = await this.lisa.getLivePrice(p.symbol).catch(() => null);
           if (!quote) return null;
+          // 🛡️ Garde-fou : ignorer les fallback dans le calcul du worst P&L,
+          // sinon on tag la position comme catastrophique sur prix factice.
+          if (this.isFallbackSource(quote.source)) return null;
           const entry = Number(p.entryPrice);
           const current = Number(quote.price);
           if (!Number.isFinite(entry) || entry <= 0 || !Number.isFinite(current)) return null;
@@ -1223,6 +1243,10 @@ export class MechanicalTradingService {
 
       const quote = await this.lisa.getLivePrice(weakest.symbol).catch(() => null);
       if (!quote) return 'ok';
+      if (this.isFallbackSource(quote.source)) {
+        this.logger.warn(`[FALLBACK_GUARD] close-weakest ${weakest.symbol} skip — source=${quote.source}`);
+        return 'ok';
+      }
 
       this.logger.warn(
         `[P4.1] ${portfolioId.slice(0, 8)} close-weakest ${weakest.symbol}: dd=${drawdownPct.toFixed(2)}% > ${weakestDD.toFixed(2)}%`,
@@ -1266,6 +1290,20 @@ export class MechanicalTradingService {
     const quote = await this.lisa.getLivePrice(pos.symbol).catch(() => null);
     if (!quote) return;
 
+    // 🛡️ GARDE-FOU CRITIQUE — bug du 26/04 (perte $2627 sur prix fallback) :
+    // Si EODHD timeout/échoue ET pas de quote en cache Supabase, fetchLivePrice
+    // retourne un fallback hardcoded primitif (LMT=100, GLD=310, SLV=31, ...).
+    // Ces fallbacks NE DOIVENT JAMAIS déclencher un stop/target — sinon une
+    // position légitime à $513 (LMT) est instantanément liquidée à $100 = -80%.
+    // On skip ce cycle pour cette position ; au prochain tick (60s), si EODHD
+    // est revenu, on reprend normalement.
+    if (this.isFallbackSource(quote.source)) {
+      this.logger.warn(
+        `[FALLBACK_GUARD] ${pos.symbol}: source=${quote.source} price=${quote.price} — skip stop/target check (prix non fiable, cycle suivant)`,
+      );
+      return;
+    }
+
     const currentPrice = new Decimal(quote.price);
     const stopPrice = pos.stopLossPrice ? new Decimal(pos.stopLossPrice) : null;
     const tpPrice = pos.takeProfitPrice ? new Decimal(pos.takeProfitPrice) : null;
@@ -1288,6 +1326,17 @@ export class MechanicalTradingService {
     // AUCUN stop/target atteint → checker les signaux réactifs (indicateurs
     // techniques) pour potentiellement clôturer plus tôt OU trailer le stop.
     await this.checkReactiveSignals(pos, currentPrice, isHyperActive);
+  }
+
+  /**
+   * Détecte si une quote a été retournée via le fallback hardcoded
+   * (au lieu d'une vraie source live). Toute source commençant par "fallback"
+   * doit être traitée comme NON FIABLE — on skip les actions destructives.
+   * Cf. checkStopTarget pour le rationale (incident 26/04).
+   */
+  private isFallbackSource(source: string | undefined): boolean {
+    if (!source) return true; // pas de source = suspect
+    return source.startsWith('fallback');
   }
 
   /**

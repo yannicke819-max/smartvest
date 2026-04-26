@@ -161,22 +161,37 @@ export class MaterialChangeDetectorService {
     };
   }
 
-  /** Capture les inputs marché actuels (utilisé comme baseline future). */
+  /** Capture les inputs marché actuels (utilisé comme baseline future).
+   *
+   * 🛡️ Garde-fou critique (incident 26/04, perte $2627) : on n'inclut PAS
+   * les prix issus du fallback hardcoded (LMT=100, GLD=310, SLV=31...) dans
+   * le snapshot. Sinon le delta entre snapshot N (vrai prix) et snapshot N+1
+   * (fallback) génère un faux event "GLD -28%" qui réveille Lisa et propage
+   * la corruption. On ignore silencieusement les fallback ; le snapshot
+   * suivant aura cette case absente, le détecteur skippe le delta proprement.
+   */
   async captureCurrentInputs(
     portfolioId: string,
     heldSymbols: string[],
   ): Promise<MaterialSnapshot> {
-    // VIX + DXY
+    const isFallback = (src: string | undefined): boolean =>
+      !src || src.startsWith('fallback');
+
+    // VIX + DXY (on ignore les fallback)
     const [vixQuote, dxyQuote] = await Promise.all([
       this.lisa.getLivePrice('VIX').catch(() => null),
       this.lisa.getLivePrice('DXY').catch(() => null),
     ]);
+    const vixReliable = vixQuote && !isFallback(vixQuote.source) ? vixQuote : null;
+    const dxyReliable = dxyQuote && !isFallback(dxyQuote.source) ? dxyQuote : null;
 
-    // Prix de chaque position tenue
+    // Prix de chaque position tenue — ignorer les fallback pour ne pas
+    // injecter des prix factices dans le snapshot baseline.
     const pricesHeld: Record<string, number> = {};
     await Promise.all(heldSymbols.map(async (sym) => {
       const q = await this.lisa.getLivePrice(sym).catch(() => null);
-      if (q) pricesHeld[sym] = Number(q.price);
+      if (q && !isFallback(q.source)) pricesHeld[sym] = Number(q.price);
+      else if (q) this.logger.warn(`[FALLBACK_GUARD] snapshot ${sym} ignoré — source=${q.source}`);
     }));
 
     // Funding rates pour positions crypto
@@ -220,8 +235,8 @@ export class MaterialChangeDetectorService {
     }
 
     return {
-      vix: vixQuote ? Number(vixQuote.price) : null,
-      dxy: dxyQuote ? Number(dxyQuote.price) : null,
+      vix: vixReliable ? Number(vixReliable.price) : null,
+      dxy: dxyReliable ? Number(dxyReliable.price) : null,
       pricesHeld,
       fundingHeld,
       drawdownPct,
