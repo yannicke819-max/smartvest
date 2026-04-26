@@ -43,15 +43,10 @@ const SIZING_METHOD_ENUM = [
   'fixed_notional', 'pct_portfolio', 'kelly_fraction', 'risk_parity', 'vol_targeting',
 ] as const;
 
-const METRIC_TYPE_ENUM = [
-  'price', 'yield', 'spread', 'vix', 'dxy', 'ratio', 'event', 'time',
-  // Technique (Lisa générait régulièrement ces types et le schema rejetait)
-  'rsi', 'macd', 'volume', 'level',
-  // Flow & positioning
-  'funding_rate', 'open_interest', 'sentiment_score',
-  // Catch-all pour cas exotiques (description obligatoire)
-  'other',
-] as const;
+// metricType passé en string libre (cf. proposal-tool-schema l.111 + types/index.ts)
+// après observation de rejets répétés sur valeurs sémantiquement valides mais
+// non listées (ex. funding_pct, oi_change, support, breakout, momentum...).
+// L'enum strict gaspillait des cycles Lisa. Validation custom dans description.
 const THRESHOLD_DIRECTION_ENUM = ['above', 'below', 'cross', 'occurs'] as const;
 const DRIVER_TYPE_ENUM = [
   'fundamentals_cashflow', 'fundamentals_spreads', 'flows_positioning',
@@ -116,7 +111,7 @@ const thesisSchema = {
             type: 'object',
             properties: {
               description: { type: 'string' },
-              metricType: { type: 'string', enum: METRIC_TYPE_ENUM },
+              metricType: { type: 'string', maxLength: 50, description: 'Métrique surveillée pour invalidation. Valeurs courantes : price, yield, spread, vix, dxy, rsi, macd, volume, level, funding_rate, open_interest, sentiment_score, support, resistance, breakout. Lisa peut utiliser une métrique custom si justifiée par description.' },
               thresholdValue: { type: ['string', 'null'] },
               thresholdDirection: { type: ['string', 'null'], enum: [...THRESHOLD_DIRECTION_ENUM, null] },
             },
