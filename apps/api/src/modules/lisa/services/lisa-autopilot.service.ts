@@ -192,8 +192,16 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
    * d'exécuter le même runPortfolioCycle en parallèle (race condition
    * observée : 3 propositions générées en 71 sec parce que 3 ticks lisaient
    * le même lastCycle stale).
+   *
+   * Garde-fou anti-hang (incident 26/04 7:45 → 8:28) : si un cycle pend
+   * (await DB / fetch / Anthropic indéfiniment), le finally { delete }
+   * n'est jamais atteint, le portfolioId reste dans le Set, tous les
+   * ticks suivants skip silencieusement. cycleStartedAt enregistre le
+   * timestamp pour permettre une force-release après MUTEX_MAX_AGE_MS.
    */
   private readonly runningCycles = new Set<string>();
+  private readonly cycleStartedAt = new Map<string, number>();
+  private static readonly MUTEX_MAX_AGE_MS = 5 * 60_000; // 5 min
 
   private async runPortfolioCycle(
     userId: string,
@@ -203,13 +211,27 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
   ): Promise<void> {
     // Mutex in-memory : skip si un cycle est déjà en cours pour ce portfolio
     if (this.runningCycles.has(portfolioId)) {
-      return;
+      const startedAt = this.cycleStartedAt.get(portfolioId) ?? 0;
+      const ageMs = Date.now() - startedAt;
+      if (ageMs > LisaAutopilotService.MUTEX_MAX_AGE_MS) {
+        // Cycle hangs depuis > 5 min → force release pour débloquer
+        this.logger.warn(
+          `[mutex] portfolio ${portfolioId.slice(0, 8)} stuck since ${Math.round(ageMs / 60_000)}min — force release`,
+        );
+        this.runningCycles.delete(portfolioId);
+        this.cycleStartedAt.delete(portfolioId);
+        // Ne pas return : on continue avec un mutex propre pour ce tick
+      } else {
+        return; // Mutex récent, skip normal
+      }
     }
     this.runningCycles.add(portfolioId);
+    this.cycleStartedAt.set(portfolioId, Date.now());
     try {
       await this.runPortfolioCycleInner(userId, portfolioId, cycleMinutes, autoApprove);
     } finally {
       this.runningCycles.delete(portfolioId);
+      this.cycleStartedAt.delete(portfolioId);
     }
   }
 
