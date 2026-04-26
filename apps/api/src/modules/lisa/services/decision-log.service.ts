@@ -42,10 +42,51 @@ export class DecisionLogService {
   constructor(private readonly supabase: SupabaseService) {}
 
   /**
+   * Mutex applicatif par portfolioId. Sérialise les append() concurrents
+   * pour empêcher la race condition SELECT prev_hash → INSERT (où 2 crons
+   * concurrents lisaient le même prev_hash et insertaient des lignes en
+   * conflit, cassant le hash chain).
+   *
+   * Causes historiques de corruption :
+   *  - runAutopilotCycle (every minute) + runFastRiskMonitor (every minute)
+   *    + runMechanicalCycle (every minute) tournent en parallèle.
+   *  - chacun appelle append() sur le même portfolio, race sur prev_hash.
+   *
+   * Limitations : fonctionne uniquement single-instance Fly. Si scaling
+   * horizontal multi-machine → migrer vers advisory locks Postgres.
+   */
+  private readonly portfolioQueues = new Map<string, Promise<unknown>>();
+
+  /**
    * Append une entrée au decision log avec hash chaîné.
-   * Retourne le hash_chain_current calculé.
+   * Sérialisé par portfolioId via mutex applicatif.
    */
   async append(entry: {
+    portfolioId: string;
+    kind: string;
+    summary: string;
+    rationale: string;
+    payload: Record<string, unknown>;
+    triggeredBy: 'user_manual' | 'autopilot_cron' | 'risk_monitor' | 'corpus_trigger' | 'market_event' | 'mechanical_cron';
+  }): Promise<{ id: string; hashChainCurrent: string; hashChainPrev: string | null }> {
+    // Enchaîne sur la queue du portfolio (initialisée à Promise.resolve si vide)
+    const queueHead = this.portfolioQueues.get(entry.portfolioId) ?? Promise.resolve();
+    const result = queueHead
+      .catch(() => null) // si l'append précédent a échoué, on continue quand même
+      .then(() => this.appendInternal(entry));
+    // Stocke la nouvelle queue head (catch pour ne pas bloquer en cas d'échec)
+    this.portfolioQueues.set(
+      entry.portfolioId,
+      result.catch(() => null),
+    );
+    return result;
+  }
+
+  /**
+   * Implémentation interne (sans mutex) — appelée uniquement via append()
+   * qui garantit la sérialisation par portfolioId.
+   */
+  private async appendInternal(entry: {
     portfolioId: string;
     kind: string;
     summary: string;

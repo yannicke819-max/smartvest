@@ -43,7 +43,15 @@ const SIZING_METHOD_ENUM = [
   'fixed_notional', 'pct_portfolio', 'kelly_fraction', 'risk_parity', 'vol_targeting',
 ] as const;
 
-const METRIC_TYPE_ENUM = ['price', 'yield', 'spread', 'vix', 'ratio', 'event', 'time'] as const;
+const METRIC_TYPE_ENUM = [
+  'price', 'yield', 'spread', 'vix', 'dxy', 'ratio', 'event', 'time',
+  // Technique (Lisa générait régulièrement ces types et le schema rejetait)
+  'rsi', 'macd', 'volume', 'level',
+  // Flow & positioning
+  'funding_rate', 'open_interest', 'sentiment_score',
+  // Catch-all pour cas exotiques (description obligatoire)
+  'other',
+] as const;
 const THRESHOLD_DIRECTION_ENUM = ['above', 'below', 'cross', 'occurs'] as const;
 const DRIVER_TYPE_ENUM = [
   'fundamentals_cashflow', 'fundamentals_spreads', 'flows_positioning',

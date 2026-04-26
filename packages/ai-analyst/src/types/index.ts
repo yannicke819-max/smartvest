@@ -116,7 +116,11 @@ export const ThesisInvalidation = z.object({
   /** Conditions quantifiées qui rendent la thèse caduque */
   conditions: z.array(z.object({
     description: z.string(),
-    metricType: z.enum(['price', 'yield', 'spread', 'vix', 'ratio', 'event', 'time']),
+    metricType: z.enum([
+      'price', 'yield', 'spread', 'vix', 'dxy', 'ratio', 'event', 'time',
+      'rsi', 'macd', 'volume', 'level',
+      'funding_rate', 'open_interest', 'sentiment_score', 'other',
+    ]),
     thresholdValue: z.string().nullable(),
     thresholdDirection: z.enum(['above', 'below', 'cross', 'occurs']).nullable(),
   })),

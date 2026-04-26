@@ -1064,7 +1064,18 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     // on ferme la weakest et on ouvre la nouvelle (rotation tactique).
     // Sans ça, les meilleures opportunités étaient simplement ignorées
     // une fois le cap saturé.
-    const SWAP_MIN_GAP = 1.5; // sur échelle 0-10
+    // SWAP gap dynamique adaptatif (sur échelle conviction 0-10) :
+    // - Position weakest en perte : gap = 1.0 (réactif, on coupe vite les losers)
+    // - Position weakest breakeven : gap = 1.0
+    // - Position weakest en gain : gap = 1.0 + min(2.0, weakestPnlPct/2)
+    //   → un winner +5% demande gap +3.5 pour être swap (don't fix what works)
+    //   → un winner +1% demande gap +1.5 (modeste protection)
+    // Effet : autoriser rotation tactique sur les losers, protéger les winners.
+    const computeSwapGap = (weakestPnlPct: number | null): number => {
+      const pnl = weakestPnlPct ?? 0;
+      if (pnl <= 0) return 1.0; // perte ou breakeven : facile à swap
+      return Math.min(3.5, 1.0 + pnl / 2); // gain : protège proportionnel
+    };
     const { data: openSwapCandidates } = await this.supabase.getClient()
       .from('lisa_positions')
       .select('id, symbol, conviction_score, unrealized_pnl_pct, entry_price')
@@ -1096,20 +1107,31 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         continue;
       }
 
-      // Cap atteint : tenter swap (close weakest if newConviction ≥ weakest + 1.5)
+      // Cap atteint : tenter swap avec gap dynamique fonction PnL weakest
       if (currentOpenCount + openedSoFar - swappedIds.size >= maxOpenPositions) {
-        const swapTarget = (openSwapCandidates ?? [])
-          .filter((p) => !swappedIds.has(String(p.id))
-                      && String(p.symbol) !== newSymbol)
-          .find((p) => {
-            const existingConv = Number((p.conviction_score as number | null) ?? 5);
-            return newConviction >= existingConv + SWAP_MIN_GAP;
-          });
+        type SwapCandidate = (NonNullable<typeof openSwapCandidates>)[number];
+        let swapTarget: SwapCandidate | null = null;
+        let actualGap = 0;
+        let usedThreshold = 0;
+        for (const p of openSwapCandidates ?? []) {
+          if (swappedIds.has(String(p.id))) continue;
+          if (String(p.symbol) === newSymbol) continue;
+          const existingConv = Number((p.conviction_score as number | null) ?? 5);
+          const weakestPnl = (p.unrealized_pnl_pct as number | null) ?? null;
+          const dynamicGap = computeSwapGap(weakestPnl);
+          const gap = newConviction - existingConv;
+          if (gap >= dynamicGap) {
+            swapTarget = p;
+            actualGap = gap;
+            usedThreshold = dynamicGap;
+            break;
+          }
+        }
         if (!swapTarget) {
           await this.logDecision(portfolioId, 'proposal_capped_by_max_positions', {
             summary: `Cap maxOpenPositions atteint (${currentOpenCount + openedSoFar - swappedIds.size}/${maxOpenPositions}) — pas de swap candidate (gap conviction insuffisant)`,
-            rationale: `Garde-fou cap atteint. Tentative swap : nouvelle thèse ${newSymbol} conviction ${newConviction.toFixed(1)} ; aucune position existante avec conviction inférieure d'au moins ${SWAP_MIN_GAP} pts. Pour autoriser plus de positions concurrentes, augmenter Max positions ouvertes dans /lisa.`,
-            payload: { currentOpenCount, openedSoFar, maxOpenPositions, newSymbol, newConviction, swapMinGap: SWAP_MIN_GAP },
+            rationale: `Garde-fou cap atteint. Tentative swap : nouvelle thèse ${newSymbol} conviction ${newConviction.toFixed(1)} ; aucune position existante avec conviction inférieure ET gap suffisant (gap dynamique = 1.0 si position en perte, jusqu'à 3.5 si winner). Pour autoriser plus de positions concurrentes, augmenter Max positions ouvertes dans /lisa.`,
+            payload: { currentOpenCount, openedSoFar, maxOpenPositions, newSymbol, newConviction },
             triggeredBy: 'user_manual',
           });
           break;
@@ -1126,17 +1148,20 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
           swappedIds.add(String(swapTarget.id));
           // Position fermée : son symbole peut être réouvert ce cycle
           openSymbolsSet.delete(String(swapTarget.symbol).toUpperCase());
+          const closedPnl = (swapTarget.unrealized_pnl_pct as number | null) ?? null;
           await this.logDecision(portfolioId, 'position_swapped_for_better_thesis', {
-            summary: `SWAP : ${swapTarget.symbol} fermée → ${newSymbol} (conviction ${newConviction.toFixed(1)} > ${Number(swapTarget.conviction_score ?? 5).toFixed(1)})`,
-            rationale: `Rotation tactique : nouvelle thèse ${newSymbol} a conviction ${newConviction.toFixed(1)} pts vs position existante ${swapTarget.symbol} à ${Number(swapTarget.conviction_score ?? 5).toFixed(1)} pts (gap ${(newConviction - Number(swapTarget.conviction_score ?? 5)).toFixed(1)} ≥ seuil ${SWAP_MIN_GAP}). Position fermée, nouvelle ouverture en cours.`,
+            summary: `SWAP : ${swapTarget.symbol} fermée → ${newSymbol} (gap ${actualGap.toFixed(1)} ≥ seuil dynamique ${usedThreshold.toFixed(1)})`,
+            rationale: `Rotation tactique adaptative : nouvelle thèse ${newSymbol} conviction ${newConviction.toFixed(1)} vs ${swapTarget.symbol} conviction ${Number(swapTarget.conviction_score ?? 5).toFixed(1)} (PnL ${closedPnl !== null ? closedPnl.toFixed(2) + '%' : '?'}). Seuil dynamique calculé = ${usedThreshold.toFixed(1)} pts (1.0 si position en perte, jusqu'à 3.5 si gain pour protéger les winners).`,
             payload: {
               closedSymbol: swapTarget.symbol,
               closedPositionId: swapTarget.id,
               closedConviction: Number(swapTarget.conviction_score ?? 5),
+              closedPnlPct: closedPnl,
               newSymbol,
               newThesisId: alloc.thesisId,
               newConviction,
-              gap: newConviction - Number(swapTarget.conviction_score ?? 5),
+              gap: actualGap,
+              dynamicThreshold: usedThreshold,
             },
             triggeredBy: 'user_manual',
           });
