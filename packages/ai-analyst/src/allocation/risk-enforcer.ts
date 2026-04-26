@@ -32,9 +32,21 @@ export interface RiskEnforcementResult {
 export class RiskEnforcer {
   /**
    * Valide une proposition contre les contraintes.
+  /**
+   * Vérifie + ajuste une proposition.
    * Retourne la proposition inchangée si conforme, ajustée ou null sinon.
+   *
+   * @param proposal Proposition à vérifier
+   * @param existingExposureByAssetClassPct Optionnel — exposition agrégée
+   *   des positions déjà tenues par classe d'actifs. Permet au check
+   *   ASSET_CLASS_CONCENTRATION de prendre en compte le portefeuille
+   *   existant + les nouvelles allocations (incident 26/04 : précieux à
+   *   40% sur 2 ouvertures successives chacune <28% mais agrégat ignoré).
    */
-  enforce(proposal: AllocationProposal): RiskEnforcementResult {
+  enforce(
+    proposal: AllocationProposal,
+    existingExposureByAssetClassPct?: Record<string, number>,
+  ): RiskEnforcementResult {
     const violations: RiskEnforcementResult['violations'] = [];
     const constraints = proposal.constraints;
 
@@ -83,13 +95,27 @@ export class RiskEnforcer {
     }
 
     // 5. Exposition par classe d'actifs <= maxExposurePerAssetClassPct
-    const exposureByAssetClass = this.aggregateByAssetClass(proposal);
+    // Agrégat = positions déjà tenues + nouvelles allocations du cycle.
+    // Sans agrégat existant, on ne voit que les nouvelles allocations
+    // → cycle 1 ouvre GDX 22%, cycle 2 ouvre SLV 18%, ni l'un ni l'autre
+    // ne dépasse 28% individuellement mais cumul = 40% → bug 26/04.
+    const newAllocByClass = this.aggregateByAssetClass(proposal);
+    const exposureByAssetClass: Record<string, number> = { ...newAllocByClass };
+    if (existingExposureByAssetClassPct) {
+      for (const [cls, pct] of Object.entries(existingExposureByAssetClassPct)) {
+        exposureByAssetClass[cls] = (exposureByAssetClass[cls] ?? 0) + pct;
+      }
+    }
     for (const [assetClass, pct] of Object.entries(exposureByAssetClass)) {
       if (pct > constraints.maxExposurePerAssetClassPct) {
+        const existingPct = existingExposureByAssetClassPct?.[assetClass] ?? 0;
+        const newPct = newAllocByClass[assetClass] ?? 0;
         violations.push({
           code: 'ASSET_CLASS_CONCENTRATION',
           severity: 'error',
-          message: `${assetClass} total ${pct.toFixed(1)}% exceeds max ${constraints.maxExposurePerAssetClassPct}%`,
+          message: existingPct > 0
+            ? `${assetClass} total ${pct.toFixed(1)}% (tenu ${existingPct.toFixed(1)}% + nouveau ${newPct.toFixed(1)}%) exceeds max ${constraints.maxExposurePerAssetClassPct}%`
+            : `${assetClass} total ${pct.toFixed(1)}% exceeds max ${constraints.maxExposurePerAssetClassPct}%`,
         });
       }
     }

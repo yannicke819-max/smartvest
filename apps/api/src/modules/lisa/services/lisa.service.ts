@@ -689,7 +689,20 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     }
 
     // Enforce risk constraints (structural safety net)
-    const enforcement = this.riskEnforcer.enforce(result.proposal);
+    // Calcule l'exposition AGRÉGÉE par classe des positions DÉJÀ TENUES
+    // pour que le check ASSET_CLASS_CONCENTRATION prenne en compte
+    // l'existant + les nouvelles allocations (fix 26/04 : précieux à 40%
+    // sur 2 ouvertures successives chacune <28% mais cumul ignoré).
+    const existingExposureByAssetClassPct: Record<string, number> = {};
+    const capitalNum = Number(sessionConfig.capitalUsd) || 10000;
+    for (const pos of openPositionsRaw) {
+      const cls = String((pos as unknown as Record<string, unknown>)['asset_class'] ?? pos.assetClass ?? '').toLowerCase();
+      if (!cls) continue;
+      const notional = Number((pos as unknown as Record<string, unknown>)['entry_notional_usd'] ?? pos.entryNotionalUsd ?? 0);
+      const pct = capitalNum > 0 ? (notional / capitalNum) * 100 : 0;
+      existingExposureByAssetClassPct[cls] = (existingExposureByAssetClassPct[cls] ?? 0) + pct;
+    }
+    const enforcement = this.riskEnforcer.enforce(result.proposal, existingExposureByAssetClassPct);
     const finalProposal = enforcement.adjustedProposal ?? result.proposal;
 
     if (!enforcement.adjustedProposal) {

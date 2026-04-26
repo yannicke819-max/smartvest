@@ -40,7 +40,7 @@ export class MaterialChangeDetectorService {
   private static readonly DXY_DELTA_PCT = 0.3;              // (anciennement hardcodé en const)
   private static readonly PRICE_DELTA_PCT = 0.5;            // OK : 0.5% évite le bruit intraday
   private static readonly REFERENCE_DELTA_PCT = 0.6;        // PHASE 2 — bouge ref ETF/crypto, capte sans positions
-  private static readonly FUNDING_DELTA_PCT = 0.2;          // était 0.3 — capte les shifts crypto plus tôt
+  private static readonly FUNDING_DELTA_PCT = 0.4;          // 0.2→0.4 (26/04 soir) : ETH funding bouge en cascade -3.1→-5.4 sur 30min, chaque tick de 0.3 trigger un cycle ($0.30 chacun). 0.4 réduit cadence sans perdre signal majeur
   private static readonly DRAWDOWN_DELTA_PT = 0.5;          // OK : sur $10k = $50 réaction
   private static readonly NEWS_FRESH_MIN_SCORE = 60;        // était 75 — capte la convergence cross-source
   private static readonly NEWS_FRESH_MAX_AGE_MIN = 15;      // était 5 — la plupart des news arrivent à 10-30 min

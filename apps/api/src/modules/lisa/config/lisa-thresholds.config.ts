@@ -124,7 +124,7 @@ export const LISA_THRESHOLDS_HYPER: LisaThresholds = {
   dxyDeltaPct: 0.3,
   priceDeltaPct: 0.5,
   referenceDeltaPct: 0.6,
-  fundingDeltaPct: 0.2,
+  fundingDeltaPct: 0.4,  // 0.2→0.4 (26/04 soir) : evite cascade ETH funding triggers
   drawdownDeltaPt: 0.5,
   newsFreshMinScore: 60,
   newsFreshMaxAgeMin: 15,
