@@ -1163,9 +1163,9 @@ export default function LisaPage() {
         isLoading={proposalsQuery.isLoading}
       />
 
-      {/* Phase 4 — Dernier trigger event-driven */}
+      {/* Phase 4 — Dernier trigger event-driven + décompte safety_net */}
       {config?.last_event_trigger_reason && (
-        <div className="rounded-md border bg-blue-50 dark:bg-blue-950/20 px-3 py-2 text-sm">
+        <div className="rounded-md border bg-blue-50 dark:bg-blue-950/20 px-3 py-2 text-sm space-y-1">
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <span className="text-xs font-semibold uppercase tracking-wide text-blue-700 dark:text-blue-300">
@@ -1186,6 +1186,12 @@ export default function LisaPage() {
               </span>
             )}
           </div>
+          <NextCycleCountdown
+            lastTriggerAt={config.last_event_trigger_at as string | null}
+            lastProposalAt={proposalsQuery.data?.[0]?.generated_at ?? null}
+            killSwitchActive={(config.kill_switch_active as boolean) ?? false}
+            autopilotEnabled={(config.autopilot_enabled as boolean) ?? false}
+          />
         </div>
       )}
 
@@ -1288,6 +1294,100 @@ export default function LisaPage() {
           </Button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * NextCycleCountdown — décompte temps réel jusqu'au prochain cycle Lisa
+ * forcé par le filet safety_net (30 min après le dernier cycle).
+ *
+ * Lisa peut tourner AVANT ce décompte si un event matériel est détecté
+ * (VIX shift, prix tenu ±0.5%, funding crypto, news catalyst, etc.).
+ * Ce décompte est donc un PLAFOND, pas un timing exact.
+ *
+ * Baseline = MAX(last_event_trigger_at, dernière proposal.created_at)
+ * → couvre les cycles event ET safety_net ET bootstrap.
+ */
+function NextCycleCountdown(props: {
+  lastTriggerAt: string | null;
+  lastProposalAt: string | null;
+  killSwitchActive: boolean;
+  autopilotEnabled: boolean;
+}) {
+  const SAFETY_NET_MIN = 30;
+  const RATE_LIMIT_MIN = 3;
+  const [, setTick] = useState(0);
+
+  useEffect(() => {
+    const interval = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const baselineMs = useMemo(() => {
+    const ts = [props.lastTriggerAt, props.lastProposalAt]
+      .filter((t): t is string => Boolean(t))
+      .map((t) => new Date(t).getTime());
+    return ts.length > 0 ? Math.max(...ts) : 0;
+  }, [props.lastTriggerAt, props.lastProposalAt]);
+
+  if (!props.autopilotEnabled) {
+    return (
+      <div className="text-xs text-muted-foreground italic">
+        Autopilot désactivé — pas de décompte automatique.
+      </div>
+    );
+  }
+  if (props.killSwitchActive) {
+    return (
+      <div className="text-xs text-red-600 dark:text-red-400 font-medium">
+        🛑 Kill-switch actif — Lisa bloquée jusqu'à réactivation.
+      </div>
+    );
+  }
+  if (baselineMs === 0) {
+    return (
+      <div className="text-xs text-muted-foreground italic">
+        Pas encore de baseline — prochain cycle imminent (bootstrap).
+      </div>
+    );
+  }
+
+  const now = Date.now();
+  const elapsedMs = now - baselineMs;
+  const elapsedMin = elapsedMs / 60_000;
+  const safetyNetMs = baselineMs + SAFETY_NET_MIN * 60_000;
+  const remainingMs = safetyNetMs - now;
+
+  // En rate limit : aucun cycle possible avant 3 min écoulées
+  if (elapsedMin < RATE_LIMIT_MIN) {
+    const rateLimitRemaining = (RATE_LIMIT_MIN * 60_000 - elapsedMs) / 1000;
+    const m = Math.floor(rateLimitRemaining / 60);
+    const s = Math.floor(rateLimitRemaining % 60);
+    return (
+      <div className="text-xs text-amber-700 dark:text-amber-400 font-mono">
+        ⏱️ Rate limit (3 min) — pas de cycle avant <strong>{m}m {s.toString().padStart(2, '0')}s</strong>
+      </div>
+    );
+  }
+
+  // Window event-driven : entre 3 min et 30 min, peut déclencher si event
+  if (remainingMs <= 0) {
+    return (
+      <div className="text-xs text-emerald-700 dark:text-emerald-400 font-mono">
+        ⚡ Cycle imminent — safety_net atteint, prochain tick autopilot (≤60s)
+      </div>
+    );
+  }
+
+  const m = Math.floor(remainingMs / 60_000);
+  const s = Math.floor((remainingMs % 60_000) / 1000);
+  return (
+    <div className="text-xs text-blue-700 dark:text-blue-300 font-mono">
+      🕐 Prochain cycle au plus tard dans <strong>{m}m {s.toString().padStart(2, '0')}s</strong>
+      <span className="text-muted-foreground ml-1">
+        (safety_net 30 min — peut déclencher avant si event matériel détecté)
+      </span>
     </div>
   );
 }
