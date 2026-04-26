@@ -740,6 +740,7 @@ Biais du cycle : **${bias}** — ${biasRationale}`;
     const cashLine = availableCash
       ? `\nCash disponible : ${availableCash} USD (après fermetures que tu recommandes)`
       : '';
+    const heldSymbolsList = positions.map((p) => p.symbol.toUpperCase()).join(', ');
     return `${summary}
 
 ${lines.join('\n')}${cashLine}
@@ -758,11 +759,25 @@ Critères de fermeture typiques :
 Ne ferme PAS une position juste parce qu'elle est en légère perte si la
 thèse initiale tient toujours (respect du plan, pas de panic-sell).
 
+**RÈGLE ANTI-DOUBLON STRICTE — symboles déjà tenus :**
+Les symboles suivants sont **DÉJÀ DANS TON PORTEFEUILLE** : ${heldSymbolsList}.
+- ❌ Ne les re-propose PAS comme nouvelle thèse \`expression.symbol\`. Le
+  garde-fou applicatif skippera silencieusement, gaspillant le cycle ($0.30).
+- ✅ Si tu veux ajuster une position existante (renforcer / réduire / pivoter),
+  utilise \`closeRecommendations\` pour la fermer puis propose le SYMBOLE DE
+  REMPLACEMENT (différent ou même secteur via proxy ETF).
+- ✅ Pour amplifier une thèse existante : propose un SYMBOLE PROCHE non-tenu
+  (ex: tu tiens RTX → propose LMT/NOC/GD ; tu tiens GLD → propose IAU/PHYS/GDX ;
+  tu tiens BTC → propose ETH/SOL/COIN/MSTR).
+- ✅ Pour exposition différente sur le MÊME thème : varie l'instrument
+  (option long_call ATM 30DTE, ETF leveraged 2x/3x, secteur cousin).
+
 **IMPORTANT — règle d'ouverture conditionnelle au biais :**
 - Biais HOLD recommandé → array \`theses\` vide est la réponse par défaut.
   N'ouvre QUE si tu identifies une opportunité avec R/R strictement
   supérieur au pire R/R des positions ci-dessus.
-- Biais OPPORTUNISTE → ouvre selon ta conviction normale.
+- Biais OPPORTUNISTE → ouvre selon ta conviction normale, sur des SYMBOLES
+  NON DÉJÀ TENUS.
 - Biais URGENCE → priorise les fermetures, ouvertures uniquement si elles
   réduisent l'exposition agrégée ou couvrent un risque concentré.`;
   }
