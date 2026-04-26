@@ -187,21 +187,66 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
     }
   }
 
+  /**
+   * Mutex in-memory par portfolioId pour empêcher 2 ticks cron concurrents
+   * d'exécuter le même runPortfolioCycle en parallèle (race condition
+   * observée : 3 propositions générées en 71 sec parce que 3 ticks lisaient
+   * le même lastCycle stale).
+   */
+  private readonly runningCycles = new Set<string>();
+
   private async runPortfolioCycle(
     userId: string,
     portfolioId: string,
     cycleMinutes: number,
     autoApprove: boolean = false,
   ): Promise<void> {
-    // 1. Check when was last autopilot cycle (from decision log)
-    const { data: lastCycle } = await this.supabase.getClient()
-      .from('lisa_decision_log')
-      .select('timestamp')
-      .eq('portfolio_id', portfolioId)
-      .eq('kind', 'autopilot_cycle_completed')
-      .order('timestamp', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    // Mutex in-memory : skip si un cycle est déjà en cours pour ce portfolio
+    if (this.runningCycles.has(portfolioId)) {
+      return;
+    }
+    this.runningCycles.add(portfolioId);
+    try {
+      await this.runPortfolioCycleInner(userId, portfolioId, cycleMinutes, autoApprove);
+    } finally {
+      this.runningCycles.delete(portfolioId);
+    }
+  }
+
+  private async runPortfolioCycleInner(
+    userId: string,
+    portfolioId: string,
+    cycleMinutes: number,
+    autoApprove: boolean = false,
+  ): Promise<void> {
+    // 1. Rate limit baseline = MAX(dernier cycle_started OU completed,
+    //    dernière proposal). Source de vérité = lisa_proposals.created_at
+    //    car même si cycle_started/completed plantent, une proposal créée
+    //    bloque les ticks suivants.
+    const [lastCycleRes, lastProposalRes] = await Promise.all([
+      this.supabase.getClient()
+        .from('lisa_decision_log')
+        .select('timestamp')
+        .eq('portfolio_id', portfolioId)
+        .in('kind', ['autopilot_cycle_started', 'autopilot_cycle_completed'])
+        .order('timestamp', { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      this.supabase.getClient()
+        .from('lisa_proposals')
+        .select('created_at')
+        .eq('portfolio_id', portfolioId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    ]);
+
+    const lastCycleTs = (lastCycleRes.data?.timestamp as string | undefined) ?? null;
+    const lastProposalTs = (lastProposalRes.data?.created_at as string | undefined) ?? null;
+    const lastBaselineTs = [lastCycleTs, lastProposalTs]
+      .filter((t): t is string => Boolean(t))
+      .map((t) => new Date(t).getTime())
+      .reduce((max, t) => Math.max(max, t), 0);
 
     // EVENT-DRIVEN MODE
     // Au lieu d'attendre l'intervalle cycle_minutes (20 min default), on
@@ -214,8 +259,8 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
     let triggerReason = `bootstrap (premier cycle)`;
     let triggerKind: 'event' | 'safety_net' | 'bootstrap' = 'bootstrap';
 
-    if (lastCycle) {
-      const elapsedMs = Date.now() - new Date(lastCycle.timestamp as string).getTime();
+    if (lastBaselineTs > 0) {
+      const elapsedMs = Date.now() - lastBaselineTs;
       const elapsedMin = elapsedMs / 60_000;
 
       // Rate limit dur : jamais 2 cycles à moins de 3 min
