@@ -1644,7 +1644,11 @@ export class MechanicalTradingService {
     activePositions: OpenPosition[],
   ): Promise<void> {
     const client = this.supabase.getClient();
-    const exposureUsd = activePositions.reduce((s, p) => s + Number(p.entryNotionalUsd ?? 0), 0);
+    // Le select('*') retourne des colonnes snake_case Postgres, pas la
+    // version camelCase typée dans OpenPosition. On accède via le nom DB.
+    const readNotional = (p: OpenPosition) =>
+      Number((p as unknown as Record<string, unknown>)['entry_notional_usd'] ?? 0);
+    const exposureUsd = activePositions.reduce((s, p) => s + readNotional(p), 0);
     // Tente de lire le capital depuis la dernière config session
     const { data: snap } = await client
       .from('lisa_portfolio_snapshots')
