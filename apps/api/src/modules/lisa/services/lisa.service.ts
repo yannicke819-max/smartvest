@@ -30,6 +30,8 @@ import { NewsRankerService } from './news-ranker.service';
 import { NewsAggregatorService } from './news-aggregator.service';
 import { LisaMemoryService } from './lisa-memory.service';
 import { MaterialChangeDetectorService } from './material-change-detector.service';
+import { TradeOutcomeRecorderService } from './trade-outcome-recorder.service';
+import { LisaPerformanceAnalyticsService } from './lisa-performance-analytics.service';
 import { EodhdTechnicalService } from './eodhd-technical.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
 import { BinanceMarketService } from './binance-market.service';
@@ -79,6 +81,8 @@ export class LisaService {
     private readonly lisaMemory: LisaMemoryService,
     @Inject(forwardRef(() => MaterialChangeDetectorService))
     private readonly materialDetector: MaterialChangeDetectorService,
+    private readonly tradeOutcomeRecorder: TradeOutcomeRecorderService,
+    private readonly performanceAnalytics: LisaPerformanceAnalyticsService,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
     this.claudeClient = anthropicKey
@@ -596,6 +600,20 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       .getMemoryBriefing(portfolioId, lastRegime, 30)
       .catch(() => '(mémoire indisponible)');
 
+    // Phase 5 : edge confirmé contextuel (stats sur trades fermés).
+    // Utilise le VIX live pour le bucket courant + les symboles candidats
+    // qui pourraient être dans les thèses (positions tenues + symboles
+    // évoqués récemment dans le briefing).
+    const candidateSymbols = Array.from(new Set([
+      ...uniqueSymbols, // positions actuellement tenues
+      // Note : on pourrait aussi inclure les symboles des thèses précédentes
+      // mais les positions tenues sont le signal le plus fort.
+    ]));
+    const liveVix = marketSnapshot.vix ?? null;
+    marketSnapshot.performanceAnalytics = await this.performanceAnalytics
+      .getContextualEdge(portfolioId, lastRegime, liveVix, candidateSymbols, 30)
+      .catch(() => '(analytics indisponibles)');
+
     let result: Awaited<ReturnType<ThesisGeneratorService['generateTheses']>>;
     try {
       result = await this.thesisGenerator.generateTheses({
@@ -987,6 +1005,9 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
           livePrice: quote.price,
           rationale: `Lisa recommendation: ${rec.reason}`.slice(0, 500),
         });
+        // Phase 5 — capture outcome
+        this.tradeOutcomeRecorder.recordOutcome(pos.id, quote.price, 'closed_invalidated')
+          .catch(() => null);
         closedRecommended++;
         await this.logDecision(portfolioId, 'position_closed_by_lisa', {
           summary: `Lisa closed ${pos.symbol} (${pos.id.slice(0, 8)}): ${rec.reason}`.slice(0, 200),
@@ -1157,6 +1178,9 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
             livePrice: swapQuote.price,
             rationale: `SWAP : remplacée par ${newSymbol} (conviction ${newConviction.toFixed(1)} vs ${Number(swapTarget.conviction_score ?? 5).toFixed(1)})`.slice(0, 500),
           });
+          // Phase 5 — capture outcome (swap close)
+          this.tradeOutcomeRecorder.recordOutcome(String(swapTarget.id), swapQuote.price, 'closed_invalidated')
+            .catch(() => null);
           swappedIds.add(String(swapTarget.id));
           // Position fermée : son symbole peut être réouvert ce cycle
           openSymbolsSet.delete(String(swapTarget.symbol).toUpperCase());
@@ -1479,6 +1503,9 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
           livePrice: quote.price,
           rationale: `User kill switch: ${reason}`,
         });
+        // Phase 5 — capture outcome (kill switch)
+        this.tradeOutcomeRecorder.recordOutcome(pos.id, quote.price, 'closed_kill')
+          .catch(() => null);
       } catch (e) {
         this.logger.error(`Kill switch close failed for ${pos.symbol}: ${String(e)}`);
       }

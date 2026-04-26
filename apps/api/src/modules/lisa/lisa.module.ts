@@ -29,6 +29,8 @@ import { TwitterService } from './services/twitter.service';
 import { NewsAggregatorService } from './services/news-aggregator.service';
 import { LisaMemoryService } from './services/lisa-memory.service';
 import { MaterialChangeDetectorService } from './services/material-change-detector.service';
+import { TradeOutcomeRecorderService } from './services/trade-outcome-recorder.service';
+import { LisaPerformanceAnalyticsService } from './services/lisa-performance-analytics.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule],
@@ -61,6 +63,8 @@ import { MaterialChangeDetectorService } from './services/material-change-detect
     NewsAggregatorService,
     LisaMemoryService,
     MaterialChangeDetectorService,
+    TradeOutcomeRecorderService,
+    LisaPerformanceAnalyticsService,
   ],
   exports: [
     LisaService,

@@ -28,6 +28,7 @@ import { AgentLisaSyncService } from './agent-lisa-sync.service';
 import { OptionBrokerService } from './option-broker.service';
 import { EodhdCalendarService } from './eodhd-calendar.service';
 import { BinanceMarketService } from './binance-market.service';
+import { TradeOutcomeRecorderService } from './trade-outcome-recorder.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types internes
@@ -147,6 +148,7 @@ export class MechanicalTradingService {
     private readonly optionBroker: OptionBrokerService,
     private readonly earningsCalendar: EodhdCalendarService,
     private readonly binance: BinanceMarketService,
+    private readonly tradeOutcomeRecorder: TradeOutcomeRecorderService,
   ) {}
 
   /**
@@ -1569,6 +1571,12 @@ export class MechanicalTradingService {
         updated_at: now,
       })
       .eq('id', positionId);
+
+    // Phase 5 — fire-and-forget : capture l'outcome contextualisé pour
+    // l'apprentissage continu Lisa. Ne bloque jamais le close.
+    this.tradeOutcomeRecorder
+      .recordOutcome(positionId, exitPrice.toFixed(10), reason)
+      .catch((e) => this.logger.debug(`outcome record failed: ${String(e).slice(0, 100)}`));
 
     await this.decisionLog.append({
       portfolioId: pos.portfolio_id as string,

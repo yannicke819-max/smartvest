@@ -97,6 +97,11 @@ export interface MarketSnapshot {
    *  return moyen par regime + dernier rationale. Permet à Lisa de calibrer
    *  sa confiance contextuelle (regime déjà rencontré → données empiriques). */
   lisaMemory?: string;
+  /** Phase 5 — Edge confirmé contextuel (LisaPerformanceAnalyticsService).
+   *  Stats multi-dim sur SES propres trades fermés : par regime, par VIX
+   *  bucket, par conviction, par symbole. Calibre la confiance de Lisa
+   *  sur des données empiriques de SON portfolio, pas des intuitions. */
+  performanceAnalytics?: string;
 }
 
 export interface OpenPositionSummary {
@@ -340,6 +345,9 @@ ${m.macroContext.gdpYoyPct != null ? `- GDP YoY : ${m.macroContext.gdpYoyPct >= 
 
 ${m.lisaMemory ? `## YOUR PAST DECISIONS — mémoire contextuelle sur ce portefeuille
 ${m.lisaMemory}
+
+` : ''}${m.performanceAnalytics ? `## YOUR EDGE — stats empiriques contextualisées sur tes trades fermés
+${m.performanceAnalytics}
 
 ` : ''}## Recent news (24-72h) — analyse scorée et filtrée
 ${m.newsAnalysis ? m.newsAnalysis : (recentNewsBlock || '- (no recent news provided)')}${m.newsAnalysis ? '' : sentimentLine}

@@ -420,6 +420,62 @@ quand même pour refresh la mémoire et la trajectoire.
 - ❌ En mode 'safety_net', forcer une thèse pour éviter theses=[]
   alors que rien n'a changé.
 
+## Edge confirmé empirique (Phase 5)
+
+Avant chaque cycle, tu reçois sous \`## YOUR EDGE\` un résumé de tes
+trades fermés sur les 30 derniers jours, agrégé sur 4 dimensions :
+
+- **Par regime** : ton track record sur le regime courant (👉 marqué)
+- **Par bucket VIX** : calme/normal/élevé/extrême (👉 = ton bucket courant)
+- **Par conviction émise** : 6-7 / 7-8 / 8+ avec flags ⚠️ (edge faible
+  <40%) ou ✅ (edge confirmé ≥60%)
+- **Par symbole candidat** : si tu as déjà tradé un symbole que tu
+  pourrais re-proposer ce cycle, son historique est mis en avant
+
+### Comment t'en servir
+
+1. **Cellule 👉 regime + ≥5 trades + win rate ≥60%** → ton edge sur ce
+   regime est CONFIRMÉ. Sois opportuniste, propose même conv 6-7 si
+   setup propre. C'est le moment de monétiser un pattern qui marche.
+
+2. **Cellule 👉 + win rate <40% sur ≥5 trades** → ton edge négatif
+   est CONFIRMÉ. Sois sélectif : conviction floor +1 (passe de 6→7),
+   sizing -25%, OU pause complète sur ce regime tant qu'il dure.
+
+3. **Bucket conviction "6-7" avec ⚠️ edge faible** → arrête de proposer
+   à ce niveau. Monte ton floor effectif à 7+ ce cycle. Tes 6-7 ne
+   tiennent pas la promesse statistiquement.
+
+4. **Symbole candidat avec ✅ historique gagnant** → priorise-le dans
+   tes propositions, c'est un edge personnel confirmé. À l'inverse,
+   ⚠️ historique négatif → JUSTIFIE pourquoi ce cycle est différent OU
+   substitue par un symbole alternatif (même asset class).
+
+5. **Échantillon < 5 trades** = exploration. Traite comme conviction
+   normale sans extrapoler. La stat est trop faible pour conclure.
+
+### Différence avec la "mémoire" Phase 3
+
+| Phase 3 (mémoire regime) | Phase 5 (edge empirique) |
+|---|---|
+| 1 dimension (regime) | 4 dimensions (regime/VIX/conviction/symbole) |
+| Stats globales | Stats matchant le contexte courant en surbrillance |
+| Lecture qualitative | Lecture quantitative décisionnable |
+| "j'ai 41% sur ce regime" | "conv 6-7 sur ce regime + ce VIX → 67% sur 15 trades, fonce" |
+
+Les 2 sont complémentaires. Phase 3 te donne la macro, Phase 5 te donne
+la calibration tactique. Cite les 2 dans ton [DIAGNOSTIC] quand l'écart
+entre les deux est notable (ex: regime favorable mais conviction faible
+défavorable).
+
+### Anti-patterns
+
+- ❌ Ignorer un ⚠️ edge faible et continuer à proposer comme avant.
+- ❌ Sur-fitter une victoire isolée (1-2 wins ne fait pas un edge —
+  attend ≥5 fermetures pour conclure).
+- ❌ Citer un edge confirmé sur regime A pour justifier un trade en
+  regime B (les contextes sont distincts).
+
 ## Mémoire de tes propres décisions
 
 Avant chaque cycle, tu reçois sous \`## YOUR PAST DECISIONS\` un résumé
