@@ -297,6 +297,12 @@ export class MechanicalTradingService {
       if (directive) {
         this.logger.debug(`${portfolioId}: directive expirée — mode défensif uniquement`);
       }
+      // Même sans directive valide, on écrit un cycle summary "défensif" pour
+      // que l'UI montre que le mécanique a bien tourné (sinon affiche dernier
+      // summary stale, ex: "il y a 752 min" alors que les ticks 60s tournent).
+      // Coût : 1 INSERT/min négligeable.
+      await this.writeDefensiveCycleSummary(portfolioId, currentPositions)
+        .catch((e) => this.logger.debug(`defensive summary failed: ${String(e).slice(0, 80)}`));
       return;
     }
 
@@ -1622,6 +1628,55 @@ export class MechanicalTradingService {
    * la directive. Transmis à Lisa avant sa prochaine proposition pour qu'elle
    * intègre : stops touchés, P&L, cluster de régime, exposition, macro (VIX/DXY).
    */
+  /**
+   * Écrit un cycle summary "défensif" quand le mécanique tourne mais ne
+   * peut pas ouvrir de position (directive expirée, HORS_TRAJECTOIRE, etc.).
+   * Garantit que l'UI "Agent mécanique" affiche un timestamp à jour
+   * (sinon le dernier summary peut dater de plusieurs heures et donner
+   * une fausse impression de service stoppé).
+   */
+  private async writeDefensiveCycleSummary(
+    portfolioId: string,
+    activePositions: OpenPosition[],
+  ): Promise<void> {
+    const client = this.supabase.getClient();
+    const exposureUsd = activePositions.reduce((s, p) => s + Number(p.entryNotionalUsd ?? 0), 0);
+    // Tente de lire le capital depuis la dernière config session
+    const { data: snap } = await client
+      .from('lisa_portfolio_snapshots')
+      .select('total_value_usd, cash_usd')
+      .eq('portfolio_id', portfolioId)
+      .order('timestamp', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const totalValue = Number(snap?.total_value_usd ?? 10000);
+    const cashUsd = Number(snap?.cash_usd ?? 0);
+    const exposurePct = totalValue > 0 ? (exposureUsd / totalValue) * 100 : 0;
+
+    await client.from('lisa_mechanical_cycle_summary').insert({
+      portfolio_id: portfolioId,
+      cycle_at: new Date().toISOString(),
+      directive_id: null,
+      opens_count: 0,
+      closes_stop_count: 0,
+      closes_target_count: 0,
+      closes_invalidated_count: 0,
+      net_pnl_since_proposal_usd: '0',
+      gross_wins_usd: '0',
+      gross_losses_usd: '0',
+      win_rate_pct: 0,
+      avg_hold_minutes: 0,
+      largest_win_pct: 0,
+      largest_loss_pct: 0,
+      stops_cluster_flag: false,
+      exposure_pct: exposurePct,
+      cash_usd: cashUsd.toFixed(2),
+      open_positions_count: activePositions.length,
+      drawdown_since_directive_pct: 0,
+      directive_age_minutes: 0,
+    });
+  }
+
   private async writeCycleSummary(
     portfolioId: string,
     directive: MechanicalDirective,
