@@ -28,6 +28,7 @@ import { RedditService } from './services/reddit.service';
 import { TwitterService } from './services/twitter.service';
 import { NewsAggregatorService } from './services/news-aggregator.service';
 import { LisaMemoryService } from './services/lisa-memory.service';
+import { MaterialChangeDetectorService } from './services/material-change-detector.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule],
@@ -59,6 +60,7 @@ import { LisaMemoryService } from './services/lisa-memory.service';
     TwitterService,
     NewsAggregatorService,
     LisaMemoryService,
+    MaterialChangeDetectorService,
   ],
   exports: [
     LisaService,
@@ -84,6 +86,7 @@ import { LisaMemoryService } from './services/lisa-memory.service';
     TwitterService,
     NewsAggregatorService,
     LisaMemoryService,
+    MaterialChangeDetectorService,
   ],
 })
 export class LisaModule {}

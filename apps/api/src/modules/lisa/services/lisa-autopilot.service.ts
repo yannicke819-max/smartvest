@@ -6,6 +6,7 @@ import { PerformanceService } from '../../performance/performance.service';
 import { LisaService } from './lisa.service';
 import { DecisionLogService } from './decision-log.service';
 import { RealtimePriceService } from './realtime-price.service';
+import { MaterialChangeDetectorService } from './material-change-detector.service';
 
 /** Tickers macro et indices stratégiques que Lisa consulte en permanence.
  *  Warmed une fois au boot pour peupler le cache immédiatement, évite le
@@ -59,6 +60,7 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
     private readonly decisionLog: DecisionLogService,
     private readonly realtimePrice: RealtimePriceService,
     private readonly performance: PerformanceService,
+    private readonly materialDetector: MaterialChangeDetectorService,
   ) {}
 
   /**
@@ -201,19 +203,72 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
       .limit(1)
       .maybeSingle();
 
+    // EVENT-DRIVEN MODE
+    // Au lieu d'attendre l'intervalle cycle_minutes (20 min default), on
+    // déclenche dès qu'un événement matériel est détecté, avec :
+    //  - Rate limit min 3 min entre 2 cycles (anti-spam si VIX vacille)
+    //  - Filet de garantie 60 min (force un cycle même si calme, pour
+    //    refresh la mémoire / la trajectoire / les news cache)
+    const RATE_LIMIT_MIN = 3;
+    const SAFETY_NET_MIN = 60;
+    let triggerReason = `bootstrap (premier cycle)`;
+    let triggerKind: 'event' | 'safety_net' | 'bootstrap' = 'bootstrap';
+
     if (lastCycle) {
       const elapsedMs = Date.now() - new Date(lastCycle.timestamp as string).getTime();
-      const requiredMs = cycleMinutes * 60_000;
-      if (elapsedMs < requiredMs) return; // skip : not yet due
+      const elapsedMin = elapsedMs / 60_000;
+
+      // Rate limit dur : jamais 2 cycles à moins de 3 min
+      if (elapsedMin < RATE_LIMIT_MIN) {
+        return;
+      }
+
+      // Charge les positions tenues pour le détecteur
+      const { data: openPositions } = await this.supabase.getClient()
+        .from('lisa_positions')
+        .select('symbol')
+        .eq('portfolio_id', portfolioId)
+        .eq('status', 'open');
+      const heldSymbols = Array.from(new Set((openPositions ?? []).map((p) => String(p.symbol))));
+
+      // Détection event-driven
+      const detection = await this.materialDetector.detect(portfolioId, heldSymbols)
+        .catch((e) => {
+          this.logger.warn(`MaterialDetector failed: ${String(e).slice(0, 120)} — fallback time-based`);
+          return null;
+        });
+
+      if (detection?.triggered) {
+        triggerKind = 'event';
+        triggerReason = detection.reasons.slice(0, 3).join(' · ');
+      } else if (elapsedMin >= SAFETY_NET_MIN) {
+        triggerKind = 'safety_net';
+        triggerReason = `filet de garantie ${SAFETY_NET_MIN}min sans event`;
+      } else {
+        // Pas d'event ET pas encore au filet → skip
+        return;
+      }
+
+      // Persiste la raison du trigger pour visibilité UI
+      await this.supabase.getClient()
+        .from('lisa_session_configs')
+        .update({
+          last_event_trigger_reason: `[${triggerKind}] ${triggerReason}`.slice(0, 200),
+          last_event_trigger_at: new Date().toISOString(),
+        })
+        .eq('portfolio_id', portfolioId)
+        .then(({ error }) => {
+          if (error) this.logger.debug(`trigger reason update failed: ${error.message}`);
+        });
     }
 
-    // 2. Log cycle start
+    // 2. Log cycle start avec la raison
     await this.decisionLog.append({
       portfolioId,
       kind: 'autopilot_cycle_started',
-      summary: 'Autopilot cycle started',
-      rationale: `Interval ${cycleMinutes}min elapsed since last cycle`,
-      payload: {},
+      summary: `Autopilot cycle started [${triggerKind}]`,
+      rationale: triggerReason,
+      payload: { triggerKind, triggerReason },
       triggeredBy: 'autopilot_cron',
     }).catch((e) => this.logger.warn(`log append failed: ${String(e)}`));
 

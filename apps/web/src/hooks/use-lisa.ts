@@ -49,6 +49,9 @@ export interface LisaSessionConfigRow {
   autopilot_expires_at?: string | null;
   autopilot_aggressive?: boolean;
   autopilot_market_hours_only?: boolean;
+  // Phase 4 event-driven : dernière raison de trigger Lisa
+  last_event_trigger_reason?: string | null;
+  last_event_trigger_at?: string | null;
   // Lisa v2 — objectifs & budget (tous optionnels)
   return_target_daily_pct?: number | null;
   return_target_monthly_pct?: number | null;

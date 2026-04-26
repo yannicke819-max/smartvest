@@ -29,6 +29,7 @@ import { EodhdCalendarService } from './eodhd-calendar.service';
 import { NewsRankerService } from './news-ranker.service';
 import { NewsAggregatorService } from './news-aggregator.service';
 import { LisaMemoryService } from './lisa-memory.service';
+import { MaterialChangeDetectorService } from './material-change-detector.service';
 import { EodhdTechnicalService } from './eodhd-technical.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
 import { BinanceMarketService } from './binance-market.service';
@@ -76,6 +77,7 @@ export class LisaService {
     private readonly newsRanker: NewsRankerService,
     private readonly newsAggregator: NewsAggregatorService,
     private readonly lisaMemory: LisaMemoryService,
+    private readonly materialDetector: MaterialChangeDetectorService,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
     this.claudeClient = anthropicKey
@@ -668,6 +670,12 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     }
 
     // Persist proposal
+    // Snapshot des inputs marché pour MaterialChangeDetector (event-driven)
+    // Capturé EN ASYNC pour ne pas bloquer la réponse Lisa.
+    const detectedInputsSnapshot = await this.materialDetector
+      .captureCurrentInputs(portfolioId, uniqueSymbols)
+      .catch(() => null);
+
     await this.supabase.getClient().from('lisa_proposals').insert({
       id: finalProposal.id,
       user_id: userId,
@@ -693,6 +701,9 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       generated_at: finalProposal.generatedAt,
       expires_at: new Date(Date.now() + 3600_000).toISOString(), // 1h validity
       close_recommendations: result.closeRecommendations ?? [],
+      detected_inputs: detectedInputsSnapshot
+        ? { ...detectedInputsSnapshot, freshHighScoreNews: undefined } // exclude verbose news from snapshot
+        : null,
     });
 
     // Decision log

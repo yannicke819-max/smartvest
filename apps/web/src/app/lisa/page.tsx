@@ -1163,6 +1163,32 @@ export default function LisaPage() {
         isLoading={proposalsQuery.isLoading}
       />
 
+      {/* Phase 4 — Dernier trigger event-driven */}
+      {config?.last_event_trigger_reason && (
+        <div className="rounded-md border bg-blue-50 dark:bg-blue-950/20 px-3 py-2 text-sm">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold uppercase tracking-wide text-blue-700 dark:text-blue-300">
+                ⚡ Dernier trigger Lisa
+              </span>
+              <span className="text-blue-900 dark:text-blue-100">
+                {config.last_event_trigger_reason}
+              </span>
+            </div>
+            {config.last_event_trigger_at && (
+              <span className="text-xs text-muted-foreground">
+                {new Date(config.last_event_trigger_at).toLocaleString('fr-FR', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  day: '2-digit',
+                  month: '2-digit',
+                })}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Agent mécanique */}
       <MechanicalAgentCard
         data={agentStatusQuery.data}
