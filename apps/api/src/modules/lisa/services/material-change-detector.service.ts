@@ -39,10 +39,28 @@ export class MaterialChangeDetectorService {
   private static readonly VIX_DELTA_THRESHOLD = 0.3;        // était 0.5 — VIX 18.5 → 1.6% du niveau
   private static readonly DXY_DELTA_PCT = 0.3;              // (anciennement hardcodé en const)
   private static readonly PRICE_DELTA_PCT = 0.5;            // OK : 0.5% évite le bruit intraday
+  private static readonly REFERENCE_DELTA_PCT = 0.6;        // PHASE 2 — bouge ref ETF/crypto, capte sans positions
   private static readonly FUNDING_DELTA_PCT = 0.2;          // était 0.3 — capte les shifts crypto plus tôt
   private static readonly DRAWDOWN_DELTA_PT = 0.5;          // OK : sur $10k = $50 réaction
   private static readonly NEWS_FRESH_MIN_SCORE = 60;        // était 75 — capte la convergence cross-source
   private static readonly NEWS_FRESH_MAX_AGE_MIN = 15;      // était 5 — la plupart des news arrivent à 10-30 min
+
+  // PHASE 2 — Tickers de référence scannés MÊME quand 0 positions tenues.
+  // Évite la castration du mode event-driven sur portefeuilles vides : si
+  // SPY/BTC/GLD/etc. bouge fort, c'est un signal macro/sectoriel à
+  // exploiter (Lisa scanne le marché pour ouvrir des positions).
+  // Seuil 0.6% (vs 0.5% positions tenues) — légèrement plus strict pour
+  // éviter le bruit sur ces tickers ultra-liquides à fort volume.
+  private static readonly REFERENCE_TICKERS = [
+    'SPY',   // S&P 500 — equity benchmark global
+    'QQQ',   // Nasdaq 100 — tech benchmark
+    'IWM',   // Russell 2000 — small cap
+    'BTC',   // Bitcoin — crypto reference
+    'ETH',   // Ethereum — alt crypto reference
+    'GLD',   // Gold ETF — précieux + de-dollarization
+    'TLT',   // 20Y bonds — taux long terme
+    'HYG',   // High-yield credit — risk-on/off proxy
+  ];
 
   constructor(
     private readonly supabase: SupabaseService,
@@ -121,6 +139,23 @@ export class MaterialChangeDetectorService {
       }
     }
 
+    // PHASE 2 — Prix des tickers de référence (scan macro même sans positions)
+    // Cap à 2 reasons pour éviter le spam si tout le marché bouge.
+    const referenceReasons: string[] = [];
+    for (const sym of Object.keys(current.pricesReference ?? {})) {
+      const oldPrice = snapshot.pricesReference?.[sym];
+      const newPrice = current.pricesReference?.[sym];
+      if (oldPrice && newPrice) {
+        const deltaPct = Math.abs((newPrice - oldPrice) / oldPrice) * 100;
+        if (deltaPct >= MaterialChangeDetectorService.REFERENCE_DELTA_PCT) {
+          const direction = newPrice > oldPrice ? '+' : '-';
+          referenceReasons.push(`marché ${sym} ${direction}${deltaPct.toFixed(2)}%`);
+        }
+      }
+    }
+    // Ajoute max 2 reasons macro pour signaler "le marché bouge" sans noyer
+    reasons.push(...referenceReasons.slice(0, 2));
+
     // Funding rates crypto
     for (const sym of Object.keys(current.fundingHeld)) {
       const oldFunding = snapshot.fundingHeld?.[sym];
@@ -198,6 +233,17 @@ export class MaterialChangeDetectorService {
       else if (q) this.logger.warn(`[FALLBACK_GUARD] snapshot ${sym} ignoré — source=${q.source}`);
     }));
 
+    // PHASE 2 — Tickers de référence (scannés MÊME sans positions tenues).
+    // Évite la castration du mode event-driven sur portefeuille vide.
+    // Skip ceux déjà dans pricesHeld pour ne pas double-tracker.
+    const pricesReference: Record<string, number> = {};
+    const referenceTickersToScan = MaterialChangeDetectorService.REFERENCE_TICKERS
+      .filter((t) => !pricesHeld[t.toUpperCase()]);
+    await Promise.all(referenceTickersToScan.map(async (sym) => {
+      const q = await this.lisa.getLivePrice(sym).catch(() => null);
+      if (q && !isFallback(q.source)) pricesReference[sym.toUpperCase()] = Number(q.price);
+    }));
+
     // Funding rates pour positions crypto
     const fundingHeld: Record<string, number> = {};
     const cryptoNative = new Set(['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA']);
@@ -242,6 +288,7 @@ export class MaterialChangeDetectorService {
       vix: vixReliable ? Number(vixReliable.price) : null,
       dxy: dxyReliable ? Number(dxyReliable.price) : null,
       pricesHeld,
+      pricesReference,
       fundingHeld,
       drawdownPct,
       openPositionsCount: heldSymbols.length,
@@ -260,6 +307,12 @@ export interface MaterialSnapshot {
   vix: number | null;
   dxy: number | null;
   pricesHeld: Record<string, number>;
+  /** PHASE 2 — Tickers de référence (SPY/QQQ/BTC/ETH/GLD/TLT/HYG/IWM)
+   *  scannés MÊME quand 0 positions tenues. Permet le déclenchement
+   *  event-driven sur mouvements macro/sectoriels sans dépendre des
+   *  positions. Évite la castration du mode event-driven sur portefeuille
+   *  vide (cas observé incident 26/04 : 0 positions = 0 événement). */
+  pricesReference?: Record<string, number>;
   fundingHeld: Record<string, number>;
   drawdownPct: number | null;
   /** Nombre de positions ouvertes au moment du snapshot. Une baisse entre
