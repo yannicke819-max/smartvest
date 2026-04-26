@@ -309,6 +309,8 @@ export class MechanicalTradingService {
     // HORS_TRAJECTOIRE → préservation du capital, aucune ouverture
     if (directive.trajectoryStatus === 'HORS_TRAJECTOIRE') {
       this.logger.debug(`${portfolioId}: HORS_TRAJECTOIRE — ouvertures suspendues, protection capital`);
+      await this.writeDefensiveCycleSummary(portfolioId, currentPositions)
+        .catch((e) => this.logger.debug(`defensive summary failed: ${String(e).slice(0, 80)}`));
       return;
     }
 
@@ -342,6 +344,8 @@ export class MechanicalTradingService {
       this.logger.log(
         `[MÉCANIQUE] ${portfolioId.slice(0, 8)} — pauseOpens=true (reason=${overrides.pauseOpensReason ?? 'unspecified'}) — skip ouvertures`,
       );
+      await this.writeDefensiveCycleSummary(portfolioId, currentPositions)
+        .catch((e) => this.logger.debug(`defensive summary failed: ${String(e).slice(0, 80)}`));
       return;
     }
     if (overrides.pauseOpens === true && isHyperAggressive) {
