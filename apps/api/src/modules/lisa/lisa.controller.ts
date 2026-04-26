@@ -227,6 +227,22 @@ export class LisaController {
     return this.lisa.getSnapshotHistory(extractUserId(headers), portfolioId, windowDays);
   }
 
+  /**
+   * Force la persistance d'un snapshot live immédiatement, sans attendre le
+   * cron 5min. Utile pour debug ou pour rafraîchir le graphique à la demande.
+   *
+   *   POST /lisa/portfolio/:portfolioId/snapshot-now
+   */
+  @Post('portfolio/:portfolioId/snapshot-now')
+  async forceSnapshot(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    extractUserId(headers);
+    await this.lisa.persistLivePortfolioSnapshot(portfolioId);
+    return { ok: true, snapshotPersisted: true, at: new Date().toISOString() };
+  }
+
   // ── Agent mécanique — statut temps réel ─────────────────────────────────────
 
   @Get('agent/:portfolioId')
