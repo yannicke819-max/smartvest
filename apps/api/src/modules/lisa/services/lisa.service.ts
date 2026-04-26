@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException, Inject, forwardRef } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHmac } from 'node:crypto';
 import Decimal from 'decimal.js';
@@ -77,6 +77,7 @@ export class LisaService {
     private readonly newsRanker: NewsRankerService,
     private readonly newsAggregator: NewsAggregatorService,
     private readonly lisaMemory: LisaMemoryService,
+    @Inject(forwardRef(() => MaterialChangeDetectorService))
     private readonly materialDetector: MaterialChangeDetectorService,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');

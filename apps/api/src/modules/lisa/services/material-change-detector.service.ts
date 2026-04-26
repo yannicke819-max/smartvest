@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { LisaService } from './lisa.service';
@@ -42,6 +42,7 @@ export class MaterialChangeDetectorService {
 
   constructor(
     private readonly supabase: SupabaseService,
+    @Inject(forwardRef(() => LisaService))
     private readonly lisa: LisaService,
     private readonly binance: BinanceMarketService,
     private readonly newsAggregator: NewsAggregatorService,
