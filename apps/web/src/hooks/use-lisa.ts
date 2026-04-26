@@ -414,8 +414,14 @@ export function useLisaSnapshotHistory(portfolioId: string | null, windowDays = 
     queryKey: ['lisa', 'snapshots', portfolioId, windowDays],
     queryFn: () => apiFetch<LisaSnapshot[]>(`/lisa/snapshots/${portfolioId}?window=${windowDays}`),
     enabled: !!portfolioId,
-    refetchInterval: 60_000, // chart capital : rafraîchi toutes les 60s
-    ...LISA_QUERY_OPTIONS,
+    retry: false,
+    // Chart capital : on surcharge LISA_QUERY_OPTIONS pour forcer le refresh
+    // au focus + interval continu en background. Sinon le user voit un graph
+    // figé en revenant sur l'onglet (cron snapshot tourne mais frontend ne
+    // refetch pas).
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: true,
   });
 }
 
