@@ -448,7 +448,15 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       let currentPrice = pos.entryPrice;
       try {
         const q = await this.fetchLivePrice(pos.symbol);
-        currentPrice = q.price;
+        // 🛡️ Patch A : si Lisa reçoit un prix fallback, utiliser entry_price
+        // au lieu (pas de PnL latent factice). Évite que Lisa génère des
+        // thèses sur prix faux (ex: "GLD à 310 → close immédiat" alors que
+        // le vrai prix est 430). Cf. incident 26/04 — bug fallback critique.
+        if (q.source && q.source.startsWith('fallback')) {
+          this.logger.warn(`[FALLBACK_GUARD_LISA] ${pos.symbol} source=${q.source} → using entry_price ${pos.entryPrice} pour thèse`);
+        } else {
+          currentPrice = q.price;
+        }
       } catch { /* fallback entryPrice */ }
       const entryPx = new Decimal(pos.entryPrice);
       const livePx = new Decimal(currentPrice);
@@ -943,6 +951,30 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     }
 
     const portfolioId = proposal.portfolio_id as string;
+
+    // 🛡️ Patch C : kill-switch étanche.
+    // Si l'utilisateur a cliqué Emergency Stop entre la génération de la
+    // proposition et son approbation (auto ou manuelle), on refuse toute
+    // action. Sinon une proposition générée juste avant le kill-switch
+    // peut continuer à fermer/ouvrir des positions et rendre le stop
+    // d'urgence non étanche.
+    const { data: killCheck } = await this.supabase.getClient()
+      .from('lisa_session_configs')
+      .select('kill_switch_active')
+      .eq('portfolio_id', portfolioId)
+      .maybeSingle();
+    if (killCheck?.kill_switch_active === true) {
+      this.logger.warn(`[KILL_SWITCH_GUARD] approveProposal ${proposalId} refusé — kill_switch_active=true sur portfolio ${portfolioId.slice(0, 8)}`);
+      await this.logDecision(portfolioId, 'proposal_skipped_kill_switch', {
+        summary: 'Proposition refusée — kill-switch actif',
+        rationale: 'Garde-fou : aucune action après Emergency Stop. Désactiver le kill-switch dans la config pour reprendre.',
+        payload: { proposalId },
+        triggeredBy: 'system',
+      });
+      // On ne lève pas d'erreur (le caller autopilot ne doit pas crash).
+      // On retourne un résultat "rien fait" cohérent.
+      return { openedPositions: [], skipped: 0, closedRecommended: 0 };
+    }
     const theses = proposal.theses as Array<Record<string, unknown>>;
     const allocationsRaw = proposal.allocations as Array<{ thesisId: string; pctCapital: number; amountUsd: string }>;
     const closeRecommendations = (proposal.close_recommendations as Array<{ positionId: string; reason: string }> | null) ?? [];
@@ -1227,6 +1259,19 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
 
       try {
         const quote = await this.fetchLivePrice(expression.symbol as string);
+        // 🛡️ Patch A : ne JAMAIS ouvrir une position à prix fallback
+        // (incident 26/04 — LMT ouvert à $513 puis liquidé à fallback $100).
+        if (quote.source && quote.source.startsWith('fallback')) {
+          this.logger.warn(`[FALLBACK_GUARD_LISA] approveProposal skip open ${expression.symbol} — source=${quote.source} (prix non fiable)`);
+          skipped++;
+          await this.logDecision(portfolioId, 'position_skipped_fallback_price', {
+            summary: `Skip ${String(expression.symbol)} — prix live indisponible (source ${quote.source})`,
+            rationale: `Garde-fou critique : pas d'ouverture sur fallback hardcoded. Au prochain cycle, si EODHD est revenu, l'ouverture pourra se faire à prix réel.`,
+            payload: { thesisId: alloc.thesisId, symbol: expression.symbol, source: quote.source },
+            triggeredBy: 'user_manual',
+          });
+          continue;
+        }
         const riskReward = thesis.riskReward as { horizonDays: number; adverseScenarioReturnPct?: number };
         const assetClass = String(expression.assetClass ?? '');
         const isCrypto = assetClass.startsWith('crypto_');

@@ -197,7 +197,14 @@ export class PaperBrokerService {
 
     const now = new Date().toISOString();
 
-    const { error: updErr } = await this.supabase
+    // 🛡️ Patch B : UPDATE atomique avec WHERE status='open'.
+    // Évite le double-close si Lisa (closeRecommendation) et le mécanique
+    // (checkStopTarget) tentent de fermer la même position en parallèle.
+    // Si une autre transaction a déjà mis status != 'open', cet UPDATE
+    // touche 0 rows → on retourne la position fermée précédente sans
+    // ré-écrire les champs (pas de double comptage P&L, pas de double
+    // appel au TradeOutcomeRecorder).
+    const { data: updated, error: updErr } = await this.supabase
       .from('lisa_positions')
       .update({
         status: cmd.reason,
@@ -208,8 +215,19 @@ export class PaperBrokerService {
         realized_pnl_pct: pnlPct,
         updated_at: now,
       })
-      .eq('id', cmd.positionId);
+      .eq('id', cmd.positionId)
+      .eq('status', 'open')
+      .select('*');
     if (updErr) throw new Error(`Paper position close failed: ${updErr.message}`);
+
+    // 0 rows updated = la position avait déjà été fermée par un autre acteur
+    // entre notre SELECT (line 168) et l'UPDATE. Retour silencieux pour ne
+    // pas casser le caller, mais on log un warning.
+    if (!updated || updated.length === 0) {
+      // eslint-disable-next-line no-console
+      console.warn(`[PAPER_BROKER] closePosition ${cmd.positionId} race detected — already closed by another actor, skipping double-close`);
+      return position; // état d'avant, déjà cohérent avec la DB
+    }
 
     return {
       ...position,

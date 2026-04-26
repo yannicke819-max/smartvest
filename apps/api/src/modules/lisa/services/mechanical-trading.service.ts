@@ -1384,6 +1384,14 @@ export class MechanicalTradingService {
     const TRAILING_BREAKEVEN_PNL = isHyperActive ? 0.8 : 1.5;
     const TRAILING_LOCK_PNL = isHyperActive ? 1.5 : 3;
     const TRAILING_ATR_PNL = isHyperActive ? 3 : 5;
+    // 🛡️ Patch D — Take-profit absolu : garantit la matérialisation des
+    // gains avant qu'ils ne s'évaporent. Trigger en plus du trailing stop
+    // existant. Important pour éviter le scénario "death by thousand cuts"
+    // où aucune position n'atteint son target théorique mais le portefeuille
+    // accumule des coûts d'ouverture/fermeture sans jamais réaliser un gain.
+    // 2.5% en hyper_active (couvre largement les coûts ~0.2% × 12-15)
+    // 4% en standard (objectifs plus ambitieux, positions plus longues)
+    const TAKE_PROFIT_ABSOLUTE_PCT = isHyperActive ? 2.5 : 4;
 
     // Récupère les indicateurs techniques (cache 5 min, donc appels réels ~12/h)
     const eodhdTicker = (this.lisa as unknown as { toEodhdTicker(s: string): string }).toEodhdTicker(pos.symbol);
@@ -1392,7 +1400,25 @@ export class MechanicalTradingService {
       ind = await this.technical.getIndicators(eodhdTicker, currentPrice.toNumber());
     } catch { /* indicators unavailable — skip reactive, keep baseline stops */ }
 
-    if (!ind) return;
+    if (!ind) {
+      // 🛡️ Patch D : take-profit absolu fonctionne même sans indicateurs
+      // (pas de dépendance EODHD technical). Vérification minimale.
+      if (pnlPct >= TAKE_PROFIT_ABSOLUTE_PCT) {
+        await this.closePosition(pos.id, currentPrice.toString(), 'closed_target',
+          `[MÉCANIQUE] Take-profit absolu ${pos.symbol} @ ${currentPrice.toFixed(4)} : P&L=+${pnlPct.toFixed(2)}% ≥ ${TAKE_PROFIT_ABSOLUTE_PCT}% (matérialisation gain)`);
+      }
+      return;
+    }
+
+    // 🛡️ Patch D — Take-profit absolu prioritaire (avant trailing/reactive).
+    // Si le P&L atteint le seuil absolu, on ferme tout immédiatement pour
+    // garantir la matérialisation du gain. Évite les retournements qui
+    // ramènent un winner à breakeven puis en perte.
+    if (pnlPct >= TAKE_PROFIT_ABSOLUTE_PCT) {
+      await this.closePosition(pos.id, currentPrice.toString(), 'closed_target',
+        `[MÉCANIQUE] Take-profit absolu ${pos.symbol} @ ${currentPrice.toFixed(4)} : P&L=+${pnlPct.toFixed(2)}% ≥ ${TAKE_PROFIT_ABSOLUTE_PCT}% (matérialisation gain)`);
+      return;
+    }
 
     // ─── a) Close anticipé sur signal de reversal ───────────────────────────
     let reactiveCloseReason: string | null = null;
