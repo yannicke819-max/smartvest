@@ -1,8 +1,8 @@
 'use client';
 
-import { ScrollText, Sparkles, ShieldCheck, Swords, AlertTriangle, UserCheck, Clock, CheckCircle2, XCircle } from 'lucide-react';
+import { ScrollText, Sparkles, ShieldCheck, Swords, AlertTriangle, UserCheck, Clock, CheckCircle2, XCircle, Wrench } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { useLisaDecisionLog, useAuditChainVerify, type LisaDecisionLogRow } from '@/hooks/use-lisa';
+import { useLisaDecisionLog, useAuditChainVerify, useRepairAuditChain, type LisaDecisionLogRow } from '@/hooks/use-lisa';
 import { SkeletonCard } from '@/components/ui/skeleton';
 
 const KIND_ICONS: Record<string, ReactNode> = {
@@ -33,8 +33,20 @@ const TRIGGER_LABELS: Record<string, string> = {
 export function LisaDecisionLog({ portfolioId }: { portfolioId: string }) {
   const logQuery = useLisaDecisionLog(portfolioId, 50);
   const verifyQuery = useAuditChainVerify(portfolioId);
+  const repairMutation = useRepairAuditChain(portfolioId);
   const entries = logQuery.data ?? [];
   const chain = verifyQuery.data;
+
+  const handleRepair = async () => {
+    if (!confirm('Recalculer tous les hashs avec la canonisation Node.js ?\n\nIdempotent — peut être ré-exécuté sans danger. Aucune donnée perdue.')) return;
+    try {
+      const result = await repairMutation.mutateAsync();
+      const status = result.verifiedAfterRepair.isValid ? '✅ intègre' : `❌ encore corrompue #${result.verifiedAfterRepair.firstCorruptedIndex}`;
+      alert(`${result.repaired}/${result.totalEntries} entrées réparées.\nStatut après repair : ${status}`);
+    } catch (e) {
+      alert(`Erreur : ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
 
   return (
     <div className="rounded-lg border p-5 space-y-3">
@@ -53,6 +65,18 @@ export function LisaDecisionLog({ portfolioId }: { portfolioId: string }) {
             {chain.isValid ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
             Hash chain {chain.isValid ? 'intègre' : `corrompue #${chain.firstCorruptedIndex ?? '?'}`}
           </span>
+        )}
+        {chain && !chain.isValid && chain.totalEntries > 0 && (
+          <button
+            type="button"
+            onClick={handleRepair}
+            disabled={repairMutation.isPending}
+            className="inline-flex items-center gap-1 rounded border border-red-200 bg-white px-2 py-0.5 text-[10px] font-medium text-red-700 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Recalcule tous les hashs avec la canonisation Node.js"
+          >
+            <Wrench className="h-3 w-3" />
+            {repairMutation.isPending ? 'Réparation…' : 'Réparer la chain'}
+          </button>
         )}
       </div>
 

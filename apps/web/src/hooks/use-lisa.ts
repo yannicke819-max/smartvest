@@ -459,6 +459,21 @@ export function useAuditChainVerify(portfolioId: string | null) {
   });
 }
 
+export function useRepairAuditChain(portfolioId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<{
+        totalEntries: number;
+        repaired: number;
+        verifiedAfterRepair: { totalEntries: number; isValid: boolean; firstCorruptedIndex: number | null };
+      }>(`/lisa/audit/repair-chain/${portfolioId}`, { method: 'POST' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['lisa', 'audit', 'verify', portfolioId] });
+    },
+  });
+}
+
 export function useTriggerKillSwitch(portfolioId: string) {
   const qc = useQueryClient();
   return useMutation({
