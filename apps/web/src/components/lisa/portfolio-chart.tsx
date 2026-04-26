@@ -12,7 +12,7 @@ import {
   ReferenceLine,
 } from 'recharts';
 import { LineChart as LineChartIcon, RefreshCw } from 'lucide-react';
-import { useLisaSnapshotHistory } from '@/hooks/use-lisa';
+import { useLisaSnapshotHistory, useLisaSnapshot } from '@/hooks/use-lisa';
 import { SkeletonCard } from '@/components/ui/skeleton';
 
 type ChartPoint = {
@@ -81,11 +81,15 @@ const WINDOW_LABELS: Record<TimeWindow, string> = {
 export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
   const [window, setWindow] = useState<TimeWindow>('1m');
   const historyQuery = useLisaSnapshotHistory(portfolioId, WINDOW_DAYS[window]);
+  // Live snapshot pour ajouter un point virtuel à droite du graph en
+  // fallback du cron 5min. Garantit que le graph reflète TOUJOURS la
+  // valeur courante affichée en haut de page.
+  const liveQuery = useLisaSnapshot(portfolioId);
 
   const data = historyQuery.data ?? [];
 
   const chartData = useMemo(() => {
-    return data.map((s) => ({
+    const points = data.map((s) => ({
       t: new Date(s.timestamp).getTime(),
       tFull: new Date(s.timestamp).toLocaleString('fr-FR', {
         day: '2-digit',
@@ -98,7 +102,35 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
       returnPct: s.return_from_inception_pct,
       drawdown: s.drawdown_from_peak_pct,
     }));
-  }, [data]);
+
+    // Ajout point "live" : si la valeur live est plus récente que le
+    // dernier snapshot persisté, on l'ajoute en queue. Si pas de live ou
+    // antérieur au dernier point, on ne fait rien.
+    const live = liveQuery.data;
+    if (live) {
+      const lastPersistedTs = points.length > 0 ? points[points.length - 1].t : 0;
+      const liveTs = new Date(live.timestamp).getTime();
+      const liveValue = parseFloat(live.total_value_usd);
+      if (liveTs > lastPersistedTs && Number.isFinite(liveValue) && liveValue > 0) {
+        const now = new Date();
+        points.push({
+          t: now.getTime(), // utilise now pour garantir position en queue
+          tFull: now.toLocaleString('fr-FR', {
+            day: '2-digit',
+            month: 'short',
+            hour: '2-digit',
+            minute: '2-digit',
+          }) + ' (live)',
+          value: liveValue,
+          realized: parseFloat(live.realized_pnl_cumulative_usd),
+          returnPct: live.return_from_inception_pct,
+          drawdown: live.drawdown_from_peak_pct,
+        });
+      }
+    }
+
+    return points;
+  }, [data, liveQuery.data]);
 
   const hasData = chartData.length > 1;
   const firstValue = chartData[0]?.value ?? 0;
