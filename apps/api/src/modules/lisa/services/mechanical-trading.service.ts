@@ -283,8 +283,9 @@ export class MechanicalTradingService {
     const currentPositions: OpenPosition[] = positionsAfterClose ?? [];
 
     // Step 2 — Stop-loss / take-profit checks (toutes positions, pas besoin de directive)
+    const isHyperActiveProfile = cfg.profile === 'hyper_active';
     for (const pos of currentPositions) {
-      await this.checkStopTarget(pos);
+      await this.checkStopTarget(pos, isHyperActiveProfile);
     }
 
     // Si le guard a fermé la plus faible → on bloque les nouvelles ouvertures
@@ -1249,7 +1250,7 @@ export class MechanicalTradingService {
     return 'ok';
   }
 
-  private async checkStopTarget(pos: OpenPosition): Promise<void> {
+  private async checkStopTarget(pos: OpenPosition, isHyperActive: boolean = false): Promise<void> {
     if (!pos.stopLossPrice && !pos.takeProfitPrice) return;
 
     const quote = await this.lisa.getLivePrice(pos.symbol).catch(() => null);
@@ -1276,7 +1277,7 @@ export class MechanicalTradingService {
 
     // AUCUN stop/target atteint → checker les signaux réactifs (indicateurs
     // techniques) pour potentiellement clôturer plus tôt OU trailer le stop.
-    await this.checkReactiveSignals(pos, currentPrice);
+    await this.checkReactiveSignals(pos, currentPrice, isHyperActive);
   }
 
   /**
@@ -1298,7 +1299,7 @@ export class MechanicalTradingService {
    * Règle absolue : le trailing ne peut QUE resserrer le stop (jamais le
    * relâcher). Et ne jamais trailer un stop qui résulterait en P&L négatif.
    */
-  private async checkReactiveSignals(pos: OpenPosition, currentPrice: Decimal): Promise<void> {
+  private async checkReactiveSignals(pos: OpenPosition, currentPrice: Decimal, isHyperActive: boolean = false): Promise<void> {
     const entryPx = new Decimal(pos.entryPrice);
     if (entryPx.lte(0)) return;
 
@@ -1307,10 +1308,23 @@ export class MechanicalTradingService {
       ? currentPrice.minus(entryPx).div(entryPx).mul(100).toNumber()
       : entryPx.minus(currentPrice).div(entryPx).mul(100).toNumber();
 
-    // Pas de signal réactif si position fraîche (< 2 min) — évite les close
-    // sur bougie de formation pendant l'ouverture
+    // Pas de signal réactif si position fraîche — évite les close sur bougie
+    // de formation pendant l'ouverture. En hyper_active la fenêtre est
+    // réduite (90s vs 120s) pour réagir plus vite sur les vrais retournements.
+    const minAgeMs = isHyperActive ? 90_000 : 120_000;
     const ageMs = Date.now() - new Date((pos as unknown as Record<string, unknown>)['entry_timestamp'] as string || Date.now()).getTime();
-    if (ageMs < 2 * 60_000) return;
+    if (ageMs < minAgeMs) return;
+
+    // Seuils ANTICIPATIFS en hyper_active : déclenchement plus tôt pour
+    // sécuriser les gains et couper les retournements avant qu'ils ne
+    // s'installent. Trade-off : risque de sortie prématurée sur bruit
+    // normal, mais avec stop-loss 1% Kamikaze, le risque downside reste
+    // borné. L'anticipation prime sur la maximisation du gain.
+    const RSI_OVERBOUGHT = isHyperActive ? 70 : 80;
+    const RSI_OVERSOLD = isHyperActive ? 30 : 20;
+    const TRAILING_BREAKEVEN_PNL = isHyperActive ? 0.8 : 1.5;
+    const TRAILING_LOCK_PNL = isHyperActive ? 1.5 : 3;
+    const TRAILING_ATR_PNL = isHyperActive ? 3 : 5;
 
     // Récupère les indicateurs techniques (cache 5 min, donc appels réels ~12/h)
     const eodhdTicker = (this.lisa as unknown as { toEodhdTicker(s: string): string }).toEodhdTicker(pos.symbol);
@@ -1324,12 +1338,15 @@ export class MechanicalTradingService {
     // ─── a) Close anticipé sur signal de reversal ───────────────────────────
     let reactiveCloseReason: string | null = null;
 
-    // RSI extreme + P&L positif → lock in profits
-    if (pnlPct > 1) {
-      if (isLong && ind.rsi14 != null && ind.rsi14 > 80) {
-        reactiveCloseReason = `RSI14=${ind.rsi14.toFixed(1)} > 80 (overbought) + P&L=+${pnlPct.toFixed(2)}% → take profit`;
-      } else if (!isLong && ind.rsi14 != null && ind.rsi14 < 20) {
-        reactiveCloseReason = `RSI14=${ind.rsi14.toFixed(1)} < 20 (oversold) + P&L=+${pnlPct.toFixed(2)}% → take profit short`;
+    // RSI extreme + P&L positif → lock in profits.
+    // Seuils plus serrés en hyper_active (RSI 70 vs 80) pour anticiper
+    // les retournements avant qu'ils ne mangent les gains acquis.
+    const minPnlForReactive = isHyperActive ? 0.5 : 1;
+    if (pnlPct > minPnlForReactive) {
+      if (isLong && ind.rsi14 != null && ind.rsi14 > RSI_OVERBOUGHT) {
+        reactiveCloseReason = `RSI14=${ind.rsi14.toFixed(1)} > ${RSI_OVERBOUGHT} (overbought) + P&L=+${pnlPct.toFixed(2)}% → take profit`;
+      } else if (!isLong && ind.rsi14 != null && ind.rsi14 < RSI_OVERSOLD) {
+        reactiveCloseReason = `RSI14=${ind.rsi14.toFixed(1)} < ${RSI_OVERSOLD} (oversold) + P&L=+${pnlPct.toFixed(2)}% → take profit short`;
       }
     }
 
@@ -1349,16 +1366,17 @@ export class MechanicalTradingService {
     }
 
     // ─── b) Trailing stop ──────────────────────────────────────────────────
-    if (pnlPct <= 1.5) return; // pas encore assez de marge
+    // Seuils plus reactifs en hyper_active pour sécuriser les gains plus tôt.
+    if (pnlPct <= TRAILING_BREAKEVEN_PNL) return; // pas encore assez de marge
 
     let newStopPct: number | null = null;
-    if (pnlPct >= 5 && ind.atr14Pct != null && ind.atr14Pct > 0) {
+    if (pnlPct >= TRAILING_ATR_PNL && ind.atr14Pct != null && ind.atr14Pct > 0) {
       // Trail à -1× ATR du prix actuel
       newStopPct = ind.atr14Pct;
-    } else if (pnlPct >= 3) {
+    } else if (pnlPct >= TRAILING_LOCK_PNL) {
       // Stop à +0.5% du entry
       newStopPct = -0.5;
-    } else if (pnlPct >= 1.5) {
+    } else if (pnlPct >= TRAILING_BREAKEVEN_PNL) {
       // Stop à breakeven (0% vs entry)
       newStopPct = 0;
     }
@@ -1366,11 +1384,11 @@ export class MechanicalTradingService {
     if (newStopPct === null) return;
 
     // Calcul du nouveau prix de stop. newStopPct est :
-    //  - distance en % DU PRIX ACTUEL si pnlPct >= 5 (trailing ATR)
-    //  - distance en % DU ENTRY si 1.5 <= pnlPct < 5 (breakeven / lock)
+    //  - distance en % DU PRIX ACTUEL si pnlPct >= TRAILING_ATR_PNL (trailing ATR)
+    //  - distance en % DU ENTRY si TRAILING_BREAKEVEN <= pnlPct < TRAILING_ATR (breakeven / lock)
     let newStopPrice: Decimal;
     let stopLabel: string;
-    if (pnlPct >= 5) {
+    if (pnlPct >= TRAILING_ATR_PNL) {
       newStopPrice = isLong
         ? currentPrice.mul(1 - newStopPct / 100)
         : currentPrice.mul(1 + newStopPct / 100);
