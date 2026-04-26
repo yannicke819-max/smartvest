@@ -187,14 +187,67 @@ export class DecisionLogService {
           firstCorruptedIndex: i,
         };
       }
-
-      prevHash = e.hash_chain_current as string;
+      prevHash = expected;
     }
 
-    return {
-      totalEntries: entries.length,
-      isValid: true,
-      firstCorruptedIndex: null,
-    };
+    return { totalEntries: entries.length, isValid: true, firstCorruptedIndex: null };
+  }
+
+  /**
+   * Réparation de la chaîne en utilisant EXACTEMENT la même canonisation
+   * que append() / verifyChain() (canonicalJson + canonicalTimestamp).
+   *
+   * Différence avec la fonction SQL repair_lisa_decision_log_chain() :
+   * cette dernière utilisait `payload::text` et `timestamp::text` Postgres,
+   * ce qui produit des hashs ≠ de canonicalJson(payload). Résultat : la
+   * fonction SQL faisait que la chaîne était cohérente avec elle-même mais
+   * incompatible avec verifyChain() côté Node → badge "corrompue #0".
+   *
+   * Ici on lit chaque ligne, on recalcule avec les helpers TypeScript, et
+   * on UPDATE hash_chain_current + hash_chain_prev. Idempotent : peut être
+   * ré-exécuté sans danger.
+   */
+  async repairChainCanonical(portfolioId: string): Promise<{
+    totalEntries: number;
+    repaired: number;
+  }> {
+    const { data: entries, error } = await this.supabase.getClient()
+      .from('lisa_decision_log')
+      .select('id, kind, summary, rationale, payload, hash_chain_current, hash_chain_prev, timestamp')
+      .eq('portfolio_id', portfolioId)
+      .order('timestamp', { ascending: true });
+
+    if (error || !entries) {
+      return { totalEntries: 0, repaired: 0 };
+    }
+
+    let prevHash: string | null = null;
+    let repairedCount = 0;
+    for (const e of entries) {
+      const input = [
+        prevHash ?? 'GENESIS',
+        e.kind as string,
+        e.summary as string,
+        e.rationale as string,
+        canonicalJson(e.payload),
+        canonicalTimestamp(e.timestamp as string),
+      ].join('|');
+      const newHash = createHash('sha256').update(input).digest('hex');
+
+      // UPDATE seulement si différent (économise des writes)
+      if (e.hash_chain_current !== newHash || e.hash_chain_prev !== prevHash) {
+        await this.supabase.getClient()
+          .from('lisa_decision_log')
+          .update({
+            hash_chain_current: newHash,
+            hash_chain_prev: prevHash,
+          })
+          .eq('id', e.id as string);
+        repairedCount++;
+      }
+      prevHash = newHash;
+    }
+
+    return { totalEntries: entries.length, repaired: repairedCount };
   }
 }

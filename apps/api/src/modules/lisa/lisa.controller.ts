@@ -118,6 +118,27 @@ export class LisaController {
     return this.decisionLog.verifyChain(portfolioId);
   }
 
+  /**
+   * Répare la chaîne de hash en utilisant la canonisation Node.js
+   * (canonicalJson + canonicalTimestamp). À appeler quand le badge UI
+   * indique "Hash chain corrompue" pour rétablir l'intégrité.
+   *
+   *   POST /lisa/audit/repair-chain/:portfolioId
+   */
+  @Post('audit/repair-chain/:portfolioId')
+  async repairAuditChain(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    extractUserId(headers);
+    const repairResult = await this.decisionLog.repairChainCanonical(portfolioId);
+    const verifyResult = await this.decisionLog.verifyChain(portfolioId);
+    return {
+      ...repairResult,
+      verifiedAfterRepair: verifyResult,
+    };
+  }
+
   // ── Session config ──────────────────────────────────────────────────────────
 
   @Get('config/:portfolioId')
