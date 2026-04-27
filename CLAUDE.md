@@ -309,6 +309,54 @@ Les flags `supports_*` sur la ligne `broker_connections` sont dérivés de `PROV
 
 ---
 
+## 6 quater. Données macro EODHD — cascade & qualité tracée
+
+Lisa raisonne sur un `MarketSnapshot` produit par `LisaService.fetchMarketSnapshot()`. Plusieurs tickers EODHD historiques sont **cassés** (HTTP 404 ou `empty_price_field`). Sans précaution, Lisa reçoit silencieusement des fallbacks hardcoded à chaque cycle et raisonne sur une photo statique.
+
+### Règle immuable — cascade obligatoire pour tout indicateur macro
+
+Tout ajout d'indicateur dans `fetchMarketSnapshot` doit passer par `fetchCascade(indicator, attempts[])` :
+
+1. **Tentatives ordonnées** live → proxy ETF → fallback hardcoded (dernier recours).
+2. Chaque tentative est typée `quality: 'live' | 'proxy'` ; le fallback bascule automatiquement dans `dataQuality.fallback`.
+3. Un proxy ETF peut porter un `multiplier` (ex : `UUP.US × 4.1` ≈ DXY, `GLD.US × 10` ≈ Gold).
+4. Toute valeur retournée alimente `MarketSnapshot.dataQuality = { live, proxy, fallback }`.
+
+### Mapping de référence (ne pas régresser)
+
+| Indicateur | Live primary | Proxy ETF | Multiplier |
+|---|---|---|---|
+| VIX | `VIX.INDX` | `VXX.US` | — |
+| DXY | `DXY.INDX` puis `USDX.INDX` | `UUP.US` | × 4.1 |
+| US10Y | `TNX.INDX` | — | — |
+| US2Y | `IRX.INDX` | — | — |
+| Brent | `BRENT.COMM` | `USO.US` | × 1.05 |
+| Gold | `XAUUSD.FOREX` | `GLD.US` | × 10 |
+| Silver | `XAGUSD.FOREX` | `SLV.US` | — |
+
+Tickers à **ne jamais utiliser** (cassés EODHD côté plan actuel) : `^VIX.INDX`, `DX-Y.NYB.FOREX`, `US10Y.BOND`, `US2Y.BOND`, `GC.COMM`, `SI.COMM`, `BZ.COMM`, `NG.COMM`, `HG.COMM`.
+
+### Bloc `## DATA QUALITY` dans le briefing
+
+Si `dataQuality.proxy` ou `dataQuality.fallback` n'est pas vide, `formatDataQualityBlock` injecte un bloc explicite dans le user message. Lisa doit alors :
+
+- citer la dégradation dans `[DIAGNOSTIC]` ;
+- éviter de fonder un changement de régime sur un indicateur en `fallback` ;
+- privilégier l'analyse bottom-up (technique, news, options flow) si ≥ 3 indicateurs en fallback.
+
+### Règle de comportement HORS_TRAJECTOIRE
+
+`trajectoryStatus = 'HORS_TRAJECTOIRE'` (réalisé négatif OU coûts > 50 % des gains 7 j) déclenche un protocole **STOP + DIAGNOSTIC** non négociable :
+
+1. Lisa renvoie `theses=[]` ce cycle (toute nouvelle ouverture aggrave le saignement).
+2. `[DIAGNOSTIC]` documente la cause racine (sur-trading ? thèses sans catalyseur ? régime macro défavorable ? données macro dégradées ?).
+3. Sur position ouverte avec setup cassé → propose `close_now` dans `special_actions`.
+4. Le mécanique (`mechanical-trading.service.ts`) refuse déjà toute nouvelle ouverture sur ce statut — la persona doit rester alignée.
+
+Tout wording du type "HORS_TRAJECTOIRE n'est PAS un signal de retrait" est **interdit** dans la persona — il a causé la stagnation 13-cycles d'avril 2026.
+
+---
+
 ## 7. Frictions d'intermédiation — à rendre visibles
 
 Le moteur de coût (`@smartvest/cost-engine`) ventile chaque transaction :
