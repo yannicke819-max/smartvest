@@ -18,13 +18,111 @@ import { SupabaseService } from '../../supabase/supabase.service';
  * pour que Lisa lise "dans CE regime + CE VIX bucket, voici ton track
  * record" plutôt qu'un dump global.
  */
+/**
+ * PATCH 6 — Confidence buckets pour le N-gating du sizer.
+ *
+ * Sample size par régime → niveau de confiance → multiplicateur de taille.
+ * Le sizer multiplie le pctCapital par `sizingMultiplier` AVANT le check
+ * maxPositionSizePct. Une thèse à 10% sur un régime à N=8 sort à 3% net.
+ *
+ * Bornes calibrées pour qu'un edge à N<10 soit traité comme bruit
+ * statistique (multiplier 0.3) et qu'un edge à N>=30 soit pleinement
+ * exploité (multiplier 1.0). Entre les deux, ramp linéaire conservateur.
+ */
+export type EdgeConfidence = 'none' | 'weak' | 'moderate' | 'confirmed';
+
+export interface BucketStats {
+  /** Nombre de trades dans le bucket */
+  n: number;
+  /** Win rate 0-1 (0.62 = 62%) */
+  winRate: number;
+  /** Return moyen en % (ex: +0.85) */
+  avgReturn: number;
+  /** Niveau de confiance dérivé de N */
+  confidence: EdgeConfidence;
+  /** Multiplicateur de taille à appliquer au sizer (0.3 / 0.6 / 0.85 / 1.0) */
+  sizingMultiplier: number;
+}
+
+/**
+ * PATCH 6 — Helper pur. Dérive la confiance + le sizing multiplier à
+ * partir du nombre de trades N et des stats agrégées.
+ *
+ * Exporté pour être testable sans Supabase et réutilisable par d'autres
+ * couches (RiskEnforcer caller).
+ */
+export function bucketStatsFromTrades(trades: { returnPct: number }[]): BucketStats {
+  const n = trades.length;
+  const wins = trades.filter((t) => t.returnPct > 0).length;
+  const winRate = n > 0 ? wins / n : 0;
+  const avgReturn = n > 0 ? trades.reduce((s, t) => s + t.returnPct, 0) / n : 0;
+
+  let confidence: EdgeConfidence;
+  let sizingMultiplier: number;
+  if (n < 10) {
+    confidence = 'none';
+    sizingMultiplier = 0.3;
+  } else if (n < 20) {
+    confidence = 'weak';
+    sizingMultiplier = 0.6;
+  } else if (n < 30) {
+    confidence = 'moderate';
+    sizingMultiplier = 0.85;
+  } else {
+    confidence = 'confirmed';
+    sizingMultiplier = 1.0;
+  }
+
+  return { n, winRate, avgReturn, confidence, sizingMultiplier };
+}
+
 @Injectable()
 export class LisaPerformanceAnalyticsService {
   private readonly logger = new Logger(LisaPerformanceAnalyticsService.name);
   private readonly cache = new Map<string, { text: string; asOf: number }>();
+  private readonly bucketCache = new Map<string, { stats: BucketStats; asOf: number }>();
   private readonly CACHE_MS = 5 * 60 * 1000;
 
   constructor(private readonly supabase: SupabaseService) {}
+
+  /**
+   * PATCH 6 — Stats structurées par régime macro pour gating du sizer.
+   *
+   * Lit `lisa_trade_outcomes` filtré sur `open_regime = regime`.
+   * Retourne `{ n, winRate, avgReturn, confidence, sizingMultiplier }`.
+   *
+   * Si la lecture échoue (DB indispo, premier cycle), retourne des stats
+   * conservatrices (n=0, confidence='none', multiplier=0.3) — fail-safe :
+   * en cas de doute, on shrink. Jamais d'agrandissement par défaut.
+   */
+  async getBucketStats(
+    portfolioId: string,
+    regime: string,
+    lookbackDays = 30,
+  ): Promise<BucketStats> {
+    const cacheKey = `${portfolioId}:${regime}:${lookbackDays}`;
+    const cached = this.bucketCache.get(cacheKey);
+    if (cached && Date.now() - cached.asOf < this.CACHE_MS) return cached.stats;
+
+    try {
+      const since = new Date(Date.now() - lookbackDays * 86_400_000).toISOString();
+      const { data: outcomes } = await this.supabase.getClient()
+        .from('lisa_trade_outcomes')
+        .select('return_pct')
+        .eq('portfolio_id', portfolioId)
+        .eq('open_regime', regime)
+        .gte('close_at', since)
+        .limit(500);
+
+      const trades = (outcomes ?? []).map((r) => ({ returnPct: Number(r.return_pct) }));
+      const stats = bucketStatsFromTrades(trades);
+      this.bucketCache.set(cacheKey, { stats, asOf: Date.now() });
+      return stats;
+    } catch (e) {
+      this.logger.warn(`getBucketStats failed for ${regime}: ${String(e).slice(0, 120)}`);
+      return { n: 0, winRate: 0, avgReturn: 0, confidence: 'none', sizingMultiplier: 0.3 };
+    }
+  }
 
   /**
    * Calcule l'edge contextualisé pour le cycle courant.

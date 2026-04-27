@@ -375,6 +375,8 @@ export class LisaService {
       enableLeverage: (config.enable_leverage as boolean) ?? false,
       // PATCH 1 — kill-switch dataQuality (PR#1 P0).
       allowDegradedMacro: (config.allow_degraded_macro as boolean) ?? false,
+      // PATCH 6 — gating strict du sizer sur les régimes à edge non confirmé.
+      requireConfirmedEdge: (config.require_confirmed_edge as boolean) ?? false,
     };
 
     const marketSnapshot = await this.fetchMarketSnapshot();
@@ -796,7 +798,34 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       const pct = capitalNum > 0 ? (notional / capitalNum) * 100 : 0;
       existingExposureByAssetClassPct[cls] = (existingExposureByAssetClassPct[cls] ?? 0) + pct;
     }
-    const enforcement = this.riskEnforcer.enforce(result.proposal, existingExposureByAssetClassPct);
+    // PATCH 6 — Edge confidence N-gating.
+    // On regarde le track record empirique de Lisa sur le régime du cycle.
+    // Si N<30, on shrink toutes les allocations (×0.3 / ×0.6 / ×0.85).
+    // Si requireConfirmedEdge=true et confidence='none'/'weak', le cycle
+    // est rejeté (critical violation EDGE_NOT_CONFIRMED).
+    const detectedRegime = result.proposal.detectedRegime;
+    const bucketStats = detectedRegime
+      ? await this.performanceAnalytics.getBucketStats(portfolioId, String(detectedRegime), 30)
+      : null;
+    const edgeGate = bucketStats
+      ? {
+          stats: {
+            n: bucketStats.n,
+            winRate: bucketStats.winRate,
+            avgReturn: bucketStats.avgReturn,
+            confidence: bucketStats.confidence,
+            sizingMultiplier: bucketStats.sizingMultiplier,
+          },
+          requireConfirmedEdge: sessionConfig.requireConfirmedEdge ?? false,
+        }
+      : undefined;
+
+    const enforcement = this.riskEnforcer.enforce(
+      result.proposal,
+      existingExposureByAssetClassPct,
+      undefined, // existingExposureByThemePct — non câblé ici (cf. PATCH 3 caller chain)
+      edgeGate,
+    );
     const finalProposal = enforcement.adjustedProposal ?? result.proposal;
 
     if (!enforcement.adjustedProposal) {

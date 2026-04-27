@@ -521,5 +521,11 @@ export const LisaSessionConfig = z.object({
    *  avec audit `cycle_skipped_data_quality_degraded`. Cf. PATCH 1
    *  risk-01-dataquality-killswitch. */
   allowDegradedMacro: z.boolean().optional().default(false),
+  /** PATCH 6 — Si true, le RiskEnforcer rejette le cycle complet quand
+   *  l'edge sur le régime courant a confidence='none' ou 'weak' (N<20).
+   *  Default false : on shrink seulement les allocations (×0.3 / ×0.6).
+   *  À activer en mode autopilot strict où on préfère ne rien faire qu'agir
+   *  sur du bruit statistique. Cf. PATCH 6 risk-06-edge-confidence-gating. */
+  requireConfirmedEdge: z.boolean().optional().default(false),
 });
 export type LisaSessionConfig = z.infer<typeof LisaSessionConfig>;

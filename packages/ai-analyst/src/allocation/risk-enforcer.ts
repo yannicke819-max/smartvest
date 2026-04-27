@@ -14,6 +14,37 @@ import Decimal from 'decimal.js';
 import type { AllocationProposal, ThemeTag } from '../types';
 
 /**
+ * PATCH 6 — Stats d'edge structurées passées au RiskEnforcer pour gating
+ * du sizer par sample size. Calculées par
+ * `LisaPerformanceAnalyticsService.getBucketStats(regime)` côté apps/api.
+ *
+ * Le RiskEnforcer applique `sizingMultiplier` à TOUTES les allocations du
+ * cycle AVANT le check maxPositionSizePct. Une thèse à 10% sur un régime
+ * à N=8 (confidence='none', multiplier=0.3) sort à 3% net.
+ */
+export type EdgeConfidence = 'none' | 'weak' | 'moderate' | 'confirmed';
+
+export interface EdgeStats {
+  /** Nombre de trades observés sur le bucket régime */
+  n: number;
+  /** Win rate empirique [0,1] */
+  winRate: number;
+  /** Return moyen empirique en % */
+  avgReturn: number;
+  /** Niveau de confiance dérivé de N */
+  confidence: EdgeConfidence;
+  /** Multiplicateur appliqué au pctCapital (0.3 / 0.6 / 0.85 / 1.0) */
+  sizingMultiplier: number;
+}
+
+export interface EdgeGateOptions {
+  stats: EdgeStats;
+  /** Si true, rejette le cycle quand confidence='none' ou 'weak'.
+   *  Défaut false : on shrink seulement, jamais de rejet. */
+  requireConfirmedEdge?: boolean;
+}
+
+/**
  * PATCH 3 — Position légère pour les checks incrémentaux par classe + thème.
  * Utilisée par `canOpen()` qui valide une SEULE proposition contre un
  * portefeuille existant, sans nécessiter une AllocationProposal complète.
@@ -153,12 +184,38 @@ export class RiskEnforcer {
     proposal: AllocationProposal,
     existingExposureByAssetClassPct?: Record<string, number>,
     existingExposureByThemePct?: Record<string, number>,
+    edgeGate?: EdgeGateOptions,
   ): RiskEnforcementResult {
     const violations: RiskEnforcementResult['violations'] = [];
     const constraints = proposal.constraints;
 
-    // 1. Sum des allocations <= 100%
-    const totalAllocPct = proposal.allocations.reduce(
+    // PATCH 6 — Edge confidence N-gating (avant tout autre check de size).
+    //
+    // Le sizer Lisa est aveugle au sample size : 8 trades sur un régime =
+    // bruit statistique. On force un multiplier <1 tant que N est insuffisant.
+    // Quand `requireConfirmedEdge=true`, on REJETTE le cycle entier sur les
+    // régimes à confidence 'none'/'weak' au lieu de juste shrinker — utile
+    // en mode autopilot strict où on préfère ne rien faire qu'extrapoler.
+    let edgeAdjusted = proposal;
+    if (edgeGate) {
+      const { stats, requireConfirmedEdge } = edgeGate;
+      const isWeak = stats.confidence === 'none' || stats.confidence === 'weak';
+
+      if (requireConfirmedEdge && isWeak) {
+        violations.push({
+          code: 'EDGE_NOT_CONFIRMED',
+          severity: 'critical',
+          message: `Edge non confirmé sur ce régime (N=${stats.n}, confidence=${stats.confidence}). requireConfirmedEdge=true → cycle rejeté.`,
+        });
+        // Pas de shrink utile : on rejette en bas de la fonction (critical).
+      } else if (stats.sizingMultiplier < 1.0) {
+        // Shrink toutes les allocations + amountUsd ; recompute cashReserve.
+        edgeAdjusted = this.applyEdgeShrink(proposal, stats);
+      }
+    }
+
+    // 1. Sum des allocations <= 100% (sur la version potentiellement shrinkée)
+    const totalAllocPct = edgeAdjusted.allocations.reduce(
       (sum, a) => sum + a.pctCapital,
       0,
     );
@@ -172,16 +229,16 @@ export class RiskEnforcer {
 
     // 2. Cash reserve cohérent
     const expectedCashReserve = 100 - totalAllocPct;
-    if (Math.abs(proposal.cashReservePct - expectedCashReserve) > 0.5) {
+    if (Math.abs(edgeAdjusted.cashReservePct - expectedCashReserve) > 0.5) {
       violations.push({
         code: 'CASH_RESERVE_MISMATCH',
         severity: 'warning',
-        message: `Cash reserve stated ${proposal.cashReservePct}% but implied ${expectedCashReserve}%`,
+        message: `Cash reserve stated ${edgeAdjusted.cashReservePct}% but implied ${expectedCashReserve}%`,
       });
     }
 
-    // 3. Chaque position <= maxPositionSizePct
-    for (const alloc of proposal.allocations) {
+    // 3. Chaque position <= maxPositionSizePct (post-shrink edge)
+    for (const alloc of edgeAdjusted.allocations) {
       if (alloc.pctCapital > constraints.maxPositionSizePct) {
         violations.push({
           code: 'POSITION_SIZE_EXCEEDED',
@@ -193,11 +250,11 @@ export class RiskEnforcer {
     }
 
     // 4. Nombre de positions <= maxOpenPositions
-    if (proposal.allocations.length > constraints.maxOpenPositions) {
+    if (edgeAdjusted.allocations.length > constraints.maxOpenPositions) {
       violations.push({
         code: 'TOO_MANY_POSITIONS',
         severity: 'error',
-        message: `${proposal.allocations.length} positions proposed > max ${constraints.maxOpenPositions}`,
+        message: `${edgeAdjusted.allocations.length} positions proposed > max ${constraints.maxOpenPositions}`,
       });
     }
 
@@ -206,7 +263,7 @@ export class RiskEnforcer {
     // Sans agrégat existant, on ne voit que les nouvelles allocations
     // → cycle 1 ouvre GDX 22%, cycle 2 ouvre SLV 18%, ni l'un ni l'autre
     // ne dépasse 28% individuellement mais cumul = 40% → bug 26/04.
-    const newAllocByClass = this.aggregateByAssetClass(proposal);
+    const newAllocByClass = this.aggregateByAssetClass(edgeAdjusted);
     const exposureByAssetClass: Record<string, number> = { ...newAllocByClass };
     if (existingExposureByAssetClassPct) {
       for (const [cls, pct] of Object.entries(existingExposureByAssetClassPct)) {
@@ -232,7 +289,7 @@ export class RiskEnforcer {
     // si l'un des deux casse. Capture la concentration thématique (GDX
     // equity + SLV commodity + RTX equity = 3 classes mais 1 thème
     // geopolitical_safehaven concentré).
-    const newAllocByTheme = this.aggregateByTheme(proposal);
+    const newAllocByTheme = this.aggregateByTheme(edgeAdjusted);
     const exposureByTheme: Record<string, number> = { ...newAllocByTheme };
     if (existingExposureByThemePct) {
       for (const [theme, pct] of Object.entries(existingExposureByThemePct)) {
@@ -257,7 +314,7 @@ export class RiskEnforcer {
     }
 
     // 6. Levier effectif portfolio (somme |sizingValue| leveraged expressions)
-    const effectiveLeverage = this.computeEffectiveLeverage(proposal);
+    const effectiveLeverage = this.computeEffectiveLeverage(edgeAdjusted);
     if (effectiveLeverage > constraints.maxLeverage) {
       violations.push({
         code: 'LEVERAGE_EXCEEDED',
@@ -269,7 +326,7 @@ export class RiskEnforcer {
     // 7. Volatilité portfolio estimée <= maxPortfolioVolatilityPct
     // (approximation : moyenne pondérée des vols individuelles — sous-estime
     // sans matrice de corrélation, mais donne un floor)
-    const estimatedVol = this.estimatePortfolioVolatility(proposal);
+    const estimatedVol = this.estimatePortfolioVolatility(edgeAdjusted);
     if (estimatedVol > constraints.maxPortfolioVolatilityPct) {
       violations.push({
         code: 'PORTFOLIO_VOLATILITY_EXCEEDED',
@@ -279,7 +336,7 @@ export class RiskEnforcer {
     }
 
     // 8. Coût total d'exécution raisonnable (warning si > 2% du capital)
-    const totalExecutionCostBps = this.estimateTotalExecutionCost(proposal);
+    const totalExecutionCostBps = this.estimateTotalExecutionCost(edgeAdjusted);
     if (totalExecutionCostBps > 200) {
       violations.push({
         code: 'EXECUTION_COST_HIGH',
@@ -289,7 +346,7 @@ export class RiskEnforcer {
     }
 
     // 9. Chaque thèse a expressions + invalidation + antiBullshit
-    for (const thesis of proposal.theses) {
+    for (const thesis of edgeAdjusted.theses) {
       if (thesis.expressions.length === 0) {
         violations.push({
           code: 'THESIS_NO_EXPRESSIONS',
@@ -312,7 +369,7 @@ export class RiskEnforcer {
     const criticalViolations = violations.filter((v) => v.severity === 'critical');
     const errorViolations = violations.filter((v) => v.severity === 'error');
 
-    let adjustedProposal: AllocationProposal | null = proposal;
+    let adjustedProposal: AllocationProposal | null = edgeAdjusted;
 
     // Critique = REJET total
     if (criticalViolations.length > 0) {
@@ -320,7 +377,7 @@ export class RiskEnforcer {
     }
     // Erreur = tentative d'auto-correction (drop des thèses fautives, scale back)
     else if (errorViolations.length > 0) {
-      adjustedProposal = this.autoCorrect(proposal, violations);
+      adjustedProposal = this.autoCorrect(edgeAdjusted, violations);
     }
 
     const passes = violations.filter((v) => v.severity !== 'warning').length === 0;
@@ -428,6 +485,42 @@ export class RiskEnforcer {
       totalCost += (alloc.pctCapital / 100) * expr.estimatedCostBps;
     }
     return totalCost;
+  }
+
+  /**
+   * PATCH 6 — Applique le sizingMultiplier (edge confidence) à toutes les
+   * allocations du cycle. Mutation pure : retourne une nouvelle proposal
+   * avec pctCapital + amountUsd shrinkés et cashReservePct recompute.
+   *
+   * Le multiplier est < 1 quand le bucket régime a un sample trop petit
+   * (N<30). Une thèse à 10% sur un régime à N=8 (multiplier=0.3) sort à 3%.
+   * Cash reserve récupère la différence.
+   */
+  private applyEdgeShrink(
+    proposal: AllocationProposal,
+    stats: EdgeStats,
+  ): AllocationProposal {
+    const m = stats.sizingMultiplier;
+    if (m >= 1.0) return proposal;
+
+    const shrunkAllocations = proposal.allocations.map((alloc) => {
+      const newPct = alloc.pctCapital * m;
+      const newAmountUsd = new Decimal(alloc.amountUsd).mul(m).toFixed(2);
+      return { ...alloc, pctCapital: newPct, amountUsd: newAmountUsd };
+    });
+
+    const totalAllocPct = shrunkAllocations.reduce((s, a) => s + a.pctCapital, 0);
+    const cashReservePct = Math.max(0, Math.min(100, 100 - totalAllocPct));
+
+    return {
+      ...proposal,
+      allocations: shrunkAllocations,
+      cashReservePct,
+      warnings: [
+        ...proposal.warnings,
+        `Edge N-gating : sizingMultiplier=${m} (N=${stats.n}, confidence=${stats.confidence}) — toutes les allocations shrinkées de ×${m}.`,
+      ],
+    };
   }
 
   /**
