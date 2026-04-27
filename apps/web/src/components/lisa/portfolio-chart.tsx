@@ -12,7 +12,7 @@ import {
   ReferenceLine,
 } from 'recharts';
 import { LineChart as LineChartIcon, RefreshCw } from 'lucide-react';
-import { useLisaSnapshotHistory, useLisaSnapshot } from '@/hooks/use-lisa';
+import { useLisaSnapshotHistory, useLisaSnapshot, useLisaConfig } from '@/hooks/use-lisa';
 import { SkeletonCard } from '@/components/ui/skeleton';
 
 type ChartPoint = {
@@ -85,6 +85,14 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
   // fallback du cron 5min. Garantit que le graph reflète TOUJOURS la
   // valeur courante affichée en haut de page.
   const liveQuery = useLisaSnapshot(portfolioId);
+  // Capital initial déclaré (config Lisa) — utilisé comme baseline "Départ"
+  // au lieu du premier snapshot persisté qui peut déjà inclure les frais
+  // d'un premier trade (incident 27/04 : LMT ouvert puis fermé immédiatement
+  // par cap classe → snapshot enregistré à 9996.40 mais inception = 10000).
+  const configQuery = useLisaConfig(portfolioId);
+  const inceptionCapital = configQuery.data?.capital_usd
+    ? parseFloat(configQuery.data.capital_usd)
+    : null;
 
   const data = historyQuery.data ?? [];
 
@@ -133,9 +141,14 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
   }, [data, liveQuery.data]);
 
   const hasData = chartData.length > 1;
-  const firstValue = chartData[0]?.value ?? 0;
   const latestValue = chartData[chartData.length - 1]?.value ?? 0;
-  const periodReturn = firstValue > 0 ? ((latestValue - firstValue) / firstValue) * 100 : 0;
+  // Baseline = capital initial (inception) si dispo, sinon fallback sur le
+  // premier snapshot. Évite que la ligne "Départ" pointe vers un snapshot
+  // qui inclurait déjà des frais/trades (cf. incident 27/04 :
+  // 1er snapshot = 9996.40 alors que capital initial = 10000).
+  const firstSnapshotValue = chartData[0]?.value ?? 0;
+  const baselineValue = inceptionCapital ?? firstSnapshotValue;
+  const periodReturn = baselineValue > 0 ? ((latestValue - baselineValue) / baselineValue) * 100 : 0;
 
   // Y-axis : range auto mais on garde au moins 2% de padding pour ne pas
   // écraser visuellement les petites variations (cas typique après peu de
@@ -143,12 +156,16 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
   const yDomain = useMemo((): [number | 'auto', number | 'auto'] => {
     if (chartData.length === 0) return ['auto', 'auto'];
     const values = chartData.map((d) => d.value);
+    // Inclure baseline dans le domain pour que la ligne "Départ" soit
+    // toujours visible, même si la courbe est entièrement au-dessus ou
+    // en-dessous du capital initial.
+    if (inceptionCapital != null) values.push(inceptionCapital);
     const min = Math.min(...values);
     const max = Math.max(...values);
     const range = max - min;
     const padding = Math.max(range * 0.15, max * 0.002);
     return [Math.max(0, min - padding), max + padding];
-  }, [chartData]);
+  }, [chartData, inceptionCapital]);
 
   // Tick formatter qui adapte la précision selon l'amplitude des valeurs.
   const tickFormatter = (v: number): string => {
@@ -250,12 +267,12 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
                 content={<ChartTooltip />}
               />
               <ReferenceLine
-                y={firstValue}
+                y={baselineValue}
                 stroke="currentColor"
                 strokeDasharray="4 4"
                 opacity={0.3}
                 label={{
-                  value: 'Départ',
+                  value: inceptionCapital != null ? 'Capital initial' : 'Départ',
                   position: 'right',
                   fontSize: 9,
                   fill: 'currentColor',
