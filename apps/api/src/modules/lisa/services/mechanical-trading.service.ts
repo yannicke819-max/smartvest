@@ -204,7 +204,9 @@ export class MechanicalTradingService {
    * mieux sur actions/ETF. Pour ce commit on se concentre sur equity/ETF.
    */
   private toEodhdForCorrelation(symbol: string, assetClass: string): string {
-    const cls = assetClass.toLowerCase();
+    // Defensive guard : assetClass typé string mais peut être undefined si
+    // le caller passe un row Supabase non-mappé (cf. fix/position-data-integrity).
+    const cls = (assetClass ?? '').toLowerCase();
     if (cls.includes('crypto')) return `${symbol.toUpperCase()}-USD.CC`;
     if (cls.includes('fx') || cls.includes('forex')) return `${symbol.toUpperCase()}.FOREX`;
     // equity / etf / commodity ETF / bond ETF → suffixe .US si pas déjà présent
@@ -885,7 +887,9 @@ export class MechanicalTradingService {
       // pousserait l'exposition de la classe au-delà du seuil (default 25%).
       // PATCH 2 (PR#2 P0) — audit DECISION_LOG pour visibility (avant : simple
       // logger.debug invisible côté UI).
-      const classKey = target.assetClass.toLowerCase();
+      // Defense-in-depth : `?? ''` au cas où la directive Lisa serait corrompue
+      // (target.assetClass undefined). Évite un crash silencieux en plein cycle.
+      const classKey = (target.assetClass ?? '').toLowerCase();
       const currentClassExposure = exposureByClass.get(classKey) ?? 0;
       const projectedClassExposurePct = capitalUsd.gt(0)
         ? ((currentClassExposure + notional.toNumber()) / capitalUsd.toNumber()) * 100

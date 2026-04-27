@@ -285,7 +285,10 @@ export class AgentLisaSyncService {
     positions: OpenPositionMinimal[],
   ): Promise<TriggerContext | null> {
     const cryptos = positions.filter((p) =>
-      p.assetClass.toLowerCase().includes('crypto'),
+      // Defense-in-depth : si le mapper de la position a raté assetClass
+      // (cf. fix/position-data-integrity), `?? ''` évite le TypeError
+      // `Cannot read properties of undefined (reading 'toLowerCase')`.
+      (p.assetClass ?? '').toLowerCase().includes('crypto'),
     );
     for (const p of cryptos) {
       try {
@@ -310,7 +313,7 @@ export class AgentLisaSyncService {
     positions: OpenPositionMinimal[],
   ): Promise<TriggerContext | null> {
     const equities = positions.filter((p) => {
-      const cls = p.assetClass.toLowerCase();
+      const cls = (p.assetClass ?? '').toLowerCase();
       return cls.includes('equity') || cls.includes('etf') || cls.includes('stock');
     });
     for (const p of equities) {
@@ -340,7 +343,7 @@ export class AgentLisaSyncService {
   ): Promise<TriggerContext | null> {
     // On ne check que les positions equity/ETF (ADX EODHD = actions)
     const equities = positions.filter((p) => {
-      const cls = p.assetClass.toLowerCase();
+      const cls = (p.assetClass ?? '').toLowerCase();
       return cls.includes('equity') || cls.includes('etf') || cls.includes('stock');
     });
     for (const p of equities) {
