@@ -2,6 +2,10 @@ import { Body, Controller, Delete, Get, Headers, HttpCode, Param, Post, Query } 
 import { extractUserId } from '../../common/extract-user-id';
 import { BotConnectorService } from './services/bot-connector.service';
 import { JournalNormalizerService } from './services/journal-normalizer.service';
+import { PerformanceEngineService } from './services/performance-engine.service';
+import { EquityCurveService } from './services/equity-curve.service';
+import { RegimeTaggerService } from './services/regime-tagger.service';
+import { BotComparatorService } from './services/bot-comparator.service';
 import type { BotDefinitionDraft } from './types/bot-lab.types';
 
 /**
@@ -22,6 +26,10 @@ export class BotLabController {
   constructor(
     private readonly connector: BotConnectorService,
     private readonly normalizer: JournalNormalizerService,
+    private readonly perfEngine: PerformanceEngineService,
+    private readonly equityCurve: EquityCurveService,
+    private readonly regimeTagger: RegimeTaggerService,
+    private readonly comparator: BotComparatorService,
   ) {}
 
   // ───────────────────────────────────────────────────────────────────
@@ -128,5 +136,86 @@ export class BotLabController {
       limit ? Math.min(1000, parseInt(limit, 10)) : 100,
     );
     return { trades };
+  }
+
+  // ───────────────────────────────────────────────────────────────────
+  // PHASE 2 — METRICS / EQUITY / COMPARE
+  // ───────────────────────────────────────────────────────────────────
+
+  /** Métriques composite d'un bot (Sharpe, Sortino, MaxDD, etc.). */
+  @Get('bots/:botId/metrics')
+  async getMetrics(
+    @Headers() headers: Record<string, string>,
+    @Param('botId') botId: string,
+  ) {
+    extractUserId(headers);
+    const summary = await this.perfEngine.computeSummary(botId);
+    return { summary };
+  }
+
+  /** Courbe equity jour par jour. */
+  @Get('bots/:botId/equity-curve')
+  async getEquityCurve(
+    @Headers() headers: Record<string, string>,
+    @Param('botId') botId: string,
+  ) {
+    extractUserId(headers);
+    const curve = await this.equityCurve.getCurve(botId);
+    return { curve };
+  }
+
+  /** Métriques par session (regime / VIX bucket / asset class). */
+  @Get('bots/:botId/sessions')
+  async getSessionMetrics(
+    @Headers() headers: Record<string, string>,
+    @Param('botId') botId: string,
+  ) {
+    extractUserId(headers);
+    const sessions = await this.comparator.getSessionMetrics(botId);
+    return { sessions };
+  }
+
+  /**
+   * Recompute pipeline complet : tag regime + equity curve + session metrics.
+   * À appeler après import CSV ou si données stale.
+   */
+  @Post('bots/:botId/recompute')
+  @HttpCode(200)
+  async recompute(
+    @Headers() headers: Record<string, string>,
+    @Param('botId') botId: string,
+  ) {
+    const userId = extractUserId(headers);
+    const bot = await this.connector.getBot(userId, botId);
+    if (!bot) throw new Error(`Bot ${botId} not found`);
+
+    const tagged = await this.regimeTagger.tagBotTrades(botId);
+    const equity = await this.equityCurve.refreshDaily(botId, parseFloat(bot.capitalBaseUsd));
+    await this.comparator.refreshSessionMetrics(botId);
+    await this.connector.updateBotStats(botId);
+
+    return {
+      tagged: tagged.tagged,
+      totalTrades: tagged.total,
+      daysGenerated: equity.daysGenerated,
+      finalEquity: equity.finalEquity,
+      finalCumulPnl: equity.finalCumulPnl,
+    };
+  }
+
+  /** Comparator multi-bots côte à côte. Query : ?botIds=a,b,c */
+  @Get('compare')
+  async compareBots(
+    @Headers() headers: Record<string, string>,
+    @Query('botIds') botIdsCsv: string,
+  ) {
+    extractUserId(headers);
+    if (!botIdsCsv) throw new Error('botIds query param requis (CSV)');
+    const botIds = botIdsCsv.split(',').map((s) => s.trim()).filter(Boolean);
+    if (botIds.length === 0) throw new Error('Au moins 1 bot id requis');
+    if (botIds.length > 5) throw new Error('Max 5 bots par compare');
+
+    const entries = await this.comparator.compareBots(botIds);
+    return { entries };
   }
 }

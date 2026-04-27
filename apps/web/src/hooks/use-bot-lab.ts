@@ -101,6 +101,114 @@ export function useDeleteBot() {
   });
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// PHASE 2 — METRICS / EQUITY / COMPARE
+// ═══════════════════════════════════════════════════════════════════
+
+export interface BotPerformanceSummary {
+  botId: string;
+  totalTrades: number;
+  totalDays: number;
+  netPnlUsd: number;
+  netReturnPct: number;
+  cagr: number | null;
+  sharpeRatio: number | null;
+  sortinoRatio: number | null;
+  maxDrawdownPct: number;
+  recoveryDays: number | null;
+  profitFactor: number | null;
+  expectancyPerTradeUsd: number;
+  winRatePct: number;
+  avgWinUsd: number;
+  avgLossUsd: number;
+  largestWinUsd: number;
+  largestLossUsd: number;
+  consecutiveWinsMax: number;
+  consecutiveLossesMax: number;
+}
+
+export interface EquityCurvePoint {
+  date: string;
+  cumulativePnlUsd: number;
+  equityValueUsd: number;
+  dailyReturnPct: number | null;
+  drawdownFromPeakPct: number;
+  isNewPeak: boolean;
+  tradesCount: number;
+  winningTrades: number;
+  losingTrades: number;
+  totalCostsUsd: number;
+}
+
+export interface SessionMetrics {
+  sessionKind: 'market_regime' | 'vix_bucket' | 'asset_class' | 'symbol' | 'time_of_day' | 'global';
+  sessionValue: string;
+  tradesCount: number;
+  winRatePct: number;
+  netPnlUsd: number;
+  expectancyUsd: number;
+  profitFactor: number | null;
+  maxDrawdownPct: number;
+}
+
+export interface ComparatorEntry {
+  botId: string;
+  botName: string;
+  summary: BotPerformanceSummary | null;
+  byRegime: SessionMetrics[];
+  byVixBucket: SessionMetrics[];
+  byAssetClass: SessionMetrics[];
+}
+
+export function useBotMetrics(botId: string | null) {
+  return useQuery({
+    queryKey: ['bot-lab', 'metrics', botId],
+    queryFn: () => apiFetch<{ summary: BotPerformanceSummary | null }>(`/bot-lab/bots/${botId}/metrics`),
+    enabled: !!botId,
+  });
+}
+
+export function useBotEquityCurve(botId: string | null) {
+  return useQuery({
+    queryKey: ['bot-lab', 'equity', botId],
+    queryFn: () => apiFetch<{ curve: EquityCurvePoint[] }>(`/bot-lab/bots/${botId}/equity-curve`),
+    enabled: !!botId,
+  });
+}
+
+export function useBotSessionMetrics(botId: string | null) {
+  return useQuery({
+    queryKey: ['bot-lab', 'sessions', botId],
+    queryFn: () => apiFetch<{ sessions: SessionMetrics[] }>(`/bot-lab/bots/${botId}/sessions`),
+    enabled: !!botId,
+  });
+}
+
+export function useRecomputeBot(botId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<{ tagged: number; totalTrades: number; daysGenerated: number; finalEquity: number; finalCumulPnl: number }>(
+        `/bot-lab/bots/${botId}/recompute`,
+        { method: 'POST', body: JSON.stringify({}) },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['bot-lab', 'metrics', botId] });
+      qc.invalidateQueries({ queryKey: ['bot-lab', 'equity', botId] });
+      qc.invalidateQueries({ queryKey: ['bot-lab', 'sessions', botId] });
+      qc.invalidateQueries({ queryKey: ['bot-lab', 'bots'] });
+    },
+  });
+}
+
+export function useCompareBots(botIds: string[]) {
+  return useQuery({
+    queryKey: ['bot-lab', 'compare', botIds],
+    queryFn: () => apiFetch<{ entries: ComparatorEntry[] }>(`/bot-lab/compare?botIds=${botIds.join(',')}`),
+    enabled: botIds.length > 0,
+  });
+}
+
 /** Importe un CSV de trades. */
 export function useImportCsv(botId: string | null) {
   const qc = useQueryClient();
