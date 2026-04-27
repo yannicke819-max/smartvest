@@ -31,6 +31,9 @@ import { NewsAggregatorService } from './news-aggregator.service';
 import { LisaMemoryService } from './lisa-memory.service';
 import { MaterialChangeDetectorService } from './material-change-detector.service';
 import { TradeOutcomeRecorderService } from './trade-outcome-recorder.service';
+import { DailySessionService } from './daily-session.service';
+import type { DailyHarvestConfig, CapitalDisciplineMode } from '../types/capital-discipline.types';
+import type { DailyHarvestBriefingContext } from '@smartvest/ai-analyst';
 import { LisaPerformanceAnalyticsService } from './lisa-performance-analytics.service';
 import { EodhdTechnicalService } from './eodhd-technical.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
@@ -83,6 +86,7 @@ export class LisaService {
     private readonly materialDetector: MaterialChangeDetectorService,
     private readonly tradeOutcomeRecorder: TradeOutcomeRecorderService,
     private readonly performanceAnalytics: LisaPerformanceAnalyticsService,
+    private readonly dailySession: DailySessionService,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
     this.claudeClient = anthropicKey
@@ -622,6 +626,14 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       .getContextualEdge(portfolioId, lastRegime, liveVix, candidateSymbols, 30)
       .catch(() => '(analytics indisponibles)');
 
+    // DAILY_HARVEST Phase 3 — construit le contexte si mode actif.
+    // Inerte (undefined) si capital_discipline_mode != 'DAILY_HARVEST'.
+    const dailyHarvestContext = await this.buildDailyHarvestContext(portfolioId)
+      .catch((e) => {
+        this.logger.warn(`buildDailyHarvestContext failed: ${String(e).slice(0, 100)}`);
+        return undefined;
+      });
+
     let result: Awaited<ReturnType<ThesisGeneratorService['generateTheses']>>;
     try {
       result = await this.thesisGenerator.generateTheses({
@@ -638,6 +650,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         technicalBySymbol,
         intradayBySymbol,
         earningsBySymbol,
+        ...(dailyHarvestContext ? { dailyHarvestContext } : {}),
       });
     } catch (e) {
       // Parse failure ou erreur Claude : on log dans le decision log et on
@@ -2309,6 +2322,50 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
    * configuré. Utilise netReturn dans la fenêtre 7j (proxy) comparée à
    * la cible extrapolée depuis return_target_daily_pct ou _monthly_pct.
    */
+  /**
+   * Construit le contexte DAILY_HARVEST à injecter dans le briefing Lisa.
+   * Retourne undefined si le portfolio n'est PAS en mode DAILY_HARVEST.
+   *
+   * Lit la config + crée la session du jour si absente + calcule le progress.
+   * Idempotent : peut être appelé plusieurs fois par cycle sans effet de bord.
+   */
+  private async buildDailyHarvestContext(portfolioId: string): Promise<DailyHarvestBriefingContext | undefined> {
+    // 1. Lire le mode + la config
+    const { data: cfgRow } = await this.supabase.getClient()
+      .from('lisa_session_configs')
+      .select('capital_discipline_mode, daily_harvest_config')
+      .eq('portfolio_id', portfolioId)
+      .maybeSingle();
+
+    const mode = (cfgRow?.capital_discipline_mode as CapitalDisciplineMode | undefined) ?? 'NONE';
+    if (mode !== 'DAILY_HARVEST') return undefined;
+
+    const config = cfgRow?.daily_harvest_config as DailyHarvestConfig | null;
+    if (!config) return undefined;
+
+    // 2. Récupérer ou créer la session du jour
+    const session = await this.dailySession.createOrGetTodaySession(portfolioId, config);
+
+    // 3. Calculer la progression (pure function)
+    const progress = this.dailySession.computeProgress(session, config);
+
+    // 4. Mapper vers le DTO du briefing
+    return {
+      active: true,
+      state: progress.state,
+      targetAmountUsd: progress.targetAmountUsd,
+      realizedTodayUsd: progress.realizedToday,
+      securedTodayUsd: progress.securedToday,
+      remainingToTargetUsd: progress.remainingToTarget,
+      progressPct: progress.progressPct,
+      tradesCount: progress.tradesCount,
+      tradesRemainingBeforeCap: progress.tradesRemainingBeforeCap,
+      lossRemainingBeforeLockUsd: progress.lossRemainingBeforeLock,
+      sweepMode: config.profitSweepMode,
+      workingCapitalUsd: config.workingCapitalBaseUsd,
+    };
+  }
+
   private computeTrajectoryStatus(
     objectives: PerformanceObjectives,
     metrics: HistoryMetrics,

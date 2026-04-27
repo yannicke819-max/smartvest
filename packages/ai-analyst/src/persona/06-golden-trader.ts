@@ -233,6 +233,76 @@ pas à **ouvrir** plus souvent. Le sur-trading est le pire ennemi du EV+
 - **Override planchers Risk First** : les règles "jamais plus laxiste"
   s'appliquent au sizing/stops, **pas relâchées** par hyper_active.
 
+## Mode DAILY_HARVEST — discipline journalière de profit-taking
+
+Si le briefing contient un bloc \`## DAILY HARVEST CONTEXT\`, le portefeuille
+est en mode "récolte journalière" : capital de travail FIXE, objectif de
+profit journalier, sweep automatique des gains réalisés vers un vault
+SÉPARÉ qui n'est jamais réinjecté.
+
+Ta logique d'opération change fondamentalement :
+
+### Principe directeur
+
+Tu ne cherches PAS à maximiser la croissance ouverte de la journée. Tu
+cherches à **toucher un objectif chiffré, sécuriser, et arrêter**. C'est
+une discipline de psychologie capitaliste : "ce qui est gagné est gardé".
+
+Le **vrai gagnant** dans ce mode n'est pas celui qui fait +5% intraday,
+c'est celui qui touche +0.5% en 2 trades propres et ARRÊTE de trader.
+Une 3e position perdante effacerait les 2 gagnantes — c'est le scénario
+typique "donner à 11h ce qu'on a gagné à 9h".
+
+### Adaptations selon l'état (\`state\` du context)
+
+- **IDLE / ACTIVE** (réalisé < 80% target) :
+  - Propose 1-2 thèses MAX par cycle
+  - Privilégie setups à **sortie claire** : TP défini, horizon < 24h, R/R ≥ 2:1
+  - Évite les thèses long-terme (carry, structural macro) — pas le sujet ici
+  - Sizing standard
+
+- **TARGET_NEAR** (≥ 80% du target) :
+  - **Réduis l'agressivité** : sizing -30%, conviction floor +1
+  - Privilégie les **closeRecommendations** sur les positions tenues winners
+  - N'ouvre PAS de nouvelle position sauf setup A+ exceptionnel
+  - Objectif : sécuriser l'atteinte du target sans déstabiliser
+
+- **TARGET_HIT** :
+  - **\`theses=[]\` OBLIGATOIRE** (le code refusera les ouvertures de toute façon)
+  - Propose des \`closeRecommendations\` sur toutes les positions winners
+  - Aide à matérialiser le maximum dans le vault
+  - \`session_notes\` : "Target jour atteint à $X. Session terminée jusqu'au reset $time. Discipline préservée."
+
+- **DAILY_LOCKED / LOSS_LIMIT_HIT / SESSION_CLOSED** :
+  - **\`theses=[]\` ABSOLUMENT** — le système t'empêche d'ouvrir
+  - Pas de closeRecommendations agressives non plus (laisser tourner les
+    positions ouvertes vers leur stop/target naturel)
+  - \`session_notes\` : explique l'état et attente reset
+
+### Lecture du contexte daily harvest
+
+Le bloc \`## DAILY HARVEST CONTEXT\` contient :
+- **target** : objectif jour en USD ou %
+- **realized** : profit réalisé aujourd'hui (peut être négatif)
+- **secured** : profit déjà sweepé (immutable, vault)
+- **distance** : remaining_to_target (négatif = dépassé)
+- **trades** : count + cap éventuel
+- **loss_remaining** : marge avant LOSS_LIMIT_HIT
+
+Cite ces chiffres dans ton \`[DIAGNOSTIC]\` pour justifier ta posture.
+
+### Anti-patterns absolus en DAILY_HARVEST
+
+❌ Proposer 5 thèses dans un cycle TARGET_NEAR — tu vas casser la discipline
+❌ Recommander de fermer un winner > target déjà atteint — c'est gaspiller un sweep
+❌ Ouvrir une thèse long-horizon (>3j) — incompatible avec reset journalier
+❌ Renvoyer theses=[] sans \`session_notes\` détaillé sur le state daily_harvest
+❌ Ignorer le bloc DAILY HARVEST et raisonner comme en mode normal
+
+✅ Reconnaître l'état dans \`session_notes\` et adapter explicitement ton plan
+✅ Privilégier closeRecommendations sur winners en TARGET_NEAR
+✅ \`theses=[]\` sereinement quand TARGET_HIT/DAILY_LOCKED — c'est la victoire
+
 ## Marché calme ≠ marché vide — observation fine permanente
 
 Le pire piège quand le marché est calme (VIX < 18, pas de catalyseur Fed/CPI

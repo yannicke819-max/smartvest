@@ -104,6 +104,45 @@ export interface MarketSnapshot {
   performanceAnalytics?: string;
 }
 
+/**
+ * Contexte DAILY_HARVEST passé au briefing Lisa quand le mode est actif.
+ * Lisa adapte ses thèses en fonction de la progression vers l'objectif jour.
+ */
+export interface DailyHarvestBriefingContext {
+  /** Mode actif. Si false, le formatter retourne string vide. */
+  active: boolean;
+  /** État courant de la session (machine d'état du DailyProfitGovernor). */
+  state:
+    | 'IDLE'
+    | 'ACTIVE'
+    | 'TARGET_NEAR'
+    | 'TARGET_HIT'
+    | 'PROFIT_SWEEP_PENDING'
+    | 'PROFIT_SWEPT'
+    | 'DAILY_LOCKED'
+    | 'LOSS_LIMIT_HIT'
+    | 'SESSION_CLOSED';
+  /** Cible jour en USD absolu (résolu depuis amount OU percent). */
+  targetAmountUsd: number;
+  /** Profit réalisé aujourd'hui (peut être négatif). */
+  realizedTodayUsd: number;
+  /** Profit déjà sécurisé (sweepé) aujourd'hui. */
+  securedTodayUsd: number;
+  /** Distance à l'objectif (négatif si dépassé). */
+  remainingToTargetUsd: number;
+  /** Progression % vers l'objectif (0-100+). */
+  progressPct: number;
+  /** Trades count + cap éventuel. */
+  tradesCount: number;
+  tradesRemainingBeforeCap: number | null;
+  /** Marge avant LOSS_LIMIT_HIT. */
+  lossRemainingBeforeLockUsd: number | null;
+  /** Mode de sweep configuré. */
+  sweepMode: 'PER_TRADE' | 'END_OF_DAY';
+  /** Working capital fixe (référence opérationnelle). */
+  workingCapitalUsd: number;
+}
+
 export interface OpenPositionSummary {
   positionId: string;
   symbol: string;
@@ -183,6 +222,10 @@ export interface GenerateThesesRequest {
    *  binaire), ou au contraire de positionner explicitement event-driven
    *  via long_call/long_put. Nul/absent = pas d'earnings dans la fenêtre. */
   earningsBySymbol?: Record<string, string | null>;
+  /** Phase DAILY_HARVEST — contexte de session journalière si mode actif.
+   *  Permet à Lisa d'adapter ses thèses (sortie claire, take profit
+   *  prioritaire, defensive si TARGET_NEAR, theses=[] si TARGET_HIT). */
+  dailyHarvestContext?: DailyHarvestBriefingContext;
 }
 
 export interface GenerateThesesResponse {
@@ -349,7 +392,7 @@ ${m.lisaMemory}
 ` : ''}${m.performanceAnalytics ? `## YOUR EDGE — stats empiriques contextualisées sur tes trades fermés
 ${m.performanceAnalytics}
 
-` : ''}## Recent news (24-72h) — analyse scorée et filtrée
+` : ''}${this.formatDailyHarvestBlock(req.dailyHarvestContext)}## Recent news (24-72h) — analyse scorée et filtrée
 ${m.newsAnalysis ? m.newsAnalysis : (recentNewsBlock || '- (no recent news provided)')}${m.newsAnalysis ? '' : sentimentLine}
 ${m.screenerCandidates ? `\n## Screener candidates (scans de découverte EODHD)\n${m.screenerCandidates}\n` : ''}${m.insiderSignals ? `\n## Insider signals (SEC Form 4, 30j)\n${m.insiderSignals}\n` : ''}${m.optionsSignals ? `\n## Options flow (IV ATM · put/call ratio)\n${m.optionsSignals}\n` : ''}${m.liquidationsSignals ? `\n## Crypto liquidations (waves reversal)\n${m.liquidationsSignals}\n` : ''}
 
@@ -438,6 +481,95 @@ autorise la réactivité, il ne l'impose pas.
 Applique TA méthode Lisa complète. Renvoie UNIQUEMENT le JSON au format
 défini, sans markdown, sans explications hors JSON.
 `.trim();
+  }
+
+  /**
+   * Bloc DAILY_HARVEST CONTEXT — état de la session journalière de profit-taking.
+   *
+   * Renvoyé string vide si :
+   *  - Aucun contexte fourni (mode != DAILY_HARVEST)
+   *  - active = false
+   *
+   * Renvoyé bloc complet si actif, avec :
+   *  - state machine state
+   *  - target / realized / secured / distance
+   *  - trades count + caps
+   *  - posture recommandée (lue depuis la persona)
+   */
+  private formatDailyHarvestBlock(ctx?: DailyHarvestBriefingContext): string {
+    if (!ctx || !ctx.active) return '';
+
+    const sign = (n: number) => (n >= 0 ? '+' : '');
+    const stateLabel = {
+      IDLE: '🟢 IDLE — pas encore de trade aujourd\'hui',
+      ACTIVE: '🟢 ACTIVE — session en cours, recherche d\'opportunités',
+      TARGET_NEAR: '🟡 TARGET_NEAR — objectif proche (≥80%), réduis l\'agressivité',
+      TARGET_HIT: '✅ TARGET_HIT — objectif atteint, theses=[] obligatoire',
+      PROFIT_SWEEP_PENDING: '🔄 PROFIT_SWEEP_PENDING — sweep en cours',
+      PROFIT_SWEPT: '✅ PROFIT_SWEPT — profits sécurisés dans vault',
+      DAILY_LOCKED: '🔒 DAILY_LOCKED — entrées bloquées jusqu\'au reset',
+      LOSS_LIMIT_HIT: '🛑 LOSS_LIMIT_HIT — perte journalière max atteinte, lock auto',
+      SESSION_CLOSED: '⏹️ SESSION_CLOSED — fin journée, attend prochain reset',
+    }[ctx.state];
+
+    const lines = [
+      '## DAILY HARVEST CONTEXT — mode discipline journalière de profit-taking',
+      '',
+      `**État courant** : ${stateLabel}`,
+      '',
+      '**Métriques journalières** :',
+      `- Working capital fixe : $${ctx.workingCapitalUsd.toFixed(2)} (référence opérationnelle, INCHANGÉ)`,
+      `- Cible jour : $${ctx.targetAmountUsd.toFixed(2)}`,
+      `- Réalisé aujourd'hui : ${sign(ctx.realizedTodayUsd)}$${ctx.realizedTodayUsd.toFixed(2)}`,
+      `- Sécurisé (vault) : $${ctx.securedTodayUsd.toFixed(2)} ← non réinjectable`,
+      `- Distance à l'objectif : ${sign(ctx.remainingToTargetUsd)}$${ctx.remainingToTargetUsd.toFixed(2)}`,
+      `- Progression : ${ctx.progressPct.toFixed(0)}%`,
+      `- Trades aujourd'hui : ${ctx.tradesCount}${ctx.tradesRemainingBeforeCap != null ? ` (cap atteint dans ${ctx.tradesRemainingBeforeCap})` : ''}`,
+      ctx.lossRemainingBeforeLockUsd != null
+        ? `- Marge avant LOSS_LIMIT : $${ctx.lossRemainingBeforeLockUsd.toFixed(2)}`
+        : '',
+      `- Mode sweep : ${ctx.sweepMode}`,
+      '',
+      '**Implications immédiates pour ce cycle** :',
+    ];
+
+    // Posture par état
+    switch (ctx.state) {
+      case 'IDLE':
+      case 'ACTIVE':
+        lines.push(
+          '- Mode actif normal. Privilégie 1-2 thèses MAX à sortie claire (TP < 24h, R/R ≥ 2:1).',
+          '- Sizing standard. Évite les thèses long-horizon (carry, structural macro).',
+        );
+        break;
+      case 'TARGET_NEAR':
+        lines.push(
+          '- ⚠️ **Réduis l\'agressivité** : sizing -30%, conviction floor +1.',
+          '- Privilégie les **closeRecommendations** sur winners pour sécuriser le target.',
+          '- N\'ouvre PAS sauf setup A+ exceptionnel (R/R ≥ 3:1).',
+        );
+        break;
+      case 'TARGET_HIT':
+      case 'PROFIT_SWEPT':
+        lines.push(
+          '- 🎯 Objectif jour atteint. **theses=[] obligatoire** (le code refuse les ouvertures).',
+          '- Tu PEUX proposer des `closeRecommendations` sur winners pour matérialiser plus.',
+          '- `session_notes` : explicite la victoire et l\'arrêt discipliné.',
+        );
+        break;
+      case 'DAILY_LOCKED':
+      case 'LOSS_LIMIT_HIT':
+      case 'SESSION_CLOSED':
+        lines.push(
+          '- 🔒 Session lockée. **theses=[] absolument** — système refuse toute ouverture.',
+          '- Pas de closeRecommendations agressives non plus (laisse les positions tenues toucher leurs stops/targets naturels).',
+          '- `session_notes` : explique l\'état et l\'attente du reset.',
+        );
+        break;
+    }
+
+    lines.push('');
+    return lines.filter((l) => l !== '').join('\n') + '\n\n';
   }
 
   /**
