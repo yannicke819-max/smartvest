@@ -1777,7 +1777,10 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       if (anyCached) {
         return { symbol, price: anyCached.price, asOf: new Date(Date.now() - anyCached.ageMs).toISOString(), source: `${anyCached.source}_stale` };
       }
-      return { symbol, price: this.getFallbackPrice(symbol), asOf: now, source: 'fallback_quota_cap' };
+      const fb = this.getFallbackPrice(symbol);
+      // Si symbole inconnu de la table fallback : marqué 'fallback_unknown'
+      // → garde-fou consumer DOIT skipper toute action destructive.
+      return { symbol, price: fb ?? '0', asOf: now, source: fb ? 'fallback_quota_cap' : 'fallback_unknown' };
     }
 
     // 1. Try EODHD real-time endpoint
@@ -1825,6 +1828,14 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     // 3. Static fallback (simulation still works without live data)
     this.logger.warn(`No quote found for ${symbol}, returning fallback price`);
     const fallback = this.getFallbackPrice(symbol);
+    if (fallback === null) {
+      // Symbole inconnu de la table : pas de fallback plausible. On signale
+      // explicitement 'fallback_unknown' → garde-fou consumer DOIT skipper.
+      // Incident 27/04 : ancien code retournait $100 → stop trigger fake price.
+      this.logger.error(`[FALLBACK_UNKNOWN] No fallback known for ${symbol} — returning sentinel '0' with source='fallback_unknown'`);
+      this.logEodhdCall({ ticker: symbol, eodhdTicker, source: 'fallback', success: false, calledBy: 'live_price', errorMessage: 'fallback_unknown_symbol' });
+      return { symbol, price: '0', asOf: now, source: 'fallback_unknown' };
+    }
     this.logEodhdCall({ ticker: symbol, eodhdTicker, source: 'fallback', success: true, priceUsd: Number(fallback), calledBy: 'live_price' });
     return { symbol, price: fallback, asOf: now, source: 'fallback' };
   }
@@ -1953,8 +1964,13 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
    * servent uniquement de filet de sécurité quand EODHD échoue ET le cache
    * Supabase est vide. Un système de fallback ne doit JAMAIS retourner une
    * valeur cohérente dans la plage de panique d'un agent en aval.
+   *
+   * Retourne `null` si le symbole est inconnu — le caller DOIT alors traiter
+   * comme "pas de prix disponible" et skipper toute décision destructive.
+   * Incident 27/04/2026 : LMT non listé → fallback générique $100 → stop
+   * triggered sur prix factice → liquidation -80 % d'une position $513.
    */
-  private getFallbackPrice(symbol: string): string {
+  private getFallbackPrice(symbol: string): string | null {
     const s = symbol.toUpperCase().replace('-', '');
     const prices: Record<string, string> = {
       // Crypto
@@ -1968,6 +1984,10 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       // Equity / ETFs principaux
       'SPY': '545', 'QQQ': '455', 'IWM': '195',
       'AAPL': '195', 'MSFT': '405', 'NVDA': '870', 'AMZN': '195',
+      // Defense names (univers récurrent en geopolitical_stress)
+      'LMT': '510', 'RTX': '175', 'NOC': '500', 'GD': '300', 'BA': '180', 'GE': '200',
+      // Energy / Mining usuels
+      'XLE': '95', 'XOM': '115', 'CVX': '160', 'GDX': '40', 'NEM': '55',
       // FX (paires sans tiret)
       'USDJPY': '155', 'EURUSD': '1.08', 'GBPUSD': '1.27',
       'USDCHF': '0.90', 'AUDUSD': '0.64', 'USDCAD': '1.38',
@@ -1982,7 +2002,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       'US30Y': '4.4', 'TYX': '4.4',
       'TLT': '90', 'IEF': '95', 'HYG': '76', 'LQD': '108',
     };
-    return prices[s] ?? '100.00';
+    return prices[s] ?? null;
   }
 
   /**

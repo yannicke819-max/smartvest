@@ -400,6 +400,17 @@ Mécanisme indépendant de Lisa : ferme une position long avant que Lisa ait le 
 
 Tracé comme `closed_invalidated` dans `lisa_positions`, decision_log enrichi du sentiment et du titre. Critères stricts pour éviter de tordre une thèse encore valide à cause d'une news bruyante.
 
+### Garde-fous prix fallback — règles immuables
+
+Tout consumer de `LisaService.getLivePrice()` doit traiter le champ `source` comme **autorité** sur la fiabilité, en plus du prix lui-même :
+
+1. **`getFallbackPrice(symbol)` retourne `null`** quand le symbole n'est pas dans la table de fallback statique. Tout caller qui reçoit `null` doit traiter comme « pas de prix disponible ». Anti-pattern interdit : retourner $100 par défaut (incident 27/04/2026 — LMT $513 → $100 → stop trigger fake → liquidation -80 %).
+2. **`source = 'fallback_unknown'`** signale ce cas. Sentinel price `'0'`. Aucune action destructive (close, stop, take-profit) ne doit jamais être prise sur ce source.
+3. **`isFallbackSource(source)`** doit catcher tout préfixe `fallback*` (incluant `fallback_unknown`, `fallback_quota_cap`).
+4. **Sanity bound 30 %** dans `checkStopTarget` : tout prix divergeant > 30 % de l'entry en un seul tick est skippé avec log `[SANITY_BOUND]`. Une variation > 30 % en 60 s sur un actif liquide est presque toujours une corruption (cache pollué, parser glitch, source aberrante non taggée fallback). Cette double protection est nécessaire — ne pas la retirer sous prétexte qu'elle « bloque » un vrai mouvement violent ; un vrai krash sera capté au tick suivant.
+
+Tout nouveau symbole pertinent (LMT, NOC, GD, etc.) doit être ajouté à la table `getFallbackPrice` avec une valeur réaliste pour éviter de bloquer la simulation pendant une indisponibilité EODHD.
+
 ### Filet de garantie autopilot — preset HARVEST = 7 min
 
 Le filet de garantie (`autopilot_cycle_minutes`) force un cycle Lisa même si aucun event matériel n'est détecté. Clamp UI : 5-60 min, modifiable par utilisateur. Defaults par preset :

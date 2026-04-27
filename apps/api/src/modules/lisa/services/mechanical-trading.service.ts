@@ -1422,7 +1422,40 @@ export class MechanicalTradingService {
       return;
     }
 
-    const currentPrice = new Decimal(quote.price);
+    // 🛡️ SANITY BOUND (incident 27/04, LMT closed at $100 from $513) :
+    // refuse tout prix qui diverge > 30% de l'entry en un seul tick. Un
+    // vrai mouvement >30% sur un asset liquide en 60s est virtuellement
+    // impossible — c'est presque certainement un prix corrompu (cache
+    // pollué, parser EODHD glitch, source non-fallback mais aberrante).
+    // On skip ; le tick suivant aura un prix réaliste OU le sanity bound
+    // continuera à protéger.
+    const entryPx = new Decimal(pos.entryPrice);
+    const livePx = new Decimal(quote.price);
+    if (entryPx.gt(0) && livePx.gt(0)) {
+      const deltaPct = livePx.minus(entryPx).div(entryPx).abs().mul(100).toNumber();
+      if (deltaPct > 30) {
+        this.logger.warn(
+          `[SANITY_BOUND] ${pos.symbol}: prix=${quote.price} (source=${quote.source}) diverge ${deltaPct.toFixed(1)}% de l'entry=${pos.entryPrice} — skip (probable corruption)`,
+        );
+        await this.decisionLog.append({
+          portfolioId: String((pos as unknown as Record<string, unknown>)['portfolio_id'] ?? ''),
+          kind: 'autopilot_cycle_completed',
+          summary: `[SANITY_BOUND] ${pos.symbol} prix ${quote.price} divergeait ${deltaPct.toFixed(1)}% de l'entry — close skippé`,
+          rationale: `Anti faux-stop : ${quote.price} (source=${quote.source}) vs entry ${pos.entryPrice}. Un mouvement > 30 % en un tick sur un actif liquide est presque toujours une corruption de prix.`,
+          payload: {
+            symbol: pos.symbol,
+            live_price: quote.price,
+            live_source: quote.source,
+            entry_price: pos.entryPrice,
+            divergence_pct: deltaPct,
+          },
+          triggeredBy: 'mechanical_cron',
+        }).catch(() => {/* non bloquant */});
+        return;
+      }
+    }
+
+    const currentPrice = livePx;
     const stopPrice = pos.stopLossPrice ? new Decimal(pos.stopLossPrice) : null;
     const tpPrice = pos.takeProfitPrice ? new Decimal(pos.takeProfitPrice) : null;
 
