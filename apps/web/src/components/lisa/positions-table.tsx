@@ -1,7 +1,7 @@
 'use client';
 
 import { Briefcase, TrendingUp, TrendingDown, AlertCircle } from 'lucide-react';
-import { useLisaPositions, type LisaPosition } from '@/hooks/use-lisa';
+import { useLisaPositions, useLisaPositionsRealtime, type LisaPosition } from '@/hooks/use-lisa';
 import { SkeletonCard } from '@/components/ui/skeleton';
 
 const STATUS_LABELS: Record<LisaPosition['status'], { label: string; color: string }> = {
@@ -15,6 +15,9 @@ const STATUS_LABELS: Record<LisaPosition['status'], { label: string; color: stri
 };
 
 export function LisaPositionsTable({ portfolioId }: { portfolioId: string }) {
+  // PR E — invalidation immédiate de la cache positions sur INSERT/UPDATE/DELETE
+  // côté DB (le mécanique ouvre/ferme sans interaction UI).
+  useLisaPositionsRealtime(portfolioId);
   const openQuery = useLisaPositions(portfolioId, true);
   const allQuery = useLisaPositions(portfolioId, false);
 
