@@ -29,6 +29,7 @@ import { OptionBrokerService } from './option-broker.service';
 import { EodhdCalendarService } from './eodhd-calendar.service';
 import { BinanceMarketService } from './binance-market.service';
 import { TradeOutcomeRecorderService } from './trade-outcome-recorder.service';
+import { DailyProfitGovernor } from './daily-profit-governor.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types internes
@@ -149,6 +150,7 @@ export class MechanicalTradingService {
     private readonly earningsCalendar: EodhdCalendarService,
     private readonly binance: BinanceMarketService,
     private readonly tradeOutcomeRecorder: TradeOutcomeRecorderService,
+    private readonly dailyProfitGovernor: DailyProfitGovernor,
   ) {}
 
   /**
@@ -629,6 +631,26 @@ export class MechanicalTradingService {
     let cycleNotionalUsed = new Decimal(0);
 
     let slotsUsed = 0;
+
+    // DAILY_HARVEST gatekeeper — bloque toutes les ouvertures du cycle si
+    // état terminal de session (DAILY_LOCKED, LOSS_LIMIT_HIT, SESSION_CLOSED,
+    // ou TARGET_HIT avec stopTradingWhenTargetHit). Inerte si mode != DAILY_HARVEST.
+    const harvestGate = await this.dailyProfitGovernor.canOpenPosition(cfg.portfolio_id);
+    if (!harvestGate.allowed) {
+      this.logger.log(`[DAILY_HARVEST] Cycle skip ouvertures: ${harvestGate.reason}`);
+      await this.decisionLog.append({
+        portfolioId: cfg.portfolio_id,
+        kind: 'daily_harvest_block_new_entries',
+        summary: `Ouvertures bloquées (state: ${harvestGate.state})`,
+        rationale: harvestGate.reason ?? 'Mode DAILY_HARVEST en état non-tradant',
+        payload: {
+          state: harvestGate.state,
+          targetCount: directive.targetSymbols.length,
+        },
+        triggeredBy: 'autopilot_cron',
+      }).catch(() => null);
+      return; // skip toutes les ouvertures
+    }
 
     for (const target of directive.targetSymbols) {
       if (activePositions.length + slotsUsed >= maxPositions) break;
@@ -1680,6 +1702,19 @@ export class MechanicalTradingService {
     this.tradeOutcomeRecorder
       .recordOutcome(positionId, exitPrice.toFixed(10), reason)
       .catch((e) => this.logger.debug(`outcome record failed: ${String(e).slice(0, 100)}`));
+
+    // DAILY_HARVEST Phase 2 — fire-and-forget : update session metrics +
+    // sweep PER_TRADE si applicable + state machine. Inerte si le portfolio
+    // n'est PAS en mode DAILY_HARVEST. Ne bloque jamais le close.
+    this.dailyProfitGovernor
+      .onTradeClosed(
+        pos.portfolio_id as string,
+        positionId,
+        pos.symbol as string,
+        realizedPnl.toNumber(),
+        reason,
+      )
+      .catch((e) => this.logger.debug(`daily-harvest hook failed: ${String(e).slice(0, 100)}`));
 
     await this.decisionLog.append({
       portfolioId: pos.portfolio_id as string,

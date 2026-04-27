@@ -7,6 +7,7 @@ import { LisaService } from './lisa.service';
 import { DecisionLogService } from './decision-log.service';
 import { RealtimePriceService } from './realtime-price.service';
 import { MaterialChangeDetectorService } from './material-change-detector.service';
+import { DailyProfitGovernor } from './daily-profit-governor.service';
 
 /** Tickers macro et indices stratégiques que Lisa consulte en permanence.
  *  Warmed une fois au boot pour peupler le cache immédiatement, évite le
@@ -61,7 +62,29 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
     private readonly realtimePrice: RealtimePriceService,
     private readonly performance: PerformanceService,
     private readonly materialDetector: MaterialChangeDetectorService,
+    private readonly dailyProfitGovernor: DailyProfitGovernor,
   ) {}
+
+  /**
+   * Cron DAILY_HARVEST — toutes les 60s.
+   * Vérifie pour chaque portfolio en mode DAILY_HARVEST :
+   *  - Faut-il fermer la session (sessionEndTime atteint) ?
+   *  - Faut-il sweeper end-of-day ?
+   *  - Faut-il faire le reset journalier ?
+   *
+   * Inerte si aucun portfolio n'est en mode DAILY_HARVEST.
+   * Idempotent : ne déclenche les actions que si nécessaire.
+   */
+  @Cron(CronExpression.EVERY_MINUTE, { name: 'daily-harvest-governor' })
+  async runDailyHarvestGovernor() {
+    const locked = await this.acquireCronLock('daily_harvest_governor', 90);
+    if (!locked) return;
+    try {
+      await this.dailyProfitGovernor.runDailyTick();
+    } finally {
+      await this.releaseCronLock('daily_harvest_governor');
+    }
+  }
 
   /**
    * Tente d'acquérir le mutex distribué (table lisa_cron_locks).

@@ -32,6 +32,8 @@ import { MaterialChangeDetectorService } from './services/material-change-detect
 import { TradeOutcomeRecorderService } from './services/trade-outcome-recorder.service';
 import { LisaPerformanceAnalyticsService } from './services/lisa-performance-analytics.service';
 import { DailySessionService } from './services/daily-session.service';
+import { ProfitSweepService } from './services/profit-sweep.service';
+import { DailyProfitGovernor } from './services/daily-profit-governor.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule],
@@ -66,8 +68,10 @@ import { DailySessionService } from './services/daily-session.service';
     MaterialChangeDetectorService,
     TradeOutcomeRecorderService,
     LisaPerformanceAnalyticsService,
-    // DAILY_HARVEST (Phase 1) — service CRUD only, pas de logique métier active
+    // DAILY_HARVEST (Phase 1+2) — CRUD + sweep + governor (state machine)
     DailySessionService,
+    ProfitSweepService,
+    DailyProfitGovernor,
   ],
   exports: [
     LisaService,
@@ -95,6 +99,8 @@ import { DailySessionService } from './services/daily-session.service';
     LisaMemoryService,
     MaterialChangeDetectorService,
     DailySessionService,
+    ProfitSweepService,
+    DailyProfitGovernor,
   ],
 })
 export class LisaModule {}
