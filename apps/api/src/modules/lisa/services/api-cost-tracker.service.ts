@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import type { CostTracker, LlmTask } from '@smartvest/ai-analyst';
 import { SupabaseService } from '../../supabase/supabase.service';
 
 /**
@@ -39,10 +40,35 @@ export class BudgetExceededError extends Error {
  * Cf. PATCH 4 risk-04-adaptive-safetynet-budget.
  */
 @Injectable()
-export class ApiCostTrackerService {
+export class ApiCostTrackerService implements CostTracker {
   private readonly logger = new Logger(ApiCostTrackerService.name);
 
   constructor(private readonly supabase: SupabaseService) {}
+
+  /**
+   * PATCH 6 P1 cost-01-llm-router — Adapter de l'interface `CostTracker`
+   * consommée par `LlmRouter`. Persiste via `recordApiCost` (par modèle)
+   * et logue task + tokens (sans extension de schéma DB pour l'instant).
+   *
+   * Contract `CostTracker`:
+   *   record({ task, model, inputTokens, outputTokens, costUsd })
+   *
+   * Le tracking par-tâche granulaire (by_task JSONB) sera ajouté quand le
+   * router aura assez de call sites migrés pour rendre la breakdown utile.
+   */
+  async record(entry: {
+    task: LlmTask;
+    model: string;
+    inputTokens: number;
+    outputTokens: number;
+    costUsd: number;
+  }): Promise<void> {
+    this.logger.debug(
+      `[router:cost] task=${entry.task} model=${entry.model} ` +
+      `tokens=${entry.inputTokens}/${entry.outputTokens} cost=$${entry.costUsd.toFixed(4)}`,
+    );
+    await this.recordApiCost(entry.model, entry.costUsd);
+  }
 
   /**
    * Total coûts API consommés depuis 00:00 UTC aujourd'hui (USD).
