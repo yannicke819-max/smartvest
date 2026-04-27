@@ -36,6 +36,7 @@ import { DailySessionService } from './services/daily-session.service';
 import { ProfitSweepService } from './services/profit-sweep.service';
 import { DailyProfitGovernor } from './services/daily-profit-governor.service';
 import { MacroModeService } from './services/macro-mode.service';
+import { ApiCostTrackerService } from './services/api-cost-tracker.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule, BotLabModule],
@@ -76,6 +77,8 @@ import { MacroModeService } from './services/macro-mode.service';
     DailyProfitGovernor,
     // Macro mode (INVESTMENT / HARVEST presets)
     MacroModeService,
+    // PATCH 4 — running total + hard-stop budget API
+    ApiCostTrackerService,
   ],
   exports: [
     LisaService,
