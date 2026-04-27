@@ -365,9 +365,59 @@ export function useLisaPositions(portfolioId: string | null, openOnly = false) {
     queryKey: ['lisa', 'positions', portfolioId, openOnly],
     queryFn: () => apiFetch<LisaPosition[]>(`/lisa/positions/${portfolioId}?openOnly=${openOnly}`),
     enabled: !!portfolioId,
-    refetchInterval: 30_000,
+    // PR E — incident 27/04 : le mécanique ouvre RTX à 19:14, UI restait
+    // à "1 position" pendant 30s. Polling 5s + Realtime invalidation via
+    // useLisaPositionsRealtime ramène le délai à <1s perçu.
+    refetchInterval: 5_000,
+    refetchIntervalInBackground: true,
     ...LISA_QUERY_OPTIONS,
   });
+}
+
+/**
+ * PR E — Subscribe à Supabase Realtime sur `lisa_positions` filtré par
+ * portfolio_id et invalide la query React Query
+ * `['lisa', 'positions', portfolioId, ...]` à chaque INSERT/UPDATE/DELETE.
+ *
+ * Cas d'usage : le mécanique (cron 60s côté API) ouvre/ferme des positions
+ * sans interaction UI. Sans Realtime, l'UI n'a connaissance d'une
+ * nouvelle position qu'au prochain `refetchInterval`. Avec Realtime, la
+ * query est ré-exécutée immédiatement → le tableau positions apparaît
+ * instantanément.
+ *
+ * Pré-requis : migration 0073 doit avoir activé Realtime sur
+ * `lisa_positions` dans la publication `supabase_realtime`. Sans la
+ * migration, ce hook fait un subscribe inerte (aucun event reçu) — le
+ * polling 5s prend le relais comme fallback.
+ *
+ * Note : on invalide TOUTES les variantes de la query (openOnly true/false)
+ * via une queryKey préfixe, car un INSERT pertinent peut affecter les
+ * deux vues simultanément.
+ */
+export function useLisaPositionsRealtime(portfolioId: string | null): void {
+  const qc = useQueryClient();
+  useEffect(() => {
+    if (!portfolioId) return;
+    const client = createSupabaseBrowserClient();
+    const channel = client
+      .channel(`lisa_positions_${portfolioId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'lisa_positions',
+          filter: `portfolio_id=eq.${portfolioId}`,
+        },
+        () => {
+          void qc.invalidateQueries({ queryKey: ['lisa', 'positions', portfolioId] });
+        },
+      )
+      .subscribe();
+    return () => {
+      void client.removeChannel(channel);
+    };
+  }, [portfolioId, qc]);
 }
 
 export interface LisaOptionPosition {
