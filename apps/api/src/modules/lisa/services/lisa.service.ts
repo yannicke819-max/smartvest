@@ -1547,14 +1547,22 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     await this.assertPortfolioOwner(userId, portfolioId);
     const client = this.supabase.getClient();
 
-    const [posRes, snapRes, logRes, propRes] = await Promise.all([
+    // Reset COMPLET — toutes les tables qui portent un état du portfolio.
+    // Incident 27/04/2026 : ancien reset n'effaçait que positions/snapshots/log/proposals
+    // → daily_trading_sessions et secured_profit_balance gardaient le P&L corrompu
+    // → UI Harvest affichait toujours -$0.91 et vault $7.09 après reset.
+    const [posRes, snapRes, logRes, propRes, sessRes, vaultRes, dirRes, cycleRes] = await Promise.all([
       client.from('lisa_positions').delete().eq('portfolio_id', portfolioId),
       client.from('lisa_portfolio_snapshots').delete().eq('portfolio_id', portfolioId),
       client.from('lisa_decision_log').delete().eq('portfolio_id', portfolioId),
       client.from('lisa_proposals').delete().eq('portfolio_id', portfolioId),
+      client.from('daily_trading_sessions').delete().eq('portfolio_id', portfolioId),
+      client.from('secured_profit_balance').delete().eq('portfolio_id', portfolioId),
+      client.from('lisa_mechanical_directives').delete().eq('portfolio_id', portfolioId),
+      client.from('lisa_mechanical_cycle_summary').delete().eq('portfolio_id', portfolioId),
     ]);
 
-    const errors = [posRes.error, snapRes.error, logRes.error, propRes.error].filter(Boolean);
+    const errors = [posRes.error, snapRes.error, logRes.error, propRes.error, sessRes.error, vaultRes.error, dirRes.error, cycleRes.error].filter(Boolean);
     if (errors.length) {
       throw new BadRequestException(`Reset partiel — erreurs : ${errors.map((e) => e!.message).join(' | ')}`);
     }

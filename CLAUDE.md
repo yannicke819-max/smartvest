@@ -419,6 +419,23 @@ Pourquoi : un hook `onTradeClosed` qui silently échoue (fire-and-forget swallow
 
 Règle immuable : tout nouveau champ de session aggregé (somme/count) doit être recalculé dans `resyncSessionFromPositions`, pas incrémenté à la volée. Tout échec du hook `onTradeClosed` se logge en `error` (pas `debug`/`warn`) pour qu'il soit visible.
 
+### `resetSimulation` — efface TOUTES les tables d'état
+
+`LisaService.resetSimulation()` doit effacer **toutes** les tables qui portent un état du portfolio. Incident 27/04/2026 : l'ancien reset oubliait `daily_trading_sessions` et `secured_profit_balance` → l'UI Harvest gardait −$0.91 et vault $7.09 même après reset → utilisateur voyait des données fantômes sur un capital propre.
+
+Liste actuelle (à étendre dès qu'une nouvelle table porte de l'état) :
+
+- `lisa_positions`
+- `lisa_portfolio_snapshots`
+- `lisa_decision_log`
+- `lisa_proposals`
+- `daily_trading_sessions`
+- `secured_profit_balance`
+- `lisa_mechanical_directives`
+- `lisa_mechanical_cycle_summary`
+
+Et lève `kill_switch_active = false` sur `lisa_session_configs`. Toute nouvelle table d'état d'un portfolio (compteurs, vaults, sessions, directives, audits scopés) doit être ajoutée à cette liste — sinon le reset laisse de la pollution UI.
+
 ### Filet de garantie autopilot — preset HARVEST = 7 min
 
 Le filet de garantie (`autopilot_cycle_minutes`) force un cycle Lisa même si aucun event matériel n'est détecté. Clamp UI : 5-60 min, modifiable par utilisateur. Defaults par preset :
