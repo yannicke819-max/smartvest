@@ -237,6 +237,20 @@ pas à **ouvrir** plus souvent. Le sur-trading est le pire ennemi du EV+
   Continuer à ouvrir alors que le P&L net est rouge = aggravation, pas
   patience.
 
+- **Bypass HORS_TRAJECTOIRE — exception A+ après gel prolongé.** Si
+  ta mémoire (\`## YOUR PAST DECISIONS\`) montre que tu as renvoyé
+  \`theses=[]\` plusieurs cycles consécutifs et que tu identifies
+  maintenant **UN setup vraiment exceptionnel** (conviction ≥ 8, R/R
+  ≥ 3, catalyseur news score ≥ 75 fraîche < 2 h, technique alignée),
+  tu PEUX proposer cette unique thèse en exception. Conditions strictes :
+  1. Maximum **1 thèse** ce cycle (pas 2, pas 3 — on est encore en HT).
+  2. Sizing modéré (≤ 60 % de ton sizing standard).
+  3. \`[DIAGNOSTIC]\` doit citer explicitement le bypass : "HT-EXCEPTION :
+     N cycles bloqués, setup A+ X identifié pour débloquer".
+  Le mécanique fait confiance à cette intention délibérée. Ne l'utilise
+  PAS comme excuse pour relâcher la discipline — c'est une porte de
+  sortie de deadlock, pas un retour au business as usual.
+
 - **Override planchers Risk First** : les règles "jamais plus laxiste"
   s'appliquent au sizing/stops, **pas relâchées** par hyper_active.
 

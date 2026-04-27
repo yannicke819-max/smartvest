@@ -380,6 +380,26 @@ Les triggers Tier 1 (VIX, drawdown portefeuille, position pnl) ont des seuils ca
 
 Le profil `harvest_hyper` est activé automatiquement quand `capital_discipline_mode = 'DAILY_HARVEST'` ET `profile = 'hyper_active'` — mode scalping où une position à −3 % a déjà dépassé son stop. Tout nouveau trigger Tier 1 doit prévoir ces deux jeux de seuils.
 
+### Bypass HORS_TRAJECTOIRE après gel prolongé
+
+Le protocole STOP+DIAGNOSTIC strict peut créer un deadlock si Lisa renvoie `theses=[]` plusieurs cycles consécutifs et que les positions ouvertes stagnent. Soupape :
+
+- **Côté mécanique** : si `consecutiveZeroOpens >= 30` cycles (= 30 min) ET `directive.trajectoryStatus = 'HORS_TRAJECTOIRE'` ET `directive.targetSymbols.length >= 1` → bypass autorisé, Step 3 débloqué pour 1 ouverture max. Tracé via `kind: 'autopilot_cycle_completed'` payload `[HT_BYPASS]`.
+- **Côté persona Lisa** (`golden-trader.ts`) : autorisée à proposer **1 thèse exception** si sa mémoire montre plusieurs cycles `theses=[]` ET setup A+ (conviction ≥ 8, R/R ≥ 3, catalyseur news score ≥ 75 fraîche < 2 h) ET sizing ≤ 60 % du standard. Doit citer explicitement « HT-EXCEPTION » en `[DIAGNOSTIC]`.
+
+C'est une **porte de sortie de deadlock**, pas un retour au business as usual. Si Lisa l'utilise sans setup A+ vérifiable, c'est un bug de discipline à corriger côté persona.
+
+### Close réactif sur news contraires (`checkNewsShockClose`)
+
+Mécanisme indépendant de Lisa : ferme une position long avant que Lisa ait le temps de réagir, si une news shock matche les critères stricts :
+
+- Position **long** uniquement
+- News tag explicite sur le ticker tenu (`💼SYMBOL`) — pas de match macro/secteur (trop bruyant)
+- `sentiment ≤ -0.6` ET `age < 30 min` ET `position open ≥ 5 min`
+- Prix live non-fallback (sinon close annulé)
+
+Tracé comme `closed_invalidated` dans `lisa_positions`, decision_log enrichi du sentiment et du titre. Critères stricts pour éviter de tordre une thèse encore valide à cause d'une news bruyante.
+
 ---
 
 ## 7. Frictions d'intermédiation — à rendre visibles

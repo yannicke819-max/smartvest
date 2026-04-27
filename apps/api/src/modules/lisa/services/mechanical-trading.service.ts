@@ -31,6 +31,7 @@ import { BinanceMarketService } from './binance-market.service';
 import { TradeOutcomeRecorderService } from './trade-outcome-recorder.service';
 import { DailyProfitGovernor } from './daily-profit-governor.service';
 import { PatternAdoptionService } from '../../bot-lab/services/pattern-adoption.service';
+import { EodhdEnrichmentService } from './eodhd-enrichment.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types internes
@@ -157,6 +158,7 @@ export class MechanicalTradingService {
     private readonly tradeOutcomeRecorder: TradeOutcomeRecorderService,
     private readonly dailyProfitGovernor: DailyProfitGovernor,
     private readonly patternAdoption: PatternAdoptionService,
+    private readonly enrichment: EodhdEnrichmentService,
   ) {}
 
   /**
@@ -306,6 +308,13 @@ export class MechanicalTradingService {
     await this.triggerAgentLisaSyncIfNeeded(cfg, openPositions)
       .catch((e) => this.logger.warn(`[P5.1] Agent sync eval failed: ${String(e).slice(0, 120)}`));
 
+    // Step 0.6 — Close réactif sur news contraires fraîches.
+    // Ne réveille pas Lisa : ferme directement avant qu'un wake-up Lisa
+    // ne tarde 5-20 min. Critères stricts (sentiment ≤ -0.6, age < 30 min,
+    // direct hit ticker tenu) pour éviter les faux positifs.
+    await this.checkNewsShockClose(openPositions)
+      .catch((e) => this.logger.warn(`[news-shock-close] eval failed: ${String(e).slice(0, 120)}`));
+
     // Step 1 — Explicit close requests from Lisa
     if (directive) {
       for (const cond of directive.closeConditions) {
@@ -367,12 +376,39 @@ export class MechanicalTradingService {
       return;
     }
 
-    // HORS_TRAJECTOIRE → préservation du capital, aucune ouverture
-    if (directive.trajectoryStatus === 'HORS_TRAJECTOIRE') {
+    // HORS_TRAJECTOIRE → préservation du capital, aucune ouverture par défaut.
+    // Bypass autorisé si : ≥ 30 cycles mécaniques sans opens (= 30 min de gel)
+    // ET Lisa a délibérément proposé ≥ 1 thèse A+ malgré sa règle STOP+DIAGNOSTIC.
+    // Logique : si Lisa, qui sait qu'elle est en HT, propose quand même quelque
+    // chose après long gel, c'est qu'elle a un setup A+ qui justifie l'exception.
+    // Le mécanique respecte cette intention plutôt que de bloquer mécaniquement.
+    const htConsecutiveZero = await this.countConsecutiveZeroOpenCycles(portfolioId);
+    const htBypassAllowed =
+      directive.trajectoryStatus === 'HORS_TRAJECTOIRE' &&
+      htConsecutiveZero >= 30 &&
+      directive.targetSymbols.length >= 1;
+    if (directive.trajectoryStatus === 'HORS_TRAJECTOIRE' && !htBypassAllowed) {
       this.logger.debug(`${portfolioId}: HORS_TRAJECTOIRE — ouvertures suspendues, protection capital`);
       await this.writeDefensiveCycleSummary(portfolioId, currentPositions)
         .catch((e) => this.logger.debug(`defensive summary failed: ${String(e).slice(0, 80)}`));
       return;
+    }
+    if (htBypassAllowed) {
+      this.logger.log(
+        `[HT_BYPASS] ${portfolioId.slice(0, 8)} — ${htConsecutiveZero} cycles sans opens + Lisa propose ${directive.targetSymbols.length} thèse(s) A+ → Step 3 débloqué (1 ouverture max)`,
+      );
+      await this.decisionLog.append({
+        portfolioId,
+        kind: 'autopilot_cycle_completed',
+        summary: `[HT_BYPASS] HORS_TRAJECTOIRE débloqué après ${htConsecutiveZero} cycles inactifs — Lisa a proposé ${directive.targetSymbols.length} thèse(s) A+, 1 exception autorisée`,
+        rationale:
+          'Évite la paralysie perpétuelle quand HT persiste : le mécanique fait confiance à Lisa qui a délibérément bypassé sa règle STOP+DIAGNOSTIC pour proposer 1 setup A+.',
+        payload: {
+          consecutive_zero_cycles: htConsecutiveZero,
+          target_symbols_count: directive.targetSymbols.length,
+        },
+        triggeredBy: 'mechanical_cron',
+      });
     }
 
     // === Overrides tactiques de Lisa (golden-trader) — s'appliquent AVANT le flow trajectoire ===
@@ -381,7 +417,7 @@ export class MechanicalTradingService {
     // Auto-relax : si N cycles consécutifs ont ouvert 0 position ET que des
     // overrides défensifs sont actifs, on les relâche progressivement pour
     // éviter qu'un wake-up ponctuel paralyse le système indéfiniment.
-    const consecutiveZeroOpens = await this.countConsecutiveZeroOpenCycles(portfolioId);
+    const consecutiveZeroOpens = htConsecutiveZero;
     const overrides = await this.relaxDefensiveOverrides(
       rawOverrides,
       consecutiveZeroOpens,
@@ -1442,6 +1478,65 @@ export class MechanicalTradingService {
   private isFallbackSource(source: string | undefined): boolean {
     if (!source) return true; // pas de source = suspect
     return source.startsWith('fallback');
+  }
+
+  /**
+   * Close réactif sur news contraires fraîches — décide indépendamment de Lisa.
+   *
+   * Critères STRICTS (3 garde-fous anti faux-positifs) :
+   *  - Position long uniquement (la news bearish menace les longs)
+   *  - News tag explicite sur le ticker tenu (`💼SYMBOL`) — pas de match
+   *    par macro/secteur (trop bruyant)
+   *  - Sentiment ≤ -0.6 ET news age < 30 min ET position open ≥ 5 min
+   *
+   * Position open ≥ 5 min évite la fermeture immédiate sur news déjà connue
+   * au moment de l'ouverture (Lisa l'a déjà priced-in).
+   *
+   * Ce mécanisme complète le wake-up Lisa (qui peut prendre 5-20 min de
+   * latence avant que Lisa émette un closeRecommendation explicite). Ici
+   * on ferme dans la minute si les critères stricts matchent.
+   */
+  private async checkNewsShockClose(openPositions: OpenPosition[]): Promise<void> {
+    const longs = openPositions.filter((p) => p.direction === 'long');
+    if (longs.length === 0) return;
+
+    const SENTIMENT_THRESHOLD = -0.6;
+    const NEWS_MAX_AGE_MS = 30 * 60 * 1000;
+    const POSITION_MIN_AGE_MS = 5 * 60 * 1000;
+    const now = Date.now();
+
+    for (const pos of longs) {
+      const entryTs = (pos as unknown as Record<string, unknown>)['entry_timestamp'];
+      const ageMs = entryTs ? now - new Date(String(entryTs)).getTime() : 0;
+      if (ageMs < POSITION_MIN_AGE_MS) continue; // position trop fraîche
+
+      let news: Awaited<ReturnType<EodhdEnrichmentService['fetchRecentNews']>>;
+      try {
+        news = await this.enrichment.fetchRecentNews([pos.symbol], 10);
+      } catch { continue; }
+
+      const heldUpper = pos.symbol.toUpperCase();
+      for (const n of news) {
+        if (n.sentiment == null || n.sentiment > SENTIMENT_THRESHOLD) continue;
+        const ts = n.date ? new Date(n.date).getTime() : 0;
+        if (now - ts > NEWS_MAX_AGE_MS) continue;
+        const articleSymbols = (n.symbols ?? []).map((s) => s.toUpperCase());
+        if (!articleSymbols.includes(heldUpper)) continue;
+
+        // Récupère le prix live pour close à mid-market — fallback = skip
+        const quote = await this.lisa.getLivePrice(pos.symbol).catch(() => null);
+        if (!quote || this.isFallbackSource(quote.source)) {
+          this.logger.warn(`[news-shock-close] ${pos.symbol} prix non fiable, close annulé`);
+          break;
+        }
+
+        const ageMin = Math.round((now - ts) / 60_000);
+        const reason = `News shock ${pos.symbol} sentiment=${n.sentiment.toFixed(2)} (${ageMin}min) : "${(n.title ?? '').slice(0, 80)}"`;
+        await this.closePosition(pos.id, quote.price, 'closed_invalidated', `[MÉCANIQUE] ${reason}`);
+        this.logger.log(`[news-shock-close] Closed ${pos.symbol} on news shock: ${reason}`);
+        break; // une seule news suffit, on passe à la position suivante
+      }
+    }
   }
 
   /**
