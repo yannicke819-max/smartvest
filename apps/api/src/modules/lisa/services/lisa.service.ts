@@ -1986,13 +1986,24 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
   }
 
   /**
-   * Fetch live market snapshot via EODHD for all key signals.
-   * Gracefully falls back on static values if EODHD is unavailable.
+   * Fetch live market snapshot via EODHD avec **fallback chain à 3 niveaux** :
+   *
+   *   1. LIVE   : ticker primaire EODHD
+   *   2. PROXY  : ETF approximatif (ex: VXX→VIX, UUP→DXY) si LIVE échoue
+   *   3. FALLBACK : valeur hardcoded statique (DANGER — masque le problème)
+   *
+   * RETEX 27/04 : tickers ^VIX.INDX, DX-Y.NYB.FOREX, US10Y.BOND, GC.COMM,
+   * SI.COMM, BZ.COMM, etc. retournent systématiquement empty_price_field
+   * ou HTTP 404. Lisa recevait donc 18.5/102.3/4.2 hardcoded sur 100% des
+   * cycles → briefing macro figé → 13 cycles identiques.
+   *
+   * Le tracking dataQuality (live/proxy/fallback) permet à Lisa de savoir
+   * que le snapshot est partiel et d'être conservatrice sur son diagnostic.
    */
   private async fetchMarketSnapshot(): Promise<MarketSnapshot> {
     const eodhKey = this.config.get<string>('EODHD_API_KEY');
 
-    // Static fallback used both as defaults and when EODHD is unavailable
+    // Static fallback (3e niveau, dernier recours)
     const fallback: MarketSnapshot = {
       timestamp: new Date().toISOString(),
       vix: 18.5, usdDxy: 102.3, us10yYield: 4.2, us2yYield: 3.9,
@@ -2003,6 +2014,8 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     };
 
     if (!eodhKey || eodhKey === 'demo') return fallback;
+
+    const dataQuality = { live: [] as string[], proxy: [] as string[], fallback: [] as string[] };
 
     const fetchNum = async (ticker: string): Promise<number | null> => {
       const tStart = Date.now();
@@ -2030,40 +2043,85 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       }
     };
 
+    /**
+     * Tente plusieurs tickers en cascade. Retourne la 1re valeur valide
+     * + identifie la qualité (live primary OU proxy ETF).
+     */
+    const fetchCascade = async (
+      indicator: string,
+      attempts: Array<{ ticker: string; multiplier?: number; quality: 'live' | 'proxy' }>,
+    ): Promise<number | null> => {
+      for (const a of attempts) {
+        const v = await fetchNum(a.ticker);
+        if (v !== null) {
+          const finalValue = a.multiplier ? v * a.multiplier : v;
+          if (a.quality === 'live') dataQuality.live.push(indicator);
+          else dataQuality.proxy.push(`${indicator}(via ${a.ticker})`);
+          return finalValue;
+        }
+      }
+      dataQuality.fallback.push(indicator);
+      return null;
+    };
+
+    // ── Lance toutes les requêtes en parallèle ─────────────────────
     const [
-      vix, dxy, us10y, us2y, brent, btc, eth, gold, spy, qqq, eurusd, usdjpy,
-      // Extensions macro : sectoriels + crypto alt + FX EM + bonds
-      silver, copper, uranium, natgas, solana, xrp, tlt, hyg, iwm, eem,
-    ] =
-      await Promise.all([
-        fetchNum('^VIX.INDX'),
-        fetchNum('DX-Y.NYB.FOREX'),
-        fetchNum('US10Y.BOND'),
-        fetchNum('US2Y.BOND'),
-        fetchNum('BZ.COMM'),
-        fetchNum('BTC-USD.CC'),
-        fetchNum('ETH-USD.CC'),
-        fetchNum('GC.COMM'),
-        fetchNum('SPY.US'),
-        fetchNum('QQQ.US'),
-        fetchNum('EURUSD.FOREX'),
-        fetchNum('USDJPY.FOREX'),
-        fetchNum('SI.COMM'),          // Silver
-        fetchNum('HG.COMM'),          // Copper
-        fetchNum('URA.US'),           // Uranium ETF
-        fetchNum('NG.COMM'),          // Natural gas
-        fetchNum('SOL-USD.CC'),       // Solana
-        fetchNum('XRP-USD.CC'),       // XRP
-        fetchNum('TLT.US'),           // US long bonds 20y
-        fetchNum('HYG.US'),           // High yield corporate bonds
-        fetchNum('IWM.US'),           // Russell 2000 (small caps)
-        fetchNum('EEM.US'),           // Emerging markets
-      ]);
-    // Les nouveaux tickers ne sont pas dans le type MarketSnapshot pour l'instant
-    // — ils seront poussés dans recentNews / additionalContext si besoin plus tard.
-    // Conservés ici pour alimenter le cache EODHD et le log pour analyse quota.
-    void silver; void copper; void uranium; void natgas; void solana;
-    void xrp; void tlt; void hyg; void iwm; void eem;
+      vix, dxy, us10y, us2y, brent, btc, eth, gold,
+      spy, qqq, eurusd, usdjpy,
+      silver, hyg,
+    ] = await Promise.all([
+      // VIX : ticker .INDX échoue (empty_price_field) → fallback ETF VXX
+      // VXX se trade ~à VIX × 0.8-1.0 (decay), pas exact mais directionnel OK
+      fetchCascade('vix', [
+        { ticker: 'VIX.INDX', quality: 'live' },
+        { ticker: 'VXX.US', quality: 'proxy' }, // proxy ETF
+      ]),
+      // DXY : ticker FOREX échoue (empty) → fallback UUP ETF
+      // UUP $25 ≈ DXY 100 → multiplier 4.1 approximatif
+      fetchCascade('dxy', [
+        { ticker: 'DXY.INDX', quality: 'live' },
+        { ticker: 'USDX.INDX', quality: 'live' },
+        { ticker: 'UUP.US', multiplier: 4.1, quality: 'proxy' },
+      ]),
+      // Bonds : .BOND échoue → fallback TNX.INDX (ou ETF TLT yield-proxy)
+      fetchCascade('us10y', [
+        { ticker: 'TNX.INDX', quality: 'live' },
+      ]),
+      fetchCascade('us2y', [
+        { ticker: 'IRX.INDX', quality: 'live' }, // 13-week T-Bill
+      ]),
+      // Brent : .COMM 404 → ETF USO proxy (× 1.05 ≈ proche WTI/Brent)
+      fetchCascade('brent', [
+        { ticker: 'BRENT.COMM', quality: 'live' },
+        { ticker: 'USO.US', multiplier: 1.05, quality: 'proxy' },
+      ]),
+      // Crypto : OK
+      fetchCascade('btc', [
+        { ticker: 'BTC-USD.CC', quality: 'live' },
+      ]),
+      fetchCascade('eth', [
+        { ticker: 'ETH-USD.CC', quality: 'live' },
+      ]),
+      // Gold : .COMM 404 → GLD ETF × 10 (GLD $300 ≈ Gold $3000)
+      fetchCascade('gold', [
+        { ticker: 'XAUUSD.FOREX', quality: 'live' },
+        { ticker: 'GLD.US', multiplier: 10, quality: 'proxy' },
+      ]),
+      // ETFs OK directs
+      fetchCascade('spy', [{ ticker: 'SPY.US', quality: 'live' }]),
+      fetchCascade('qqq', [{ ticker: 'QQQ.US', quality: 'live' }]),
+      fetchCascade('eurusd', [{ ticker: 'EURUSD.FOREX', quality: 'live' }]),
+      fetchCascade('usdjpy', [{ ticker: 'USDJPY.FOREX', quality: 'live' }]),
+      // Silver : .COMM 404 → SLV ETF
+      fetchCascade('silver', [
+        { ticker: 'XAGUSD.FOREX', quality: 'live' },
+        { ticker: 'SLV.US', quality: 'proxy' },
+      ]),
+      // HYG ETF pour proxy de credit spread (si HYG bas → spreads compressés)
+      fetchCascade('hyg', [{ ticker: 'HYG.US', quality: 'live' }]),
+    ]);
+
+    void silver; void hyg; // pour usage futur
 
     // SPY ≈ SP500/10, QQQ ≈ NASDAQ/40
     return {
@@ -2082,6 +2140,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       usdJpy: usdjpy ?? fallback.usdJpy,
       creditHyOasBps: fallback.creditHyOasBps,
       creditIgOasBps: fallback.creditIgOasBps,
+      dataQuality,
       recentNews: [],
       upcomingEvents: [],
     };

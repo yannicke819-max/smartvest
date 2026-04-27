@@ -51,6 +51,15 @@ export interface MarketSnapshot {
   /** Spread HY OAS en bps */
   creditHyOasBps: number;
   creditIgOasBps: number;
+  /** Qualité des données du snapshot. Permet à Lisa de savoir quels
+   *  indicateurs sont en LIVE vs PROXY (estimé via ETF) vs FALLBACK
+   *  (valeur hardcoded - DANGER). Si fallback dominant, Lisa doit être
+   *  conservatrice sur son diagnostic régime. */
+  dataQuality?: {
+    live: string[];      // indicateurs avec vraie valeur EODHD
+    proxy: string[];     // indicateurs estimés via ETF (VXX→VIX, UUP→DXY)
+    fallback: string[];  // indicateurs sur valeur hardcoded (DANGER)
+  };
   /** News / événements récents 24-72h */
   recentNews: Array<{
     headline: string;
@@ -389,7 +398,7 @@ ${m.macroContext.gdpYoyPct != null ? `- GDP YoY : ${m.macroContext.gdpYoyPct >= 
 - USD/JPY: ${m.usdJpy}
 - S&P 500: ${m.sp500}
 - Nasdaq: ${m.nasdaq}
-
+${this.formatDataQualityBlock(m.dataQuality)}
 ${m.lisaMemory ? `## YOUR PAST DECISIONS — mémoire contextuelle sur ce portefeuille
 ${m.lisaMemory}
 
@@ -500,6 +509,45 @@ défini, sans markdown, sans explications hors JSON.
    *  - trades count + caps
    *  - posture recommandée (lue depuis la persona)
    */
+  /** Bloc DATA QUALITY — affiche un avertissement explicite si les indicateurs
+   *  macro reposent sur des proxies ETF ou pire, sur des fallbacks hardcoded.
+   *  Lisa doit pouvoir distinguer un régime VIX=18.5 réel d'un fallback
+   *  hardcoded depuis 13 cycles. Si fallback dominant ou présent sur des
+   *  indicateurs critiques (VIX, DXY, US10Y), Lisa doit être conservatrice
+   *  sur son diagnostic régime et l'inscrire dans [DIAGNOSTIC]. */
+  private formatDataQualityBlock(dq?: MarketSnapshot['dataQuality']): string {
+    if (!dq) return '';
+    const live = dq.live ?? [];
+    const proxy = dq.proxy ?? [];
+    const fallback = dq.fallback ?? [];
+    if (proxy.length === 0 && fallback.length === 0) return '';
+
+    const lines: string[] = ['', '## DATA QUALITY — fiabilité des indicateurs macro'];
+    if (fallback.length > 0) {
+      lines.push(
+        `- ⚠️ **FALLBACK (valeurs hardcoded — DANGER)** : ${fallback.join(', ')}`,
+      );
+      lines.push(
+        `  → Ces indicateurs ne reflètent PAS le marché actuel. Ne base PAS un changement de régime sur eux. Mentionne-le dans [DIAGNOSTIC] et reste conservateur sur la lecture macro.`,
+      );
+    }
+    if (proxy.length > 0) {
+      lines.push(`- 🟡 **PROXY (estimé via ETF)** : ${proxy.join(', ')}`);
+      lines.push(
+        `  → Direction fiable, niveau approximatif (±5-15%). Utilisable pour le sens du marché, pas pour un seuil précis.`,
+      );
+    }
+    if (live.length > 0) {
+      lines.push(`- ✅ **LIVE (EODHD direct)** : ${live.join(', ')}`);
+    }
+    if (fallback.length >= 3) {
+      lines.push(
+        `- 🚨 **PLUSIEURS INDICATEURS EN FALLBACK** : la lecture macro de ce cycle est dégradée. Privilégie l'analyse bottom-up (technique sur tickers individuels, news, options flow) plutôt que des thèses macro top-down. Si \`HORS_TRAJECTOIRE\`, c'est un facteur aggravant à citer dans [DIAGNOSTIC].`,
+      );
+    }
+    return lines.join('\n') + '\n';
+  }
+
   private formatDailyHarvestBlock(ctx?: DailyHarvestBriefingContext): string {
     if (!ctx || !ctx.active) return '';
 
@@ -661,7 +709,6 @@ défini, sans markdown, sans explications hors JSON.
       }
     }
 
-    const isHyperActive = req.config.profile === 'hyper_active';
     const gapLines: string[] = [];
     if (req.trajectoryStatus && req.targetExtrapolated7dPct != null && metrics?.netReturn7dPct != null) {
       const statusLabel =
@@ -671,9 +718,7 @@ défini, sans markdown, sans explications hors JSON.
             ? '**DANS LE PLAN** — régime normal, pas de changement de posture'
             : req.trajectoryStatus === 'EN_RETARD'
               ? `**EN RETARD** — examiner d'abord si le risque est sous-utilisé (drawdown ${fmtPct(metrics.drawdownFromPeakPct)} << limite), sinon envisager révision d'objectif`
-              : isHyperActive
-                ? `**HORS TRAJECTOIRE (hyper_active)** — coûts > 50% des gains 7j. En profile hyper_active, ce n'est PAS un signal de retrait : continue à proposer 1-3 setups asymétriques par cycle (R/R ≥ 2:1 conviction ≥6) pour réduire le ratio coûts/gains. La passivité n'est PAS la solution — le drift négatif des frais API empire si tu ne tradees pas. Signale en [DIAGNOSTIC] mais NE renvoie PAS theses=[].`
-                : `**HORS TRAJECTOIRE** — objectif structurellement irréaliste dans la configuration actuelle OU coûts > 50% des gains bruts. Signale-le dans [DIAGNOSTIC] et propose révision (cible, horizon, risque)`;
+              : `**HORS TRAJECTOIRE — STOP & DIAGNOSTIC.** Coûts > 50% des gains 7j (ou pire, P&L net négatif). Le système saigne. Action obligatoire ce cycle : (1) \`theses=[]\` — chaque ouverture rajoute des coûts qui creusent le trou ; (2) [DIAGNOSTIC] documente la cause racine : sur-trading ? thèses sans catalyseur ? régime macro défavorable ? données macro en proxy/fallback (voir \`## DATA QUALITY\` si présent) ? ; (3) si positions ouvertes en perte latente avec setup cassé → propose \`close_now\` dans \`special_actions\`. Continuer à ouvrir alors que le P&L net est rouge = aggravation, pas patience.`;
       const delta = metrics.netReturn7dPct - req.targetExtrapolated7dPct;
       gapLines.push(
         `- Cible 7j extrapolée : ${fmtPct(req.targetExtrapolated7dPct)} · Réalisé 7j : ${fmtPct(metrics.netReturn7dPct)}`,

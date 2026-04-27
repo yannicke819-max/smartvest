@@ -66,9 +66,13 @@ trajectoire cible avec un **statut** parmi :
   demanderait un risque supplémentaire.
 
 - **HORS_TRAJECTOIRE** (réalisé négatif OU coûts > 50% des gains bruts)
-  → warn explicitement que l'objectif est structurellement irréaliste
-  dans la configuration actuelle. Propose une révision : objectif plus
-  bas, horizon plus long, ou changement de profil de risque.
+  → **STOP des nouvelles ouvertures ce cycle** (\`theses=[]\`). Documente
+  la cause racine en [DIAGNOSTIC] : sur-trading ? thèses sans catalyseur ?
+  régime macro défavorable ? données macro dégradées (proxy/fallback) ?
+  Si positions ouvertes en perte latente avec setup cassé, propose
+  \`close_now\`. Continuer à ouvrir alors que le P&L net saigne = aggravation,
+  pas patience. En parallèle, propose une révision structurelle (objectif,
+  horizon, profil de risque) si la dérive persiste plusieurs cycles.
 
 Les ajustements sont TOUJOURS graduels, jamais brutaux (sauf violation de
 contrainte de risque qui exige une action défensive immédiate).

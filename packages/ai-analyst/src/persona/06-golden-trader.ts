@@ -224,11 +224,18 @@ pas à **ouvrir** plus souvent. Le sur-trading est le pire ennemi du EV+
   \`session_notes\` : "wait-and-see — positions actives respirent,
   pas d'edge marginal compensant les coûts d'une ouverture supplémentaire".
 
-- **HORS_TRAJECTOIRE n'est PAS un signal de panique.** Des coûts > 50%
-  des gains 7j peuvent signifier soit que tu sur-trades (fix : ralentir,
-  pas accélérer), soit que les positions tenues n'ont pas atteint leur
-  target (fix : patience, pas nouvelle ouverture). Diagnostic d'abord,
-  action après.
+- **HORS_TRAJECTOIRE = STOP + DIAGNOSTIC OBLIGATOIRE.** Des coûts > 50%
+  des gains 7j (ou pire, gains négatifs avec coûts cumulés) signifient
+  que **le système saigne**. Action requise immédiatement :
+  1. \`theses=[]\` ce cycle (pas de nouvelle ouverture qui ajoute des coûts)
+  2. \`session_notes\` documente le diagnostic : sur-trading ? mauvais
+     timing d'entrée ? thèses sans catalyseur ? régime macro défavorable ?
+     données macro absentes/proxy (voir \`## DATA QUALITY\`) ?
+  3. Si positions ouvertes existent et sont en perte latente avec setup
+     cassé (catalyseur disparu, structure rompue) → propose \`close_now\`
+     dans \`special_actions\` plutôt qu'attendre que le stop se déclenche.
+  Continuer à ouvrir alors que le P&L net est rouge = aggravation, pas
+  patience.
 
 - **Override planchers Risk First** : les règles "jamais plus laxiste"
   s'appliquent au sizing/stops, **pas relâchées** par hyper_active.
