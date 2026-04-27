@@ -18,6 +18,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import Decimal from 'decimal.js';
 import { randomUUID } from 'node:crypto';
 import { computeAtrStopByKind, type ThesisKind } from '@smartvest/ai-analyst';
+import { mapPositionRows } from '../helpers/position.mapper';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { PerformanceService } from '../../performance/performance.service';
 import { DecisionLogService } from './decision-log.service';
@@ -308,14 +309,18 @@ export class MechanicalTradingService {
     // Load latest valid directive
     const directive = await this.loadDirective(portfolioId);
 
-    // Load open positions
+    // Load open positions — mapPositionRows ajoute les alias camelCase aux
+    // colonnes snake_case de Supabase (entry_price → entryPrice, etc.).
+    // SANS ce mapping, `pos.stopLossPrice` / `pos.takeProfitPrice` /
+    // `pos.assetClass` étaient undefined → checkStopTarget early-return
+    // ligne ~1446 → stops jamais déclenchés (incident 27/04/2026).
     const { data: positions } = await this.supabase.getClient()
       .from('lisa_positions')
       .select('*')
       .eq('portfolio_id', portfolioId)
       .eq('status', 'open');
 
-    const openPositions: OpenPosition[] = positions ?? [];
+    const openPositions: OpenPosition[] = mapPositionRows(positions) as unknown as OpenPosition[];
 
     // Step 0 — P4.1 Portfolio Drawdown Guard (protection capital niveau portefeuille)
     // Vérifie le drawdown intraday AVANT toute autre action. Si franchi :
@@ -373,7 +378,7 @@ export class MechanicalTradingService {
       .eq('portfolio_id', portfolioId)
       .eq('status', 'open');
 
-    const currentPositions: OpenPosition[] = positionsAfterClose ?? [];
+    const currentPositions: OpenPosition[] = mapPositionRows(positionsAfterClose) as unknown as OpenPosition[];
 
     // Step 2 — Stop-loss / take-profit checks (toutes positions, pas besoin de directive)
     const isHyperActiveProfile = cfg.profile === 'hyper_active';
@@ -491,7 +496,7 @@ export class MechanicalTradingService {
       .eq('portfolio_id', portfolioId)
       .eq('status', 'open');
 
-    const activePositions: OpenPosition[] = positionsForOpen ?? [];
+    const activePositions: OpenPosition[] = mapPositionRows(positionsForOpen) as unknown as OpenPosition[];
 
     const constraints = cfg.risk_constraints ?? {};
     // P4.3 — Defaults golden-trader diversifiés :
@@ -1883,6 +1888,12 @@ export class MechanicalTradingService {
     }
     if (metric === 'funding_annual_pct') {
       // Crypto only : convertit symbol → format Binance perp (BTCUSDT)
+      // Defensive `?.` : si le mapper a raté un load site, on log + skip
+      // au lieu de crasher le cycle entier (incident 27/04 BTC crash).
+      if (!pos.assetClass) {
+        this.logger.warn(`[AUTONOMY] funding_annual_pct skip ${pos.symbol}: assetClass undefined (mapper missed?)`);
+        return null;
+      }
       if (!pos.assetClass.toLowerCase().includes('crypto')) return null;
       const binSym = `${pos.symbol.toUpperCase()}USDT`;
       const stats = await this.binance.getFutureStats(binSym).catch(() => null);

@@ -1427,6 +1427,27 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
           ? livePx.mul(new Decimal(1).minus(new Decimal(stopPct))).toFixed(8)
           : livePx.mul(new Decimal(1).plus(new Decimal(stopPct))).toFixed(8);
 
+        // 🛡️ Take-profit OBLIGATOIRE — incident 27/04/2026 : BTC + RTX
+        // ouvertes via paperBroker avaient `takeProfitPrice: null` en dur,
+        // ce qui inscrivait NULL en DB. Le mécanique skippait ensuite tout
+        // check TP (cf. checkStopTarget). On force ici un TP basé sur :
+        //   - daily_harvest_config.takeProfitAbsolutePct si DAILY_HARVEST actif
+        //   - sinon defaults : 2.5% hyper_active, 4% standard
+        const harvestCfg = sessionCfg?.daily_harvest_config as
+          | { takeProfitAbsolutePct?: number }
+          | null
+          | undefined;
+        const isHyper = sessionCfg?.profile === 'hyper_active';
+        const tpPct = (
+          (typeof harvestCfg?.takeProfitAbsolutePct === 'number' && harvestCfg.takeProfitAbsolutePct > 0)
+            ? harvestCfg.takeProfitAbsolutePct
+            : (isHyper ? 2.5 : 4.0)
+        ) / 100;
+        const isLongDir = direction === 'long' || direction === 'long_call' || direction === 'long_put';
+        const takeProfitPrice = isLongDir
+          ? livePx.mul(new Decimal(1).plus(new Decimal(tpPct))).toFixed(8)
+          : livePx.mul(new Decimal(1).minus(new Decimal(tpPct))).toFixed(8);
+
         const binanceResult = isCrypto
           ? await this.tryBinanceExecution(expression.symbol as string, alloc.amountUsd, quote.price)
           : null;
@@ -1439,7 +1460,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
           capitalAllocationUsd: alloc.amountUsd,
           livePrice: quote.price,
           stopLossPrice,
-          takeProfitPrice: null,
+          takeProfitPrice,
           horizonDays: riskReward.horizonDays ?? 30,
         });
         opened.push(pos);
