@@ -323,6 +323,21 @@ export function useDeactivateAdoption() {
   });
 }
 
+/** Trigger manuel du sync auto Lisa → Bot Lab. */
+export function useTriggerAutoSync() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<{ syncedPortfolios: number; totalImported: number }>(
+        '/bot-lab/auto-sync/trigger',
+        { method: 'POST', body: JSON.stringify({}) },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['bot-lab', 'bots'] });
+    },
+  });
+}
+
 /** Importe un CSV de trades. */
 export function useImportCsv(botId: string | null) {
   const qc = useQueryClient();

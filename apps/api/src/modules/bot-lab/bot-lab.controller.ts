@@ -8,6 +8,7 @@ import { RegimeTaggerService } from './services/regime-tagger.service';
 import { BotComparatorService } from './services/bot-comparator.service';
 import { PatternMinerService } from './services/pattern-miner.service';
 import { PatternAdoptionService } from './services/pattern-adoption.service';
+import { LisaReplayConnectorService } from './services/lisa-replay-connector.service';
 import type { BotDefinitionDraft, PatternStatus, AdoptionLevel } from './types/bot-lab.types';
 
 /**
@@ -34,6 +35,7 @@ export class BotLabController {
     private readonly comparator: BotComparatorService,
     private readonly patternMiner: PatternMinerService,
     private readonly patternAdoption: PatternAdoptionService,
+    private readonly lisaReplay: LisaReplayConnectorService,
   ) {}
 
   // ───────────────────────────────────────────────────────────────────
@@ -314,5 +316,28 @@ export class BotLabController {
       userId, portfolioId, all !== 'true',
     );
     return { adoptions };
+  }
+
+  // ───────────────────────────────────────────────────────────────────
+  // AUTO-SYNC LISA → BOT LAB (alternative au CSV)
+  // ───────────────────────────────────────────────────────────────────
+
+  /**
+   * Trigger manuel du sync Lisa → Bot Lab pour le user courant.
+   * Le cron `lisa-replay-sync` (toutes les 30 min) appelle déjà
+   * automatiquement, mais l'utilisateur peut forcer une exécution
+   * immédiate via cet endpoint.
+   *
+   * Crée automatiquement un bot "Lisa Live — <portfolio_name>" si absent.
+   * Ne duplique jamais (idempotent par lisa_position.id).
+   */
+  @Post('auto-sync/trigger')
+  @HttpCode(200)
+  async triggerAutoSync(
+    @Headers() headers: Record<string, string>,
+  ) {
+    const userId = extractUserId(headers);
+    const result = await this.lisaReplay.syncAllForUser(userId);
+    return result;
   }
 }

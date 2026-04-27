@@ -8,6 +8,7 @@ import { DecisionLogService } from './decision-log.service';
 import { RealtimePriceService } from './realtime-price.service';
 import { MaterialChangeDetectorService } from './material-change-detector.service';
 import { DailyProfitGovernor } from './daily-profit-governor.service';
+import { LisaReplayConnectorService } from '../../bot-lab/services/lisa-replay-connector.service';
 
 /** Tickers macro et indices stratégiques que Lisa consulte en permanence.
  *  Warmed une fois au boot pour peupler le cache immédiatement, évite le
@@ -63,7 +64,52 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
     private readonly performance: PerformanceService,
     private readonly materialDetector: MaterialChangeDetectorService,
     private readonly dailyProfitGovernor: DailyProfitGovernor,
+    private readonly lisaReplay: LisaReplayConnectorService,
   ) {}
+
+  /**
+   * Cron BOT LAB auto-sync — toutes les 30 minutes.
+   * Pour chaque user actif (= ayant au moins 1 portfolio simulation),
+   * sync les trades Lisa fermés vers les bots "Lisa Live" pour analyse
+   * Bot Lab.
+   *
+   * Idempotent : ne duplique pas (UNIQUE constraint bot_id + external_id).
+   * Inerte si aucun nouveau trade.
+   */
+  @Cron('0 */30 * * * *', { name: 'lisa-replay-sync' })
+  async runLisaReplaySync() {
+    const locked = await this.acquireCronLock('lisa_replay_sync', 600);
+    if (!locked) return;
+    try {
+      // Récupère tous les user_id distincts ayant au moins un portfolio simulation
+      const { data: users } = await this.supabase.getClient()
+        .from('portfolios')
+        .select('user_id')
+        .eq('is_simulation', true);
+
+      const userIds = Array.from(new Set((users ?? []).map((u) => u.user_id as string)));
+      let totalImported = 0;
+      let totalUsers = 0;
+
+      for (const userId of userIds) {
+        try {
+          const result = await this.lisaReplay.syncAllForUser(userId);
+          if (result.totalImported > 0) {
+            totalImported += result.totalImported;
+            totalUsers++;
+          }
+        } catch (e) {
+          this.logger.warn(`lisa-replay-sync failed for user ${userId.slice(0, 8)}: ${String(e).slice(0, 100)}`);
+        }
+      }
+
+      if (totalImported > 0) {
+        this.logger.log(`[LISA_REPLAY_CRON] Synced ${totalImported} new trades across ${totalUsers} users`);
+      }
+    } finally {
+      await this.releaseCronLock('lisa_replay_sync');
+    }
+  }
 
   /**
    * Cron DAILY_HARVEST — toutes les 60s.

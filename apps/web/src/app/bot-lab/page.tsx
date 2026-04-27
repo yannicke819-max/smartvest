@@ -14,12 +14,14 @@ import {
   useBotEquityCurve,
   useBotSessionMetrics,
   useRecomputeBot,
+  useTriggerAutoSync,
   type BotDefinition,
   type BotSourceType,
   type BotPerformanceSummary,
   type EquityCurvePoint,
   type SessionMetrics,
 } from '@/hooks/use-bot-lab';
+import { Zap } from 'lucide-react';
 
 type DetailTab = 'overview' | 'metrics' | 'equity' | 'sessions' | 'trades';
 
@@ -72,10 +74,45 @@ export default function BotLabPage() {
 function BotListView({ onSelectBot }: { onSelectBot: (botId: string) => void }) {
   const botsQuery = useBots();
   const deleteMut = useDeleteBot();
+  const autoSyncMut = useTriggerAutoSync();
   const [showCreateForm, setShowCreateForm] = useState(false);
+
+  const handleAutoSync = async () => {
+    try {
+      const r = await autoSyncMut.mutateAsync();
+      alert(`Sync terminé : ${r.totalImported} nouveaux trades importés sur ${r.syncedPortfolios} portfolio(s)`);
+    } catch (e) {
+      alert(`Erreur sync: ${String(e).slice(0, 200)}`);
+    }
+  };
 
   return (
     <div className="space-y-4">
+      {/* Auto-sync banner — alternative au CSV */}
+      <div className="rounded-lg border border-emerald-200 bg-emerald-50/50 dark:bg-emerald-950/20 p-4 space-y-2">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <h3 className="text-sm font-medium flex items-center gap-2 text-emerald-700 dark:text-emerald-300">
+              <Zap className="h-4 w-4" />
+              Auto-sync Lisa Live
+            </h3>
+            <p className="text-xs text-muted-foreground mt-1 max-w-2xl">
+              Les trades fermés de Lisa sont automatiquement synchronisés vers un bot dédié <strong>« Lisa Live »</strong> par
+              portfolio simulation, toutes les 30 min via cron. Pas de CSV nécessaire — tu peux directement
+              extraire des patterns de TES propres trades. Boucle vertueuse : Lisa trade → patterns extraits → Lisa adopte → Lisa s&apos;améliore.
+            </p>
+          </div>
+          <button
+            onClick={handleAutoSync}
+            disabled={autoSyncMut.isPending}
+            className="rounded-md bg-emerald-600 text-white px-3 py-1.5 text-xs font-medium hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5 self-start"
+          >
+            <Zap className={`h-3 w-3 ${autoSyncMut.isPending ? 'animate-pulse' : ''}`} />
+            {autoSyncMut.isPending ? 'Sync…' : 'Sync maintenant'}
+          </button>
+        </div>
+      </div>
+
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-medium">Mes bots ({botsQuery.data?.bots.length ?? 0})</h2>
         <button
@@ -83,7 +120,7 @@ function BotListView({ onSelectBot }: { onSelectBot: (botId: string) => void }) 
           className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90 flex items-center gap-1"
         >
           <Plus className="h-3 w-3" />
-          Nouveau bot
+          Nouveau bot manuel
         </button>
       </div>
 

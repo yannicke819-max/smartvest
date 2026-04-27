@@ -10,6 +10,7 @@ import { BotComparatorService } from './services/bot-comparator.service';
 import { PatternMinerService } from './services/pattern-miner.service';
 import { PatternAdoptionService } from './services/pattern-adoption.service';
 import { PatternBriefingService } from './services/pattern-briefing.service';
+import { LisaReplayConnectorService } from './services/lisa-replay-connector.service';
 
 /**
  * Bot Profitability Lab — module R&D séparé du flow Lisa principal.
@@ -33,6 +34,8 @@ import { PatternBriefingService } from './services/pattern-briefing.service';
     // Phase 4 — Transfer Layer
     PatternAdoptionService,
     PatternBriefingService,
+    // Auto-sync Lisa → Bot Lab
+    LisaReplayConnectorService,
   ],
   exports: [
     BotConnectorService,
@@ -42,9 +45,9 @@ import { PatternBriefingService } from './services/pattern-briefing.service';
     RegimeTaggerService,
     BotComparatorService,
     PatternMinerService,
-    // Phase 4 — exposés pour lisa.module
     PatternAdoptionService,
     PatternBriefingService,
+    LisaReplayConnectorService,
   ],
 })
 export class BotLabModule {}
