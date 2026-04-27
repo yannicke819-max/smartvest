@@ -375,14 +375,15 @@ export class LisaController {
     const config = cfgRow?.daily_harvest_config as DailyHarvestConfig | null;
 
     if (mode !== 'DAILY_HARVEST' || !config) {
-      return { mode: 'NONE' as const, config: null, session: null, vault: null, progress: null };
+      return { mode: 'NONE' as const, config: null, session: null, vault: null, progress: null, cumulativeStats: null };
     }
 
     const session = await this.dailySession.createOrGetTodaySession(portfolioId, config);
     const vault = await this.dailySession.getSecuredBalance(portfolioId);
     const progress = this.dailySession.computeProgress(session, config);
+    const cumulativeStats = await this.dailySession.getCumulativeStats(portfolioId, config.timezone);
 
-    return { mode, config, session, vault, progress };
+    return { mode, config, session, vault, progress, cumulativeStats };
   }
 
   /**

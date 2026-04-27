@@ -185,6 +185,117 @@ export class DailySessionService {
     return (data ?? []).map((r) => this.mapRowToSession(r));
   }
 
+  /**
+   * Statistiques cumulées (jour courant + month-to-date + records).
+   * Utilisé par les cartes UI gains quotidiens / mensuels.
+   *
+   * Retourne :
+   *  - daily : realized + secured + trades pour la session du jour
+   *  - mtd   : sum sur toutes les sessions du mois courant (timezone user)
+   *  - best/worst : meilleure/pire journée du mois (par realized)
+   */
+  async getCumulativeStats(
+    portfolioId: string,
+    timezone = 'Europe/Paris',
+  ): Promise<{
+    daily: {
+      realized: number;
+      secured: number;
+      tradesCount: number;
+      winRate: number;
+    };
+    mtd: {
+      realized: number;
+      secured: number;
+      tradesCount: number;
+      sessionsCount: number;
+      winningDays: number;
+      losingDays: number;
+    };
+    bestDay: { date: string; pnl: number } | null;
+    worstDay: { date: string; pnl: number } | null;
+  }> {
+    // 1. Session du jour
+    const today = await this.getCurrentSession(portfolioId, timezone);
+
+    // 2. Toutes les sessions du mois courant (timezone user)
+    const firstOfMonth = this.getFirstOfMonth(timezone);
+    const { data: monthSessions } = await this.supabase.getClient()
+      .from('daily_trading_sessions')
+      .select('session_date, realized_pnl_today_usd, secured_pnl_today_usd, trades_count, winning_trades_count, losing_trades_count')
+      .eq('portfolio_id', portfolioId)
+      .gte('session_date', firstOfMonth)
+      .order('session_date', { ascending: true });
+
+    const sessions = monthSessions ?? [];
+
+    // 3. Agrégat MTD
+    let mtdRealized = 0;
+    let mtdSecured = 0;
+    let mtdTrades = 0;
+    let winningDays = 0;
+    let losingDays = 0;
+    let bestDay: { date: string; pnl: number } | null = null;
+    let worstDay: { date: string; pnl: number } | null = null;
+
+    for (const s of sessions) {
+      const realized = Number(s.realized_pnl_today_usd) || 0;
+      const secured = Number(s.secured_pnl_today_usd) || 0;
+      mtdRealized += realized;
+      mtdSecured += secured;
+      mtdTrades += Number(s.trades_count) || 0;
+      if (realized > 0) winningDays++;
+      else if (realized < 0) losingDays++;
+
+      if (!bestDay || realized > bestDay.pnl) {
+        bestDay = { date: String(s.session_date), pnl: realized };
+      }
+      if (!worstDay || realized < worstDay.pnl) {
+        worstDay = { date: String(s.session_date), pnl: realized };
+      }
+    }
+
+    // 4. Win rate du jour
+    const todayWinRate = today && today.tradesCount > 0
+      ? (today.winningTradesCount / today.tradesCount) * 100
+      : 0;
+
+    return {
+      daily: {
+        realized: today ? parseFloat(today.realizedPnlTodayUsd) : 0,
+        secured: today ? parseFloat(today.securedPnlTodayUsd) : 0,
+        tradesCount: today?.tradesCount ?? 0,
+        winRate: todayWinRate,
+      },
+      mtd: {
+        realized: mtdRealized,
+        secured: mtdSecured,
+        tradesCount: mtdTrades,
+        sessionsCount: sessions.length,
+        winningDays,
+        losingDays,
+      },
+      bestDay,
+      worstDay,
+    };
+  }
+
+  /**
+   * Retourne le 1er jour du mois courant en timezone user, format YYYY-MM-DD.
+   */
+  private getFirstOfMonth(timezone: string): string {
+    const now = new Date();
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+    });
+    const parts = formatter.formatToParts(now);
+    const year = parts.find((p) => p.type === 'year')?.value;
+    const month = parts.find((p) => p.type === 'month')?.value;
+    return `${year}-${month}-01`;
+  }
+
   // ───────────────────────────────────────────────────────────────────
   // VAULT — SECURED PROFIT BALANCE
   // ───────────────────────────────────────────────────────────────────

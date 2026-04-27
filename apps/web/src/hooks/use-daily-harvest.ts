@@ -74,12 +74,32 @@ export interface DailyHarvestProgress {
   isLocked: boolean;
 }
 
+export interface CumulativeStats {
+  daily: {
+    realized: number;
+    secured: number;
+    tradesCount: number;
+    winRate: number;
+  };
+  mtd: {
+    realized: number;
+    secured: number;
+    tradesCount: number;
+    sessionsCount: number;
+    winningDays: number;
+    losingDays: number;
+  };
+  bestDay: { date: string; pnl: number } | null;
+  worstDay: { date: string; pnl: number } | null;
+}
+
 export interface DailyHarvestState {
   mode: CapitalDisciplineMode;
   config: DailyHarvestConfig | null;
   session: DailyTradingSession | null;
   vault: SecuredProfitBalance | null;
   progress: DailyHarvestProgress | null;
+  cumulativeStats: CumulativeStats | null;
 }
 
 /** Lit l'état complet DAILY_HARVEST d'un portfolio. Refresh toutes les 30s. */
