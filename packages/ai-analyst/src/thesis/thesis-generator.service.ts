@@ -54,11 +54,17 @@ export interface MarketSnapshot {
   /** Qualité des données du snapshot. Permet à Lisa de savoir quels
    *  indicateurs sont en LIVE vs PROXY (estimé via ETF) vs FALLBACK
    *  (valeur hardcoded - DANGER). Si fallback dominant, Lisa doit être
-   *  conservatrice sur son diagnostic régime. */
+   *  conservatrice sur son diagnostic régime.
+   *
+   *  `degraded` est un signal binaire calculé à partir des 3 listes
+   *  (cf. `computeDataQualityDegraded`). Si true, l'autopilot saute le
+   *  cycle (sauf si `LisaSessionConfig.allowDegradedMacro = true`).
+   */
   dataQuality?: {
     live: string[];      // indicateurs avec vraie valeur EODHD
     proxy: string[];     // indicateurs estimés via ETF (VXX→VIX, UUP→DXY)
     fallback: string[];  // indicateurs sur valeur hardcoded (DANGER)
+    degraded: boolean;   // true si lecture macro non fiable (cf. règle ci-dessus)
   };
   /** News / événements récents 24-72h */
   recentNews: Array<{
@@ -111,6 +117,29 @@ export interface MarketSnapshot {
    *  bucket, par conviction, par symbole. Calibre la confiance de Lisa
    *  sur des données empiriques de SON portfolio, pas des intuitions. */
   performanceAnalytics?: string;
+}
+
+/**
+ * Calcule si la qualité des données macro est trop dégradée pour que Lisa
+ * raisonne fiablement.
+ *
+ * Règle (cf. PATCH 1 risk-01-dataquality-killswitch) :
+ *   degraded = (us10y ∈ fallback ET vix ∈ fallback) OU |fallback| ≥ 3
+ *
+ * Justification :
+ *   - us10y + vix tous les deux indisponibles = base macro inutilisable
+ *     (taux + volatilité = piliers de toute classification de régime)
+ *   - 3+ feeds en fallback = dégradation systémique du provider data
+ *
+ * Fonction pure → testable en isolation (cf. computeDataQualityDegraded.spec.ts).
+ */
+export function computeDataQualityDegraded(
+  fallback: readonly string[],
+): boolean {
+  const set = new Set(fallback);
+  if (set.has('us10y') && set.has('vix')) return true;
+  if (fallback.length >= 3) return true;
+  return false;
 }
 
 /**

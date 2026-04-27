@@ -9,6 +9,7 @@ import {
   RiskEnforcer,
   RiskMonitorService,
   ThesisGeneratorService,
+  computeDataQualityDegraded,
   type AllocationProposal,
   type HistoryMetrics,
   type LisaSessionConfig,
@@ -190,6 +191,8 @@ export class LisaService {
       autopilot_expires_at: pick('autopilot_expires_at', 'autopilotExpiresAt', existing?.autopilot_expires_at ?? null),
       autopilot_aggressive: pick('autopilot_aggressive', 'autopilotAggressive', existing?.autopilot_aggressive ?? false),
       autopilot_market_hours_only: pick('autopilot_market_hours_only', 'autopilotMarketHoursOnly', existing?.autopilot_market_hours_only ?? false),
+      // PATCH 1 — kill-switch dataQuality (PR#1 P0) — default false.
+      allow_degraded_macro: pick('allow_degraded_macro', 'allowDegradedMacro', existing?.allow_degraded_macro ?? false),
       // Lisa v2 — objectifs & budget (tous nullables)
       return_target_daily_pct: pick('return_target_daily_pct', 'returnTargetDailyPct', existing?.return_target_daily_pct ?? null),
       return_target_monthly_pct: pick('return_target_monthly_pct', 'returnTargetMonthlyPct', existing?.return_target_monthly_pct ?? null),
@@ -256,6 +259,20 @@ export class LisaService {
       error = retry.error;
     }
 
+    // PATCH 1 — fallback si migration 0070_allow_degraded_macro pas encore appliquée
+    if (error && /allow_degraded_macro/i.test(error.message)) {
+      this.logger.warn('Colonne allow_degraded_macro absente — retry sans ce champ');
+      const { allow_degraded_macro: _omit, ...mergedFallback } = merged;
+      void _omit;
+      const retry = await this.supabase.getClient()
+        .from('lisa_session_configs')
+        .upsert(mergedFallback, { onConflict: 'portfolio_id' })
+        .select()
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
+
     if (error) throw new BadRequestException(error.message);
     return data;
   }
@@ -307,6 +324,8 @@ export class LisaService {
       enableCrypto: (config.enable_crypto as boolean) ?? true,
       enableDerivatives: (config.enable_derivatives as boolean) ?? false,
       enableLeverage: (config.enable_leverage as boolean) ?? false,
+      // PATCH 1 — kill-switch dataQuality (PR#1 P0).
+      allowDegradedMacro: (config.allow_degraded_macro as boolean) ?? false,
     };
 
     const marketSnapshot = await this.fetchMarketSnapshot();
@@ -2028,7 +2047,10 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
    * Le tracking dataQuality (live/proxy/fallback) permet à Lisa de savoir
    * que le snapshot est partiel et d'être conservatrice sur son diagnostic.
    */
-  private async fetchMarketSnapshot(): Promise<MarketSnapshot> {
+  /** Public — utilisé par le kill-switch dataQuality côté autopilot (PATCH 1).
+   *  Le caller doit vérifier `result.dataQuality?.degraded` avant de lancer
+   *  un cycle Lisa coûteux si `allowDegradedMacro = false`. */
+  async fetchMarketSnapshot(): Promise<MarketSnapshot> {
     const eodhKey = this.config.get<string>('EODHD_API_KEY');
 
     // Static fallback (3e niveau, dernier recours)
@@ -2041,7 +2063,22 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       recentNews: [], upcomingEvents: [],
     };
 
-    if (!eodhKey || eodhKey === 'demo') return fallback;
+    if (!eodhKey || eodhKey === 'demo') {
+      // Pas de clé EODHD → tous les indicateurs sont en fallback hardcoded.
+      // On retourne dataQuality.degraded = true pour que l'autopilot skip.
+      const allIndicators = ['vix', 'dxy', 'us10y', 'us2y', 'brent', 'gold',
+        'silver', 'btc', 'eth', 'spy', 'qqq', 'eurusd', 'usdjpy',
+        'creditHyOas', 'creditIgOas'];
+      return {
+        ...fallback,
+        dataQuality: {
+          live: [],
+          proxy: [],
+          fallback: allIndicators,
+          degraded: computeDataQualityDegraded(allIndicators),
+        },
+      };
+    }
 
     const dataQuality = { live: [] as string[], proxy: [] as string[], fallback: [] as string[] };
 
@@ -2183,6 +2220,12 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       dataQuality.fallback.push('creditIgOas');
     }
 
+    // PATCH 1 — calcul du flag dégradé pour le kill-switch autopilot.
+    const dataQualityWithDegraded = {
+      ...dataQuality,
+      degraded: computeDataQualityDegraded(dataQuality.fallback),
+    };
+
     // SPY ≈ SP500/10, QQQ ≈ NASDAQ/40
     return {
       timestamp: new Date().toISOString(),
@@ -2200,7 +2243,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       usdJpy: usdjpy ?? fallback.usdJpy,
       creditHyOasBps,
       creditIgOasBps,
-      dataQuality,
+      dataQuality: dataQualityWithDegraded,
       recentNews: [],
       upcomingEvents: [],
     };

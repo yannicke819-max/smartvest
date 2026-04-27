@@ -247,6 +247,9 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
           cfg.portfolio_id as string,
           (cfg.autopilot_cycle_minutes as number) ?? 60,
           autoApprove && !expired,
+          // PATCH 1 — kill-switch dataQuality. Si false (default), le cycle
+          // sera skippé quand le snapshot macro est dégradé. Cf. PR#1 P0.
+          cfg.allow_degraded_macro === true,
         );
       } catch (e) {
         this.logger.error(
@@ -277,6 +280,7 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
     portfolioId: string,
     cycleMinutes: number,
     autoApprove: boolean = false,
+    allowDegradedMacro: boolean = false,
   ): Promise<void> {
     // Mutex in-memory : skip si un cycle est déjà en cours pour ce portfolio
     if (this.runningCycles.has(portfolioId)) {
@@ -297,7 +301,7 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
     this.runningCycles.add(portfolioId);
     this.cycleStartedAt.set(portfolioId, Date.now());
     try {
-      await this.runPortfolioCycleInner(userId, portfolioId, cycleMinutes, autoApprove);
+      await this.runPortfolioCycleInner(userId, portfolioId, cycleMinutes, autoApprove, allowDegradedMacro);
     } finally {
       this.runningCycles.delete(portfolioId);
       this.cycleStartedAt.delete(portfolioId);
@@ -309,6 +313,7 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
     portfolioId: string,
     cycleMinutes: number,
     autoApprove: boolean = false,
+    allowDegradedMacro: boolean = false,
   ): Promise<void> {
     // 1. Rate limit baseline = MAX(dernier cycle_started OU completed,
     //    dernière proposal). Source de vérité = lisa_proposals.created_at
@@ -434,6 +439,36 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
         summary: 'Cycle completed (new proposals paused — critical drawdown)',
         rationale: riskResult.violations.map((v) => v.message).join(' | '),
         payload: { riskStatus: riskResult.status },
+        triggeredBy: 'autopilot_cron',
+      }).catch((e) => this.logger.warn(`log append failed: ${String(e)}`));
+      return;
+    }
+
+    // PATCH 1 — Kill-switch dataQuality (PR#1 P0).
+    // Si le snapshot macro est dégradé (us10y+vix en fallback OU 3+ feeds
+    // en fallback), on skip le cycle pour ne pas gaspiller un appel Claude
+    // (~$0.17 Opus) sur des inputs non fiables. L'utilisateur peut bypass
+    // via config.allow_degraded_macro = true.
+    const guardSnapshot = await this.lisa.fetchMarketSnapshot().catch((e) => {
+      this.logger.warn(`[dataQuality guard] fetchMarketSnapshot failed: ${String(e).slice(0, 120)}`);
+      return null;
+    });
+    if (guardSnapshot?.dataQuality?.degraded === true && !allowDegradedMacro) {
+      const fallbackList = guardSnapshot.dataQuality.fallback ?? [];
+      this.logger.warn(
+        `[dataQuality guard] cycle skipped — fallback feeds: ${fallbackList.join(', ')}`,
+      );
+      await this.decisionLog.append({
+        portfolioId,
+        kind: 'autopilot_cycle_completed',
+        summary: `Cycle skipped (data quality degraded — ${fallbackList.length} feeds en fallback)`,
+        rationale: `Macro snapshot non fiable : ${fallbackList.join(', ')}. Cycle Lisa épargné pour éviter un raisonnement sur inputs hardcoded. Active config.allow_degraded_macro pour outrepasser.`,
+        payload: {
+          reason: 'data_quality_degraded',
+          fallbackFeeds: fallbackList,
+          live: guardSnapshot.dataQuality.live,
+          proxy: guardSnapshot.dataQuality.proxy,
+        },
         triggeredBy: 'autopilot_cron',
       }).catch((e) => this.logger.warn(`log append failed: ${String(e)}`));
       return;
