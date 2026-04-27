@@ -95,11 +95,21 @@ export class AgentLisaSyncService {
     worstPositionPnlPct: number | null;
     worstPositionSymbol: string | null;
     vixLevel: number | null;
+    /** Profil de sensibilité des seuils Tier 1.
+     *  - 'standard'      : VIX>30 / DD>0.8% / pos<-3%   (défaut, swing)
+     *  - 'harvest_hyper' : VIX>22 / DD>0.4% / pos<-1.5% (HARVEST hyper-active)
+     *  En HARVEST scalping (TP 2.5%) un seuil position <-3% se déclenche
+     *  APRÈS le stop, donc trop tard. Échelle ~½ aligne le réveil sur
+     *  l'horizon de la stratégie. */
+    sensitivityProfile?: 'standard' | 'harvest_hyper';
   }): Promise<{ woke: boolean; reason: string | null }> {
     const { portfolioId } = input;
 
     // 1. Tier 1 — signaux urgents en priorité
-    let trigger = this.detectTier1(input);
+    let trigger = this.detectTier1({
+      ...input,
+      sensitivityProfile: input.sensitivityProfile ?? 'standard',
+    });
 
     // 2. Tier 1 news (async fetch) si rien d'urgent pour l'instant
     if (!trigger && input.openPositions.length > 0) {
@@ -143,7 +153,12 @@ export class AgentLisaSyncService {
     worstPositionPnlPct: number | null;
     worstPositionSymbol: string | null;
     vixLevel: number | null;
+    sensitivityProfile?: 'standard' | 'harvest_hyper';
   }): TriggerContext | null {
+    const isHarvestHyper = input.sensitivityProfile === 'harvest_hyper';
+    const VIX_THRESHOLD = isHarvestHyper ? 22 : 30;
+    const DD_THRESHOLD = isHarvestHyper ? 0.4 : 0.8;
+    const POS_PNL_THRESHOLD = isHarvestHyper ? -1.5 : -3;
     // Priorité 1 : VIX spike
     //
     // Sanity bound : VIX historique max ~89.5 (Oct 2008, mars 2020 ~85).
@@ -160,7 +175,7 @@ export class AgentLisaSyncService {
     const VIX_PLAUSIBLE_MIN = 5;
     if (
       input.vixLevel != null &&
-      input.vixLevel > 30 &&
+      input.vixLevel > VIX_THRESHOLD &&
       input.vixLevel >= VIX_PLAUSIBLE_MIN &&
       input.vixLevel <= VIX_PLAUSIBLE_MAX
     ) {
@@ -173,7 +188,7 @@ export class AgentLisaSyncService {
           trigger_type: 'vix_spike',
           tier: 'tier_1',
           trigger_value: input.vixLevel,
-          threshold: 30,
+          threshold: VIX_THRESHOLD,
         };
       }
     }
@@ -184,26 +199,26 @@ export class AgentLisaSyncService {
     }
 
     // Priorité 2 : drawdown portefeuille
-    if (input.portfolioDrawdownPct != null && input.portfolioDrawdownPct > 0.8) {
+    if (input.portfolioDrawdownPct != null && input.portfolioDrawdownPct > DD_THRESHOLD) {
       return {
         trigger_type: 'portfolio_drawdown',
         tier: 'tier_1',
         trigger_value: input.portfolioDrawdownPct,
-        threshold: 0.8,
+        threshold: DD_THRESHOLD,
       };
     }
 
     // Priorité 3 : position en souffrance
     if (
       input.worstPositionPnlPct != null &&
-      input.worstPositionPnlPct < -3 &&
+      input.worstPositionPnlPct < POS_PNL_THRESHOLD &&
       input.worstPositionSymbol
     ) {
       return {
         trigger_type: 'position_pnl',
         tier: 'tier_1',
         trigger_value: input.worstPositionPnlPct,
-        threshold: -3,
+        threshold: POS_PNL_THRESHOLD,
         symbol: input.worstPositionSymbol,
       };
     }

@@ -132,6 +132,10 @@ interface SessionConfig {
    *  OptionBrokerService. Sans ce flag, les optionStructure dans les
    *  thèses Lisa sont skippées (la position equity est ouverte à la place). */
   enable_derivatives?: boolean;
+  /** 'NONE' | 'DAILY_HARVEST'. Couplé avec profile=hyper_active, escalade
+   *  la sensibilité des wake-up triggers (VIX/drawdown/position pnl)
+   *  pour aligner sur l'horizon scalping. */
+  capital_discipline_mode?: string;
 }
 
 @Injectable()
@@ -246,16 +250,24 @@ export class MechanicalTradingService {
     if (error || !configs?.length) return;
 
     for (const cfg of configs as SessionConfig[]) {
-      if (cfg.autopilot_market_hours_only && !inMarketHours) continue;
+      // ⚠️ CHANGEMENT IMPORTANT (avr 2026) : on n'écarte PLUS le portfolio
+      // entier hors heures de marché. Sinon les stops/take-profits crypto
+      // (BTC/ETH 24/7) ne sont plus contrôlés la nuit → trou de protection.
+      // Désormais : `skipNewOpens` est calculé ici, processPortfolio garde
+      // toujours les Steps 0-2 (drawdown guard, autonomy rules, agent-Lisa
+      // sync, closes Lisa, stop/take-profit) et ne skippe que le Step 3
+      // (ouverture de nouvelles positions par Lisa) si market_hours_only
+      // est activé hors fenêtre.
+      const skipNewOpens = !!cfg.autopilot_market_hours_only && !inMarketHours;
       try {
-        await this.processPortfolio(cfg);
+        await this.processPortfolio(cfg, skipNewOpens);
       } catch (e) {
         this.logger.error(`Mechanical cycle failed for ${cfg.portfolio_id}: ${String(e)}`);
       }
     }
   }
 
-  private async processPortfolio(cfg: SessionConfig): Promise<void> {
+  private async processPortfolio(cfg: SessionConfig, skipNewOpens: boolean = false): Promise<void> {
     const portfolioId = cfg.portfolio_id;
 
     // Load latest valid directive
@@ -330,6 +342,16 @@ export class MechanicalTradingService {
     // Si le guard a fermé la plus faible → on bloque les nouvelles ouvertures
     // mais on laisse les stops/targets tourner (déjà fait ci-dessus).
     if (guard === 'weakest_closed_block_opens') return;
+
+    // Hors heures de marché si le user a coché market_hours_only : on a
+    // déjà fait tourner les stops/take-profits (Step 2) — on saute juste
+    // l'ouverture de nouvelles positions. Crypto = protégé H24, Lisa
+    // n'ouvre rien la nuit.
+    if (skipNewOpens) {
+      await this.writeDefensiveCycleSummary(portfolioId, currentPositions)
+        .catch((e) => this.logger.debug(`defensive summary failed: ${String(e).slice(0, 80)}`));
+      return;
+    }
 
     // Step 3 — Open new positions (seulement si directive valide + trajectoire permet)
     if (!directive || directive.validUntil <= new Date()) {
@@ -1109,6 +1131,11 @@ export class MechanicalTradingService {
     }
 
     // Délégation à AgentLisaSyncService
+    // Sensibilité Tier 1 : si HARVEST + hyper_active, on serre les seuils
+    // (~½) pour aligner les wake-ups sur le scalping intraday (TP 2.5%).
+    const isHarvestHyper =
+      cfg.capital_discipline_mode === 'DAILY_HARVEST' &&
+      cfg.profile === 'hyper_active';
     await this.agentLisaSync.evaluateTriggers({
       portfolioId,
       userId,
@@ -1122,6 +1149,7 @@ export class MechanicalTradingService {
       worstPositionPnlPct,
       worstPositionSymbol,
       vixLevel,
+      sensitivityProfile: isHarvestHyper ? 'harvest_hyper' : 'standard',
     });
   }
 

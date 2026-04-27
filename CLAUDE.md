@@ -359,6 +359,27 @@ Si `dataQuality.proxy` ou `dataQuality.fallback` n'est pas vide, `formatDataQual
 
 Tout wording du type "HORS_TRAJECTOIRE n'est PAS un signal de retrait" est **interdit** dans la persona — il a causé la stagnation 13-cycles d'avril 2026.
 
+### Cron `mechanical-trading` & flag `autopilot_market_hours_only`
+
+Le cron `MechanicalTradingService.runMechanicalCycle` tourne **toutes les 60 sec, indépendamment du cycle Lisa** (qui tourne toutes les 5-20 min). Il pilote les Steps 0-3 :
+
+- Steps 0-2 (drawdown guard, autonomy rules, agent-Lisa sync, closes Lisa, **stop-loss & take-profit**) tournent **H24 sans condition**.
+- Step 3 (ouverture de nouvelles positions par Lisa) est gaté par le flag `autopilot_market_hours_only` via `skipNewOpens`.
+
+Règle immuable : **les vérifications de stops, take-profit absolu, trailing stops et autonomy rules doivent toujours tourner**, même hors heures de marché. Toute régression qui re-couplerait `autopilot_market_hours_only` au skip total du cycle (cf. bug avr 2026, ligne `if (cfg.autopilot_market_hours_only && !inMarketHours) continue;`) crée un trou de protection 11 h/jour sur les positions crypto (24/7).
+
+### Sensibilité des wake-up Tier 1 — `AgentLisaSyncService.evaluateTriggers`
+
+Les triggers Tier 1 (VIX, drawdown portefeuille, position pnl) ont des seuils calibrés pour swing trading par défaut :
+
+| Trigger | Seuil `standard` | Seuil `harvest_hyper` |
+|---|---|---|
+| VIX spike | > 30 | > 22 |
+| Drawdown intraday | > 0.8 % | > 0.4 % |
+| Position pnl | < −3 % | < −1.5 % |
+
+Le profil `harvest_hyper` est activé automatiquement quand `capital_discipline_mode = 'DAILY_HARVEST'` ET `profile = 'hyper_active'` — mode scalping où une position à −3 % a déjà dépassé son stop. Tout nouveau trigger Tier 1 doit prévoir ces deux jeux de seuils.
+
 ---
 
 ## 7. Frictions d'intermédiation — à rendre visibles
