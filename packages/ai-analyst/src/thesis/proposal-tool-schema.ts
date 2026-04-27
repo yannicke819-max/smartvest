@@ -151,6 +151,23 @@ const thesisSchema = {
         required: ['metric', 'op', 'value', 'action', 'reason'],
       },
     },
+    themes: {
+      type: 'array',
+      maxItems: 2,
+      description: "PATCH 3 — Tags thématiques transverses aux classes d'actifs (1-2 max). Capture la concentration de risque qu'un cap par classe ne capte pas (ex: GDX equity + SLV commodity + RTX equity = 3 classes mais 1 thème geopolitical_safehaven). Choisis les thèmes les plus dominants de la thèse parmi la liste enum. Si rien ne colle, utilise 'other'.",
+      items: {
+        type: 'string',
+        enum: [
+          'geopolitical_safehaven',
+          'ai_megacap',
+          'energy_disruption',
+          'crypto',
+          'defensive_bond_proxy',
+          'small_cap_breakout',
+          'other',
+        ],
+      },
+    },
   },
   required: ['title', 'summary', 'catalyst', 'whoIsWrong', 'category', 'expressions', 'preferredExpressionIndex', 'expressionChoiceRationale', 'riskReward', 'invalidation', 'antiBullshit', 'analogSlugs', 'confidenceScore'],
 };

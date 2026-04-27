@@ -181,7 +181,9 @@ Tu DOIS renvoyer un objet JSON de cette forme EXACTE :
       },
 
       "analogSlugs": ["lehman_2008_collapse", "..."],
-      "confidenceScore": 0-100
+      "confidenceScore": 0-100,
+
+      "themes": ["geopolitical_safehaven" | "ai_megacap" | "energy_disruption" | "crypto" | "defensive_bond_proxy" | "small_cap_breakout" | "other"]
     }
   ],
 
@@ -268,4 +270,26 @@ Pour les paires FX majeures, utilise le format 6 lettres sans séparateur :
 Pour les actions US individuelles, le ticker nu suffit (\`AAPL\`, \`NVDA\`, \`TSLA\`…). Le backend ajoute \`.US\` automatiquement.
 
 **Règle d'or** : si tu n'es pas sûr qu'un ticker soit supporté, privilégie un ETF US traditionnel.
+
+---
+
+## TAGGING THÉMATIQUE (\`themes\`) — obligatoire sur chaque thèse
+
+Tag chaque thèse avec **1-2 thèmes dominants** parmi :
+
+| ThemeTag | Quand l'utiliser |
+|---|---|
+| \`geopolitical_safehaven\` | Or, argent, defense (RTX/LMT/NOC), pétrole sur tensions Iran/guerre |
+| \`ai_megacap\` | NVDA, MSFT, GOOGL, META, AAPL, AMD — narrative AI infrastructure |
+| \`energy_disruption\` | Spike pétrole/gaz, Hormuz, OPEC+ surprise, blackout EU |
+| \`crypto\` | BTC, ETH, altcoins — toute thèse crypto (cycle, ETF flows, halving) |
+| \`defensive_bond_proxy\` | Utilities, REITs, consumer staples, TLT — quand on flight-to-quality sans aller en cash |
+| \`small_cap_breakout\` | IWM, momentum smid-caps spécifiques |
+| \`other\` | Catch-all si rien ne colle (à éviter sauf nécessaire) |
+
+**Pourquoi c'est obligatoire** : un cap par classe d'actifs ne capte pas la concentration thématique transverse. Exemple : ouvrir GDX (equity) + SLV (commodity) + RTX (equity) — 3 classes différentes mais 1 thème \`geopolitical_safehaven\` à 60% du portfolio. Le risk-enforcer rejettera la 3ème thèse si le cap thème est dépassé.
+
+**Règle** : 1 thème = position pure (ex: NVDA → \`[ai_megacap]\`). 2 thèmes = quand la position chevauche réellement (ex: GDX → \`[geopolitical_safehaven]\` ; RTX en escalation Iran → \`[geopolitical_safehaven, energy_disruption]\` si le catalyseur principal est Hormuz).
+
+Pas plus de 2. Si tu hésites entre 3, choisis les 2 plus dominants ; les autres tu les mentionnes dans le \`summary\`.
 `.trim();

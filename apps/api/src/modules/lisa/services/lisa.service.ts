@@ -294,6 +294,16 @@ export class LisaService {
         maxPortfolioVolatilityPct: 20,
         targetDeploymentPct: 60,
         autoLiquidateOnKill: true,
+        // PATCH 3 — caps par thème (defaults conservateurs pour HARVEST)
+        maxThemePct: {
+          geopolitical_safehaven: 40,
+          ai_megacap: 35,
+          energy_disruption: 30,
+          crypto: 25,
+          defensive_bond_proxy: 50,
+          small_cap_breakout: 25,
+          other: 50,
+        },
         ...(config.risk_constraints as Partial<LisaSessionConfig['riskConstraints']> ?? {}),
       },
       antiConsensusStrength: (config.anti_consensus_strength as number) ?? 7,

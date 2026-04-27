@@ -169,6 +169,27 @@ export type AutonomyRule = z.infer<typeof AutonomyRule>;
  * Thèse Lisa complète.
  * Structure identique pour toute idée, toute classe d'actifs.
  */
+/**
+ * Tags thématiques transverses aux classes d'actifs.
+ *
+ * Une thèse peut être taguée 1-2 thèmes pour exposer une concentration
+ * de risque qu'un cap par classe d'actifs ne capte pas (ex: GDX equity +
+ * SLV commodity + RTX equity = 3 classes mais 1 thème "geopolitical_safehaven"
+ * concentré).
+ *
+ * Cf. PATCH 3 risk-03-theme-caps.
+ */
+export const ThemeTag = z.enum([
+  'geopolitical_safehaven',  // gold, silver, defense (RTX/LMT/NOC), oil
+  'ai_megacap',              // NVDA/MSFT/GOOGL/META/AAPL/AMD
+  'energy_disruption',       // oil/gas spike, OPEC+, Hormuz
+  'crypto',                  // BTC/ETH/altcoins
+  'defensive_bond_proxy',    // utilities, REITs, consumer staples, longues TLT
+  'small_cap_breakout',      // IWM, momentum small caps
+  'other',                   // catch-all (laissé volontairement large)
+]);
+export type ThemeTag = z.infer<typeof ThemeTag>;
+
 export const LisaThesis = z.object({
   id: z.string().uuid(),
   /** Nom court lisible humain */
@@ -210,6 +231,13 @@ export const LisaThesis = z.object({
    *  Permettent une réactivité H24 sans attendre nouveau cycle Lisa.
    *  Cap 5 règles par thèse pour éviter combinatoire chaotique. */
   autonomyRules: z.array(AutonomyRule).max(5).optional().default([]),
+  /** PATCH 3 — Tags thématiques transverses aux classes d'actifs.
+   *  Lisa tag chaque thèse avec 1-2 thèmes dominants (cf. ThemeTag).
+   *  Le risk-enforcer applique un cap par thème en plus du cap par classe :
+   *  une thèse est rejetée si l'un des deux caps casse. Évite la
+   *  concentration thématique masquée (ex: GDX equity + SLV commodity
+   *  + RTX equity = 3 classes mais 1 thème geopolitical_safehaven). */
+  themes: z.array(ThemeTag).max(2).optional().default([]),
 });
 export type LisaThesis = z.infer<typeof LisaThesis>;
 
@@ -263,6 +291,25 @@ export const RiskConstraints = z.object({
   targetDeploymentPct: z.number().min(0).max(100).default(60.0),
   /** Si true, auto-liquidate all si drawdown 2d > maxDrawdown2DaysPct */
   autoLiquidateOnKill: z.boolean().default(true),
+  /**
+   * PATCH 3 — Plafonds par thème transverse aux classes d'actifs.
+   * Chaque thème (cf. ThemeTag) a son cap propre en % du capital.
+   * Pas listé = pas de cap (illimité). Le cap par thème agit en plus
+   * du cap par classe — la position est rejetée si l'un des deux casse.
+   *
+   * Defaults conservateurs : geopolitical_safehaven 40%, ai_megacap 35%,
+   * crypto 25%. Intentionnellement permissifs pour ne pas bloquer
+   * les thèses standards d'un portfolio simu HARVEST.
+   */
+  maxThemePct: z.record(ThemeTag, z.number().min(0).max(100)).optional().default({
+    geopolitical_safehaven: 40.0,
+    ai_megacap: 35.0,
+    energy_disruption: 30.0,
+    crypto: 25.0,
+    defensive_bond_proxy: 50.0,
+    small_cap_breakout: 25.0,
+    other: 50.0,
+  }),
 });
 export type RiskConstraints = z.infer<typeof RiskConstraints>;
 
