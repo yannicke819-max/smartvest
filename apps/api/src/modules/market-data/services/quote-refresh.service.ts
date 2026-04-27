@@ -16,7 +16,7 @@ export class QuoteRefreshService {
     const startedAt = new Date().toISOString();
     const jobId = await this.createJob('quote_refresh');
 
-    const assets = await this.marketData.getProviderAssets();
+    const assets = await this.marketData.getActiveSymbolsForRefresh();
     const assetsRequested = assets.length;
 
     let assetsSucceeded = 0;
@@ -51,7 +51,7 @@ export class QuoteRefreshService {
     const startedAt = new Date().toISOString();
     const jobId = await this.createJob('bar_refresh');
 
-    const assets = await this.marketData.getProviderAssets();
+    const assets = await this.marketData.getActiveSymbolsForRefresh();
     const assetsRequested = assets.length;
 
     let assetsSucceeded = 0;

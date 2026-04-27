@@ -4,6 +4,7 @@ import { ProviderRegistryService } from './provider-registry.service';
 import { ProviderAsset } from '../providers/market-data-provider.interface';
 import { InstrumentQuote } from '../dto/instrument-quote.dto';
 import { PriceBar } from '../dto/price-bar.dto';
+import { symbolToProviderAsset } from '../helpers/symbol-to-eodhd.helper';
 
 @Injectable()
 export class MarketDataService {
@@ -43,8 +44,66 @@ export class MarketDataService {
     return assets;
   }
 
+  /**
+   * INCIDENT 27/04/2026 — Union avec les `lisa_positions` ouvertes pour
+   * que le quote refresh ne soit pas stérile quand la table `assets` n'a
+   * pas (ou plus) de mappings provider_tickers pour les tickers actifs.
+   *
+   * Avant le fix : `getProviderAssets()` filtrait `provider_tickers != '{}'`
+   * sur la table `assets` qui retournait 0 row → bot aveugle aux prix
+   * live → stops/TP jamais évalués sur les positions effectivement
+   * tenues (BTC, RTX 27/04).
+   *
+   * Sémantique : on UNION (déduplication par providerTicker) :
+   *   - mappings statiques de la table `assets` (préservé pour watchlist)
+   *   - mappings dérivés des `lisa_positions WHERE status='open'` via
+   *     symbolToProviderAsset (heuristique crypto_/.US/.FOREX)
+   */
+  async getActiveSymbolsForRefresh(): Promise<ProviderAsset[]> {
+    const staticAssets = await this.getProviderAssets();
+    const positionAssets = await this.getOpenPositionAssets();
+
+    // Déduplication par providerTicker (le mapping statique prend le pas
+    // sur l'heuristique car il porte un assetId DB stable et une devise
+    // potentiellement non-USD précise).
+    const byTicker = new Map<string, ProviderAsset>();
+    for (const a of positionAssets) byTicker.set(a.providerTicker, a);
+    for (const a of staticAssets) byTicker.set(a.providerTicker, a);
+    return Array.from(byTicker.values());
+  }
+
+  /**
+   * Charge les positions ouvertes de `lisa_positions` et construit un
+   * ProviderAsset par ligne via `symbolToProviderAsset`. Filtre les rows
+   * dont la combinaison symbol/asset_class n'est pas reconnue (helper
+   * retourne null).
+   */
+  private async getOpenPositionAssets(): Promise<ProviderAsset[]> {
+    if (!this.supabase.isReady()) return [];
+    const { data, error } = await this.supabase
+      .getClient()
+      .from('lisa_positions')
+      .select('id, symbol, asset_class')
+      .eq('status', 'open');
+    if (error) {
+      this.logger.warn(`getOpenPositionAssets read failed: ${error.message}`);
+      return [];
+    }
+    const out: ProviderAsset[] = [];
+    for (const row of data ?? []) {
+      const a = symbolToProviderAsset(
+        String(row.id),
+        String(row.symbol ?? ''),
+        (row.asset_class as string | null | undefined) ?? null,
+      );
+      if (a) out.push(a);
+    }
+    return out;
+  }
+
   async refreshQuotes(): Promise<{ succeeded: number; failed: number }> {
-    const assets = await this.getProviderAssets();
+    // Union : assets statiques + positions ouvertes (fix incident 27/04).
+    const assets = await this.getActiveSymbolsForRefresh();
     if (assets.length === 0) return { succeeded: 0, failed: 0 };
 
     const quotes = await this.registry.fetchQuotesWithFailover(assets);
@@ -52,7 +111,7 @@ export class MarketDataService {
   }
 
   async refreshDailyBars(fromDate: string, toDate: string): Promise<{ succeeded: number; failed: number }> {
-    const assets = await this.getProviderAssets();
+    const assets = await this.getActiveSymbolsForRefresh();
     if (assets.length === 0) return { succeeded: 0, failed: 0 };
 
     const bars = await this.registry.fetchDailyBarsWithFailover(assets, fromDate, toDate);
