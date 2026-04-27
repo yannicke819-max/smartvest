@@ -11,10 +11,19 @@ interface Props {
 }
 
 function loadDoc(relPath: string): string | null {
+  // Le script `apps/web/scripts/copy-docs.mjs` (run par `predev` et
+  // `prebuild`) copie `docs/<file>.md` du repo root vers
+  // `apps/web/content/docs/<file>.md` afin que les fichiers soient
+  // bundled dans le déploiement Vercel.
+  const filename = relPath.split('/').pop();
+  if (!filename) return null;
+
+  // process.cwd() = `apps/web/` au runtime Vercel
   const candidates = [
+    path.join(process.cwd(), 'content', 'docs', filename),
+    // Fallbacks dev local au cas où le script n'a pas tourné
     path.join(process.cwd(), '..', '..', relPath),
     path.join(process.cwd(), relPath),
-    path.join(process.cwd(), '..', relPath),
   ];
   for (const candidate of candidates) {
     try {
