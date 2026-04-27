@@ -2,9 +2,11 @@ import { BadRequestException, Injectable, Logger, NotFoundException, Inject, for
 import { ConfigService } from '@nestjs/config';
 import { createHmac, randomUUID } from 'node:crypto';
 import Decimal from 'decimal.js';
+import Anthropic from '@anthropic-ai/sdk';
 import {
   CorpusQueryService,
   LisaClaudeClient,
+  LlmRouter,
   PaperBrokerService,
   RiskEnforcer,
   RiskMonitorService,
@@ -97,11 +99,31 @@ export class LisaService {
     private readonly apiCostTracker: ApiCostTrackerService,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
-    this.claudeClient = anthropicKey
-      ? new LisaClaudeClient(anthropicKey, 'claude-opus-4-7')
-      : null;
+    if (anthropicKey) {
+      // PATCH 6 P1 cost-01-llm-router — Toute requête Anthropic passe par le
+      // routeur centralisé : il choisit le modèle par tâche, applique le
+      // circuit breaker budget, et persiste le coût après chaque appel.
+      // Le LisaClaudeClient n'instancie plus l'SDK directement.
+      const dailyBudget = Number(
+        this.config.get<string>('LLM_ROUTER_DAILY_BUDGET_USD') ?? '100',
+      );
+      const fallbackOnBudget = (
+        this.config.get<string>('LLM_ROUTER_FALLBACK_ON_BUDGET') ?? 'true'
+      ).toLowerCase() !== 'false';
 
-    if (!this.claudeClient) {
+      const router = new LlmRouter(
+        new Anthropic({ apiKey: anthropicKey }),
+        this.apiCostTracker,
+        { dailyCostBudgetUsd: dailyBudget, fallbackOnBudget },
+        {
+          warn: (event, details) => this.logger.warn(
+            `[llm-router:${event}] ${JSON.stringify(details)}`,
+          ),
+        },
+      );
+      this.claudeClient = new LisaClaudeClient(router);
+    } else {
+      this.claudeClient = null;
       this.logger.warn('ANTHROPIC_API_KEY absent — thesis generation disabled');
     }
 

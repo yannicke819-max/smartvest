@@ -6,20 +6,27 @@
  *  - -90% input tokens sur cache HIT
  *  - Stable system prompt (persona Lisa 4 blocs) = cached
  *  - Profile override + user query = non-cached (dépendent de la session)
+ *
+ * PATCH 6 P1 cost-01-llm-router : ce client ne fait plus l'appel
+ * `messages.create` directement. Toutes les requêtes Anthropic transitent
+ * par le `LlmRouter` injecté au constructeur. Le routeur gère le mapping
+ * tâche→modèle, le circuit breaker budget et le tracking coût.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
+import type Anthropic from '@anthropic-ai/sdk';
 import type { SessionProfile } from '../types';
 import { buildLisaSystemPrompt } from '../persona';
+import type { LlmRouter, LlmTask } from '../llm';
 
 export interface ClaudeCallOptions {
   /** Profile Lisa à utiliser */
   profile: SessionProfile;
   /** Message utilisateur (contexte marché + corpus + demande) */
   userMessage: string;
-  /** Modèle Claude (défaut : le plus capable au moment présent) */
-  model?: string;
-  /** Max tokens output (défaut 8000, suffisant pour 3-7 thèses JSON) */
+  /** PATCH 6 P1 — Type de tâche pour routing modèle. Default 'thesis_generation'
+   *  (Opus) puisque c'est l'usage historique de ce client. */
+  task?: LlmTask;
+  /** Max tokens output (défaut 16000, suffisant pour 3-7 thèses JSON) */
   maxTokens?: number;
   /** @deprecated temperature n'est plus supporté par claude-opus-4-7+ */
   temperature?: number;
@@ -35,7 +42,7 @@ export interface ClaudeCallResult {
     cacheCreationInputTokens?: number;
     cacheReadInputTokens?: number;
   };
-  /** Modèle effectivement utilisé */
+  /** Modèle effectivement utilisé (peut différer du default si fallback router) */
   model: string;
   /** Stop reason */
   stopReason: string | null;
@@ -44,18 +51,12 @@ export interface ClaudeCallResult {
 /**
  * Client Lisa → Claude API.
  * Utilisé côté backend (NestJS), jamais côté client (clé API secret).
+ *
+ * PATCH 6 P1 — Prend désormais un `LlmRouter` au lieu d'une clé API. Le
+ * routeur encapsule l'instance Anthropic et le tracking de coût.
  */
 export class LisaClaudeClient {
-  private readonly client: Anthropic;
-  private readonly defaultModel: string;
-
-  constructor(apiKey: string, defaultModel = 'claude-sonnet-4-6') {
-    if (!apiKey) {
-      throw new Error('LisaClaudeClient requires a valid Anthropic API key.');
-    }
-    this.client = new Anthropic({ apiKey });
-    this.defaultModel = defaultModel;
-  }
+  constructor(private readonly router: LlmRouter) {}
 
   /**
    * Appel Claude avec prompt caching sur le bloc stable du system prompt.
@@ -69,7 +70,7 @@ export class LisaClaudeClient {
     const {
       profile,
       userMessage,
-      model = this.defaultModel,
+      task = 'thesis_generation',
       maxTokens = 16000,
     } = options;
 
@@ -90,8 +91,7 @@ export class LisaClaudeClient {
       },
     ];
 
-    const response = await this.client.messages.create({
-      model,
+    const { response } = await this.router.call(task, {
       max_tokens: maxTokens,
       system: systemBlocks as unknown as Anthropic.TextBlockParam[],
       messages: [
@@ -141,7 +141,7 @@ export class LisaClaudeClient {
     const {
       profile,
       userMessage,
-      model = this.defaultModel,
+      task = 'thesis_generation',
       maxTokens = 16000,
       tool,
     } = options;
@@ -152,15 +152,13 @@ export class LisaClaudeClient {
       { type: 'text' as const, text: profileSpecific },
     ];
 
-    const params: Anthropic.MessageCreateParamsNonStreaming = {
-      model,
+    const { response } = await this.router.call(task, {
       max_tokens: maxTokens,
       system: systemBlocks as unknown as Anthropic.TextBlockParam[],
       tools: [tool] as unknown as Anthropic.Tool[],
       tool_choice: { type: 'tool', name: tool.name },
       messages: [{ role: 'user', content: userMessage }],
-    };
-    const response = await this.client.messages.create(params);
+    });
 
     const toolBlock = response.content.find(
       (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
@@ -197,19 +195,18 @@ export class LisaClaudeClient {
   }
 
   /**
-   * Estime le coût d'un appel (USD).
-   * Pricing Claude Opus 4.7 (à date — à mettre à jour) :
-   *  - Input : $15 / 1M tokens
-   *  - Output : $75 / 1M tokens
-   *  - Cache write : $18.75 / 1M tokens (1.25x input)
-   *  - Cache read : $1.50 / 1M tokens (0.1x input — économie ~90%)
+   * Estime le coût d'un appel (USD), en tenant compte du caching.
+   * Le routeur calcule déjà le coût "raw" pour son budget breaker ;
+   * cette méthode reste utile aux callers qui veulent un coût précis
+   * incluant les économies cache_read/cache_write.
+   *
+   * Pricing Sonnet 4.6 (à date) :
+   *  - Input : $3 / 1M tokens
+   *  - Output : $15 / 1M tokens
+   *  - Cache write : $3.75 / 1M tokens (1.25x input)
+   *  - Cache read : $0.30 / 1M tokens (0.1x input — économie ~90%)
    */
   static estimateCostUsd(usage: ClaudeCallResult['usage']): number {
-    // Claude Sonnet 4.6 pricing (à date) — 5× moins cher que Opus :
-    //  - Input : $3 / 1M tokens
-    //  - Output : $15 / 1M tokens
-    //  - Cache write : $3.75 / 1M tokens (1.25x input)
-    //  - Cache read : $0.30 / 1M tokens (0.1x input — économie ~90%)
     const INPUT_PER_M = 3;
     const OUTPUT_PER_M = 15;
     const CACHE_WRITE_PER_M = 3.75;
