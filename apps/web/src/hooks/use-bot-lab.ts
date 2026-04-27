@@ -258,6 +258,71 @@ export function useMinePatterns() {
   });
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// PHASE 4 — TRANSFER LAYER (adoptions)
+// ═══════════════════════════════════════════════════════════════════
+
+export type AdoptionLevel = 'observe' | 'suggest' | 'enforce';
+
+export interface PatternAdoption {
+  id: string;
+  user_id: string;
+  portfolio_id: string;
+  pattern_id: string;
+  adoption_level: AdoptionLevel;
+  adopted_at: string;
+  adoption_notes: string | null;
+  triggered_count: number;
+  triggered_winning_count: number;
+  triggered_total_pnl_usd: string;
+  last_triggered_at: string | null;
+  is_active: boolean;
+  pattern_name?: string;
+  pattern_conditions?: Record<string, unknown>;
+}
+
+export function useAdoptions(portfolioId: string | null) {
+  return useQuery({
+    queryKey: ['bot-lab', 'adoptions', portfolioId],
+    queryFn: () => apiFetch<{ adoptions: PatternAdoption[] }>(`/bot-lab/adoptions/${portfolioId}`),
+    enabled: !!portfolioId,
+  });
+}
+
+export function useAdoptPattern() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ patternId, portfolioId, level, notes }: {
+      patternId: string;
+      portfolioId: string;
+      level: AdoptionLevel;
+      notes?: string;
+    }) =>
+      apiFetch<{ adoption: PatternAdoption }>(
+        `/bot-lab/patterns/${patternId}/adopt`,
+        { method: 'POST', body: JSON.stringify({ portfolioId, level, notes }) },
+      ),
+    onSuccess: (_, vars) => {
+      qc.invalidateQueries({ queryKey: ['bot-lab', 'adoptions', vars.portfolioId] });
+      qc.invalidateQueries({ queryKey: ['bot-lab', 'patterns'] });
+    },
+  });
+}
+
+export function useDeactivateAdoption() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ adoptionId, reason }: { adoptionId: string; reason?: string }) =>
+      apiFetch<{ ok: true }>(
+        `/bot-lab/adoptions/${adoptionId}/deactivate`,
+        { method: 'POST', body: JSON.stringify({ reason }) },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['bot-lab', 'adoptions'] });
+    },
+  });
+}
+
 /** Importe un CSV de trades. */
 export function useImportCsv(botId: string | null) {
   const qc = useQueryClient();

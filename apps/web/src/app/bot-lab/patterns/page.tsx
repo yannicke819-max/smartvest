@@ -1,19 +1,39 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Sparkles, RefreshCw, ArrowLeft, ShieldCheck, AlertTriangle, Clock } from 'lucide-react';
+import { Sparkles, RefreshCw, ArrowLeft, ShieldCheck, AlertTriangle, Clock, Eye, Lightbulb, Lock, X } from 'lucide-react';
 import {
   usePatterns,
   useMinePatterns,
+  useAdoptions,
+  useAdoptPattern,
+  useDeactivateAdoption,
   type BotPattern,
   type PatternStatus,
+  type AdoptionLevel,
+  type PatternAdoption,
 } from '@/hooks/use-bot-lab';
+import { usePortfolios } from '@/hooks/use-portfolio';
 
 export default function PatternsPage() {
   const [statusFilter, setStatusFilter] = useState<PatternStatus | 'all'>('all');
   const patternsQuery = usePatterns(statusFilter === 'all' ? undefined : statusFilter);
   const mineMut = useMinePatterns();
+  const portfoliosQuery = usePortfolios();
+  const [selectedPortfolioId, setSelectedPortfolioId] = useState<string | null>(null);
+
+  // Auto-select 1er portfolio simulation
+  useEffect(() => {
+    if (selectedPortfolioId) return;
+    const sim = portfoliosQuery.data?.find((p) => p.is_simulation);
+    if (sim) setSelectedPortfolioId(sim.id);
+  }, [portfoliosQuery.data, selectedPortfolioId]);
+
+  const adoptionsQuery = useAdoptions(selectedPortfolioId);
+  const adoptionsMap = new Map(
+    (adoptionsQuery.data?.adoptions ?? []).map((a) => [a.pattern_id, a]),
+  );
 
   const handleMine = async () => {
     try {
@@ -109,10 +129,36 @@ export default function PatternsPage() {
         </div>
       )}
 
+      {/* Sélecteur portfolio pour adoptions */}
+      {portfoliosQuery.data && portfoliosQuery.data.length > 0 && (
+        <div className="rounded-lg border p-3 flex items-center gap-3 flex-wrap">
+          <span className="text-xs text-muted-foreground">Portfolio cible pour adoptions :</span>
+          <select
+            value={selectedPortfolioId ?? ''}
+            onChange={(e) => setSelectedPortfolioId(e.target.value || null)}
+            className="h-8 rounded-md border bg-background px-2 text-xs"
+          >
+            {portfoliosQuery.data.filter((p) => p.is_simulation).map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+          {adoptionsQuery.data && (
+            <span className="text-[10px] text-muted-foreground">
+              {adoptionsQuery.data.adoptions.length} adoption(s) active(s)
+            </span>
+          )}
+        </div>
+      )}
+
       {patterns.length > 0 && (
         <div className="space-y-3">
           {patterns.map((p) => (
-            <PatternCard key={p.id} pattern={p} />
+            <PatternCard
+              key={p.id}
+              pattern={p}
+              portfolioId={selectedPortfolioId}
+              currentAdoption={adoptionsMap.get(p.id) ?? null}
+            />
           ))}
         </div>
       )}
@@ -129,11 +175,43 @@ function StatCard(props: { label: string; value: string; color: string }) {
   );
 }
 
-function PatternCard({ pattern }: { pattern: BotPattern }) {
+function PatternCard({
+  pattern,
+  portfolioId,
+  currentAdoption,
+}: {
+  pattern: BotPattern;
+  portfolioId: string | null;
+  currentAdoption: PatternAdoption | null;
+}) {
   const compositeScore = pattern.composite_score ?? 0;
   const robustness = pattern.robustness_score ?? 0;
   const winRate = pattern.win_rate_pct ?? 0;
   const expectancy = parseFloat(pattern.expectancy_usd ?? '0');
+  const adoptMut = useAdoptPattern();
+  const deactivateMut = useDeactivateAdoption();
+
+  const handleAdopt = async (level: AdoptionLevel) => {
+    if (!portfolioId) {
+      alert('Sélectionne un portfolio cible d\'abord');
+      return;
+    }
+    try {
+      await adoptMut.mutateAsync({ patternId: pattern.id, portfolioId, level });
+    } catch (e) {
+      alert(`Erreur: ${String(e).slice(0, 200)}`);
+    }
+  };
+
+  const handleDeactivate = async () => {
+    if (!currentAdoption) return;
+    if (!confirm(`Désactiver l'adoption ${currentAdoption.adoption_level} de ce pattern ?`)) return;
+    try {
+      await deactivateMut.mutateAsync({ adoptionId: currentAdoption.id, reason: 'user_deactivated' });
+    } catch (e) {
+      alert(`Erreur: ${String(e).slice(0, 200)}`);
+    }
+  };
 
   const scoreColor = compositeScore >= 70
     ? 'text-emerald-600'
@@ -202,6 +280,67 @@ function PatternCard({ pattern }: { pattern: BotPattern }) {
             {k}={String(v)}
           </span>
         ))}
+      </div>
+
+      {/* Adoption controls */}
+      <div className="flex items-center justify-between pt-2 border-t flex-wrap gap-2">
+        <div className="text-[10px] text-muted-foreground">
+          {currentAdoption ? (
+            <span className="flex items-center gap-2">
+              <span className="font-medium uppercase">{currentAdoption.adoption_level}</span>
+              {currentAdoption.triggered_count > 0 && (
+                <span>
+                  · {currentAdoption.triggered_count} matches Lisa,{' '}
+                  {currentAdoption.triggered_winning_count}/{currentAdoption.triggered_count} won
+                </span>
+              )}
+            </span>
+          ) : (
+            <span>Pas adopté pour ce portfolio</span>
+          )}
+        </div>
+        <div className="flex gap-1.5">
+          {currentAdoption ? (
+            <button
+              onClick={handleDeactivate}
+              disabled={deactivateMut.isPending}
+              className="rounded-md border border-red-200 dark:border-red-900 px-2 py-1 text-[10px] font-medium text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 flex items-center gap-1"
+            >
+              <X className="h-3 w-3" />
+              Désactiver
+            </button>
+          ) : (
+            <>
+              <button
+                onClick={() => handleAdopt('observe')}
+                disabled={adoptMut.isPending || !portfolioId}
+                className="rounded-md border px-2 py-1 text-[10px] font-medium hover:bg-muted disabled:opacity-50 flex items-center gap-1"
+                title="Observer uniquement — pas d'action automatique"
+              >
+                <Eye className="h-3 w-3" />
+                Observer
+              </button>
+              <button
+                onClick={() => handleAdopt('suggest')}
+                disabled={adoptMut.isPending || !portfolioId}
+                className="rounded-md border border-amber-200 bg-amber-50 dark:bg-amber-950/40 px-2 py-1 text-[10px] font-medium hover:bg-amber-100 disabled:opacity-50 flex items-center gap-1"
+                title="Lisa intègre dans le briefing comme recommandation"
+              >
+                <Lightbulb className="h-3 w-3" />
+                Suggest
+              </button>
+              <button
+                onClick={() => handleAdopt('enforce')}
+                disabled={adoptMut.isPending || !portfolioId}
+                className="rounded-md border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/40 px-2 py-1 text-[10px] font-medium hover:bg-emerald-100 disabled:opacity-50 flex items-center gap-1"
+                title="Lisa doit respecter (briefing strict, refus si contradiction)"
+              >
+                <Lock className="h-3 w-3" />
+                Enforce
+              </button>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

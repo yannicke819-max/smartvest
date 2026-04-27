@@ -30,6 +30,7 @@ import { EodhdCalendarService } from './eodhd-calendar.service';
 import { BinanceMarketService } from './binance-market.service';
 import { TradeOutcomeRecorderService } from './trade-outcome-recorder.service';
 import { DailyProfitGovernor } from './daily-profit-governor.service';
+import { PatternAdoptionService } from '../../bot-lab/services/pattern-adoption.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types internes
@@ -151,7 +152,38 @@ export class MechanicalTradingService {
     private readonly binance: BinanceMarketService,
     private readonly tradeOutcomeRecorder: TradeOutcomeRecorderService,
     private readonly dailyProfitGovernor: DailyProfitGovernor,
+    private readonly patternAdoption: PatternAdoptionService,
   ) {}
+
+  /**
+   * BOT LAB Phase 4 — boucle feedback : enregistre les triggers de patterns
+   * adoptés quand un trade est fermé. Permet de mesurer dans la durée si
+   * les patterns adoptés tiennent leurs promesses sur les vrais trades Lisa.
+   */
+  private async recordPatternFeedback(
+    portfolioId: string,
+    assetClass: string,
+    direction: string,
+    pnlUsd: number,
+  ): Promise<void> {
+    const patterns = await this.patternAdoption.getActiveAdoptedPatterns(portfolioId);
+    if (patterns.length === 0) return;
+
+    // Note : on ne dispose pas de vix_at_entry sur la position dans
+    // mechanical-trading (pas tagged). On match donc sans vix_bucket.
+    const tradeContext = { assetClass, direction };
+
+    for (const pattern of patterns) {
+      // Match conditions partielles (asset_class + direction). Si le pattern
+      // requiert vix_bucket, ce match sera large mais c'est OK pour le feedback.
+      const conditionsForMatch: Record<string, unknown> = { ...pattern.conditions };
+      delete conditionsForMatch.vix_bucket; // ignoré dans le feedback
+
+      if (this.patternAdoption.matchesPattern(tradeContext, conditionsForMatch)) {
+        await this.patternAdoption.recordTriggered(pattern.adoptionId, pnlUsd);
+      }
+    }
+  }
 
   /**
    * Mappe un ticker "natif" (AAPL, BTC, EURUSD) vers un ticker EODHD
@@ -1715,6 +1747,17 @@ export class MechanicalTradingService {
         reason,
       )
       .catch((e) => this.logger.debug(`daily-harvest hook failed: ${String(e).slice(0, 100)}`));
+
+    // BOT LAB Phase 4 — boucle feedback patterns adoptés.
+    // Pour chaque pattern adopté actif sur ce portfolio, check si ce trade
+    // matche les conditions, et si oui increment triggered_count + pnl.
+    // Fire-and-forget — ne JAMAIS bloquer le close.
+    this.recordPatternFeedback(
+      pos.portfolio_id as string,
+      pos.asset_class as string,
+      pos.direction as string,
+      realizedPnl.toNumber(),
+    ).catch((e) => this.logger.debug(`pattern feedback failed: ${String(e).slice(0, 100)}`));
 
     await this.decisionLog.append({
       portfolioId: pos.portfolio_id as string,

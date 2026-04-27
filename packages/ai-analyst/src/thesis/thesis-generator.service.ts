@@ -226,6 +226,10 @@ export interface GenerateThesesRequest {
    *  Permet à Lisa d'adapter ses thèses (sortie claire, take profit
    *  prioritaire, defensive si TARGET_NEAR, theses=[] si TARGET_HIT). */
   dailyHarvestContext?: DailyHarvestBriefingContext;
+  /** Phase BOT LAB Phase 4 — bloc texte des patterns adoptés (SUGGEST/ENFORCE).
+   *  Généré par PatternBriefingService côté back. Empty string si aucun
+   *  pattern adopté actif. */
+  adoptedPatternsBriefing?: string;
 }
 
 export interface GenerateThesesResponse {
@@ -392,7 +396,7 @@ ${m.lisaMemory}
 ` : ''}${m.performanceAnalytics ? `## YOUR EDGE — stats empiriques contextualisées sur tes trades fermés
 ${m.performanceAnalytics}
 
-` : ''}${this.formatDailyHarvestBlock(req.dailyHarvestContext)}## Recent news (24-72h) — analyse scorée et filtrée
+` : ''}${this.formatDailyHarvestBlock(req.dailyHarvestContext)}${req.adoptedPatternsBriefing ? `${req.adoptedPatternsBriefing}\n` : ''}## Recent news (24-72h) — analyse scorée et filtrée
 ${m.newsAnalysis ? m.newsAnalysis : (recentNewsBlock || '- (no recent news provided)')}${m.newsAnalysis ? '' : sentimentLine}
 ${m.screenerCandidates ? `\n## Screener candidates (scans de découverte EODHD)\n${m.screenerCandidates}\n` : ''}${m.insiderSignals ? `\n## Insider signals (SEC Form 4, 30j)\n${m.insiderSignals}\n` : ''}${m.optionsSignals ? `\n## Options flow (IV ATM · put/call ratio)\n${m.optionsSignals}\n` : ''}${m.liquidationsSignals ? `\n## Crypto liquidations (waves reversal)\n${m.liquidationsSignals}\n` : ''}
 

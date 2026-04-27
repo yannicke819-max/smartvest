@@ -34,6 +34,8 @@ import { TradeOutcomeRecorderService } from './trade-outcome-recorder.service';
 import { DailySessionService } from './daily-session.service';
 import type { DailyHarvestConfig, CapitalDisciplineMode } from '../types/capital-discipline.types';
 import type { DailyHarvestBriefingContext } from '@smartvest/ai-analyst';
+import { PatternBriefingService } from '../../bot-lab/services/pattern-briefing.service';
+import { PatternAdoptionService } from '../../bot-lab/services/pattern-adoption.service';
 import { LisaPerformanceAnalyticsService } from './lisa-performance-analytics.service';
 import { EodhdTechnicalService } from './eodhd-technical.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
@@ -87,6 +89,8 @@ export class LisaService {
     private readonly tradeOutcomeRecorder: TradeOutcomeRecorderService,
     private readonly performanceAnalytics: LisaPerformanceAnalyticsService,
     private readonly dailySession: DailySessionService,
+    private readonly patternBriefing: PatternBriefingService,
+    private readonly patternAdoption: PatternAdoptionService,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
     this.claudeClient = anthropicKey
@@ -634,6 +638,14 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         return undefined;
       });
 
+    // BOT LAB Phase 4 — bloc patterns adoptés (SUGGEST/ENFORCE).
+    // Empty string si aucune adoption active sur ce portfolio.
+    const adoptedPatternsBriefing = await this.patternBriefing.getBriefingBlock(portfolioId)
+      .catch((e) => {
+        this.logger.warn(`getBriefingBlock failed: ${String(e).slice(0, 100)}`);
+        return '';
+      });
+
     let result: Awaited<ReturnType<ThesisGeneratorService['generateTheses']>>;
     try {
       result = await this.thesisGenerator.generateTheses({
@@ -651,6 +663,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         intradayBySymbol,
         earningsBySymbol,
         ...(dailyHarvestContext ? { dailyHarvestContext } : {}),
+        ...(adoptedPatternsBriefing ? { adoptedPatternsBriefing } : {}),
       });
     } catch (e) {
       // Parse failure ou erreur Claude : on log dans le decision log et on

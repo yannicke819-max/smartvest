@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { SupabaseModule } from '../supabase/supabase.module';
 import { PerformanceModule } from '../performance/performance.module';
+import { BotLabModule } from '../bot-lab/bot-lab.module';
 import { LisaController } from './lisa.controller';
 import { LisaService } from './services/lisa.service';
 import { LisaAutopilotService } from './services/lisa-autopilot.service';
@@ -36,7 +37,7 @@ import { ProfitSweepService } from './services/profit-sweep.service';
 import { DailyProfitGovernor } from './services/daily-profit-governor.service';
 
 @Module({
-  imports: [SupabaseModule, PerformanceModule],
+  imports: [SupabaseModule, PerformanceModule, BotLabModule],
   controllers: [LisaController],
   providers: [
     LisaService,

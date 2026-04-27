@@ -7,7 +7,8 @@ import { EquityCurveService } from './services/equity-curve.service';
 import { RegimeTaggerService } from './services/regime-tagger.service';
 import { BotComparatorService } from './services/bot-comparator.service';
 import { PatternMinerService } from './services/pattern-miner.service';
-import type { BotDefinitionDraft, PatternStatus } from './types/bot-lab.types';
+import { PatternAdoptionService } from './services/pattern-adoption.service';
+import type { BotDefinitionDraft, PatternStatus, AdoptionLevel } from './types/bot-lab.types';
 
 /**
  * BotLabController — API du module Bot Profitability Lab.
@@ -32,6 +33,7 @@ export class BotLabController {
     private readonly regimeTagger: RegimeTaggerService,
     private readonly comparator: BotComparatorService,
     private readonly patternMiner: PatternMinerService,
+    private readonly patternAdoption: PatternAdoptionService,
   ) {}
 
   // ───────────────────────────────────────────────────────────────────
@@ -256,5 +258,61 @@ export class BotLabController {
       : undefined;
     const patterns = await this.patternMiner.listPatterns(userId, filterStatus);
     return { patterns };
+  }
+
+  // ───────────────────────────────────────────────────────────────────
+  // PHASE 4 — TRANSFER LAYER (adoptions)
+  // ───────────────────────────────────────────────────────────────────
+
+  /**
+   * Adopt un pattern pour un portfolio à un niveau donné.
+   * Body : { portfolioId: string, level: 'observe' | 'suggest' | 'enforce', notes?: string }
+   */
+  @Post('patterns/:patternId/adopt')
+  async adoptPattern(
+    @Headers() headers: Record<string, string>,
+    @Param('patternId') patternId: string,
+    @Body() body: { portfolioId: string; level: AdoptionLevel; notes?: string },
+  ) {
+    const userId = extractUserId(headers);
+    if (!body.portfolioId) throw new Error('portfolioId requis');
+    if (!['observe', 'suggest', 'enforce'].includes(body.level)) {
+      throw new Error('level doit être observe / suggest / enforce');
+    }
+    const adoption = await this.patternAdoption.adopt(
+      userId, body.portfolioId, patternId, body.level, body.notes,
+    );
+    return { adoption };
+  }
+
+  /**
+   * Désactive une adoption.
+   */
+  @Post('adoptions/:adoptionId/deactivate')
+  @HttpCode(200)
+  async deactivateAdoption(
+    @Headers() headers: Record<string, string>,
+    @Param('adoptionId') adoptionId: string,
+    @Body() body?: { reason?: string },
+  ) {
+    const userId = extractUserId(headers);
+    await this.patternAdoption.deactivate(userId, adoptionId, body?.reason);
+    return { ok: true };
+  }
+
+  /**
+   * Liste les adoptions d'un portfolio (avec join pattern).
+   */
+  @Get('adoptions/:portfolioId')
+  async listAdoptions(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+    @Query('all') all?: string,
+  ) {
+    const userId = extractUserId(headers);
+    const adoptions = await this.patternAdoption.listAdoptions(
+      userId, portfolioId, all !== 'true',
+    );
+    return { adoptions };
   }
 }
