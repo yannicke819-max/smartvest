@@ -15,6 +15,8 @@ import {
   Sliders,
   Wallet,
   Activity,
+  Bot,
+  FileSearch,
 } from 'lucide-react';
 import { useUIStore } from '@/stores/ui';
 import { cn } from '@/lib/utils';
@@ -27,10 +29,12 @@ const items = [
   { href: '/backtest', label: 'Backtest', icon: FlaskConical },
   { href: '/monte-carlo', label: 'Monte Carlo', icon: Dices },
   { href: '/optimizer', label: 'Optimizer', icon: Sliders },
+  { href: '/bot-lab', label: 'Bot Lab', icon: Bot },
   { href: '/alerts', label: 'Alertes', icon: Bell },
   { href: '/history', label: 'Historique', icon: History },
   { href: '/settings', label: 'Paramètres', icon: Settings },
   { href: '/admin/monitoring', label: 'Monitoring', icon: Activity },
+  { href: '/admin/audit', label: 'Audit produit', icon: FileSearch },
 ] as const;
 
 export function Sidebar() {
