@@ -271,7 +271,18 @@ export class PaperBrokerService {
       if (!priceMap.has(pos.symbol)) {
         try {
           const quote = await this.fetchLivePrice(pos.symbol);
-          priceMap.set(pos.symbol, new Decimal(quote.price));
+          // 🛡️ GARDE-FOU CRITIQUE — bug 27/04 02:01 :
+          // Si fetchLivePrice retourne un fallback hardcoded (LMT=100, GLD=310,
+          // SLV=31...), le snapshot calcule une valeur portefeuille massivement
+          // erronée → drawdown_from_peak_pct faux → P4.1 Kill-switch armé sur
+          // fausse alerte (incident 27/04 nocturne).
+          // Solution : si source fallback, utiliser entry_price (PnL latent
+          // honnête à 0% pour cette position en attendant que EODHD revienne).
+          if (quote.source && quote.source.startsWith('fallback')) {
+            priceMap.set(pos.symbol, new Decimal(pos.entryPrice));
+          } else {
+            priceMap.set(pos.symbol, new Decimal(quote.price));
+          }
         } catch {
           // Fallback sur entry price si quote unavailable
           priceMap.set(pos.symbol, new Decimal(pos.entryPrice));
