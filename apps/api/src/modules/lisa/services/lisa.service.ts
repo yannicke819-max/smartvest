@@ -933,6 +933,8 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         horizonDays,
         venue: expr.preferredVenue,
         thesisId: thesis.id,
+        // PATCH 5 — propage thesisKind au mécanique pour multiplicateur ATR
+        ...(thesis.kind ? { thesisKind: thesis.kind } : {}),
         ...(isOptionLong
           ? {
               optionStructure: {

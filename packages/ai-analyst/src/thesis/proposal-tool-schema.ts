@@ -168,6 +168,11 @@ const thesisSchema = {
         ],
       },
     },
+    kind: {
+      type: 'string',
+      enum: ['momentum', 'mean_reversion', 'breakout', 'event', 'macro_hedge'],
+      description: "PATCH 5 — Type de thèse pour calibrer la posture de risque (multiplicateur ATR du stop). Orthogonal à 'category'. momentum=1.0× ATR (stop serré, sortie sur cassure de momentum), mean_reversion=2.0× (stop large, drawdown initial attendu), breakout=1.2× (stop sous niveau cassé, faux breakouts), event=1.5× (volatilité event), macro_hedge=2.2× (couverture long-terme). Si tu hésites, choisir 'momentum' (default conservateur).",
+    },
   },
   required: ['title', 'summary', 'catalyst', 'whoIsWrong', 'category', 'expressions', 'preferredExpressionIndex', 'expressionChoiceRationale', 'riskReward', 'invalidation', 'antiBullshit', 'analogSlugs', 'confidenceScore'],
 };

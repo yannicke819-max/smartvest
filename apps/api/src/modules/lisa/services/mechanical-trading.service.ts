@@ -17,6 +17,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import Decimal from 'decimal.js';
 import { randomUUID } from 'node:crypto';
+import { computeAtrStopByKind, type ThesisKind } from '@smartvest/ai-analyst';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { PerformanceService } from '../../performance/performance.service';
 import { DecisionLogService } from './decision-log.service';
@@ -47,6 +48,10 @@ interface TargetSymbol {
   horizonDays: number;
   venue?: string;
   thesisId?: string;
+  /** PATCH 5 — type de thèse pour calibrer la posture de risque
+   *  (multiplier ATR du stop). Cf. ThesisKind dans @smartvest/ai-analyst.
+   *  Default 'momentum' (1.0× ATR) si absent. */
+  thesisKind?: ThesisKind;
   /** Si présent, ouvrir une option (long call/put) au lieu d'une position
    *  equity classique. Routé vers OptionBrokerService.openOption() :
    *   - direction 'long' → call (parie sur la hausse du sous-jacent)
@@ -211,29 +216,57 @@ export class MechanicalTradingService {
    * propre de chaque actif — BTC (σ élevée) aura un stop plus large que
    * SPY (σ faible), donc moins de "stops sur bruit normal".
    *
-   * Formule :
-   *   stopATR% = MULTIPLIER × ATR14% du prix actuel
-   *   stopFinal% = clamp(stopATR%, FLOOR, CEILING)
+   * PATCH 5 — Multiplicateur modulé par `thesisKind` :
+   *   momentum=1.0 (serré), mean_reversion=2.0 (respire), breakout=1.2,
+   *   event=1.5, macro_hedge=2.2. Default 1.5 si kind absent (rétrocompat).
+   *   Ceiling étendu 5% → 7% pour mean_reversion / macro_hedge avec ATR > 3%.
+   *
+   * Formule (cf. computeAtrStopByKind dans @smartvest/ai-analyst) :
+   *   stopATR% = MULTIPLIER[kind] × ATR14% du prix actuel
+   *   stopFinal% = clamp(stopATR%, FLOOR=1.0%, CEILING=7.0%)
    *   si ATR indispo → fallback sur stopPct "Lisa" (propagé)
    *
-   * MULTIPLIER=1.5 → classique (distance "1.5 ATR" = 1σ sur horizon court).
-   * FLOOR=1.0%     → évite stops trop serrés même sur actifs très calmes.
-   * CEILING=5.0%   → limite l'exposition max par position.
+   * Le caller peut aussi récupérer recommendedSizeUsd pour appliquer un
+   * sizing compensatoire (size inversement proportionnelle au stop pour
+   * que le risk$ par trade reste constant). Aujourd'hui retourné mais
+   * NON-appliqué automatiquement (le sizing Lisa prévaut). À câbler dans
+   * un PR ultérieur quand on aura le riskPerTradePct configurable user.
    */
   private async deriveAtrStopPct(
     eodhdTicker: string,
     currentPrice: number,
     fallbackPct: number,
-  ): Promise<{ stopPct: number; atr14Pct: number | null; source: 'atr' | 'fallback' }> {
+    thesisKind?: ThesisKind,
+    capitalUsd?: number,
+  ): Promise<{
+    stopPct: number;
+    atr14Pct: number | null;
+    source: 'atr' | 'fallback';
+    kindMultiplier: number;
+    recommendedSizeUsd: number | null;
+  }> {
     try {
       const ind = await this.technical.getIndicators(eodhdTicker, currentPrice);
       if (ind.atr14Pct != null && ind.atr14Pct > 0) {
-        const raw = 1.5 * ind.atr14Pct;
-        const clamped = Math.max(1.0, Math.min(5.0, raw));
-        return { stopPct: clamped, atr14Pct: ind.atr14Pct, source: 'atr' };
+        const result = computeAtrStopByKind(ind.atr14Pct, thesisKind, capitalUsd);
+        return {
+          stopPct: result.stopPct,
+          atr14Pct: ind.atr14Pct,
+          source: 'atr',
+          kindMultiplier: result.kindMultiplier,
+          recommendedSizeUsd: result.recommendedSizeUsd,
+        };
       }
     } catch { /* fall through */ }
-    return { stopPct: fallbackPct, atr14Pct: null, source: 'fallback' };
+    return {
+      stopPct: fallbackPct,
+      atr14Pct: null,
+      source: 'fallback',
+      kindMultiplier: thesisKind
+        ? (computeAtrStopByKind(0, thesisKind).kindMultiplier)
+        : 1.5,
+      recommendedSizeUsd: null,
+    };
   }
 
   @Cron(CronExpression.EVERY_MINUTE, { name: 'mechanical-trading' })
@@ -886,7 +919,16 @@ export class MechanicalTradingService {
       const eodhdTicker = this.lisa['toEodhdTicker']
         ? (this.lisa as unknown as { toEodhdTicker(s: string): string }).toEodhdTicker(target.symbol)
         : target.symbol;
-      const atrDerived = await this.deriveAtrStopPct(eodhdTicker, price.toNumber(), fallbackStopPct);
+      // PATCH 5 — passer thesisKind à deriveAtrStopPct pour multiplier ATR
+      // adapté (momentum 1×, mean_reversion 2×, breakout 1.2×, event 1.5×,
+      // macro_hedge 2.2×). Default 'momentum' si Lisa n'a pas tagué.
+      const atrDerived = await this.deriveAtrStopPct(
+        eodhdTicker,
+        price.toNumber(),
+        fallbackStopPct,
+        target.thesisKind,
+        capitalUsd.toNumber(),
+      );
       const stopPct = Math.max(atrDerived.stopPct * stopsMult, 0.3);
       const tpPct = Math.max(target.takeProfitPct ?? Math.max(atrDerived.stopPct * 2, 4), 0.5);
 
@@ -899,7 +941,8 @@ export class MechanicalTradingService {
 
       this.logger.log(
         `[MÉCANIQUE] ${target.symbol} stop=${stopPct.toFixed(2)}% tp=${tpPct.toFixed(2)}% ` +
-        `(source=${atrDerived.source}, ATR14=${atrDerived.atr14Pct?.toFixed(2) ?? 'n/a'}%, override×${stopsMult})`,
+        `(source=${atrDerived.source}, ATR14=${atrDerived.atr14Pct?.toFixed(2) ?? 'n/a'}%, ` +
+        `kind=${target.thesisKind ?? 'default'} ×${atrDerived.kindMultiplier}, override×${stopsMult})`,
       );
 
       const horizonDays = target.horizonDays ?? 3;
