@@ -166,7 +166,7 @@ export class MacroModeService {
       capital_discipline_mode: 'DAILY_HARVEST' as CapitalDisciplineMode,
       daily_harvest_config: dailyHarvestConfigWithTP,
       autopilot_aggressive: true,
-      autopilot_cycle_minutes: 20,                 // réactif
+      autopilot_cycle_minutes: 7,                  // ultra-réactif (HARVEST scalping). Modifiable UI dans clamp [5, 60].
       anti_consensus_strength: 7,
       // Risk constraints serrés
       risk_constraints: {

@@ -400,6 +400,18 @@ Mécanisme indépendant de Lisa : ferme une position long avant que Lisa ait le 
 
 Tracé comme `closed_invalidated` dans `lisa_positions`, decision_log enrichi du sentiment et du titre. Critères stricts pour éviter de tordre une thèse encore valide à cause d'une news bruyante.
 
+### Filet de garantie autopilot — preset HARVEST = 7 min
+
+Le filet de garantie (`autopilot_cycle_minutes`) force un cycle Lisa même si aucun event matériel n'est détecté. Clamp UI : 5-60 min, modifiable par utilisateur. Defaults par preset :
+
+- Preset **INVESTMENT** : 60 min (passif, swing trading)
+- Preset **HARVEST** : 7 min (réactif, scalping intraday)
+- Aucun preset : 30 min (legacy)
+
+Note coût : 7 min en HARVEST ≈ 8 cycles/h vs 3 cycles/h en INVESTMENT — coût LLM ~3× supérieur. À assumer en HARVEST où la cadence d'analyse compte plus que les frais marginaux. L'utilisateur reste maître via le champ UI ; le preset n'est qu'une suggestion sensée.
+
+Toute régression qui imposerait un cap dur en HARVEST hyper-active doit être évitée — la modifiabilité du filet est un invariant.
+
 ---
 
 ## 7. Frictions d'intermédiation — à rendre visibles
