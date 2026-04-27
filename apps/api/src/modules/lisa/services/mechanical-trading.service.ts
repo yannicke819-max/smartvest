@@ -491,69 +491,28 @@ export class MechanicalTradingService {
       exposureByClass.set(cls, (exposureByClass.get(cls) ?? 0) + readNotionalPos(p));
     }
 
-    // P4.3 (2-way) — enforcement sur positions EXISTANTES : si une classe
-    // dépasse déjà le cap, on ferme la position la moins convaincue
-    // (conviction_score si disponible, fallback sur notional pour les
-    // positions héritées sans score explicite).
+    // PATCH 2 (PR#2 P0) — Bloc P4.3 2-way (post-close) SUPPRIMÉ.
+    //
+    // Rationale incident LMT 27/04/2026 :
+    //   16:12:55 — Lisa propose 2 thèses (GDX commodities + LMT equity)
+    //              au cycle. Le pré-check P4.3 (ligne 887-899) refuse
+    //              correctement LMT car projected = (RTX 2000 + LMT 1800) /
+    //              10000 = 38% > cap 28%. MAIS le post-check 2-way s'exécutait
+    //              en plus, et ferme la "weakest" → le système fermait des
+    //              positions VIRTUELLES (race avec ouverture juste avant).
+    //   16:13:08 — Post-check ferme LMT 13s après ouverture, P&L -$3.60 frais.
+    //
+    // La seule source de vérité pour le cap classe est désormais le pré-check
+    // INCRÉMENTAL ligne 887-899 + 996. La map `exposureByClass` est mise à
+    // jour APRÈS chaque insert réussi (ligne 996). Suffisant et déterministe.
+    //
+    // Helper readConviction conservé car utilisé par d'autres branches (ex:
+    // override closeLowestConvictionIfExposureAbovePct ligne ~568).
     const readConviction = (p: OpenPosition): number | null => {
       const v = (p as unknown as Record<string, unknown>)['conviction_score'];
       const n = v == null ? null : Number(v);
       return n != null && Number.isFinite(n) ? n : null;
     };
-    const capitalForClass = capitalUsd.toNumber();
-    if (capitalForClass > 0) {
-      for (const [cls, exposureUsd] of exposureByClass.entries()) {
-        const classExposurePct = (exposureUsd / capitalForClass) * 100;
-        if (classExposurePct <= maxAssetClassPct) continue;
-
-        const candidates = activePositions.filter((p) => readAssetClass(p) === cls);
-        if (candidates.length === 0) continue;
-
-        // Tri : conviction_score ASC (plus basse conviction d'abord), puis
-        // notional ASC en tie-breaker. Si conviction_score est null sur
-        // toutes, le fallback est purement notional (rétrocompatibilité).
-        const weakest = [...candidates].sort((a, b) => {
-          const ca = readConviction(a);
-          const cb = readConviction(b);
-          if (ca != null && cb != null && ca !== cb) return ca - cb;
-          if (ca != null && cb == null) return -1; // null = inconnu, on garde
-          if (ca == null && cb != null) return 1;
-          return readNotionalPos(a) - readNotionalPos(b);
-        })[0];
-        const quote = await this.lisa.getLivePrice(weakest.symbol).catch(() => null);
-        if (!quote) continue;
-        if (this.isFallbackSource(quote.source)) {
-          this.logger.warn(`[FALLBACK_GUARD] close_class_cap ${weakest.symbol} skip — source=${quote.source}`);
-          continue;
-        }
-
-        const weakestNotional = readNotionalPos(weakest);
-        await this.closePosition(
-          weakest.id,
-          quote.price,
-          'closed_invalidated',
-          `[P4.3 2-way] Classe "${cls}" à ${classExposurePct.toFixed(1)}% > cap ${maxAssetClassPct}% — fermeture ${weakest.symbol} ($${weakestNotional.toFixed(0)}) pour revenir sous cap`,
-        );
-
-        await this.decisionLog.append({
-          portfolioId,
-          kind: 'risk_limit_breached',
-          summary: `[P4.3 2-way] Cap asset class violé : ${cls} ${classExposurePct.toFixed(1)}% > ${maxAssetClassPct}% — fermeture ${weakest.symbol}`,
-          rationale: `Enforcement post-agrégation : avant ce cycle, la classe "${cls}" cumulait ${exposureUsd.toFixed(0)}$ sur ${capitalForClass.toFixed(0)}$ de capital (${classExposurePct.toFixed(1)}%), au-dessus du seuil ${maxAssetClassPct}%. Fermeture de la position la plus petite (${weakest.symbol}, ${weakestNotional.toFixed(0)}$) pour ramener la classe sous le cap. Les prochaines ouvertures sur cette classe resteront bloquées tant que l'exposition n'est pas revenue sous le seuil.`,
-          payload: {
-            asset_class: cls,
-            exposure_pct: Number(classExposurePct.toFixed(2)),
-            cap_pct: maxAssetClassPct,
-            closed_symbol: weakest.symbol,
-            closed_notional_usd: weakestNotional,
-          },
-          triggeredBy: 'risk_monitor',
-        });
-
-        // Met à jour la map locale pour ne pas retraiter cette classe ce cycle
-        exposureByClass.set(cls, exposureUsd - weakestNotional);
-      }
-    }
 
     // Override : fermer la plus basse conviction si exposition > seuil.
     // Tri prioritaire sur conviction_score (vrai score Lisa), fallback
@@ -886,15 +845,33 @@ export class MechanicalTradingService {
 
       // P4.3 — Plafond par classe d'actif : refuse l'ouverture si elle
       // pousserait l'exposition de la classe au-delà du seuil (default 25%).
+      // PATCH 2 (PR#2 P0) — audit DECISION_LOG pour visibility (avant : simple
+      // logger.debug invisible côté UI).
       const classKey = target.assetClass.toLowerCase();
       const currentClassExposure = exposureByClass.get(classKey) ?? 0;
       const projectedClassExposurePct = capitalUsd.gt(0)
         ? ((currentClassExposure + notional.toNumber()) / capitalUsd.toNumber()) * 100
         : 0;
       if (projectedClassExposurePct > maxAssetClassPct) {
-        this.logger.debug(
+        this.logger.log(
           `[P4.3] Skip ${target.symbol} — exposition classe "${classKey}" projetée ${projectedClassExposurePct.toFixed(1)}% > cap ${maxAssetClassPct}%`,
         );
+        await this.decisionLog.append({
+          portfolioId,
+          kind: 'risk_limit_breached',
+          summary: `[P4.3] Ouverture ${target.symbol} refusée — class ${classKey} projetée ${projectedClassExposurePct.toFixed(1)}% > cap ${maxAssetClassPct}%`,
+          rationale: `Pré-check incremental : exposition courante ${(currentClassExposure / capitalUsd.toNumber() * 100).toFixed(1)}% + nouvelle position $${notional.toFixed(0)} aurait poussé la classe à ${projectedClassExposurePct.toFixed(1)}%. Position rejetée AVANT ouverture (pas de close forcé post-fait).`,
+          payload: {
+            reason: 'would_exceed_class_cap',
+            symbol: target.symbol,
+            asset_class: classKey,
+            current_exposure_pct: Number(((currentClassExposure / capitalUsd.toNumber()) * 100).toFixed(2)),
+            projected_exposure_pct: Number(projectedClassExposurePct.toFixed(2)),
+            cap_pct: maxAssetClassPct,
+            notional_usd: notional.toNumber(),
+          },
+          triggeredBy: 'mechanical_cron',
+        }).catch((e) => this.logger.warn(`risk_limit_breached log failed: ${String(e).slice(0, 120)}`));
         continue;
       }
 
@@ -1021,6 +998,26 @@ export class MechanicalTradingService {
       });
 
       this.logger.log(`[MÉCANIQUE] ${portfolioId.slice(0, 8)} — OPEN ${target.direction} ${target.symbol} @ ${price.toFixed(4)}`);
+    }
+
+    // PATCH 2 (PR#2 P0) — Invariant assert post-batch.
+    // Vérifie en environnement non-prod que l'invariant cap classe tient
+    // après la boucle d'ouverture. Remplace l'ancien post-check 2-way qui
+    // fermait des positions a posteriori. Ici on log uniquement (pas
+    // d'action destructive) — si l'invariant casse, c'est un bug du
+    // pré-check à investiguer, pas un état à "réparer".
+    if (process.env.NODE_ENV !== 'production') {
+      const currentCapital = capitalUsd.toNumber();
+      if (currentCapital > 0) {
+        for (const [cls, exposureUsd] of exposureByClass.entries()) {
+          const pct = (exposureUsd / currentCapital) * 100;
+          if (pct > maxAssetClassPct + 0.001) {
+            this.logger.error(
+              `[INVARIANT BROKEN] class ${cls} at ${pct.toFixed(2)}% > cap ${maxAssetClassPct}% post-batch — pré-check P4.3 défaillant à investiguer`,
+            );
+          }
+        }
+      }
     }
 
     // P4.5 — Hedge recommendation (alerte seule, aucune exécution)
