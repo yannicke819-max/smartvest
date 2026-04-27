@@ -8,6 +8,9 @@ import { NewsRankerService } from './services/news-ranker.service';
 import { EodhdEnrichmentService } from './services/eodhd-enrichment.service';
 import { NewsAggregatorService } from './services/news-aggregator.service';
 import { SupabaseService } from '../supabase/supabase.service';
+import { DailySessionService } from './services/daily-session.service';
+import { ProfitSweepService } from './services/profit-sweep.service';
+import type { DailyHarvestConfig, CapitalDisciplineMode } from './types/capital-discipline.types';
 
 @Controller('lisa')
 export class LisaController {
@@ -20,6 +23,8 @@ export class LisaController {
     private readonly enrichment: EodhdEnrichmentService,
     private readonly newsAggregator: NewsAggregatorService,
     private readonly supabase: SupabaseService,
+    private readonly dailySession: DailySessionService,
+    private readonly profitSweep: ProfitSweepService,
   ) {}
 
   /**
@@ -337,5 +342,129 @@ export class LisaController {
         };
       }),
     );
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // DAILY_HARVEST endpoints (Phase 4)
+  // ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Récupère l'état complet du mode DAILY_HARVEST pour un portfolio :
+   *  - mode courant (NONE / DAILY_HARVEST)
+   *  - config si active
+   *  - session du jour (créée si absente)
+   *  - vault (secured profit balance)
+   *  - progress calculé
+   *
+   * Retourne mode='NONE' + autres champs null si le portfolio n'est pas en DAILY_HARVEST.
+   */
+  @Get('daily-harvest/:portfolioId')
+  async getDailyHarvest(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    extractUserId(headers); // validation auth
+
+    const { data: cfgRow } = await this.supabase.getClient()
+      .from('lisa_session_configs')
+      .select('capital_discipline_mode, daily_harvest_config')
+      .eq('portfolio_id', portfolioId)
+      .maybeSingle();
+
+    const mode = (cfgRow?.capital_discipline_mode as CapitalDisciplineMode | undefined) ?? 'NONE';
+    const config = cfgRow?.daily_harvest_config as DailyHarvestConfig | null;
+
+    if (mode !== 'DAILY_HARVEST' || !config) {
+      return { mode: 'NONE' as const, config: null, session: null, vault: null, progress: null };
+    }
+
+    const session = await this.dailySession.createOrGetTodaySession(portfolioId, config);
+    const vault = await this.dailySession.getSecuredBalance(portfolioId);
+    const progress = this.dailySession.computeProgress(session, config);
+
+    return { mode, config, session, vault, progress };
+  }
+
+  /**
+   * Update la config DAILY_HARVEST.
+   * Body : { mode: CapitalDisciplineMode, config?: DailyHarvestConfig }
+   * - mode='NONE' désactive le mode (config nulle)
+   * - mode='DAILY_HARVEST' active avec la config fournie
+   */
+  @Post('daily-harvest/:portfolioId/config')
+  async updateDailyHarvestConfig(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+    @Body() body: { mode: CapitalDisciplineMode; config?: DailyHarvestConfig },
+  ) {
+    extractUserId(headers);
+
+    const update: Record<string, unknown> = {
+      capital_discipline_mode: body.mode,
+      updated_at: new Date().toISOString(),
+    };
+    if (body.mode === 'DAILY_HARVEST' && body.config) {
+      update.daily_harvest_config = body.config;
+    } else if (body.mode === 'NONE') {
+      update.daily_harvest_config = null;
+    }
+
+    const { error } = await this.supabase.getClient()
+      .from('lisa_session_configs')
+      .update(update)
+      .eq('portfolio_id', portfolioId);
+
+    if (error) throw new Error(`Update failed: ${error.message}`);
+    return { ok: true, mode: body.mode };
+  }
+
+  /**
+   * Sweep manuel — déclenche un transfert vers le vault à la demande user.
+   * Body : { amountUsd: number, reason: string }
+   */
+  @Post('daily-harvest/:portfolioId/manual-sweep')
+  @HttpCode(200)
+  async manualSweep(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+    @Body() body: { amountUsd: number; reason?: string },
+  ) {
+    extractUserId(headers);
+
+    const { data: cfgRow } = await this.supabase.getClient()
+      .from('lisa_session_configs')
+      .select('capital_discipline_mode, daily_harvest_config')
+      .eq('portfolio_id', portfolioId)
+      .maybeSingle();
+
+    if (cfgRow?.capital_discipline_mode !== 'DAILY_HARVEST') {
+      throw new Error('Mode DAILY_HARVEST non actif');
+    }
+    const config = cfgRow.daily_harvest_config as DailyHarvestConfig;
+    const session = await this.dailySession.createOrGetTodaySession(portfolioId, config);
+
+    const result = await this.profitSweep.sweepManual(
+      session,
+      body.amountUsd,
+      body.reason ?? 'Sweep manuel via UI',
+    );
+    return result;
+  }
+
+  /**
+   * Liste l'historique des sessions journalières (pour graphique long-terme).
+   */
+  @Get('daily-harvest/:portfolioId/history')
+  async getDailyHarvestHistory(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+    @Query('limit') limit?: string,
+  ) {
+    extractUserId(headers);
+    const sessions = await this.dailySession.listRecentSessions(
+      portfolioId,
+      limit ? Math.min(90, parseInt(limit, 10)) : 30,
+    );
+    return { sessions };
   }
 }

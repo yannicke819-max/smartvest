@@ -26,6 +26,8 @@ import { LisaProposalsGroupedByDay } from '@/components/lisa/proposals-grouped-b
 import { LisaPortfolioSummary } from '@/components/lisa/portfolio-summary';
 import { LisaPortfolioChart } from '@/components/lisa/portfolio-chart';
 import { LisaPositionsTable } from '@/components/lisa/positions-table';
+import { DailyHarvestTracker } from '@/components/lisa/daily-harvest-tracker';
+import { DailyHarvestPanel } from '@/components/lisa/daily-harvest-panel';
 import { LisaDecisionLog } from '@/components/lisa/decision-log';
 import { MechanicalAgentCard } from '@/components/lisa/mechanical-agent-card';
 import { OptionPositionsCard } from '@/components/lisa/option-positions-card';
@@ -514,6 +516,9 @@ export default function LisaPage() {
       {/* Chart 1d/1w/1m/1y */}
       {selectedPortfolioId && <LisaPortfolioChart portfolioId={selectedPortfolioId} />}
 
+      {/* DAILY_HARVEST tracker — visible uniquement si mode actif */}
+      {selectedPortfolioId && <DailyHarvestTracker portfolioId={selectedPortfolioId} />}
+
       {/* Positions */}
       {selectedPortfolioId && <LisaPositionsTable portfolioId={selectedPortfolioId} />}
 
@@ -988,6 +993,9 @@ export default function LisaPage() {
           )}
         </div>
       </div>
+
+      {/* Daily Harvest config panel — orthogonal au DelegationMode/OperatingTempo */}
+      {selectedPortfolioId && <DailyHarvestPanel portfolioId={selectedPortfolioId} />}
 
       {/* Generate proposal card */}
       <div className="rounded-lg border p-5 space-y-4">
