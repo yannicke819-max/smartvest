@@ -164,6 +164,43 @@ export interface AnthropicLike {
 // Router
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * LlmRouter — point d'entrée unique pour toute requête Anthropic.
+ *
+ * **Call sites actuels (migrés)** :
+ *  - `LisaClaudeClient.call` / `callWithTool` → `'thesis_generation'`
+ *    (consommé par `ThesisGeneratorService` — ~1 appel par cycle Lisa, ~$0.50)
+ *
+ * **Call sites réservés / à venir** — chaque tâche est PRÉ-CÂBLÉE dans
+ * `MODEL_BY_TASK` pour qu'un nouveau service n'ait pas à choisir son
+ * modèle. Quand l'un de ces services sera implémenté, il devra prendre un
+ * `LlmRouter` en dépendance et appeler `router.call(task, params)` :
+ *
+ *  - `'regime_classification'` → MarketRegimeClassifier (à venir)
+ *      classifie le régime macro courant en 1 des 14 valeurs `MarketRegime`.
+ *      Sonnet — input court (~5k tokens), output très court (1 enum).
+ *  - `'binary_decision'` → futurs gating Lisa (à venir)
+ *      close/keep, open/skip, override de stop. Sonnet par défaut, Haiku
+ *      possible si le contexte tient en 2k tokens.
+ *  - `'audit_explanation'` → AuditService (à venir)
+ *      narratif humain post-hoc d'une décision auto pour /admin/audit.
+ *      Sonnet — réponse longue, lecture humaine.
+ *  - `'news_classification'` → EodhdNewsService.classifyBatch (à venir)
+ *      tag {sentiment, relevance, ticker_match} sur news bulk.
+ *      **Volume : jusqu'à 45 appels par cycle** — Haiku obligatoire pour
+ *      le ratio coût/quantité.
+ *  - `'summary'` → divers (à venir)
+ *      formatage de blocs (résumés portefeuille, briefings, snapshots).
+ *      Haiku — pas de raisonnement.
+ *
+ * **Règle d'or** : tout nouvel appel direct à `anthropic.messages.create`
+ * hors de ce fichier est un bug. Le grep
+ * `grep -rn 'messages\.create' apps packages | grep -v __tests__` doit
+ * retourner exactement 1 hit (ligne `await this.anthropic.messages.create`
+ * dans la méthode `call()` ci-dessous).
+ *
+ * Cf. PATCH 6 P1 cost-01-llm-router.
+ */
 export class LlmRouter {
   constructor(
     private readonly anthropic: AnthropicLike,
