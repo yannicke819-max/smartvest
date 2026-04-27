@@ -4,17 +4,17 @@ import { notFound } from 'next/navigation';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { BackButton } from '@/components/ui/back-button';
+import { findHelpDoc } from '@/lib/help-docs';
 
-// Server component — lit le fichier docs/audit-2026-04.md au build/runtime.
-// TODO bêta privée : gater par rôle admin (cf. /admin/monitoring même pattern,
-// audit P3 §3.7 et P5 §5.1). Aujourd'hui : seul middleware auth-required.
+interface Props {
+  params: Promise<{ slug: string }>;
+}
 
-function loadAuditMarkdown(): string | null {
-  // En dev/build local : process.cwd() = apps/web. Le repo root est ../..
+function loadDoc(relPath: string): string | null {
   const candidates = [
-    path.join(process.cwd(), '..', '..', 'docs', 'audit-2026-04.md'),
-    path.join(process.cwd(), 'docs', 'audit-2026-04.md'),
-    path.join(process.cwd(), '..', 'docs', 'audit-2026-04.md'),
+    path.join(process.cwd(), '..', '..', relPath),
+    path.join(process.cwd(), relPath),
+    path.join(process.cwd(), '..', relPath),
   ];
   for (const candidate of candidates) {
     try {
@@ -26,19 +26,22 @@ function loadAuditMarkdown(): string | null {
   return null;
 }
 
-export default function AuditPage() {
-  const content = loadAuditMarkdown();
+const GITHUB_ROOT = 'https://github.com/yannicke819-max/smartvest/blob/main';
 
-  if (!content) {
-    notFound();
-  }
+export default async function HelpDocPage({ params }: Props) {
+  const { slug } = await params;
+  const entry = findHelpDoc(slug);
+  if (!entry) notFound();
+
+  const content = loadDoc(entry.path);
+  if (!content) notFound();
 
   return (
     <div className="mx-auto max-w-5xl space-y-4 p-6">
       <div className="flex items-center justify-between">
         <BackButton />
         <a
-          href="https://github.com/yannicke819-max/smartvest/blob/main/docs/audit-2026-04.md"
+          href={`${GITHUB_ROOT}/${entry.path}`}
           target="_blank"
           rel="noopener noreferrer"
           className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-4"
