@@ -11,7 +11,109 @@
  */
 
 import Decimal from 'decimal.js';
-import type { AllocationProposal } from '../types';
+import type { AllocationProposal, ThemeTag } from '../types';
+
+/**
+ * PATCH 3 — Position légère pour les checks incrémentaux par classe + thème.
+ * Utilisée par `canOpen()` qui valide une SEULE proposition contre un
+ * portefeuille existant, sans nécessiter une AllocationProposal complète.
+ */
+export interface PositionLite {
+  ticker: string;
+  assetClass: string;
+  sizeUsd: number;
+  themes?: ThemeTag[];
+}
+
+export interface CanOpenOptions {
+  capital: number;
+  /** Pct par classe (0.28 = 28%) */
+  maxAssetClassPct?: Record<string, number>;
+  /** Pct par thème (0.40 = 40%) */
+  maxThemePct?: Record<string, number>;
+}
+
+export interface CanOpenResult {
+  ok: boolean;
+  reason?: 'would_exceed_class_cap' | 'would_exceed_theme_cap' | 'invalid_capital';
+  details?: {
+    asset_class?: string;
+    theme?: string;
+    current_pct?: number;
+    projected_pct?: number;
+    cap_pct?: number;
+  };
+}
+
+/**
+ * PATCH 3 — Helper pur (sans état) qui valide UNE proposition individuelle
+ * contre un portefeuille existant. Cap classe + cap thème vérifiés
+ * incrémentalement (proposal serait-elle au-dessus du cap si ouverte ?).
+ *
+ * Utilisé par les caller incrémentaux (mechanical-trading.processPortfolio
+ * Step 3 boucle, tests, futurs guards). Le RiskEnforcer.enforce() reste
+ * le check global sur AllocationProposal complète.
+ */
+export function canOpen(
+  proposal: PositionLite,
+  positions: PositionLite[],
+  options: CanOpenOptions,
+): CanOpenResult {
+  const { capital, maxAssetClassPct = {}, maxThemePct = {} } = options;
+  if (capital <= 0) return { ok: false, reason: 'invalid_capital' };
+
+  // Aggregate exposure par classe et par thème depuis les positions tenues.
+  const classExposure: Record<string, number> = {};
+  const themeExposure: Record<string, number> = {};
+  for (const p of positions) {
+    classExposure[p.assetClass] = (classExposure[p.assetClass] ?? 0) + p.sizeUsd;
+    for (const t of p.themes ?? []) {
+      themeExposure[t] = (themeExposure[t] ?? 0) + p.sizeUsd;
+    }
+  }
+
+  // Check cap classe
+  const classKey = proposal.assetClass;
+  const classCap = maxAssetClassPct[classKey];
+  if (classCap != null) {
+    const currentClass = classExposure[classKey] ?? 0;
+    const projectedClass = (currentClass + proposal.sizeUsd) / capital;
+    if (projectedClass > classCap) {
+      return {
+        ok: false,
+        reason: 'would_exceed_class_cap',
+        details: {
+          asset_class: classKey,
+          current_pct: currentClass / capital,
+          projected_pct: projectedClass,
+          cap_pct: classCap,
+        },
+      };
+    }
+  }
+
+  // Check cap thème (chaque thème de la proposal individuellement)
+  for (const theme of proposal.themes ?? []) {
+    const themeCap = maxThemePct[theme];
+    if (themeCap == null) continue; // pas de cap pour ce thème → ok
+    const currentTheme = themeExposure[theme] ?? 0;
+    const projectedTheme = (currentTheme + proposal.sizeUsd) / capital;
+    if (projectedTheme > themeCap) {
+      return {
+        ok: false,
+        reason: 'would_exceed_theme_cap',
+        details: {
+          theme,
+          current_pct: currentTheme / capital,
+          projected_pct: projectedTheme,
+          cap_pct: themeCap,
+        },
+      };
+    }
+  }
+
+  return { ok: true };
+}
 
 export interface RiskEnforcementResult {
   /** True si la proposition passe toutes les contraintes */
@@ -42,10 +144,15 @@ export class RiskEnforcer {
    *   ASSET_CLASS_CONCENTRATION de prendre en compte le portefeuille
    *   existant + les nouvelles allocations (incident 26/04 : précieux à
    *   40% sur 2 ouvertures successives chacune <28% mais agrégat ignoré).
+   * @param existingExposureByThemePct Optionnel — exposition agrégée des
+   *   positions déjà tenues par thème (PATCH 3). Captures la concentration
+   *   thématique transverse aux classes d'actifs (GDX equity + SLV commo
+   *   + RTX equity = 1 thème geopolitical_safehaven concentré).
    */
   enforce(
     proposal: AllocationProposal,
     existingExposureByAssetClassPct?: Record<string, number>,
+    existingExposureByThemePct?: Record<string, number>,
   ): RiskEnforcementResult {
     const violations: RiskEnforcementResult['violations'] = [];
     const constraints = proposal.constraints;
@@ -116,6 +223,35 @@ export class RiskEnforcer {
           message: existingPct > 0
             ? `${assetClass} total ${pct.toFixed(1)}% (tenu ${existingPct.toFixed(1)}% + nouveau ${newPct.toFixed(1)}%) exceeds max ${constraints.maxExposurePerAssetClassPct}%`
             : `${assetClass} total ${pct.toFixed(1)}% exceeds max ${constraints.maxExposurePerAssetClassPct}%`,
+        });
+      }
+    }
+
+    // 5 bis. PATCH 3 — Plafonds par thème transverses aux classes d'actifs.
+    // Cap par thème agit en plus du cap par classe : la position est rejetée
+    // si l'un des deux casse. Capture la concentration thématique (GDX
+    // equity + SLV commodity + RTX equity = 3 classes mais 1 thème
+    // geopolitical_safehaven concentré).
+    const newAllocByTheme = this.aggregateByTheme(proposal);
+    const exposureByTheme: Record<string, number> = { ...newAllocByTheme };
+    if (existingExposureByThemePct) {
+      for (const [theme, pct] of Object.entries(existingExposureByThemePct)) {
+        exposureByTheme[theme] = (exposureByTheme[theme] ?? 0) + pct;
+      }
+    }
+    const themeCaps = constraints.maxThemePct ?? {};
+    for (const [theme, pct] of Object.entries(exposureByTheme)) {
+      const cap = themeCaps[theme as keyof typeof themeCaps];
+      if (cap == null) continue; // pas de cap défini pour ce thème → illimité
+      if (pct > cap) {
+        const existingPct = existingExposureByThemePct?.[theme] ?? 0;
+        const newPct = newAllocByTheme[theme] ?? 0;
+        violations.push({
+          code: 'THEME_CONCENTRATION',
+          severity: 'error',
+          message: existingPct > 0
+            ? `theme ${theme} total ${pct.toFixed(1)}% (tenu ${existingPct.toFixed(1)}% + nouveau ${newPct.toFixed(1)}%) exceeds max ${cap}%`
+            : `theme ${theme} total ${pct.toFixed(1)}% exceeds max ${cap}%`,
         });
       }
     }
@@ -205,6 +341,27 @@ export class RiskEnforcer {
       const preferredExpr = thesis.expressions[thesis.preferredExpressionIndex];
       if (!preferredExpr) continue;
       agg[preferredExpr.assetClass] = (agg[preferredExpr.assetClass] ?? 0) + alloc.pctCapital;
+    }
+    return agg;
+  }
+
+  /**
+   * PATCH 3 — Agrège l'allocation par thème.
+   * Une thèse peut être taguée 1-2 thèmes ; chaque thème reçoit l'intégralité
+   * du pctCapital de l'allocation (pas de division). C'est intentionnel :
+   * une position GDX taguée [geopolitical_safehaven, energy_disruption]
+   * compte 100% sur chacun des deux thèmes — le but est d'identifier la
+   * concentration de risque.
+   */
+  private aggregateByTheme(proposal: AllocationProposal): Record<string, number> {
+    const agg: Record<string, number> = {};
+    for (const alloc of proposal.allocations) {
+      const thesis = proposal.theses.find((t) => t.id === alloc.thesisId);
+      if (!thesis) continue;
+      const themes = thesis.themes ?? [];
+      for (const theme of themes) {
+        agg[theme] = (agg[theme] ?? 0) + alloc.pctCapital;
+      }
     }
     return agg;
   }
