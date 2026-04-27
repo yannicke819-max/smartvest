@@ -46,6 +46,7 @@ import { EodhdScreenerService } from './eodhd-screener.service';
 import { EodhdInsiderService } from './eodhd-insider.service';
 import { EodhdOptionsService } from './eodhd-options.service';
 import { BinanceLiquidationsService } from './binance-liquidations.service';
+import { ApiCostTrackerService, BudgetExceededError } from './api-cost-tracker.service';
 
 /**
  * LisaService — orchestrateur principal du module AI analyst.
@@ -92,6 +93,8 @@ export class LisaService {
     private readonly dailySession: DailySessionService,
     private readonly patternBriefing: PatternBriefingService,
     private readonly patternAdoption: PatternAdoptionService,
+    // PATCH 4 — hard-stop budget journalier API
+    private readonly apiCostTracker: ApiCostTrackerService,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
     this.claudeClient = anthropicKey
@@ -295,6 +298,42 @@ export class LisaService {
 
     const config = await this.getSessionConfig(userId, portfolioId);
     if (!config) throw new NotFoundException('Session config introuvable — configurer d\'abord');
+
+    // PATCH 4 — Hard-stop budget journalier API.
+    // Avant tout call Claude (~$0.17 Opus), vérifier que le budget configuré
+    // n'est pas déjà dépassé. Si oui → désactive autopilot + throw.
+    // Le check ne s'exécute que si dailyCostBudgetUsd est explicitement fourni
+    // (pas null) — sans budget, comportement legacy (warning UI seulement).
+    const budget = config.daily_cost_budget_usd as number | null | undefined;
+    if (budget != null && Number(budget) > 0) {
+      const todayCostUsd = await this.apiCostTracker.getTodayTotalUsd();
+      if (todayCostUsd >= Number(budget)) {
+        // Désactive autopilot pour éviter les retry boucles (run cron suivant
+        // skippe via autopilot_enabled = false dans runAutopilotCycleInner)
+        await this.supabase.getClient()
+          .from('lisa_session_configs')
+          .update({ autopilot_enabled: false })
+          .eq('portfolio_id', portfolioId)
+          .then(({ error }) => {
+            if (error) this.logger.warn(`autopilot disable on budget exceeded failed: ${error.message}`);
+          });
+
+        await this.decisionLog.append({
+          portfolioId,
+          kind: 'autopilot_disabled',
+          summary: `Autopilot désactivé — budget API journalier dépassé : $${todayCostUsd.toFixed(2)} >= $${Number(budget).toFixed(2)}`,
+          rationale: `Le coût Claude cumulé sur la journée dépasse la limite configurée (config.daily_cost_budget_usd). Réactivation manuelle nécessaire après revue. Default behavior PATCH 4 risk-04-adaptive-safetynet-budget.`,
+          payload: {
+            reason: 'daily_api_budget_exceeded',
+            today_cost_usd: todayCostUsd,
+            budget_usd: Number(budget),
+          },
+          triggeredBy: 'risk_monitor',
+        }).catch((e) => this.logger.warn(`budget log append failed: ${String(e)}`));
+
+        throw new BudgetExceededError(todayCostUsd, Number(budget));
+      }
+    }
 
     const sessionConfig: LisaSessionConfig = {
       profile: config.profile as SessionProfile,
@@ -800,6 +839,12 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         ? { ...detectedInputsSnapshot, freshHighScoreNews: undefined } // exclude verbose news from snapshot
         : null,
     });
+
+    // PATCH 4 — UPSERT api_costs_daily (running total + breakdown by model).
+    // Fire-and-forget — ne bloque jamais le flow generateProposal.
+    this.apiCostTracker
+      .recordApiCost(result.claudeMeta.model, result.costUsd)
+      .catch((e) => this.logger.debug(`recordApiCost failed: ${String(e).slice(0, 100)}`));
 
     // Decision log
     await this.logDecision(portfolioId, 'proposal_generated', {

@@ -9,6 +9,7 @@ import { RealtimePriceService } from './realtime-price.service';
 import { MaterialChangeDetectorService } from './material-change-detector.service';
 import { DailyProfitGovernor } from './daily-profit-governor.service';
 import { LisaReplayConnectorService } from '../../bot-lab/services/lisa-replay-connector.service';
+import { AdaptiveSafetyNet } from './adaptive-safety-net';
 
 /** Tickers macro et indices stratégiques que Lisa consulte en permanence.
  *  Warmed une fois au boot pour peupler le cache immédiatement, évite le
@@ -273,6 +274,23 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
    */
   private readonly runningCycles = new Set<string>();
   private readonly cycleStartedAt = new Map<string, number>();
+  /** PATCH 4 — un AdaptiveSafetyNet par portfolio pour backoff régime stable. */
+  private readonly adaptiveSafetyNetByPortfolio = new Map<string, AdaptiveSafetyNet>();
+
+  /**
+   * Retourne (ou crée) le AdaptiveSafetyNet associé à un portfolio.
+   * État in-memory — réinitialisé au reboot. Acceptable car l'effet de
+   * backoff revient au baseMin standard, donc juste un cycle Lisa "perdu"
+   * post-reboot avant de reconverger.
+   */
+  private getAdaptiveSafetyNet(portfolioId: string): AdaptiveSafetyNet {
+    let entry = this.adaptiveSafetyNetByPortfolio.get(portfolioId);
+    if (!entry) {
+      entry = new AdaptiveSafetyNet();
+      this.adaptiveSafetyNetByPortfolio.set(portfolioId, entry);
+    }
+    return entry;
+  }
   private static readonly MUTEX_MAX_AGE_MS = 5 * 60_000; // 5 min
 
   private async runPortfolioCycle(
@@ -354,7 +372,12 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
     //    son appétit (5 min = très réactif, 60 min = passif). Default 30 min.
     const RATE_LIMIT_MIN = 3;
     const configuredCycleMin = Number(cycleMinutes) || 30;
-    const SAFETY_NET_MIN = Math.max(5, Math.min(60, configuredCycleMin));
+    const baseMin = Math.max(5, Math.min(60, configuredCycleMin));
+    // PATCH 4 — backoff progressif quand le régime est stable.
+    // Le helper retient un compteur par portfolio (clé = portfolioId) et
+    // étire le filet jusqu'à 8× le base quand 10+ cycles consécutifs n'ont
+    // produit ni thèses ni changement de regime.
+    const SAFETY_NET_MIN = this.getAdaptiveSafetyNet(portfolioId).nextSafetyNetMin(baseMin);
     let triggerReason = `bootstrap (premier cycle)`;
     let triggerKind: 'event' | 'safety_net' | 'bootstrap' = 'bootstrap';
 
@@ -385,6 +408,8 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
       if (detection?.triggered) {
         triggerKind = 'event';
         triggerReason = detection.reasons.slice(0, 3).join(' · ');
+        // PATCH 4 — event matériel détecté → reset backoff (redevient réactif)
+        this.getAdaptiveSafetyNet(portfolioId).onEventDetected();
       } else if (elapsedMin >= SAFETY_NET_MIN) {
         triggerKind = 'safety_net';
         triggerReason = `filet de garantie ${SAFETY_NET_MIN}min sans event`;
@@ -510,6 +535,26 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
       const momentumTag = proposal.marketMomentum === 'bullish_strong'
         ? ' · ▲ bullish_strong'
         : proposal.marketMomentum === 'bearish' ? ' · ▼ bearish' : '';
+
+      // PATCH 4 — feedback au backoff adaptif. Cycle stable = aucune thèse
+      // ET regime inchangé vs précédent. Lookback du regime via lisa_proposals
+      // (le regime est figé sur la proposal générée). On compare au précédent.
+      const { data: prevProposal } = await this.supabase.getClient()
+        .from('lisa_proposals')
+        .select('detected_regime')
+        .eq('portfolio_id', portfolioId)
+        .neq('id', proposal.id)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const regimeChanged =
+        prevProposal != null &&
+        typeof prevProposal.detected_regime === 'string' &&
+        prevProposal.detected_regime !== proposal.detectedRegime;
+      this.getAdaptiveSafetyNet(portfolioId).onCycleCompleted({
+        proposalsGenerated: proposal.theses.length,
+        regimeChanged,
+      });
 
       await this.decisionLog.append({
         portfolioId,
