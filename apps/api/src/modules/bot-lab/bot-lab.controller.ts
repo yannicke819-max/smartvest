@@ -6,7 +6,8 @@ import { PerformanceEngineService } from './services/performance-engine.service'
 import { EquityCurveService } from './services/equity-curve.service';
 import { RegimeTaggerService } from './services/regime-tagger.service';
 import { BotComparatorService } from './services/bot-comparator.service';
-import type { BotDefinitionDraft } from './types/bot-lab.types';
+import { PatternMinerService } from './services/pattern-miner.service';
+import type { BotDefinitionDraft, PatternStatus } from './types/bot-lab.types';
 
 /**
  * BotLabController — API du module Bot Profitability Lab.
@@ -30,6 +31,7 @@ export class BotLabController {
     private readonly equityCurve: EquityCurveService,
     private readonly regimeTagger: RegimeTaggerService,
     private readonly comparator: BotComparatorService,
+    private readonly patternMiner: PatternMinerService,
   ) {}
 
   // ───────────────────────────────────────────────────────────────────
@@ -217,5 +219,42 @@ export class BotLabController {
 
     const entries = await this.comparator.compareBots(botIds);
     return { entries };
+  }
+
+  // ───────────────────────────────────────────────────────────────────
+  // PHASE 3 — PATTERN MINER
+  // ───────────────────────────────────────────────────────────────────
+
+  /**
+   * Trigger le mining cross-bots pour le user.
+   * Analyse tous les bots actifs, clusters les trades par signature
+   * (asset_class + direction + vix_bucket), score robustesse + composite.
+   */
+  @Post('patterns/mine')
+  @HttpCode(200)
+  async minePatterns(
+    @Headers() headers: Record<string, string>,
+  ) {
+    const userId = extractUserId(headers);
+    const result = await this.patternMiner.mineFromUserBots(userId);
+    return result;
+  }
+
+  /**
+   * Liste les patterns du user, triés par composite score décroissant.
+   * Query : ?status=candidate|validated|rejected|deprecated (optionnel)
+   */
+  @Get('patterns')
+  async listPatterns(
+    @Headers() headers: Record<string, string>,
+    @Query('status') status?: string,
+  ) {
+    const userId = extractUserId(headers);
+    const validStatuses: PatternStatus[] = ['candidate', 'validated', 'rejected', 'deprecated'];
+    const filterStatus = status && validStatuses.includes(status as PatternStatus)
+      ? status as PatternStatus
+      : undefined;
+    const patterns = await this.patternMiner.listPatterns(userId, filterStatus);
+    return { patterns };
   }
 }

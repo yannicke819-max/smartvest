@@ -28,7 +28,7 @@ export default function BotLabPage() {
 
   return (
     <div className="container mx-auto p-4 space-y-6 max-w-6xl">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <Link
             href="/"
@@ -46,10 +46,14 @@ export default function BotLabPage() {
             métriques standardisées (Sharpe, Sortino, MaxDD, Profit Factor) et
             extrais les patterns robustes pour les transférer à Lisa.
           </p>
-          <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
-            Phase 1 (en cours) : import CSV + journal normalisé. Phases 2-4 à venir : performance engine, pattern miner, transfer layer.
-          </p>
         </div>
+        <Link
+          href={{ pathname: '/bot-lab/patterns' }}
+          className="rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted flex items-center gap-1.5 self-start"
+        >
+          <BarChart3 className="h-3 w-3" />
+          Pattern Miner →
+        </Link>
       </div>
 
       {selectedBotId ? (

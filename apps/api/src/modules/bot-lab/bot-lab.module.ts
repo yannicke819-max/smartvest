@@ -7,14 +7,15 @@ import { PerformanceEngineService } from './services/performance-engine.service'
 import { EquityCurveService } from './services/equity-curve.service';
 import { RegimeTaggerService } from './services/regime-tagger.service';
 import { BotComparatorService } from './services/bot-comparator.service';
+import { PatternMinerService } from './services/pattern-miner.service';
 
 /**
  * Bot Profitability Lab — module R&D séparé du flow Lisa principal.
  *
  * Phase 1 : foundations DB + types + CRUD + CSV import.
- * Phase 2 (CE COMMIT) : performance engine + equity curve + regime tagger
- *                     + comparator multi-bots.
- * Phases 3-4 (à venir) : pattern miner + transfer layer.
+ * Phase 2 : performance engine + equity curve + regime tagger + comparator.
+ * Phase 3 (CE COMMIT) : pattern miner — clustering setups + scoring robustesse.
+ * Phase 4 (à venir) : transfer layer vers Lisa.
  */
 @Module({
   imports: [SupabaseModule],
@@ -22,11 +23,12 @@ import { BotComparatorService } from './services/bot-comparator.service';
   providers: [
     BotConnectorService,
     JournalNormalizerService,
-    // Phase 2
     PerformanceEngineService,
     EquityCurveService,
     RegimeTaggerService,
     BotComparatorService,
+    // Phase 3
+    PatternMinerService,
   ],
   exports: [
     BotConnectorService,
@@ -35,6 +37,7 @@ import { BotComparatorService } from './services/bot-comparator.service';
     EquityCurveService,
     RegimeTaggerService,
     BotComparatorService,
+    PatternMinerService,
   ],
 })
 export class BotLabModule {}

@@ -209,6 +209,55 @@ export function useCompareBots(botIds: string[]) {
   });
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// PHASE 3 — PATTERNS
+// ═══════════════════════════════════════════════════════════════════
+
+export type PatternKind = 'entry_setup' | 'exit_rule' | 'risk_management' | 'regime_filter' | 'time_filter';
+export type PatternStatus = 'candidate' | 'validated' | 'rejected' | 'deprecated';
+
+export interface BotPattern {
+  id: string;
+  user_id: string;
+  name: string;
+  description: string | null;
+  pattern_kind: PatternKind;
+  source_bot_ids: string[];
+  conditions: Record<string, unknown>;
+  action_signal: Record<string, unknown> | null;
+  observation_count: number;
+  win_rate_pct: number | null;
+  expectancy_usd: string | null;
+  robustness_score: number | null;
+  composite_score: number | null;
+  first_observed_at: string | null;
+  last_observed_at: string | null;
+  status: PatternStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+export function usePatterns(status?: PatternStatus) {
+  return useQuery({
+    queryKey: ['bot-lab', 'patterns', status ?? 'all'],
+    queryFn: () => apiFetch<{ patterns: BotPattern[] }>(`/bot-lab/patterns${status ? `?status=${status}` : ''}`),
+  });
+}
+
+export function useMinePatterns() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<{ minedCount: number; createdCount: number; updatedCount: number }>(
+        '/bot-lab/patterns/mine',
+        { method: 'POST', body: JSON.stringify({}) },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['bot-lab', 'patterns'] });
+    },
+  });
+}
+
 /** Importe un CSV de trades. */
 export function useImportCsv(botId: string | null) {
   const qc = useQueryClient();
