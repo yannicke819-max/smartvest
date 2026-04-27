@@ -77,15 +77,15 @@ export class DailyProfitGovernor {
       // 2. Récupère ou crée la session du jour
       const session = await this.dailySession.createOrGetTodaySession(portfolioId, config);
 
-      // 3. Update métriques (realized + trades count + win/loss count)
-      const newRealized = parseFloat(session.realizedPnlTodayUsd) + realizedPnlUsd;
-      const isWin = realizedPnlUsd > 0;
-      await this.dailySession.updateSessionMetrics(session.id, {
-        realizedPnlTodayUsd: newRealized,
-        tradesCount: session.tradesCount + 1,
-        winningTradesCount: session.winningTradesCount + (isWin ? 1 : 0),
-        losingTradesCount: session.losingTradesCount + (isWin ? 0 : 1),
-      });
+      // 3. RESYNC depuis lisa_positions (source de vérité) — incident
+      //    27/04/2026 : l'incrémentation pouvait drifter si un précédent
+      //    onTradeClosed avait silently échoué. Le resync recalcule depuis
+      //    les positions fermées de la journée → drift impossible.
+      await this.dailySession.resyncSessionFromPositions(
+        session.id,
+        portfolioId,
+        session.sessionDate,
+      );
 
       // 4. Sweep PER_TRADE si applicable (uniquement si gain)
       if (config.profitSweepMode === 'PER_TRADE' && realizedPnlUsd > 0) {
@@ -100,8 +100,10 @@ export class DailyProfitGovernor {
       await this.evaluateStateTransition(refreshed, config, closeReason);
 
     } catch (e) {
-      // Fire-and-forget côté caller — JAMAIS bloquer le close
-      this.logger.warn(`onTradeClosed failed for ${positionId.slice(0, 8)}: ${String(e).slice(0, 200)}`);
+      // Échec du hook = bug réel. On log en ERROR (pas warn) pour qu'il
+      // surface dans les alertes. Caller reste fire-and-forget mais on
+      // le voit clairement dans les logs.
+      this.logger.error(`onTradeClosed failed for ${positionId.slice(0, 8)} (pnl=${realizedPnlUsd}): ${String(e).slice(0, 300)}`);
     }
   }
 

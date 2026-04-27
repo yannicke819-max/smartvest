@@ -155,6 +155,74 @@ export class DailySessionService {
   }
 
   /**
+   * Resync session metrics depuis `lisa_positions` (source de vérité).
+   *
+   * Recalcule realized_pnl_today, trades_count, winning/losing depuis les
+   * positions fermées aujourd'hui (UTC). Évite tout drift dû à un échec
+   * silencieux du hook onTradeClosed sur un close individuel.
+   *
+   * Incident 27/04/2026 : LMT close à 11:55 → hook onTradeClosed silently
+   * dropped → Daily Harvest affichait -$0.91 alors que portfolio réel
+   * affichait -$1450. Cette méthode rend impossible ce drift en
+   * dérivant les stats au lieu de les incrémenter.
+   *
+   * Coût : 1 SELECT par appel. Acceptable au tick close (~5-50/jour).
+   * Retourne true si le resync a modifié au moins un champ.
+   */
+  async resyncSessionFromPositions(
+    sessionId: string,
+    portfolioId: string,
+    sessionDate: string,
+  ): Promise<boolean> {
+    const dayStartUtc = new Date(`${sessionDate}T00:00:00.000Z`).toISOString();
+    const dayEndUtc = new Date(new Date(dayStartUtc).getTime() + 86_400_000).toISOString();
+
+    const { data: closes, error: selectErr } = await this.supabase.getClient()
+      .from('lisa_positions')
+      .select('realized_pnl_usd, exit_timestamp, status')
+      .eq('portfolio_id', portfolioId)
+      .gte('exit_timestamp', dayStartUtc)
+      .lt('exit_timestamp', dayEndUtc)
+      .not('exit_timestamp', 'is', null);
+
+    if (selectErr) {
+      this.logger.error(`resyncSessionFromPositions select failed: ${selectErr.message}`);
+      return false;
+    }
+
+    let realizedSum = 0;
+    let trades = 0;
+    let wins = 0;
+    let losses = 0;
+    for (const c of closes ?? []) {
+      const pnl = parseFloat((c.realized_pnl_usd as string | null) ?? '0');
+      if (!Number.isFinite(pnl)) continue;
+      realizedSum += pnl;
+      trades++;
+      if (pnl > 0) wins++;
+      else losses++;
+    }
+
+    const { error: updateErr } = await this.supabase.getClient()
+      .from('daily_trading_sessions')
+      .update({
+        realized_pnl_today_usd: realizedSum.toFixed(2),
+        trades_count: trades,
+        winning_trades_count: wins,
+        losing_trades_count: losses,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', sessionId);
+
+    if (updateErr) {
+      this.logger.error(`resyncSessionFromPositions update failed: ${updateErr.message}`);
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
    * Marque une session comme fermée (état SESSION_CLOSED).
    * Appelé en fin de journée par le cron de reset.
    */

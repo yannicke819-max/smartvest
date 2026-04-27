@@ -411,6 +411,14 @@ Tout consumer de `LisaService.getLivePrice()` doit traiter le champ `source` com
 
 Tout nouveau symbole pertinent (LMT, NOC, GD, etc.) doit être ajouté à la table `getFallbackPrice` avec une valeur réaliste pour éviter de bloquer la simulation pendant une indisponibilité EODHD.
 
+### Daily Harvest accounting — resync depuis `lisa_positions` (pas d'incrémentation)
+
+Les métriques de session Harvest (`realized_pnl_today_usd`, `trades_count`, `winning/losing_trades_count`) **ne sont PAS incrémentées** au close — elles sont **dérivées** par `DailySessionService.resyncSessionFromPositions()` à chaque appel de `onTradeClosed`. Source unique de vérité : la table `lisa_positions` (positions fermées sur la journée UTC).
+
+Pourquoi : un hook `onTradeClosed` qui silently échoue (fire-and-forget swallowed) provoquait un drift permanent entre l'UI Harvest et la réalité du portfolio (incident 27/04/2026 — LMT close raté, Harvest affichait −$0.91 alors que portfolio réel −$1450).
+
+Règle immuable : tout nouveau champ de session aggregé (somme/count) doit être recalculé dans `resyncSessionFromPositions`, pas incrémenté à la volée. Tout échec du hook `onTradeClosed` se logge en `error` (pas `debug`/`warn`) pour qu'il soit visible.
+
 ### Filet de garantie autopilot — preset HARVEST = 7 min
 
 Le filet de garantie (`autopilot_cycle_minutes`) force un cycle Lisa même si aucun event matériel n'est détecté. Clamp UI : 5-60 min, modifiable par utilisateur. Defaults par preset :

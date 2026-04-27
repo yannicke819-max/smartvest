@@ -1924,7 +1924,9 @@ export class MechanicalTradingService {
         realizedPnl.toNumber(),
         reason,
       )
-      .catch((e) => this.logger.debug(`daily-harvest hook failed: ${String(e).slice(0, 100)}`));
+      .catch((e) => this.logger.error(
+        `[DAILY_HARVEST_HOOK] failed for ${pos.symbol} pnl=${realizedPnl.toFixed(2)}: ${String(e).slice(0, 200)}`,
+      ));
 
     // BOT LAB Phase 4 — boucle feedback patterns adoptés.
     // Pour chaque pattern adopté actif sur ce portfolio, check si ce trade
