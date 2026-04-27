@@ -333,6 +333,10 @@ Tout ajout d'indicateur dans `fetchMarketSnapshot` doit passer par `fetchCascade
 | Brent | `BRENT.COMM` | `USO.US` | × 1.05 |
 | Gold | `XAUUSD.FOREX` | `GLD.US` | × 10 |
 | Silver | `XAGUSD.FOREX` | `SLV.US` | — |
+| HY OAS | — | `HYG.US` | linéaire (cf. ci-dessous) |
+| IG OAS | — | `LQD.US` | linéaire (cf. ci-dessous) |
+
+**Credit OAS — proxy linéaire ETF** : `HY OAS ≈ 320 - (HYG/78 - 1) × 100 × 30` clampé `[80, 1500]bps` ; `IG OAS ≈ 95 - (LQD/108 - 1) × 100 × 30` clampé `[30, 800]bps`. Sensibilité ~30bps par 1 % de variation de prix (approximation grossière, pas vraie OAS calc). Direction fiable, niveau ±15-25 %. À recalibrer si baseline ETF dérive durablement.
 
 Tickers à **ne jamais utiliser** (cassés EODHD côté plan actuel) : `^VIX.INDX`, `DX-Y.NYB.FOREX`, `US10Y.BOND`, `US2Y.BOND`, `GC.COMM`, `SI.COMM`, `BZ.COMM`, `NG.COMM`, `HG.COMM`.
 

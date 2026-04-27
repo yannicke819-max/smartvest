@@ -2068,7 +2068,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     const [
       vix, dxy, us10y, us2y, brent, btc, eth, gold,
       spy, qqq, eurusd, usdjpy,
-      silver, hyg,
+      silver, hyg, lqd,
     ] = await Promise.all([
       // VIX : ticker .INDX échoue (empty_price_field) → fallback ETF VXX
       // VXX se trade ~à VIX × 0.8-1.0 (decay), pas exact mais directionnel OK
@@ -2117,11 +2117,43 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         { ticker: 'XAGUSD.FOREX', quality: 'live' },
         { ticker: 'SLV.US', quality: 'proxy' },
       ]),
-      // HYG ETF pour proxy de credit spread (si HYG bas → spreads compressés)
+      // HYG ETF pour proxy de credit HY OAS spread
       fetchCascade('hyg', [{ ticker: 'HYG.US', quality: 'live' }]),
+      // LQD ETF pour proxy de credit IG OAS spread
+      fetchCascade('lqd', [{ ticker: 'LQD.US', quality: 'live' }]),
     ]);
 
-    void silver; void hyg; // pour usage futur
+    void silver;
+
+    // ── Credit OAS — proxy linéaire via prix ETF ───────────────────────
+    // Baselines avr 2026 : HYG ≈ $78 ↔ HY OAS ~320bps · LQD ≈ $108 ↔ IG OAS ~95bps.
+    // Sensibilité ~30bps par 1% de variation de prix (approximation grossière,
+    // duration HY ~3-4y, IG ~7y). Direction fiable, niveau ±15-25%.
+    // Si l'ETF ne répond pas → fallback hardcoded marqué comme tel.
+    const HYG_BASE_PRICE = 78;
+    const HYG_BASE_OAS = 320;
+    const LQD_BASE_PRICE = 108;
+    const LQD_BASE_OAS = 95;
+    const BPS_PER_PCT = 30;
+    const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+
+    let creditHyOasBps = fallback.creditHyOasBps;
+    if (hyg !== null) {
+      const pctDelta = (hyg / HYG_BASE_PRICE - 1) * 100;
+      creditHyOasBps = clamp(Math.round(HYG_BASE_OAS - pctDelta * BPS_PER_PCT), 80, 1500);
+      dataQuality.proxy.push('creditHyOas(via HYG)');
+    } else {
+      dataQuality.fallback.push('creditHyOas');
+    }
+
+    let creditIgOasBps = fallback.creditIgOasBps;
+    if (lqd !== null) {
+      const pctDelta = (lqd / LQD_BASE_PRICE - 1) * 100;
+      creditIgOasBps = clamp(Math.round(LQD_BASE_OAS - pctDelta * BPS_PER_PCT), 30, 800);
+      dataQuality.proxy.push('creditIgOas(via LQD)');
+    } else {
+      dataQuality.fallback.push('creditIgOas');
+    }
 
     // SPY ≈ SP500/10, QQQ ≈ NASDAQ/40
     return {
@@ -2138,8 +2170,8 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       nasdaq: qqq ? qqq * 40 : fallback.nasdaq,
       eurUsd: eurusd ?? fallback.eurUsd,
       usdJpy: usdjpy ?? fallback.usdJpy,
-      creditHyOasBps: fallback.creditHyOasBps,
-      creditIgOasBps: fallback.creditIgOasBps,
+      creditHyOasBps,
+      creditIgOasBps,
       dataQuality,
       recentNews: [],
       upcomingEvents: [],
