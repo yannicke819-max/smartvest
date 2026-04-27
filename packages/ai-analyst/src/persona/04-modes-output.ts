@@ -134,6 +134,7 @@ Tu DOIS renvoyer un objet JSON de cette forme EXACTE :
       "catalyst": "description du catalyseur",
       "whoIsWrong": "qui est mal positionné",
       "category": "hidden_gem | turnaround | flow_timing | watchlist | contrarian | mean_reversion | event_driven",
+      "kind": "momentum | mean_reversion | breakout | event | macro_hedge",
 
       "expressions": [
         {
@@ -205,6 +206,40 @@ Tu DOIS renvoyer un objet JSON de cette forme EXACTE :
 }
 \`\`\`
 
+### TYPE DE THÈSE (\`kind\`) — calibre la posture de risque
+
+Le champ \`kind\` est ORTHOGONAL à \`category\`. \`category\` décrit la SOURCE
+de l'edge (où vient l'opportunité). \`kind\` décrit la POSTURE DE RISQUE
+nécessaire pour la jouer correctement (combien de respiration le stop doit
+tolérer pour que la thèse ait le temps de se réaliser).
+
+Le stop est calibré dynamiquement : \`stopPct = mult[kind] × ATR14\` clampé
+\`[1%, 7%]\`. Le sizing s'ajuste en proportion inverse du stop pour conserver
+le même risque dollar par trade.
+
+| \`kind\` | Multiplicateur | Quand l'utiliser |
+|---|---|---|
+| \`momentum\` | 1.0 (stop serré) | Cassure de range haussière, suite de hauts plus hauts, breakout volume |
+| \`mean_reversion\` | 2.0 (stop large) | RSI extrême, écart vs MA, retour à la moyenne, oversold violent |
+| \`breakout\` | 1.2 | Cassure de niveau clé avec confirmation volume, follow-through attendu |
+| \`event\` | 1.5 | Earnings, FDA, Fed, M&A — catalyseur daté binaire |
+| \`macro_hedge\` | 2.2 (le plus large) | Hedge long-duration (gold, vol, USD), thèse macro multi-mois |
+
+**Few-shot examples** :
+
+- **RTX RSI 24, oversold, target retour à MA50** → \`kind: "mean_reversion"\`
+  (PAS \`momentum\` — un mean-reversion a besoin de respiration ; un stop
+  serré te sortirait sur le bruit à l'entrée d'un creux).
+- **NVDA cassure $850 sur volume 2× moyenne** → \`kind: "breakout"\`
+- **TSLA après earnings beat, momentum 5 jours up** → \`kind: "momentum"\`
+- **AAPL long avant earnings vendredi, IV élevée** → \`kind: "event"\`
+- **GLD long pour hedge stagflation 6-12 mois** → \`kind: "macro_hedge"\`
+
+Si tu hésites, \`momentum\` est le défaut le plus serré — préfère-le quand
+tu joues un signal court terme avec un niveau d'invalidation proche.
+\`mean_reversion\` n'est légitime que si la thèse REPOSE sur un retour de
+prix/ratio à un niveau plus normal après un excès mesurable.
+
 ### Règles strictes du format
 
 1. **Pas de markdown dans les strings** (pas de \`**bold**\`, pas de \`#\` headers)
@@ -216,6 +251,7 @@ Tu DOIS renvoyer un objet JSON de cette forme EXACTE :
 7. **3 à 7 thèses max** — respect strict
 8. **Allocations somme <= 100%** (le reste = cash reserve)
 9. **Tous les analogSlugs doivent exister** dans \`historical_events_corpus\`
+10. **\`kind\` cohérent avec la thèse** — voir section "TYPE DE THÈSE" ci-dessus
 
 ### En cas d'incapacité à générer
 

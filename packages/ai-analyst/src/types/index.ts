@@ -68,6 +68,94 @@ export const ThesisCategory = z.enum([
 export type ThesisCategory = z.infer<typeof ThesisCategory>;
 
 /**
+ * PATCH 5 — Type de thèse pour calibrer la POSTURE DE RISQUE.
+ *
+ * Orthogonal à `ThesisCategory` (qui décrit la SOURCE de l'edge).
+ * `ThesisKind` décrit la dynamique d'invalidation attendue, ce qui
+ * détermine combien de respiration le stop-loss doit donner.
+ *
+ *  - `momentum` : ride une tendance ; stop serré (1.0× ATR), sortie sur
+ *    cassure de momentum. Mean-reversion = invalidation immédiate.
+ *  - `mean_reversion` : exploite un retour à la moyenne ; stop large
+ *    (2.0× ATR) car le drawdown initial est attendu (oversold qui
+ *    s'enfonce 1-2% avant rebound).
+ *  - `breakout` : entrée sur cassure ; stop sous le niveau cassé
+ *    (1.2× ATR), un tout petit peu de respiration pour faux breakouts.
+ *  - `event` : pari sur catalyseur spécifique (earnings, FOMC, FDA) ;
+ *    stop intermédiaire 1.5× ATR pour absorber la volatilité event.
+ *  - `macro_hedge` : couverture macro long-terme ; stop très large
+ *    (2.2× ATR) car la thèse joue sur des mois, pas des heures.
+ *
+ * Cf. PATCH 5 risk-05-stop-by-thesis-kind.
+ */
+export const ThesisKind = z.enum([
+  'momentum',
+  'mean_reversion',
+  'breakout',
+  'event',
+  'macro_hedge',
+]);
+export type ThesisKind = z.infer<typeof ThesisKind>;
+
+/**
+ * PATCH 5 — Multiplicateurs ATR par type de thèse.
+ *
+ * Default 1.5 si `kind` absent (rétrocompat). Le multiplicateur final
+ * est appliqué à `ATR14%` puis clampé `[1.0, 7.0]%` (vs 5% historique
+ * — ceiling étendu pour mean_reversion / macro_hedge).
+ */
+export const ATR_STOP_MULTIPLIER_BY_KIND: Record<ThesisKind, number> = {
+  momentum: 1.0,
+  mean_reversion: 2.0,
+  breakout: 1.2,
+  event: 1.5,
+  macro_hedge: 2.2,
+};
+
+export interface AtrStopByKindResult {
+  /** Stop en % du prix d'entrée (clampé [1, 7]). */
+  stopPct: number;
+  /** Multiplicateur effectivement appliqué (debug / audit). */
+  kindMultiplier: number;
+  /** Recommandation de sizing pour conserver risk constant par trade.
+   *  riskPerTradeUsd ≈ capital × riskPerTradePct = sizeUsd × stopPct.
+   *  Champ optionnel — null si capital non fourni au caller. */
+  recommendedSizeUsd: number | null;
+}
+
+/**
+ * PATCH 5 — Calcule un stop ATR-based modulé par le type de thèse.
+ * Helper pur (sans I/O), testable en isolation.
+ *
+ * @param atr14Pct ATR14 en % du prix actuel (ex: 2.5 pour 2.5%)
+ * @param kind Type de thèse (default 'momentum' = 1.0× ATR)
+ * @param capitalUsd Capital total — si fourni, calcule le sizing compensatoire
+ * @param riskPerTradePct Pct du capital à risquer par trade (default 0.5%)
+ */
+export function computeAtrStopByKind(
+  atr14Pct: number,
+  kind: ThesisKind | undefined,
+  capitalUsd?: number,
+  riskPerTradePct: number = 0.5,
+): AtrStopByKindResult {
+  const mult = kind ? ATR_STOP_MULTIPLIER_BY_KIND[kind] : 1.5;
+  const raw = mult * atr14Pct;
+  // PATCH 5 : ceiling 5% → 7% pour laisser respirer mean_reversion +
+  // macro_hedge (avec ATR 4% × 2.2 = 8.8% pré-clamp).
+  const stopPct = Math.max(1.0, Math.min(7.0, raw));
+
+  let recommendedSizeUsd: number | null = null;
+  if (capitalUsd != null && capitalUsd > 0 && stopPct > 0) {
+    // riskPerTradeUsd = sizeUsd × (stopPct / 100)
+    // → sizeUsd = (capital × riskPerTradePct%) / (stopPct / 100)
+    //          = capital × (riskPerTradePct / stopPct)
+    recommendedSizeUsd = capitalUsd * (riskPerTradePct / stopPct);
+  }
+
+  return { stopPct, kindMultiplier: mult, recommendedSizeUsd };
+}
+
+/**
  * Expression = façon concrète de jouer une thèse.
  * Plusieurs expressions possibles pour la même thèse (equity vs derivative vs credit).
  */
@@ -238,6 +326,11 @@ export const LisaThesis = z.object({
    *  concentration thématique masquée (ex: GDX equity + SLV commodity
    *  + RTX equity = 3 classes mais 1 thème geopolitical_safehaven). */
   themes: z.array(ThemeTag).max(2).optional().default([]),
+  /** PATCH 5 — Type de thèse pour calibrer la posture de risque (stop ATR
+   *  multiplier + sizing compensatoire). Cf. ThesisKind. Orthogonal à
+   *  `category` (source de l'edge) — `kind` décrit comment la thèse se
+   *  comporte face au drawdown initial. */
+  kind: ThesisKind.optional().default('momentum'),
 });
 export type LisaThesis = z.infer<typeof LisaThesis>;
 
