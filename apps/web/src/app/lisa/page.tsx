@@ -1202,6 +1202,7 @@ export default function LisaPage() {
             lastProposalAt={proposalsQuery.data?.[0]?.generated_at ?? null}
             killSwitchActive={(config.kill_switch_active as boolean) ?? false}
             autopilotEnabled={(config.autopilot_enabled as boolean) ?? false}
+            safetyNetMin={Number(config.autopilot_cycle_minutes ?? 30)}
           />
         </div>
       )}
@@ -1325,8 +1326,12 @@ function NextCycleCountdown(props: {
   lastProposalAt: string | null;
   killSwitchActive: boolean;
   autopilotEnabled: boolean;
+  /** Filet configurable côté backend (autopilot_cycle_minutes, clamp [5, 60]).
+   *  Si non fourni, fallback à 30 (default backend). */
+  safetyNetMin?: number;
 }) {
-  const SAFETY_NET_MIN = 30;
+  // Aligne avec le backend : SAFETY_NET_MIN = clamp(autopilot_cycle_minutes, 5, 60)
+  const SAFETY_NET_MIN = Math.max(5, Math.min(60, props.safetyNetMin ?? 30));
   const RATE_LIMIT_MIN = 3;
   const [, setTick] = useState(0);
 
@@ -1397,7 +1402,7 @@ function NextCycleCountdown(props: {
     <div className="text-xs text-blue-700 dark:text-blue-300 font-mono">
       🕐 Prochain cycle au plus tard dans <strong>{m}m {s.toString().padStart(2, '0')}s</strong>
       <span className="text-muted-foreground ml-1">
-        (safety_net 30 min — peut déclencher avant si event matériel détecté)
+        (safety_net {SAFETY_NET_MIN} min — peut déclencher avant si event matériel détecté)
       </span>
     </div>
   );
