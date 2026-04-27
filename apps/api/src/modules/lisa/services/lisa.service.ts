@@ -49,6 +49,12 @@ import { EodhdInsiderService } from './eodhd-insider.service';
 import { EodhdOptionsService } from './eodhd-options.service';
 import { BinanceLiquidationsService } from './binance-liquidations.service';
 import { ApiCostTrackerService, BudgetExceededError } from './api-cost-tracker.service';
+import {
+  buildYahooChartUrl,
+  buildStooqCsvUrl,
+  parseYahooChartResponse,
+  parseStooqCsvResponse,
+} from '../helpers/macro-fallback.helper';
 
 /**
  * LisaService — orchestrateur principal du module AI analyst.
@@ -1974,7 +1980,9 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
   private logEodhdCall(row: {
     ticker: string;
     eodhdTicker: string | null;
-    source: 'eodhd' | 'fallback' | 'supabase_quotes';
+    /** PR D — `yahoo` + `stooq` ajoutés pour la cascade multi-provider
+     *  VIX/DXY (incident 27/04). */
+    source: 'eodhd' | 'fallback' | 'supabase_quotes' | 'yahoo' | 'stooq';
     success: boolean;
     statusCode?: number;
     latencyMs?: number;
@@ -2209,19 +2217,100 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     };
 
     /**
+     * PR D — fallback multi-provider pour VIX/DXY (incident 27/04 :
+     * VIX.INDX EODHD répétitivement empty_price_field en prod). Wrapper
+     * Yahoo Finance + Stooq pour augmenter le ratio "live" avant de
+     * tomber en proxy ETF (VXX/UUP).
+     *
+     * Pas de clé API. Logged via logEodhdCall avec source='yahoo'/'stooq'
+     * pour observability.
+     */
+    const fetchYahoo = async (symbol: string): Promise<number | null> => {
+      const tStart = Date.now();
+      try {
+        const url = buildYahooChartUrl(symbol);
+        const res = await fetch(url, {
+          signal: AbortSignal.timeout(5000),
+          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SmartVest/1.0)' },
+        });
+        const latencyMs = Date.now() - tStart;
+        if (!res.ok) {
+          this.logEodhdCall({ ticker: symbol, eodhdTicker: symbol, source: 'yahoo', success: false, statusCode: res.status, latencyMs, calledBy: 'market_snapshot', errorMessage: `HTTP_${res.status}` });
+          return null;
+        }
+        const json = await res.json() as unknown;
+        const v = parseYahooChartResponse(json);
+        if (v != null) {
+          this.logEodhdCall({ ticker: symbol, eodhdTicker: symbol, source: 'yahoo', success: true, statusCode: res.status, latencyMs, priceUsd: v, calledBy: 'market_snapshot' });
+        } else {
+          this.logEodhdCall({ ticker: symbol, eodhdTicker: symbol, source: 'yahoo', success: false, statusCode: res.status, latencyMs, calledBy: 'market_snapshot', errorMessage: 'parser_returned_null' });
+        }
+        return v;
+      } catch (e) {
+        this.logEodhdCall({ ticker: symbol, eodhdTicker: symbol, source: 'yahoo', success: false, latencyMs: Date.now() - tStart, calledBy: 'market_snapshot', errorMessage: String(e).slice(0, 200) });
+        return null;
+      }
+    };
+
+    const fetchStooq = async (symbol: string): Promise<number | null> => {
+      const tStart = Date.now();
+      try {
+        const url = buildStooqCsvUrl(symbol);
+        const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+        const latencyMs = Date.now() - tStart;
+        if (!res.ok) {
+          this.logEodhdCall({ ticker: symbol, eodhdTicker: symbol, source: 'stooq', success: false, statusCode: res.status, latencyMs, calledBy: 'market_snapshot', errorMessage: `HTTP_${res.status}` });
+          return null;
+        }
+        const text = await res.text();
+        const v = parseStooqCsvResponse(text);
+        if (v != null) {
+          this.logEodhdCall({ ticker: symbol, eodhdTicker: symbol, source: 'stooq', success: true, statusCode: res.status, latencyMs, priceUsd: v, calledBy: 'market_snapshot' });
+        } else {
+          this.logEodhdCall({ ticker: symbol, eodhdTicker: symbol, source: 'stooq', success: false, statusCode: res.status, latencyMs, calledBy: 'market_snapshot', errorMessage: 'parser_returned_null' });
+        }
+        return v;
+      } catch (e) {
+        this.logEodhdCall({ ticker: symbol, eodhdTicker: symbol, source: 'stooq', success: false, latencyMs: Date.now() - tStart, calledBy: 'market_snapshot', errorMessage: String(e).slice(0, 200) });
+        return null;
+      }
+    };
+
+    /**
      * Tente plusieurs tickers en cascade. Retourne la 1re valeur valide
      * + identifie la qualité (live primary OU proxy ETF).
+     *
+     * PR D — chaque attempt peut spécifier `source` (`'eodhd' | 'yahoo' | 'stooq'`).
+     * Default `'eodhd'` pour rétrocompat. Permet de chaîner EODHD →
+     * Yahoo → Stooq → proxy ETF avant de tomber en fallback hardcoded.
+     *
+     * Le label de dataQuality indique le provider qui a réussi pour
+     * faciliter le diagnostic post-mortem ("vix(via yahoo:^VIX)").
      */
     const fetchCascade = async (
       indicator: string,
-      attempts: Array<{ ticker: string; multiplier?: number; quality: 'live' | 'proxy' }>,
+      attempts: Array<{
+        ticker: string;
+        source?: 'eodhd' | 'yahoo' | 'stooq';
+        multiplier?: number;
+        quality: 'live' | 'proxy';
+      }>,
     ): Promise<number | null> => {
       for (const a of attempts) {
-        const v = await fetchNum(a.ticker);
+        const source = a.source ?? 'eodhd';
+        let v: number | null = null;
+        if (source === 'eodhd') v = await fetchNum(a.ticker);
+        else if (source === 'yahoo') v = await fetchYahoo(a.ticker);
+        else if (source === 'stooq') v = await fetchStooq(a.ticker);
         if (v !== null) {
           const finalValue = a.multiplier ? v * a.multiplier : v;
-          if (a.quality === 'live') dataQuality.live.push(indicator);
-          else dataQuality.proxy.push(`${indicator}(via ${a.ticker})`);
+          if (a.quality === 'live') {
+            // Marque le provider qui a finalement servi la valeur live :
+            // utile pour distinguer un fix EODHD d'un fix Yahoo en prod.
+            dataQuality.live.push(source === 'eodhd' ? indicator : `${indicator}(via ${source}:${a.ticker})`);
+          } else {
+            dataQuality.proxy.push(`${indicator}(via ${source}:${a.ticker})`);
+          }
           return finalValue;
         }
       }
@@ -2235,18 +2324,28 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       spy, qqq, eurusd, usdjpy,
       silver, hyg, lqd,
     ] = await Promise.all([
-      // VIX : ticker .INDX échoue (empty_price_field) → fallback ETF VXX
-      // VXX se trade ~à VIX × 0.8-1.0 (decay), pas exact mais directionnel OK
+      // VIX cascade — PR D : 4 sources avant proxy ETF
+      // EODHD VIX.INDX → Yahoo ^VIX → Stooq ^vix → VXX.US (proxy ETF)
+      // Justification : EODHD VIX.INDX retourne empty_price_field
+      // fréquemment (incident 27/04 — Lisa lisait la valeur fallback
+      // hardcoded 18.5 toute la journée). Yahoo + Stooq sont des sources
+      // gratuites no-auth qui exposent VIX en quasi-realtime aux heures
+      // de marché US.
       fetchCascade('vix', [
-        { ticker: 'VIX.INDX', quality: 'live' },
-        { ticker: 'VXX.US', quality: 'proxy' }, // proxy ETF
+        { ticker: 'VIX.INDX', source: 'eodhd', quality: 'live' },
+        { ticker: '^VIX', source: 'yahoo', quality: 'live' },
+        { ticker: '^vix', source: 'stooq', quality: 'live' },
+        { ticker: 'VXX.US', source: 'eodhd', quality: 'proxy' }, // proxy ETF, decay vs VIX
       ]),
-      // DXY : ticker FOREX échoue (empty) → fallback UUP ETF
-      // UUP $25 ≈ DXY 100 → multiplier 4.1 approximatif
+      // DXY cascade — PR D : 5 sources avant proxy ETF UUP
+      // Yahoo expose DX-Y.NYB (ICE Dollar Index futures spot).
+      // Stooq expose ^dxy (fallback CSV).
       fetchCascade('dxy', [
-        { ticker: 'DXY.INDX', quality: 'live' },
-        { ticker: 'USDX.INDX', quality: 'live' },
-        { ticker: 'UUP.US', multiplier: 4.1, quality: 'proxy' },
+        { ticker: 'DXY.INDX', source: 'eodhd', quality: 'live' },
+        { ticker: 'USDX.INDX', source: 'eodhd', quality: 'live' },
+        { ticker: 'DX-Y.NYB', source: 'yahoo', quality: 'live' },
+        { ticker: '^dxy', source: 'stooq', quality: 'live' },
+        { ticker: 'UUP.US', source: 'eodhd', multiplier: 4.1, quality: 'proxy' },
       ]),
       // Bonds : .BOND échoue → fallback TNX.INDX (ou ETF TLT yield-proxy)
       fetchCascade('us10y', [
