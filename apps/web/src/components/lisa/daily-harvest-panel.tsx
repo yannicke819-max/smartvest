@@ -22,6 +22,7 @@ const DEFAULT_CONFIG: DailyHarvestConfig = {
   sessionEndTime: '22:00',
   timezone: 'Europe/Paris',
   cooldownMinutesAfterClose: 5,
+  takeProfitAbsolutePct: 2.5,
 };
 
 export function DailyHarvestPanel({ portfolioId }: { portfolioId: string }) {
@@ -185,7 +186,7 @@ export function DailyHarvestPanel({ portfolioId }: { portfolioId: string }) {
           </div>
 
           {/* Mode sweep + comportement target hit */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <Field label="Mode de sweep">
               <select
                 value={config.profitSweepMode}
@@ -198,7 +199,7 @@ export function DailyHarvestPanel({ portfolioId }: { portfolioId: string }) {
                 <option value="END_OF_DAY">END_OF_DAY — sweep en fin de session</option>
               </select>
             </Field>
-            <Field label="Cooldown après chaque close (min)">
+            <Field label="Cooldown après close (min)">
               <input
                 type="number"
                 min="0"
@@ -214,7 +215,27 @@ export function DailyHarvestPanel({ portfolioId }: { portfolioId: string }) {
                 className="h-8 w-full rounded-md border bg-background px-2 text-xs"
               />
             </Field>
+            <Field label="Take-profit absolu (%)">
+              <input
+                type="number"
+                min="0.5"
+                max="20"
+                step="0.1"
+                value={config.takeProfitAbsolutePct ?? 2.5}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    takeProfitAbsolutePct: parseFloat(e.target.value) || 2.5,
+                  })
+                }
+                className="h-8 w-full rounded-md border bg-background px-2 text-xs"
+              />
+            </Field>
           </div>
+          <p className="text-[10px] text-muted-foreground italic -mt-1">
+            Take-profit absolu = ferme la position dès que P&amp;L latent ≥ ce seuil. Garantit la matérialisation
+            des gains avant qu&apos;ils s&apos;évaporent. 2.5% = couvre 12× les coûts en simulation paper. Plus haut = laisse courir mais risque retournement.
+          </p>
 
           {/* Plage horaire */}
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">

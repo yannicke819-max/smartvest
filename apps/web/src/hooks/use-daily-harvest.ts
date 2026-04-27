@@ -34,6 +34,9 @@ export interface DailyHarvestConfig {
   timezone: string;
   requiresHumanApprovalAboveUsd?: number;
   cooldownMinutesAfterClose: number;
+  /** Take-profit absolu modifiable par user (défaut 2.5% en HARVEST).
+   *  Si > 0, écrase la valeur hardcoded de mechanical-trading. */
+  takeProfitAbsolutePct?: number;
 }
 
 export interface DailyTradingSession {

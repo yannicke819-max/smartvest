@@ -1383,6 +1383,29 @@ export class MechanicalTradingService {
   }
 
   /**
+   * Lit le take-profit absolu configurable depuis daily_harvest_config si
+   * mode DAILY_HARVEST actif. Sinon retourne le default selon profile.
+   */
+  private async getTakeProfitAbsolutePct(portfolioId: string, isHyperActive: boolean): Promise<number> {
+    try {
+      const { data: cfg } = await this.supabase.getClient()
+        .from('lisa_session_configs')
+        .select('capital_discipline_mode, daily_harvest_config')
+        .eq('portfolio_id', portfolioId)
+        .maybeSingle();
+
+      if (cfg?.capital_discipline_mode === 'DAILY_HARVEST') {
+        const dh = cfg.daily_harvest_config as Record<string, unknown> | null;
+        const customTp = dh?.takeProfitAbsolutePct;
+        if (typeof customTp === 'number' && customTp > 0 && customTp < 50) {
+          return customTp;
+        }
+      }
+    } catch { /* fall through to default */ }
+    return isHyperActive ? 2.5 : 4;
+  }
+
+  /**
    * Détecte si une quote a été retournée via le fallback hardcoded
    * (au lieu d'une vraie source live). Toute source commençant par "fallback"
    * doit être traitée comme NON FIABLE — on skip les actions destructives.
@@ -1439,13 +1462,12 @@ export class MechanicalTradingService {
     const TRAILING_LOCK_PNL = isHyperActive ? 1.5 : 3;
     const TRAILING_ATR_PNL = isHyperActive ? 3 : 5;
     // 🛡️ Patch D — Take-profit absolu : garantit la matérialisation des
-    // gains avant qu'ils ne s'évaporent. Trigger en plus du trailing stop
-    // existant. Important pour éviter le scénario "death by thousand cuts"
-    // où aucune position n'atteint son target théorique mais le portefeuille
-    // accumule des coûts d'ouverture/fermeture sans jamais réaliser un gain.
-    // 2.5% en hyper_active (couvre largement les coûts ~0.2% × 12-15)
-    // 4% en standard (objectifs plus ambitieux, positions plus longues)
-    const TAKE_PROFIT_ABSOLUTE_PCT = isHyperActive ? 2.5 : 4;
+    // gains. Configurable par user via daily_harvest_config.takeProfitAbsolutePct
+    // si mode DAILY_HARVEST actif. Sinon : 2.5% hyper / 4% standard.
+    const portfolioIdFromPos = String((pos as unknown as Record<string, unknown>)['portfolio_id'] ?? '');
+    const TAKE_PROFIT_ABSOLUTE_PCT = portfolioIdFromPos
+      ? await this.getTakeProfitAbsolutePct(portfolioIdFromPos, isHyperActive)
+      : (isHyperActive ? 2.5 : 4);
 
     // Récupère les indicateurs techniques (cache 5 min, donc appels réels ~12/h)
     const eodhdTicker = (this.lisa as unknown as { toEodhdTicker(s: string): string }).toEodhdTicker(pos.symbol);

@@ -28,6 +28,7 @@ import { LisaPortfolioChart } from '@/components/lisa/portfolio-chart';
 import { LisaPositionsTable } from '@/components/lisa/positions-table';
 import { DailyHarvestTracker } from '@/components/lisa/daily-harvest-tracker';
 import { DailyHarvestPanel } from '@/components/lisa/daily-harvest-panel';
+import { MacroModeSelector } from '@/components/lisa/macro-mode-selector';
 import { LisaDecisionLog } from '@/components/lisa/decision-log';
 import { MechanicalAgentCard } from '@/components/lisa/mechanical-agent-card';
 import { OptionPositionsCard } from '@/components/lisa/option-positions-card';
@@ -507,6 +508,9 @@ export default function LisaPage() {
           </select>
         </div>
       )}
+
+      {/* Macro Mode Selector — INVESTMENT vs HARVEST */}
+      {selectedPortfolioId && <MacroModeSelector portfolioId={selectedPortfolioId} />}
 
       {/* Portfolio summary */}
       {selectedPortfolioId && (

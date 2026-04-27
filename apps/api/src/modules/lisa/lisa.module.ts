@@ -35,6 +35,7 @@ import { LisaPerformanceAnalyticsService } from './services/lisa-performance-ana
 import { DailySessionService } from './services/daily-session.service';
 import { ProfitSweepService } from './services/profit-sweep.service';
 import { DailyProfitGovernor } from './services/daily-profit-governor.service';
+import { MacroModeService } from './services/macro-mode.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule, BotLabModule],
@@ -73,6 +74,8 @@ import { DailyProfitGovernor } from './services/daily-profit-governor.service';
     DailySessionService,
     ProfitSweepService,
     DailyProfitGovernor,
+    // Macro mode (INVESTMENT / HARVEST presets)
+    MacroModeService,
   ],
   exports: [
     LisaService,
@@ -102,6 +105,7 @@ import { DailyProfitGovernor } from './services/daily-profit-governor.service';
     DailySessionService,
     ProfitSweepService,
     DailyProfitGovernor,
+    MacroModeService,
   ],
 })
 export class LisaModule {}

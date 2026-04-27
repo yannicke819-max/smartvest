@@ -10,6 +10,7 @@ import { NewsAggregatorService } from './services/news-aggregator.service';
 import { SupabaseService } from '../supabase/supabase.service';
 import { DailySessionService } from './services/daily-session.service';
 import { ProfitSweepService } from './services/profit-sweep.service';
+import { MacroModeService, type MacroMode } from './services/macro-mode.service';
 import type { DailyHarvestConfig, CapitalDisciplineMode } from './types/capital-discipline.types';
 
 @Controller('lisa')
@@ -25,7 +26,43 @@ export class LisaController {
     private readonly supabase: SupabaseService,
     private readonly dailySession: DailySessionService,
     private readonly profitSweep: ProfitSweepService,
+    private readonly macroMode: MacroModeService,
   ) {}
+
+  // ─────────────────────────────────────────────────────────────────
+  // MACRO MODE — INVESTMENT vs HARVEST
+  // ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Détecte le mode macro courant + retourne la config active.
+   */
+  @Get('macro-mode/:portfolioId')
+  async detectMacroMode(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    extractUserId(headers);
+    const mode = await this.macroMode.detectMode(portfolioId);
+    return { mode };
+  }
+
+  /**
+   * Applique un preset macro mode sur la config du portfolio.
+   * Body : { mode: 'INVESTMENT' | 'HARVEST' }
+   */
+  @Post('macro-mode/:portfolioId')
+  async applyMacroMode(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+    @Body() body: { mode: MacroMode },
+  ) {
+    const userId = extractUserId(headers);
+    if (body.mode !== 'INVESTMENT' && body.mode !== 'HARVEST') {
+      throw new Error('mode doit être INVESTMENT ou HARVEST');
+    }
+    const result = await this.macroMode.applyMacroMode(userId, portfolioId, body.mode);
+    return result;
+  }
 
   /**
    * Inspecte le pipeline news pour un portfolio donné : fetch raw EODHD,
