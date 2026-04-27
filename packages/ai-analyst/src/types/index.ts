@@ -468,5 +468,11 @@ export const LisaSessionConfig = z.object({
   enableCrypto: z.boolean().default(true),
   enableDerivatives: z.boolean().default(false),
   enableLeverage: z.boolean().default(false),
+  /** Si true, autorise les cycles autopilot même quand le macro snapshot
+   *  est dégradé (us10y + vix en fallback OU 3+ feeds en fallback).
+   *  Default false : kill-switch actif, le cycle est skippé silencieusement
+   *  avec audit `cycle_skipped_data_quality_degraded`. Cf. PATCH 1
+   *  risk-01-dataquality-killswitch. */
+  allowDegradedMacro: z.boolean().optional().default(false),
 });
 export type LisaSessionConfig = z.infer<typeof LisaSessionConfig>;

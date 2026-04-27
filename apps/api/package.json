@@ -64,7 +64,8 @@
       "^@smartvest/portfolio-engine$": "<rootDir>/../../../packages/portfolio-engine/src/index.ts",
       "^@smartvest/cost-engine$": "<rootDir>/../../../packages/cost-engine/src/index.ts",
       "^@smartvest/audit$": "<rootDir>/../../../packages/audit/src/index.ts",
-      "^@smartvest/brokers$": "<rootDir>/../../../packages/brokers/src/index.ts"
+      "^@smartvest/brokers$": "<rootDir>/../../../packages/brokers/src/index.ts",
+      "^@smartvest/ai-analyst$": "<rootDir>/../../../packages/ai-analyst/src/index.ts"
     }
   }
 }
