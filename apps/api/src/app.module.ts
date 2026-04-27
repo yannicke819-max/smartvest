@@ -23,6 +23,7 @@ import { HyperTradingModule } from './modules/hyper-trading/hyper-trading.module
 import { SniperModule } from './modules/sniper/sniper.module';
 import { BrokersModule } from './modules/brokers/brokers.module';
 import { LisaModule } from './modules/lisa/lisa.module';
+import { BotLabModule } from './modules/bot-lab/bot-lab.module';
 import { BacktestModule } from './modules/backtest/backtest.module';
 import { StrategyOptimizerModule } from './modules/strategy-optimizer/optimizer.module';
 import { MonteCarloModule } from './modules/monte-carlo/monte-carlo.module';
@@ -59,6 +60,7 @@ import { MonteCarloModule } from './modules/monte-carlo/monte-carlo.module';
     SniperModule,
     BrokersModule,
     LisaModule,
+    BotLabModule,
     BacktestModule,
     StrategyOptimizerModule,
     MonteCarloModule,
