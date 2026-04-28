@@ -61,6 +61,7 @@ import {
   parseFredObservationsResponse,
   fetchWithRetry,
 } from '../helpers/macro-fallback.helper';
+import { assertRegimeInputsHealthy } from '../helpers/regime-healthcheck.helper';
 
 /**
  * LisaService — orchestrateur principal du module AI analyst.
@@ -2682,6 +2683,28 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         realized1hPct,
         redditSpikeSigma: null as number | null,
       };
+
+      // P2-A — Healthcheck fail-fast : si ≥2 indicateurs macro core
+      // (vix/dxy/us10y/us2y/realized1hPct) sont null ou en fallback >24h,
+      // on log un WARN structuré pour signaler que le verdict
+      // HORS_TRAJECTOIRE qui sortira de cette classification est peu fiable.
+      // Pure check, non-bloquant — on continue la classification.
+      const health = assertRegimeInputsHealthy(
+        {
+          vix: vix ?? null,
+          dxy: dxy ?? null,
+          us10y: us10y ?? null,
+          us2y: us2y ?? null,
+          realized1hPct,
+        },
+        { fallback: dataQuality.fallback },
+      );
+      if (health.shouldWarn) {
+        this.logger.warn(
+          `[regime-healthcheck] ${health.degraded.length}/5 macro inputs degraded: ${health.degraded.join(', ')} — HORS_TRAJECTOIRE potentially unreliable this cycle`,
+        );
+      }
+
       tacticalRegime = await this.marketRegime.getCurrentRegime(inputs);
     } catch (e) {
       this.logger.warn(`[regime] classify failed (non-blocking): ${String(e).slice(0, 100)}`);
