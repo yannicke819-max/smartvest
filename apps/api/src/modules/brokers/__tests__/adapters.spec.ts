@@ -130,7 +130,11 @@ describe('createBrokerAdapter factory', () => {
     expect(createBrokerAdapter('DEGIRO', { ...allFlagsOn, BROKER_ADAPTER_DEGIRO_ENABLED: false })).toBeInstanceOf(DegiroAdapter);
   });
   it('refuses BOURSE_DIRECT / FORTUNEO (no public API)', () => {
-    expect(() => createBrokerAdapter('BOURSE_DIRECT', allFlagsOn)).toThrow(/API publique/);
-    expect(() => createBrokerAdapter('FORTUNEO', allFlagsOn)).toThrow(/API publique/);
+    // Le message exact de adapter-factory.ts est :
+    // "${provider} n'expose pas d'API retail publique — utilisez l'import CSV via /imports."
+    // Regex `/API.*publique/` matche "API retail publique" + tolère un futur
+    // ajustement (ex: "API retail publique standard").
+    expect(() => createBrokerAdapter('BOURSE_DIRECT', allFlagsOn)).toThrow(/API.*publique/);
+    expect(() => createBrokerAdapter('FORTUNEO', allFlagsOn)).toThrow(/API.*publique/);
   });
 });
