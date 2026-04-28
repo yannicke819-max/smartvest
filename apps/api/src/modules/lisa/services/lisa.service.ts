@@ -55,9 +55,13 @@ import {
   buildYahooChartUrl,
   buildStooqCsvUrl,
   buildAlphaVantageGlobalQuoteUrl,
+  buildAlphaVantageTreasuryUrl,
+  buildFredObservationsUrl,
   parseYahooChartResponse,
   parseStooqCsvResponse,
   parseAlphaVantageGlobalQuoteResponse,
+  parseAlphaVantageTreasuryResponse,
+  parseFredObservationsResponse,
   fetchWithRetry,
 } from '../helpers/macro-fallback.helper';
 
@@ -2046,8 +2050,9 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     eodhdTicker: string | null;
     /** PR D — `yahoo` + `stooq` ajoutés pour la cascade multi-provider
      *  VIX/DXY (incident 27/04). */
-    /** P0-B — `alphavantage` ajouté pour cascade VIX/DXY 3e source. */
-    source: 'eodhd' | 'fallback' | 'supabase_quotes' | 'yahoo' | 'stooq' | 'alphavantage';
+    /** P0-B — `alphavantage` ajouté pour cascade VIX/DXY 3e source.
+     *  P0-C — `fred` ajouté pour us10y/us2y cascade (FRED Federal Reserve). */
+    source: 'eodhd' | 'fallback' | 'supabase_quotes' | 'yahoo' | 'stooq' | 'alphavantage' | 'fred';
     success: boolean;
     statusCode?: number;
     latencyMs?: number;
@@ -2405,21 +2410,94 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     };
 
     /**
+     * P0-C — Alpha Vantage TREASURY_YIELD pour us10y / us2y. Endpoint
+     * dédié distinct de GLOBAL_QUOTE. Inerte sans clé.
+     *
+     * Le `ticker` ici encode la maturity Alpha Vantage : '10year', '2year',
+     * '3month', '5year', '30year'. Le caller cascade passe la string
+     * appropriée (ex: us10y → '10year', us2y → '2year').
+     */
+    const fetchAlphaVantageTreasury = async (
+      maturity: '3month' | '2year' | '5year' | '10year' | '30year',
+    ): Promise<number | null> => {
+      const url = buildAlphaVantageTreasuryUrl(maturity, alphaKey);
+      if (!url) return null;
+      const v = await fetchWithRetry(async (signal) => {
+        const tStart = Date.now();
+        try {
+          const res = await fetch(url, { signal });
+          const latencyMs = Date.now() - tStart;
+          if (!res.ok) {
+            this.logEodhdCall({ ticker: maturity, eodhdTicker: maturity, source: 'alphavantage', success: false, statusCode: res.status, latencyMs, calledBy: 'market_snapshot', errorMessage: `HTTP_${res.status}_treasury` });
+            return null;
+          }
+          const json = await res.json() as unknown;
+          const parsed = parseAlphaVantageTreasuryResponse(json);
+          if (parsed != null) {
+            this.logEodhdCall({ ticker: maturity, eodhdTicker: maturity, source: 'alphavantage', success: true, statusCode: res.status, latencyMs, priceUsd: parsed, calledBy: 'market_snapshot' });
+            return parsed;
+          }
+          this.logEodhdCall({ ticker: maturity, eodhdTicker: maturity, source: 'alphavantage', success: false, statusCode: res.status, latencyMs, calledBy: 'market_snapshot', errorMessage: 'treasury_parser_returned_null' });
+          return null;
+        } catch (e) {
+          this.logEodhdCall({ ticker: maturity, eodhdTicker: maturity, source: 'alphavantage', success: false, latencyMs: Date.now() - tStart, calledBy: 'market_snapshot', errorMessage: String(e).slice(0, 200) });
+          throw e;
+        }
+      }, { maxAttempts: 3, backoffMs: 250, timeoutMs: 1500 });
+      incCounter(`AV_TREASURY_${maturity}`, 'alphavantage', v != null ? 'ok' : 'fail');
+      return v;
+    };
+
+    /**
+     * P0-C — FRED `series/observations` pour DGS10, DGS2, etc. Inerte si
+     * `FRED_API_KEY` non set. 120 req/min limit (largement sous notre rythme).
+     *
+     * Note : FRED publie en fin de journée US (~16:00 EST), donc en intraday
+     * la valeur est celle du business day précédent. Pas idéal pour scalp
+     * intraday mais largement OK comme baseline macro.
+     */
+    const fredKey = this.config.get<string>('FRED_API_KEY') ?? null;
+    const fetchFred = async (seriesId: string): Promise<number | null> => {
+      const url = buildFredObservationsUrl(seriesId, fredKey);
+      if (!url) return null;
+      const v = await fetchWithRetry(async (signal) => {
+        const tStart = Date.now();
+        try {
+          const res = await fetch(url, { signal });
+          const latencyMs = Date.now() - tStart;
+          if (!res.ok) {
+            this.logEodhdCall({ ticker: seriesId, eodhdTicker: seriesId, source: 'fred', success: false, statusCode: res.status, latencyMs, calledBy: 'market_snapshot', errorMessage: `HTTP_${res.status}` });
+            return null;
+          }
+          const json = await res.json() as unknown;
+          const parsed = parseFredObservationsResponse(json);
+          if (parsed != null) {
+            this.logEodhdCall({ ticker: seriesId, eodhdTicker: seriesId, source: 'fred', success: true, statusCode: res.status, latencyMs, priceUsd: parsed, calledBy: 'market_snapshot' });
+            return parsed;
+          }
+          this.logEodhdCall({ ticker: seriesId, eodhdTicker: seriesId, source: 'fred', success: false, statusCode: res.status, latencyMs, calledBy: 'market_snapshot', errorMessage: 'fred_parser_returned_null' });
+          return null;
+        } catch (e) {
+          this.logEodhdCall({ ticker: seriesId, eodhdTicker: seriesId, source: 'fred', success: false, latencyMs: Date.now() - tStart, calledBy: 'market_snapshot', errorMessage: String(e).slice(0, 200) });
+          throw e;
+        }
+      }, { maxAttempts: 3, backoffMs: 250, timeoutMs: 1500 });
+      incCounter(seriesId, 'fred', v != null ? 'ok' : 'fail');
+      return v;
+    };
+
+    /**
      * Tente plusieurs tickers en cascade. Retourne la 1re valeur valide
      * + identifie la qualité (live primary OU proxy ETF).
      *
-     * PR D — chaque attempt peut spécifier `source` (`'eodhd' | 'yahoo' | 'stooq'`).
-     * Default `'eodhd'` pour rétrocompat. Permet de chaîner EODHD →
-     * Yahoo → Stooq → proxy ETF avant de tomber en fallback hardcoded.
-     *
-     * Le label de dataQuality indique le provider qui a réussi pour
-     * faciliter le diagnostic post-mortem ("vix(via yahoo:^VIX)").
+     * PR D — chaque attempt peut spécifier `source`.
+     * P0-C — `'fred'` + `'alphavantage_treasury'` ajoutés pour us10y/us2y.
      */
     const fetchCascade = async (
       indicator: string,
       attempts: Array<{
         ticker: string;
-        source?: 'eodhd' | 'yahoo' | 'stooq' | 'alphavantage';
+        source?: 'eodhd' | 'yahoo' | 'stooq' | 'alphavantage' | 'alphavantage_treasury' | 'fred';
         multiplier?: number;
         quality: 'live' | 'proxy';
       }>,
@@ -2431,6 +2509,10 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         else if (source === 'yahoo') v = await fetchYahoo(a.ticker);
         else if (source === 'stooq') v = await fetchStooq(a.ticker);
         else if (source === 'alphavantage') v = await fetchAlphaVantage(a.ticker);
+        else if (source === 'alphavantage_treasury') {
+          v = await fetchAlphaVantageTreasury(a.ticker as '3month' | '2year' | '5year' | '10year' | '30year');
+        }
+        else if (source === 'fred') v = await fetchFred(a.ticker);
         if (v !== null) {
           const finalValue = a.multiplier ? v * a.multiplier : v;
           if (a.quality === 'live') {
@@ -2508,12 +2590,33 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         { ticker: '^dxy', source: 'stooq', quality: 'live' },
         { ticker: 'UUP.US', source: 'eodhd', multiplier: 4.1, quality: 'proxy' },
       ]),
-      // Bonds : .BOND échoue → fallback TNX.INDX (ou ETF TLT yield-proxy)
+      // P0-C — us10y cascade Yahoo PRIMARY (était EODHD-only en PR #25 →
+      // empty_price_field log 28/04 06:19 UTC). Note : Yahoo ^TNX expose
+      // le rendement multiplié par 10 (4.21% → 42.1) historiquement, mais
+      // depuis 2023 c'est rendu en valeur brute. Le multiplier 0.1 est un
+      // safety net si l'API change : Yahoo affiche 4.21 ou 42.1 selon les
+      // dates → on prend la valeur native sans multiplier.
+      // Ordre :
+      //   1. yahoo:^TNX           (primary, no auth, intraday)
+      //   2. eodhd:TNX.INDX       (legacy, souvent empty_price_field)
+      //   3. fred:DGS10           (officiel Fed, EOD seulement)
+      //   4. alphavantage_treasury:10year  (3e source no-auth si key)
+      //   5. stooq:us10yb.u       (4e fallback CSV)
+      // last-known cache (24h) appliqué en bout de chaîne par fetchCascade.
       fetchCascade('us10y', [
-        { ticker: 'TNX.INDX', quality: 'live' },
+        { ticker: '^TNX', source: 'yahoo', quality: 'live' },
+        { ticker: 'TNX.INDX', source: 'eodhd', quality: 'live' },
+        { ticker: 'DGS10', source: 'fred', quality: 'live' },
+        { ticker: '10year', source: 'alphavantage_treasury', quality: 'live' },
+        { ticker: 'us10yb.u', source: 'stooq', quality: 'live' },
       ]),
+      // P0-C — us2y cascade similaire (IRX.INDX = 13-week T-Bill, mais le
+      // contract veut 2y → DGS2 / ^IRX / 2year FRED)
       fetchCascade('us2y', [
-        { ticker: 'IRX.INDX', quality: 'live' }, // 13-week T-Bill
+        { ticker: '^IRX', source: 'yahoo', quality: 'live' }, // 13-week T-Bill (proxy court terme)
+        { ticker: 'IRX.INDX', source: 'eodhd', quality: 'live' },
+        { ticker: 'DGS2', source: 'fred', quality: 'live' },
+        { ticker: '2year', source: 'alphavantage_treasury', quality: 'live' },
       ]),
       // Brent : .COMM 404 → ETF USO proxy (× 1.05 ≈ proche WTI/Brent)
       fetchCascade('brent', [

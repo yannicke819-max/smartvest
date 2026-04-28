@@ -195,6 +195,125 @@ export function buildAlphaVantageGlobalQuoteUrl(symbol: string, apiKey: string |
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// P0-C — Alpha Vantage TREASURY_YIELD (us10y / us2y)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Parse la réponse Alpha Vantage `TREASURY_YIELD`.
+ *
+ * Shape attendu :
+ * ```
+ * { name, interval, unit, data: [
+ *     { date: "2026-04-27", value: "4.21" },
+ *     { date: "2026-04-26", value: "4.18" }, ...
+ *   ]
+ * }
+ * ```
+ *
+ * Stratégie : prend la valeur de la dernière observation valide
+ * (`data[0]` typique en sort_order=desc). Tolère :
+ *  - `value: "."` (Alpha Vantage rend "." quand pas de cotation)
+ *  - data array vide (pas encore de release)
+ *  - rate-limit envelopes (Information / Note)
+ *
+ * Retourne null si aucune valeur > 0 numérique trouvée.
+ */
+export function parseAlphaVantageTreasuryResponse(json: unknown): number | null {
+  if (!json || typeof json !== 'object') return null;
+  const obj = json as Record<string, unknown>;
+  if ('Information' in obj || 'Note' in obj || 'Error Message' in obj) return null;
+  const data = obj.data as Array<Record<string, unknown>> | undefined;
+  if (!Array.isArray(data) || data.length === 0) return null;
+  for (const row of data) {
+    const raw = row.value;
+    if (typeof raw !== 'string' || raw === '.' || raw === '') continue;
+    const v = Number(raw);
+    if (Number.isFinite(v) && v > 0) return v;
+  }
+  return null;
+}
+
+/**
+ * Construit l'URL Alpha Vantage `TREASURY_YIELD`.
+ *
+ * - maturity : '3month', '2year', '5year', '10year', '30year'
+ * - interval : 'daily' (recommandé pour valeur fraîche), 'weekly', 'monthly'
+ *
+ * Free tier rate limit : 5 req/min. À cadencer côté caller via cache.
+ * Retourne null si pas de clé API.
+ */
+export function buildAlphaVantageTreasuryUrl(
+  maturity: '3month' | '2year' | '5year' | '10year' | '30year',
+  apiKey: string | null | undefined,
+  interval: 'daily' | 'weekly' | 'monthly' = 'daily',
+): string | null {
+  if (!apiKey) return null;
+  const k = encodeURIComponent(apiKey);
+  return `https://www.alphavantage.co/query?function=TREASURY_YIELD&interval=${interval}&maturity=${maturity}&apikey=${k}`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P0-C — FRED (Federal Reserve Economic Data) — séries officielles
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Parse la réponse FRED `series/observations`.
+ *
+ * Shape attendu :
+ * ```
+ * { observations: [
+ *     { realtime_start, realtime_end, date, value: "4.21" },
+ *     ...
+ *   ]
+ * }
+ * ```
+ *
+ * FRED retourne `value: "."` quand pas de release (week-end, jour férié,
+ * série trimestrielle entre publications). On parcourt `observations` du
+ * plus récent au plus ancien (sort_order=desc côté URL) jusqu'à trouver
+ * une valeur numérique valide.
+ *
+ * Retourne null si aucune valeur valide trouvée.
+ */
+export function parseFredObservationsResponse(json: unknown): number | null {
+  if (!json || typeof json !== 'object') return null;
+  const obj = json as Record<string, unknown>;
+  // FRED renvoie un `error_code` si la query échoue, ou `error_message`.
+  if ('error_code' in obj || 'error_message' in obj) return null;
+  const obs = obj.observations as Array<Record<string, unknown>> | undefined;
+  if (!Array.isArray(obs) || obs.length === 0) return null;
+  for (const row of obs) {
+    const raw = row.value;
+    if (typeof raw !== 'string' || raw === '.' || raw === '') continue;
+    const v = Number(raw);
+    if (Number.isFinite(v) && v > 0) return v;
+  }
+  return null;
+}
+
+/**
+ * Construit l'URL FRED `series/observations`.
+ *
+ * Séries usuelles :
+ *  - DGS10 : 10-Year Treasury Constant Maturity Rate (us10y)
+ *  - DGS2  : 2-Year Treasury (us2y)
+ *  - VIXCLS : VIX (close historique, intraday non dispo en FRED)
+ *  - DCOILBRENTEU : Brent Crude Europe Spot Price
+ *
+ * Free tier : 120 requests / minute. Bien sous la limite pour 1 req / cycle 5min.
+ * Retourne null si pas de clé API.
+ */
+export function buildFredObservationsUrl(
+  seriesId: string,
+  apiKey: string | null | undefined,
+): string | null {
+  if (!apiKey) return null;
+  const s = encodeURIComponent(seriesId);
+  const k = encodeURIComponent(apiKey);
+  return `https://api.stlouisfed.org/fred/series/observations?series_id=${s}&api_key=${k}&file_type=json&sort_order=desc&limit=5`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // P0-B — Retry / timeout / backoff helper
 // ─────────────────────────────────────────────────────────────────────────────
 
