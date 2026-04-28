@@ -5,6 +5,29 @@ Guide de travail pour Claude Code sur ce repo.
 
 ---
 
+## RÈGLE OPÉRATIONNELLE PERMANENTE — AUTO-MERGE SUR MAIN
+
+Pour TOUTE PR que tu ouvres sur ce repo :
+
+1. **Tu DOIS auto-merger immédiatement sur `main`** dès que :
+   - CI typecheck (TypeScript build) ✅ vert
+   - CI Jest unit tests ✅ vert
+   - Pas de conflit avec `main`
+
+2. **N'attends JAMAIS** :
+   - validation humaine
+   - review Vercel preview
+   - confirmation utilisateur
+   - feedback approbation
+
+3. **Workflow obligatoire** : poll CI status toutes les 30s → dès 4 checks verts → `gh pr merge --squash --auto --delete-branch` ou équivalent UI → enchainer ticket suivant sans pause.
+
+4. Si CI fail : hotfix dans la même branche, push, repoll. Pas de question à l'utilisateur.
+
+5. Cette règle s'applique à TOUS les tickets P0/P1/P2/P3 et au-delà jusqu'à instruction écrite contraire de l'utilisateur dans la session.
+
+---
+
 ## 1. Positionnement produit (non négociable)
 
 SmartVest est une **plateforme d'investissement personnel** opérant selon un modèle de **délégation contrôlée**.
