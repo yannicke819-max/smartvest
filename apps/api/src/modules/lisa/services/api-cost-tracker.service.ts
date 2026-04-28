@@ -4,10 +4,13 @@ import { SupabaseService } from '../../supabase/supabase.service';
 
 /**
  * Erreur lancée quand le budget journalier API est dépassé. Catchée par
- * `LisaService.generateProposal` qui désactive l'autopilot en upsert sur
- * `lisa_session_configs.autopilot_enabled = false`.
+ * `LisaService.generateProposal` qui set `autopilot_paused_reason='BUDGET_EXCEEDED'`
+ * sans toucher `autopilot_enabled`.
  *
- * Cf. PATCH 4 risk-04-adaptive-safetynet-budget.
+ * P8-BR : la reprise est automatique au prochain cycle dès que le coût
+ * journalier retombe sous 90% du budget (rollover UTC OU budget bumped).
+ *
+ * Cf. PATCH 4 risk-04-adaptive-safetynet-budget + P8-BR autopilot-budget-resilience.
  */
 export class BudgetExceededError extends Error {
   readonly todayCostUsd: number;
@@ -16,7 +19,7 @@ export class BudgetExceededError extends Error {
   constructor(todayCostUsd: number, budgetUsd: number) {
     super(
       `[BUDGET_EXCEEDED] Coût API journalier $${todayCostUsd.toFixed(2)} >= ` +
-      `budget $${budgetUsd.toFixed(2)}. Autopilot désactivé.`,
+      `budget $${budgetUsd.toFixed(2)}. Autopilot pausé (reprise auto < 90% budget).`,
     );
     this.name = 'BudgetExceededError';
     this.todayCostUsd = todayCostUsd;
