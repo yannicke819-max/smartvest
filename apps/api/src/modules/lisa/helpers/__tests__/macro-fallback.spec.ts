@@ -9,10 +9,14 @@
  */
 import {
   buildAlphaVantageGlobalQuoteUrl,
+  buildAlphaVantageTreasuryUrl,
+  buildFredObservationsUrl,
   buildStooqCsvUrl,
   buildYahooChartUrl,
   fetchWithRetry,
   parseAlphaVantageGlobalQuoteResponse,
+  parseAlphaVantageTreasuryResponse,
+  parseFredObservationsResponse,
   parseStooqCsvResponse,
   parseYahooChartResponse,
 } from '../macro-fallback.helper';
@@ -401,5 +405,194 @@ describe('fetchWithRetry', () => {
     const fn = jest.fn().mockResolvedValue(undefined);
     await fetchWithRetry(fn, { maxAttempts: 3, backoffMs: 1, timeoutMs: 1500 });
     expect(fn).toHaveBeenCalledTimes(3);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P0-C — Alpha Vantage TREASURY_YIELD
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('parseAlphaVantageTreasuryResponse', () => {
+  it('extracts last numeric value from data[]', () => {
+    const json = {
+      name: '10-Year Treasury Constant Maturity Rate',
+      interval: 'daily',
+      unit: 'percent',
+      data: [
+        { date: '2026-04-27', value: '4.21' },
+        { date: '2026-04-26', value: '4.18' },
+      ],
+    };
+    expect(parseAlphaVantageTreasuryResponse(json)).toBe(4.21);
+  });
+
+  it('skips "." values (no release on weekends/holidays) and returns next valid', () => {
+    const json = {
+      data: [
+        { date: '2026-04-27', value: '.' }, // dimanche
+        { date: '2026-04-26', value: '.' },
+        { date: '2026-04-25', value: '4.18' }, // vendredi
+      ],
+    };
+    expect(parseAlphaVantageTreasuryResponse(json)).toBe(4.18);
+  });
+
+  it('returns null on rate-limit Information envelope', () => {
+    expect(parseAlphaVantageTreasuryResponse({ Information: 'rate limit hit' })).toBeNull();
+  });
+
+  it('returns null on Note envelope (free tier 5/min hit)', () => {
+    expect(parseAlphaVantageTreasuryResponse({ Note: 'Thank you for using AV...' })).toBeNull();
+  });
+
+  it('returns null on Error Message envelope', () => {
+    expect(parseAlphaVantageTreasuryResponse({ 'Error Message': 'invalid' })).toBeNull();
+  });
+
+  it('returns null on empty data array', () => {
+    expect(parseAlphaVantageTreasuryResponse({ data: [] })).toBeNull();
+  });
+
+  it('returns null on missing data field', () => {
+    expect(parseAlphaVantageTreasuryResponse({})).toBeNull();
+  });
+
+  it('returns null when all values are "."', () => {
+    expect(parseAlphaVantageTreasuryResponse({
+      data: [{ value: '.' }, { value: '.' }],
+    })).toBeNull();
+  });
+
+  it('returns null on non-object input', () => {
+    expect(parseAlphaVantageTreasuryResponse(null)).toBeNull();
+    expect(parseAlphaVantageTreasuryResponse(undefined)).toBeNull();
+    expect(parseAlphaVantageTreasuryResponse('not json')).toBeNull();
+  });
+
+  it('rejects 0/negative/empty string values', () => {
+    expect(parseAlphaVantageTreasuryResponse({ data: [{ value: '0' }] })).toBeNull();
+    expect(parseAlphaVantageTreasuryResponse({ data: [{ value: '-1' }] })).toBeNull();
+    expect(parseAlphaVantageTreasuryResponse({ data: [{ value: '' }] })).toBeNull();
+  });
+});
+
+describe('buildAlphaVantageTreasuryUrl', () => {
+  it('builds 10year daily URL with key', () => {
+    expect(buildAlphaVantageTreasuryUrl('10year', 'XYZ')).toBe(
+      'https://www.alphavantage.co/query?function=TREASURY_YIELD&interval=daily&maturity=10year&apikey=XYZ',
+    );
+  });
+
+  it('supports 2year + weekly interval', () => {
+    expect(buildAlphaVantageTreasuryUrl('2year', 'XYZ', 'weekly')).toBe(
+      'https://www.alphavantage.co/query?function=TREASURY_YIELD&interval=weekly&maturity=2year&apikey=XYZ',
+    );
+  });
+
+  it('returns null without API key (caller falls through)', () => {
+    expect(buildAlphaVantageTreasuryUrl('10year', null)).toBeNull();
+    expect(buildAlphaVantageTreasuryUrl('10year', undefined)).toBeNull();
+    expect(buildAlphaVantageTreasuryUrl('10year', '')).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P0-C — FRED
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('parseFredObservationsResponse', () => {
+  it('extracts last numeric value from observations[]', () => {
+    const json = {
+      observations: [
+        { realtime_start: '2026-04-27', realtime_end: '2026-04-27', date: '2026-04-27', value: '4.21' },
+        { realtime_start: '2026-04-26', realtime_end: '2026-04-26', date: '2026-04-26', value: '4.18' },
+      ],
+    };
+    expect(parseFredObservationsResponse(json)).toBe(4.21);
+  });
+
+  it('skips "." values and finds next valid', () => {
+    const json = {
+      observations: [
+        { date: '2026-04-27', value: '.' },
+        { date: '2026-04-26', value: '4.18' },
+      ],
+    };
+    expect(parseFredObservationsResponse(json)).toBe(4.18);
+  });
+
+  it('returns null on error_code envelope (FRED API key invalid, etc.)', () => {
+    expect(parseFredObservationsResponse({ error_code: 400, error_message: 'Bad Request' })).toBeNull();
+  });
+
+  it('returns null on missing observations', () => {
+    expect(parseFredObservationsResponse({})).toBeNull();
+  });
+
+  it('returns null on empty observations array', () => {
+    expect(parseFredObservationsResponse({ observations: [] })).toBeNull();
+  });
+
+  it('returns null when all observations are "."', () => {
+    expect(parseFredObservationsResponse({
+      observations: [{ value: '.' }, { value: '.' }, { value: '.' }],
+    })).toBeNull();
+  });
+
+  it('returns null on non-object input', () => {
+    expect(parseFredObservationsResponse(null)).toBeNull();
+    expect(parseFredObservationsResponse(undefined)).toBeNull();
+    expect(parseFredObservationsResponse('error')).toBeNull();
+  });
+
+  it('rejects 0/negative values', () => {
+    expect(parseFredObservationsResponse({
+      observations: [{ value: '0' }, { value: '-1.5' }],
+    })).toBeNull();
+  });
+
+  it('handles realistic DGS10 response (10-Year Treasury)', () => {
+    // Snapshot d'une réponse réelle FRED /fred/series/observations?series_id=DGS10
+    const realResponse = {
+      realtime_start: '2026-04-28',
+      realtime_end: '2026-04-28',
+      observation_start: '1962-01-02',
+      observation_end: '2026-04-27',
+      units: 'lin',
+      output_type: 1,
+      file_type: 'json',
+      order_by: 'observation_date',
+      sort_order: 'desc',
+      count: 16500,
+      offset: 0,
+      limit: 5,
+      observations: [
+        { realtime_start: '2026-04-28', realtime_end: '2026-04-28', date: '2026-04-25', value: '4.20' },
+        { realtime_start: '2026-04-28', realtime_end: '2026-04-28', date: '2026-04-24', value: '4.18' },
+      ],
+    };
+    expect(parseFredObservationsResponse(realResponse)).toBe(4.20);
+  });
+});
+
+describe('buildFredObservationsUrl', () => {
+  it('builds DGS10 URL with key', () => {
+    expect(buildFredObservationsUrl('DGS10', 'XYZ')).toBe(
+      'https://api.stlouisfed.org/fred/series/observations?series_id=DGS10&api_key=XYZ&file_type=json&sort_order=desc&limit=5',
+    );
+  });
+
+  it('supports DGS2 (2-year)', () => {
+    expect(buildFredObservationsUrl('DGS2', 'XYZ')).toContain('series_id=DGS2');
+  });
+
+  it('encodes special characters in series_id', () => {
+    expect(buildFredObservationsUrl('SERIES WITH SPACE', 'XYZ')).toContain('SERIES%20WITH%20SPACE');
+  });
+
+  it('returns null without API key', () => {
+    expect(buildFredObservationsUrl('DGS10', null)).toBeNull();
+    expect(buildFredObservationsUrl('DGS10', undefined)).toBeNull();
+    expect(buildFredObservationsUrl('DGS10', '')).toBeNull();
   });
 });
