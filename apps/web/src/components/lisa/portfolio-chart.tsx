@@ -105,10 +105,13 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
         hour: '2-digit',
         minute: '2-digit',
       }),
-      value: parseFloat(s.total_value_usd),
-      realized: parseFloat(s.realized_pnl_cumulative_usd),
-      returnPct: s.return_from_inception_pct,
-      drawdown: s.drawdown_from_peak_pct,
+      // P0 hotfix — defensive coercion : Postgres numeric() columns are
+      // serialized as strings by supabase-js. parseFloat est idempotent
+      // sur un number JS, donc safe même quand le backend a déjà coercé.
+      value: parseFloat(String(s.total_value_usd ?? '0')) || 0,
+      realized: parseFloat(String(s.realized_pnl_cumulative_usd ?? '0')) || 0,
+      returnPct: parseFloat(String(s.return_from_inception_pct ?? 0)) || 0,
+      drawdown: parseFloat(String(s.drawdown_from_peak_pct ?? 0)) || 0,
     }));
 
     // Ajout point "live" : si la valeur live est plus récente que le
@@ -130,9 +133,9 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
             minute: '2-digit',
           }) + ' (live)',
           value: liveValue,
-          realized: parseFloat(live.realized_pnl_cumulative_usd),
-          returnPct: live.return_from_inception_pct,
-          drawdown: live.drawdown_from_peak_pct,
+          realized: parseFloat(String(live.realized_pnl_cumulative_usd ?? '0')) || 0,
+          returnPct: parseFloat(String(live.return_from_inception_pct ?? 0)) || 0,
+          drawdown: parseFloat(String(live.drawdown_from_peak_pct ?? 0)) || 0,
         });
       }
     }
