@@ -301,7 +301,27 @@ REBOUND_TP3_PCT=15
 REBOUND_SL_PCT=4
 REBOUND_TIME_STOP_DAYS=10
 DAILY_TARGET_USD=100
+
+# P3-A.2 — Scanner watchlist
+REBOUND_WATCHLIST=AAPL.US,MSFT.US,NVDA.US,...   # CSV, override default
+MAX_CONCURRENT_REBOUND_POSITIONS=5
 ```
+
+### Scanner watchlist (P3-A.2)
+
+`ReboundScannerService` ferme la boucle d'entrée :
+
+- Cron `'0 */15 * * * 1-5'` toutes les 15 min, lun-ven
+- Body check heures marché US (14:30-21:00 UTC) — sinon no-op
+- Pour chaque portfolio actif × chaque ticker watchlist :
+  - Fetch 60 daily bars via EODHD `/api/eod/{ticker}` (cache 1h)
+  - Run `scanRebound(bars, cfg)`
+  - Si BUY ET pas de position OPEN sur ce (portfolio, ticker) → INSERT
+- Garde-fous : `dailyTargetHit` freeze, `openCount >= MAX_CONCURRENT` skip
+- Audit : `lisa_decision_log` kind=`rebound_scan_completed` (hash chain)
+- Lisa pipeline : `MarketSnapshot.reboundSignals` injecté dans le prompt sous `## Positions rebound ouvertes` pour empêcher les doubles signaux
+
+Watchlist par défaut : 12 tickers US liquides (mega-cap tech + ETF index + énergie). Surchargeable via env CSV.
 
 ### Garde-fous
 

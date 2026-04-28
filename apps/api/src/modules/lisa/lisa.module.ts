@@ -39,6 +39,7 @@ import { DailyProfitGovernor } from './services/daily-profit-governor.service';
 import { MacroModeService } from './services/macro-mode.service';
 import { ApiCostTrackerService } from './services/api-cost-tracker.service';
 import { ReboundMonitorService } from './services/rebound-monitor.service';
+import { ReboundScannerService } from './services/rebound-scanner.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule, BotLabModule],
@@ -85,6 +86,8 @@ import { ReboundMonitorService } from './services/rebound-monitor.service';
     MarketRegimeService,
     // P3-A — cron monitor pour rebound_positions (TP/SL/timeout toutes les 5 min)
     ReboundMonitorService,
+    // P3-A.2 — cron scanner watchlist (toutes les 15 min, heures marché US)
+    ReboundScannerService,
   ],
   exports: [
     LisaService,
