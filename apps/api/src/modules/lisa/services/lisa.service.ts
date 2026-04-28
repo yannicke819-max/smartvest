@@ -50,6 +50,7 @@ import { EodhdOptionsService } from './eodhd-options.service';
 import { BinanceLiquidationsService } from './binance-liquidations.service';
 import { ApiCostTrackerService, BudgetExceededError } from './api-cost-tracker.service';
 import { MarketRegimeService } from './market-regime.service';
+import { computeAtrPct } from '@smartvest/ai-analyst';
 import {
   buildYahooChartUrl,
   buildStooqCsvUrl,
@@ -2583,9 +2584,13 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     try {
       // Fetch Binance enrichment (avec timeout court + parallèle pour éviter
       // de bloquer le snapshot si Binance ralentit).
-      const [ticker24h, futureStats] = await Promise.all([
+      // - 24h ticker : btc24hReturnPct
+      // - futures premium index : btcFundingPct
+      // - 51 daily klines : ATR14 + ATR50 BTC pour détection RANGE
+      const [ticker24h, futureStats, dailyKlines] = await Promise.all([
         this.binanceMarket.getTicker24h('BTCUSDT').catch(() => null),
         this.binanceMarket.getFutureStats('BTCUSDT').catch(() => null),
+        this.binanceMarket.getKlines('BTCUSDT', '1d', 51).catch(() => null),
       ]);
 
       const btc24hReturnPct =
@@ -2597,12 +2602,20 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
           ? futureStats.fundingRatePct
           : null;
 
+      // ATR14 / ATR50 en % du dernier close (BTC daily). Pure helper, no I/O.
+      let atr14BtcPct: number | null = null;
+      let atr50BtcPct: number | null = null;
+      if (dailyKlines && dailyKlines.length >= 51) {
+        atr14BtcPct = computeAtrPct(dailyKlines, 14);
+        atr50BtcPct = computeAtrPct(dailyKlines, 50);
+      }
+
       const inputs = {
         btc24hReturnPct,
         btcFundingPct,
         vix: vix ?? null,
-        atr14BtcPct: null as number | null,
-        atr50BtcPct: null as number | null,
+        atr14BtcPct,
+        atr50BtcPct,
         newsScore: null as number | null,
         realized1hPct: null as number | null,
         redditSpikeSigma: null as number | null,
