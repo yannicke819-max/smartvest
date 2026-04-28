@@ -16,9 +16,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
   evaluatePersistence,
+  evaluateWindowPathQuality,
   extractPricesFromOneMinSeries,
   extractPricesFromFiveMinSeries,
   type PersistenceResult,
+  type PathQualityMetrics,
 } from '@smartvest/ai-analyst';
 import { BinanceMarketService } from './binance-market.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
@@ -29,8 +31,28 @@ interface Candidate {
   currentPrice: number;
 }
 
+/**
+ * P9-UX ADDENDUM — Path quality par TF (5/10/15/30/60m), dérivé des candles
+ * 1m ou 5m natifs déjà fetchés pour persistence.
+ */
+export interface PathQualityByTf {
+  tf5m: PathQualityMetrics | null;
+  tf10m: PathQualityMetrics | null;
+  tf15m: PathQualityMetrics | null;
+  tf30m: PathQualityMetrics | null;
+  tf1h: PathQualityMetrics | null;
+  /** Path efficiency moyenne pondérée sur les TFs disponibles. */
+  overallEfficiency: number | null;
+  /** Smooth si toutes les TFs dispos sont smooth. Choppy si au moins une choppy. */
+  overallSmoothness: 'smooth' | 'mixed' | 'choppy' | null;
+}
+
+export interface PersistenceWithPath extends PersistenceResult {
+  pathQuality?: PathQualityByTf;
+}
+
 interface CacheEntry {
-  result: PersistenceResult;
+  result: PersistenceWithPath;
   asOf: number;
 }
 
@@ -51,7 +73,7 @@ export class MultiTimeframePersistenceService {
    * Analyse un seul candidat. Retourne null si les données ne permettent
    * pas de calculer au moins 1 TF.
    */
-  async analyze(c: Candidate): Promise<PersistenceResult | null> {
+  async analyze(c: Candidate): Promise<PersistenceWithPath | null> {
     const key = c.symbol.toUpperCase();
     const cached = this.cache.get(key);
     if (cached && Date.now() - cached.asOf < CACHE_TTL_MS) {
@@ -71,8 +93,8 @@ export class MultiTimeframePersistenceService {
    *
    * Retourne un Map symbol→result. Les symboles sans donnée sont absents.
    */
-  async analyzeBatch(candidates: Candidate[]): Promise<Map<string, PersistenceResult>> {
-    const out = new Map<string, PersistenceResult>();
+  async analyzeBatch(candidates: Candidate[]): Promise<Map<string, PersistenceWithPath>> {
+    const out = new Map<string, PersistenceWithPath>();
     if (candidates.length === 0) return out;
 
     // Split crypto vs equity pour respecter les caps par source
@@ -99,14 +121,14 @@ export class MultiTimeframePersistenceService {
 
   // ───────────────────────────────────────────────────────────────────
 
-  private async fetchAndCompute(c: Candidate): Promise<PersistenceResult | null> {
+  private async fetchAndCompute(c: Candidate): Promise<PersistenceWithPath | null> {
     if (this.isCrypto(c)) {
       return this.fetchCryptoPersistence(c);
     }
     return this.fetchEquityPersistence(c);
   }
 
-  private async fetchCryptoPersistence(c: Candidate): Promise<PersistenceResult | null> {
+  private async fetchCryptoPersistence(c: Candidate): Promise<PersistenceWithPath | null> {
     const binSym = this.binance.toBinanceSymbol(c.symbol) ?? c.symbol.toUpperCase();
     // 61 candles 1-min : permet d'avoir l'ouverture il y a 60 minutes
     const candles = await this.binance.getKlines(binSym, '1m', 61);
@@ -115,10 +137,13 @@ export class MultiTimeframePersistenceService {
       return null;
     }
     const prices = extractPricesFromOneMinSeries(candles);
-    return evaluatePersistence(c.currentPrice, prices);
+    const persistence = evaluatePersistence(c.currentPrice, prices);
+    // Path quality calculé depuis les candles 1m (granularité native)
+    const pathQuality = computePathQualityForTfsFromOneMin(candles);
+    return { ...persistence, pathQuality };
   }
 
-  private async fetchEquityPersistence(c: Candidate): Promise<PersistenceResult | null> {
+  private async fetchEquityPersistence(c: Candidate): Promise<PersistenceWithPath | null> {
     // EODHD ticker convention : SYMBOL.EXCHANGE
     const eodhdTicker = this.toEodhdTicker(c);
     // 13 candles 5-min couvre 1h05 — assez pour les TFs 5m..1h
@@ -128,7 +153,9 @@ export class MultiTimeframePersistenceService {
       return null;
     }
     const prices = extractPricesFromFiveMinSeries(series.candles);
-    return evaluatePersistence(c.currentPrice, prices);
+    const persistence = evaluatePersistence(c.currentPrice, prices);
+    const pathQuality = computePathQualityForTfsFromFiveMin(series.candles);
+    return { ...persistence, pathQuality };
   }
 
   private isCrypto(c: Candidate): boolean {
@@ -165,4 +192,62 @@ export class MultiTimeframePersistenceService {
     for (let i = 0; i < n; i++) workers.push(worker());
     await Promise.all(workers);
   }
+}
+
+/**
+ * P9-UX ADDENDUM — Calcule path quality pour les 5 fenêtres TF
+ * (5/10/15/30/60m) à partir d'une série 1-min native (Binance).
+ */
+function computePathQualityForTfsFromOneMin(
+  candles: Array<{ close: number }>,
+): PathQualityByTf {
+  return summarizePathQuality({
+    tf5m: evaluateWindowPathQuality(candles, 5),
+    tf10m: evaluateWindowPathQuality(candles, 10),
+    tf15m: evaluateWindowPathQuality(candles, 15),
+    tf30m: evaluateWindowPathQuality(candles, 30),
+    tf1h: evaluateWindowPathQuality(candles, 60),
+  });
+}
+
+/**
+ * Variante 5-min série (EODHD) — windowMinutes converti en nombre de
+ * candles 5m via floor(windowMinutes/5).
+ */
+function computePathQualityForTfsFromFiveMin(
+  candles: Array<{ close: number }>,
+): PathQualityByTf {
+  const tfFromCandles = (windowMin: number): PathQualityMetrics | null => {
+    const candlesNeeded = Math.max(1, Math.floor(windowMin / 5));
+    return evaluateWindowPathQuality(candles, candlesNeeded);
+  };
+  return summarizePathQuality({
+    tf5m: tfFromCandles(5),
+    tf10m: tfFromCandles(10),
+    tf15m: tfFromCandles(15),
+    tf30m: tfFromCandles(30),
+    tf1h: tfFromCandles(60),
+  });
+}
+
+function summarizePathQuality(byTf: {
+  tf5m: PathQualityMetrics | null;
+  tf10m: PathQualityMetrics | null;
+  tf15m: PathQualityMetrics | null;
+  tf30m: PathQualityMetrics | null;
+  tf1h: PathQualityMetrics | null;
+}): PathQualityByTf {
+  const dispos = [byTf.tf5m, byTf.tf10m, byTf.tf15m, byTf.tf30m, byTf.tf1h].filter(
+    (m): m is PathQualityMetrics => m !== null,
+  );
+  const overallEfficiency = dispos.length > 0
+    ? dispos.reduce((s, m) => s + m.pathEfficiency, 0) / dispos.length
+    : null;
+  let overallSmoothness: 'smooth' | 'mixed' | 'choppy' | null = null;
+  if (dispos.length > 0) {
+    if (dispos.some((m) => m.smoothnessLabel === 'choppy')) overallSmoothness = 'choppy';
+    else if (dispos.every((m) => m.smoothnessLabel === 'smooth')) overallSmoothness = 'smooth';
+    else overallSmoothness = 'mixed';
+  }
+  return { ...byTf, overallEfficiency, overallSmoothness };
 }

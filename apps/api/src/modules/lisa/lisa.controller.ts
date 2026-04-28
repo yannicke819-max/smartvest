@@ -143,8 +143,11 @@ export class LisaController {
   ) {
     extractUserId(headers);
 
-    const intervalMinutes = this.topGainersScanner.getScanIntervalMinutes();
-    const lastTick = this.topGainersScanner.getLastTickAt();
+    // P9-UX — Cycle per-portfolio depuis DB (cache 30s). Fallback global si
+    // la colonne n'existe pas (migration 0089 pas encore appliquée).
+    const intervalMinutes = await this.topGainersScanner.getCycleMinutes(portfolioId);
+    const lastScanMs = this.topGainersScanner.getLastScanForPortfolio(portfolioId);
+    const lastTick = lastScanMs ? new Date(lastScanMs) : this.topGainersScanner.getLastTickAt();
     let nextTickInSeconds: number;
     if (lastTick) {
       const elapsedMs = Date.now() - lastTick.getTime();
@@ -271,6 +274,18 @@ export class LisaController {
         tf1h: r?.tf1h ?? null,
         persistenceScore: r ? (Number.isNaN(r.persistenceScore) ? null : r.persistenceScore) : null,
         persistenceCount: r?.persistenceCount ?? null,
+        // P9-UX ADDENDUM — path quality / smoothness par TF
+        pathQuality: r && 'pathQuality' in r && r.pathQuality
+          ? {
+              overallEfficiency: r.pathQuality.overallEfficiency,
+              overallSmoothness: r.pathQuality.overallSmoothness,
+              tf5m: r.pathQuality.tf5m,
+              tf10m: r.pathQuality.tf10m,
+              tf15m: r.pathQuality.tf15m,
+              tf30m: r.pathQuality.tf30m,
+              tf1h: r.pathQuality.tf1h,
+            }
+          : null,
       };
     });
 
