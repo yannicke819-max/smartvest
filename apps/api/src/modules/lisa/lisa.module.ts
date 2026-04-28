@@ -3,6 +3,7 @@ import { SupabaseModule } from '../supabase/supabase.module';
 import { PerformanceModule } from '../performance/performance.module';
 import { BotLabModule } from '../bot-lab/bot-lab.module';
 import { LisaController } from './lisa.controller';
+import { AutopilotController } from './autopilot.controller';
 import { LisaService } from './services/lisa.service';
 import { LisaAutopilotService } from './services/lisa-autopilot.service';
 import { DecisionLogService } from './services/decision-log.service';
@@ -48,7 +49,7 @@ import { PersistenceProbabilityService } from './services/persistence-probabilit
 
 @Module({
   imports: [SupabaseModule, PerformanceModule, BotLabModule],
-  controllers: [LisaController],
+  controllers: [LisaController, AutopilotController],
   providers: [
     LisaService,
     LisaAutopilotService,

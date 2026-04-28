@@ -380,34 +380,35 @@ export class LisaService {
     const config = await this.getSessionConfig(userId, portfolioId);
     if (!config) throw new NotFoundException('Session config introuvable — configurer d\'abord');
 
-    // PATCH 4 — Hard-stop budget journalier API.
+    // PATCH 4 + P8-BR — Hard-stop budget journalier API.
     // Avant tout call Claude (~$0.17 Opus), vérifier que le budget configuré
-    // n'est pas déjà dépassé. Si oui → désactive autopilot + throw.
-    // Le check ne s'exécute que si dailyCostBudgetUsd est explicitement fourni
-    // (pas null) — sans budget, comportement legacy (warning UI seulement).
+    // n'est pas déjà dépassé. Si oui → set autopilot_paused_reason +
+    // throw BudgetExceededError. P8-BR : on NE TOUCHE PLUS à autopilot_enabled,
+    // pour permettre la reprise automatique au prochain cycle quand le coût
+    // retombe sous 90% du budget (rollover UTC ou budget bumped). Cf.
+    // lisa-autopilot.service.runAutopilotCycleInner pour la logique de resume.
     const budget = config.daily_cost_budget_usd as number | null | undefined;
     if (budget != null && Number(budget) > 0) {
       const todayCostUsd = await this.apiCostTracker.getTodayTotalUsd();
       if (todayCostUsd >= Number(budget)) {
-        // Désactive autopilot pour éviter les retry boucles (run cron suivant
-        // skippe via autopilot_enabled = false dans runAutopilotCycleInner)
         await this.supabase.getClient()
           .from('lisa_session_configs')
-          .update({ autopilot_enabled: false })
+          .update({ autopilot_paused_reason: 'BUDGET_EXCEEDED' })
           .eq('portfolio_id', portfolioId)
           .then(({ error }) => {
-            if (error) this.logger.warn(`autopilot disable on budget exceeded failed: ${error.message}`);
+            if (error) this.logger.warn(`autopilot pause on budget exceeded failed: ${error.message}`);
           });
 
         await this.decisionLog.append({
           portfolioId,
-          kind: 'autopilot_disabled',
-          summary: `Autopilot désactivé — budget API journalier dépassé : $${todayCostUsd.toFixed(2)} >= $${Number(budget).toFixed(2)}`,
-          rationale: `Le coût Claude cumulé sur la journée dépasse la limite configurée (config.daily_cost_budget_usd). Réactivation manuelle nécessaire après revue. Default behavior PATCH 4 risk-04-adaptive-safetynet-budget.`,
+          kind: 'autopilot_paused',
+          summary: `Autopilot mis en pause — budget API journalier dépassé : $${todayCostUsd.toFixed(2)} >= $${Number(budget).toFixed(2)}`,
+          rationale: `Le coût Claude cumulé sur la journée dépasse la limite configurée (config.daily_cost_budget_usd). Reprise automatique au prochain cycle dès que le coût retombe sous 90% du budget (rollover UTC à minuit OU budget augmenté manuellement). autopilot_enabled reste à true. P8-BR risk-resilience.`,
           payload: {
             reason: 'daily_api_budget_exceeded',
             today_cost_usd: todayCostUsd,
             budget_usd: Number(budget),
+            paused_reason: 'BUDGET_EXCEEDED',
           },
           triggeredBy: 'risk_monitor',
         }).catch((e) => this.logger.warn(`budget log append failed: ${String(e)}`));
