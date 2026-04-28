@@ -5,6 +5,65 @@ Guide de travail pour Claude Code sur ce repo.
 
 ---
 
+## RÈGLE OPÉRATIONNELLE — PERSISTANCE MULTI-TF — P8
+
+P8 ajoute une **dimension qualité** sur le scanner Gainers : avant d'ouvrir une position sur un top-1m gainer, on vérifie que la hausse est **persistante sur plusieurs timeframes** (1m / 5m / 10m / 15m / 30m / 1h) — pas juste un flash.
+
+### Règle métier
+
+```
+persistenceScore = #TF positifs / #TF disponibles  ∈ [0, 1]
+```
+
+- Un TF est "positif" si `(currentPrice - openAtTFAgo) / openAtTFAgo > 0`
+- TF non disponible (provider down, série trop courte, EODHD plan sans 1m) → exclu du denominator
+- Score normalisé sur les TFs disponibles uniquement (denominator dynamique)
+
+**Gate scanner** : `if (persistenceScore < gainers_min_persistence_score) skip`. Default 0.67 (≥ 4/6 TF positifs). Configurable :
+1. `lisa_session_configs.gainers_min_persistence_score` (DB par-portfolio)
+2. `GAINERS_MIN_PERSISTENCE_SCORE` (env global)
+3. Default `0.67`
+
+### Sources de prix multi-TF
+
+| Asset class | Service | Resolution native | TFs derivés |
+|---|---|---|---|
+| Crypto | `BinanceMarketService.getKlines(sym, '1m', 61)` | 1m | 1m, 5m, 10m, 15m, 30m, 1h depuis offsets candles |
+| Equities | `EodhdIntradayService.getCandles(ticker, '5m', 13)` | 5m | 5m, 10m, 15m, 30m, 1h (1m=null, plan EODHD intraday-1m payant) |
+
+Cap concurrence : 5 fetches parallèles par source (rate-limit guard Binance 1200 weight/min, EODHD plan-dependent).
+
+### Endpoint snapshot
+
+```
+GET /lisa/gainers-persistence-snapshot/:portfolioId?topN=20&markets=crypto,us
+```
+
+**Réponse littérale à la question utilisateur** : « 20 valeurs en hausse 1min — combien sont aussi en hausse 5/10/15/30/60min ? ». Renvoie les `tfXm` par symbole + `summary` agrégé (counts par TF) + `persistenceScore`/`persistenceCount`. Cache 30s côté service. Audit append-only dans `gainers_persistence_log` (rétention 7j cron à venir).
+
+### topN configurable — priorité de lecture
+
+1. Query string `?topN=` (override ad-hoc, range 5..100)
+2. `lisa_session_configs.gainers_persistence_top_n` (DB par-portfolio)
+3. `GAINERS_PERSISTENCE_TOP_N` (env global)
+4. Default `20`
+
+### Schema forward-compatible — `paper_trades` (P6 + P8 + P9)
+
+Migration `0086` crée `paper_trades` avec **toutes** les colonnes futures dès maintenant pour éviter ALTER TABLE à chaque PR :
+- P6 logique paper-broker : `entry_price`, `exit_price`, `size_usd`, `stop_loss`, `take_profit`, `status`, `pnl_usd`, `pnl_pct`, `hold_duration_seconds`
+- P8 persistance : `persistence_score_at_entry`, `persistence_count_at_entry`, `tf_changes_at_entry JSONB`
+- P9 ML (forward-compat, peuplé par PR ultérieur) : `features_at_entry JSONB`, `p_win_at_entry`, `outcome_label`, `model_version_at_entry`
+
+### UI — slider topN + summary counters
+
+`GainersStatusTile` (P7) embarque un `PersistencePanel` (P8) avec :
+- Slider `<input type="range" min=5 max=100 step=5>` ; refetch 60s sur changement
+- 6 cellules `summary` : "1m / 5m / 10m / 15m / 30m / 1h" → "20 / 17 / 14 / 12 / 9 / 7" (réponse user)
+- Tableau détaillé top-N × 6 TFs (cellules vert/rouge selon signe)
+
+---
+
 ## RÈGLE OPÉRATIONNELLE — MODES OPÉRATOIRES (3) — P7
 
 P7 introduit un toggle 3-modes opératoires en haut de `/lisa`. La source
