@@ -56,6 +56,25 @@ export class MarketRegimeService {
   }
 
   /**
+   * Re-classifie en mergeant des inputs supplémentaires fetchés tardivement
+   * dans le cycle (ex: newsScore disponible après NewsRankerService, ou
+   * realized_1h après klines 1m). Met à jour le cache + persiste.
+   *
+   * No-op si pas de cache initial — le caller est censé avoir appelé
+   * `getCurrentRegime` avant.
+   */
+  async reclassifyWithExtras(extras: Partial<RegimeInputs>): Promise<RegimeClassification | null> {
+    if (!this.cached) return null;
+    const merged: RegimeInputs = { ...this.cached.inputs, ...extras };
+    const result = classifyTacticalRegime(merged);
+    this.cached = { result, asOf: Date.now(), inputs: merged };
+    void this.persist(result, merged).catch((e) => {
+      this.logger.warn(`[regime] reclassify persist failed (non-blocking): ${String(e).slice(0, 120)}`);
+    });
+    return result;
+  }
+
+  /**
    * Snapshot du régime courant SANS recalcul. Retourne null si pas encore
    * classifié dans le cycle de vie du process. Utile pour les call sites
    * qui veulent juste lire (ex: UI status sans déclencher une classif).

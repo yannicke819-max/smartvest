@@ -569,6 +569,26 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
           relevance: r.scores.final >= 70 ? 'high' : r.scores.final >= 40 ? 'medium' : 'low',
           sentiment: r.sentiment,
         }));
+
+        // P1 — re-classify le régime tactique avec le newsScore enrichi.
+        // NewsRanker scores 0-100, classifier seuil > 7 sur échelle 0-10
+        // → on divise par 10 pour aligner. Top item = max score.final.
+        const topNewsScore = ranked.length > 0 ? ranked[0].scores.final / 10 : null;
+        if (topNewsScore != null && Number.isFinite(topNewsScore)) {
+          const reclassified = await this.marketRegime.reclassifyWithExtras({
+            newsScore: topNewsScore,
+          });
+          if (reclassified && marketSnapshot.tacticalRegime) {
+            marketSnapshot.tacticalRegime = {
+              regime: reclassified.regime,
+              reasons: reclassified.reasons,
+              sizingMultiplier: reclassified.sizingMultiplier,
+              stopLossPct: reclassified.stopLossPct,
+              takeProfitPct: reclassified.takeProfitPct,
+              takeProfitLadderPct: reclassified.takeProfitLadderPct,
+            };
+          }
+        }
       }
     } catch (e) {
       this.logger.warn(`news aggregator failure (non-blocking): ${String(e).slice(0, 200)}`);
