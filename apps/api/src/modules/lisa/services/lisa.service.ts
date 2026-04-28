@@ -51,7 +51,11 @@ import { BinanceLiquidationsService } from './binance-liquidations.service';
 import { ApiCostTrackerService, BudgetExceededError } from './api-cost-tracker.service';
 import { MarketRegimeService } from './market-regime.service';
 import { RedditService } from './reddit.service';
-import { computeAtrPct, computeRealizedVolPct } from '@smartvest/ai-analyst';
+import {
+  computeAtrPct,
+  computeRealizedVolPct,
+  computeRegimeAdjustedDeployment,
+} from '@smartvest/ai-analyst';
 import {
   buildYahooChartUrl,
   buildStooqCsvUrl,
@@ -437,6 +441,32 @@ export class LisaService {
     };
 
     const marketSnapshot = await this.fetchMarketSnapshot();
+
+    // P2-C — Sizing dynamique selon régime risk-on / risk-off.
+    // Ajuste targetDeploymentPct AVANT envoi prompt Lisa :
+    //   - RISK_ON  (VIX<20 ET spread us10y-us2y > 0)  → +5 pp (90 → 95)
+    //   - RISK_OFF (VIX≥20 ET spread us10y-us2y ≤ 0)  → -20 pp (90 → 70)
+    //   - NEUTRAL  (signaux mixtes ou inputs incomplets) → no-op
+    // Aligne le levier de cash deployment sur l'environnement macro :
+    // pousse le déploiement quand la vol implicite est calme + curve
+    // steepening (signal classique appétit risque), réduit en stress.
+    {
+      const baseline = sessionConfig.riskConstraints.targetDeploymentPct;
+      const verdict = computeRegimeAdjustedDeployment(
+        {
+          vix: Number.isFinite(marketSnapshot.vix) ? marketSnapshot.vix : null,
+          us10yYield: Number.isFinite(marketSnapshot.us10yYield) ? marketSnapshot.us10yYield : null,
+          us2yYield: Number.isFinite(marketSnapshot.us2yYield) ? marketSnapshot.us2yYield : null,
+        },
+        baseline,
+      );
+      if (verdict.deltaPct !== 0) {
+        sessionConfig.riskConstraints.targetDeploymentPct = verdict.adjustedDeploymentPct;
+        this.logger.log(
+          `[regime-deployment] ${verdict.regime} (${verdict.reasons.join(', ')}) → targetDeploymentPct ${baseline}% → ${verdict.adjustedDeploymentPct}% (Δ${verdict.deltaPct >= 0 ? '+' : ''}${verdict.deltaPct}pp)`,
+        );
+      }
+    }
 
     // Enrichissement EODHD Premium : calendrier économique + macro +
     // screener (pas dépendants des positions). News fetchée plus bas une
