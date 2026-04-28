@@ -1744,6 +1744,70 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     };
   }
 
+  /**
+   * P2-D — Telemetry P&L journalier vs objectif fixe $100/jour.
+   *
+   *   realized       : somme realized_pnl_usd des positions fermées aujourd'hui (UTC)
+   *   latent         : unrealizedPnlUsd live du portfolio snapshot
+   *   target         : objectif fixe $100 (constante produit)
+   *   achievementPct : (realized + latent) / target × 100, clamp [0, 999]
+   *   drift          : realized + latent - target  (peut être négatif)
+   *
+   * Source de vérité realized = lisa_positions filter `closed_*` aujourd'hui
+   * (pas daily_trading_sessions qui n'est qu'un cache resync). Source de
+   * vérité latent = paperBroker.computeSnapshot (live valuation marketplace).
+   */
+  async getDailyPnl(
+    userId: string,
+    portfolioId: string,
+  ): Promise<{
+    realized: number;
+    latent: number;
+    target: number;
+    achievementPct: number;
+    drift: number;
+  }> {
+    await this.assertPortfolioOwner(userId, portfolioId);
+
+    const TARGET_USD = 100;
+    const dayStartUtc = new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00.000Z').toISOString();
+    const dayEndUtc = new Date(new Date(dayStartUtc).getTime() + 86_400_000).toISOString();
+
+    const [closesRes, snap] = await Promise.all([
+      this.supabase.getClient()
+        .from('lisa_positions')
+        .select('realized_pnl_usd')
+        .eq('portfolio_id', portfolioId)
+        .like('status', 'closed_%')
+        .gte('exit_timestamp', dayStartUtc)
+        .lt('exit_timestamp', dayEndUtc)
+        .not('exit_timestamp', 'is', null),
+      this.paperBroker.computeSnapshot(portfolioId),
+    ]);
+
+    let realized = 0;
+    for (const c of closesRes.data ?? []) {
+      const pnl = parseFloat((c.realized_pnl_usd as string | null) ?? '0');
+      if (Number.isFinite(pnl)) realized += pnl;
+    }
+    const latent = parseFloat(snap.unrealizedPnlUsd ?? '0');
+    const safeLatent = Number.isFinite(latent) ? latent : 0;
+
+    const total = realized + safeLatent;
+    const achievementPctRaw = (total / TARGET_USD) * 100;
+    const achievementPct = Math.max(0, Math.min(999, Number.isFinite(achievementPctRaw) ? achievementPctRaw : 0));
+    const drift = total - TARGET_USD;
+
+    const round2 = (n: number) => Math.round(n * 100) / 100;
+    return {
+      realized: round2(realized),
+      latent: round2(safeLatent),
+      target: TARGET_USD,
+      achievementPct: round2(achievementPct),
+      drift: round2(drift),
+    };
+  }
+
   async getSnapshotHistory(userId: string, portfolioId: string, windowDays: number) {
     await this.assertPortfolioOwner(userId, portfolioId);
     const since = new Date(Date.now() - windowDays * 86_400_000).toISOString();
