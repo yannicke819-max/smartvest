@@ -153,21 +153,23 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
   const baselineValue = inceptionCapital ?? firstSnapshotValue;
   const periodReturn = baselineValue > 0 ? ((latestValue - baselineValue) / baselineValue) * 100 : 0;
 
-  // Y-axis : range auto mais on garde au moins 2% de padding pour ne pas
-  // écraser visuellement les petites variations (cas typique après peu de
-  // mouvements sur un portefeuille 10k).
+  // P10-FIX — Y-axis ancré sur la baseline (capital initial).
+  // Avant : auto-scale + 15% padding → courbe désaxée, baseline 10000 invisible
+  //         si la fenêtre observée reste collée au capital initial. User
+  //         report : drawdown 0.12% lu visuellement comme chute massive.
+  // Après : domain garanti d'inclure la baseline, padding multiplicatif
+  //         autour [baseline*0.998 .. baseline*1.002] minimum.
   const yDomain = useMemo((): [number | 'auto', number | 'auto'] => {
     if (chartData.length === 0) return ['auto', 'auto'];
     const values = chartData.map((d) => d.value);
-    // Inclure baseline dans le domain pour que la ligne "Départ" soit
-    // toujours visible, même si la courbe est entièrement au-dessus ou
-    // en-dessous du capital initial.
-    if (inceptionCapital != null) values.push(inceptionCapital);
-    const min = Math.min(...values);
-    const max = Math.max(...values);
-    const range = max - min;
-    const padding = Math.max(range * 0.15, max * 0.002);
-    return [Math.max(0, min - padding), max + padding];
+    const dataMin = Math.min(...values);
+    const dataMax = Math.max(...values);
+    const baseline = inceptionCapital ?? 10000;
+    // Lower bound : min(baseline, dataMin) * 0.998
+    // Upper bound : max(baseline, dataMax) * 1.002
+    const lower = Math.min(baseline, dataMin) * 0.998;
+    const upper = Math.max(baseline, dataMax) * 1.002;
+    return [Math.max(0, lower), upper];
   }, [chartData, inceptionCapital]);
 
   // Tick formatter qui adapte la précision selon l'amplitude des valeurs.
@@ -271,15 +273,16 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
               />
               <ReferenceLine
                 y={baselineValue}
-                stroke="currentColor"
+                stroke="#94a3b8"
                 strokeDasharray="4 4"
-                opacity={0.3}
+                strokeWidth={1.5}
+                opacity={0.6}
                 label={{
-                  value: inceptionCapital != null ? 'Capital initial' : 'Départ',
+                  value: `Baseline ${formatBaselineLabel(baselineValue)}`,
                   position: 'right',
-                  fontSize: 9,
-                  fill: 'currentColor',
-                  opacity: 0.5,
+                  fontSize: 10,
+                  fill: '#94a3b8',
+                  opacity: 0.9,
                 }}
               />
               <Line
@@ -296,4 +299,14 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
       )}
     </div>
   );
+}
+
+/**
+ * P10-FIX — Format compact pour le label baseline ("10.0k", "100k", "1.0M").
+ */
+function formatBaselineLabel(v: number): string {
+  const abs = Math.abs(v);
+  if (abs >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1000) return `${(v / 1000).toFixed(1)}k`;
+  return v.toFixed(0);
 }

@@ -248,7 +248,9 @@ export class LisaService {
       risk_constraints: pick('risk_constraints', 'riskConstraints', existing?.risk_constraints ?? {}),
       include_asset_classes: pick('include_asset_classes', 'includeAssetClasses', existing?.include_asset_classes ?? null),
       exclude_asset_classes: pick('exclude_asset_classes', 'excludeAssetClasses', existing?.exclude_asset_classes ?? null),
-      anti_consensus_strength: pick('anti_consensus_strength', 'antiConsensusStrength', existing?.anti_consensus_strength ?? 7),
+      // P10-FIX — Default seed bumped 7→8/10 pour briser la monoculture
+      // safe-haven (or, défense). 8+ force la rotation hors consensus dominant.
+      anti_consensus_strength: pick('anti_consensus_strength', 'antiConsensusStrength', existing?.anti_consensus_strength ?? 8),
       max_theses: pick('max_theses', 'maxTheses', existing?.max_theses ?? 5),
       enable_crypto: pick('enable_crypto', 'enableCrypto', existing?.enable_crypto ?? true),
       enable_derivatives: pick('enable_derivatives', 'enableDerivatives', existing?.enable_derivatives ?? false),
@@ -1484,7 +1486,17 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     //    Gate STRICT : pas de leverage implicite, pas de cash négatif.
     const snapshot = await this.paperBroker.computeSnapshot(portfolioId);
     let availableCash = new Decimal(snapshot.cashUsd);
-    const CASH_BUFFER_USD = new Decimal('50'); // marge de sécurité (slippage + frais)
+    // P10-FIX — Buffer absolu USD réduit $50 → $20 pour laisser passer les
+    // rotations defense (NOC, GDX, etc. skippées sur 3 thèses live 28/04).
+    // Env override `CASH_BUFFER_USD_OVERRIDE` permet de tuner runtime sans
+    // redeploy. Justification : un buffer absolu plus permissif laisse
+    // déployer plus de capital tout en gardant safety contre slippage/fees.
+    const cashBufferOverride = this.config.get<string>('CASH_BUFFER_USD_OVERRIDE');
+    const CASH_BUFFER_USD = new Decimal(
+      cashBufferOverride && Number.isFinite(parseFloat(cashBufferOverride))
+        ? cashBufferOverride
+        : '20',
+    );
 
     // Cap maxOpenPositions — garde-fou utilisateur (default 10, configurable
     // dans risk_constraints). Sans ce check, l'auto-approve pouvait ouvrir

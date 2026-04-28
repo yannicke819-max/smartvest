@@ -124,7 +124,8 @@ export default function LisaPage() {
 
   const [profile, setProfile] = useState<SessionProfile>('sniper_mode');
   const [capital, setCapital] = useState('10000');
-  const [antiConsensus, setAntiConsensus] = useState(9);
+  // P10-FIX — Default seed 8 (aligné avec backend). Cassé monoculture safe-haven.
+  const [antiConsensus, setAntiConsensus] = useState(8);
   const [enableCrypto, setEnableCrypto] = useState(true);
   const [autopilotEnabled, setAutopilotEnabled] = useState(false);
   const [autopilotCycleMin, setAutopilotCycleMin] = useState(15);
@@ -591,7 +592,10 @@ export default function LisaPage() {
           </div>
 
           <div className="space-y-1.5">
-            <label className="block text-xs font-medium">
+            <label
+              className="block text-xs font-medium"
+              title="0 = suit le consensus dominant · 8+ = force la rotation hors consensus, casse la monoculture (safe-haven, mono-thématique). Default 8 (P10-FIX)."
+            >
               Anti-consensus strength : {antiConsensus} / 10
             </label>
             <input
@@ -601,9 +605,10 @@ export default function LisaPage() {
               value={antiConsensus}
               onChange={(e) => setAntiConsensus(parseInt(e.target.value, 10))}
               className="w-full"
+              aria-label="Anti-consensus strength"
             />
             <p className="text-[10px] text-muted-foreground">
-              0 = suit consensus · 10 = maximum contrarian
+              0 = suit consensus · <strong>8+ = force rotation hors consensus dominant</strong>, casse mono-thématique
             </p>
           </div>
 
