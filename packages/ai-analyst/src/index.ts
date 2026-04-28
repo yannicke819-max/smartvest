@@ -19,6 +19,7 @@ export * from './strategies/universes';
 export * from './strategies/rsi-prefilter';
 export * from './strategies/session-windows';
 export * from './strategies/proposal-source-routing';
+export * from './strategies/top-gainers-filter';
 export * from './backtest/engine';
 export * from './backtest/metrics';
 export * from './backtest/runner';
