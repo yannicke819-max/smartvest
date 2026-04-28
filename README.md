@@ -311,6 +311,22 @@ MAX_CONCURRENT_REBOUND_POSITIONS=5
 
 Avant de déployer du capital significatif sur la stratégie rebound-tp, valider l'expectancy via un backtest historique.
 
+#### Lancer depuis l'UI GitHub (recommandé, P3-B.2)
+
+1. Ouvre **GitHub → Actions → Backtest Rebound → Run workflow**
+2. Sélectionne les inputs (defaults : `both`, 2 ans, `default`, auto-tune `true`)
+3. Clique **Run workflow** — durée ~5-10 min
+4. Le verdict GO/NO-GO + métriques apparaissent directement dans le **Job summary** (pas besoin de télécharger l'artifact)
+5. Historique longitudinal : table `backtest_runs` Supabase
+
+Pré-requis Settings → Secrets and variables → Actions :
+- `EODHD_API_KEY` (clé EODHD pour fetch OHLCV)
+- `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` (insert row `backtest_runs`)
+
+Le workflow fail-fast au step `Env check` si un secret manque, avec message explicite indiquant lequel ajouter.
+
+#### Lancer en local (alternative)
+
 ```bash
 # Run par défaut (SP500 + NASDAQ100, 2 ans glissants, cfg default)
 EODHD_API_KEY=... npm run backtest:rebound -w @smartvest/ai-analyst
