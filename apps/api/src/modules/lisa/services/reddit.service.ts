@@ -35,6 +35,24 @@ export class RedditService {
   private readonly cache: Map<string, { data: EodhdNewsItem[]; asOf: number }> = new Map();
   private readonly CACHE_MS = 10 * 60 * 1000; // 10 min (Reddit rate limit strict)
 
+  /**
+   * P1 PR E — Rolling history des engagements pour computing redditSpikeSigma.
+   *
+   * Chaque appel `fetchHotPosts` push la somme des scores des posts du
+   * cycle dans cet historique. Sigma = (current - mean) / stddev, calculé
+   * sur les N derniers samples.
+   *
+   * Capacité 24 (≈ 4h à 1 cycle / 10min cache). En mémoire, perdu au
+   * redeploy — la sigma redevient null pendant les 10 premiers cycles
+   * post-redeploy (insufficient samples), puis reprend.
+   *
+   * Pour une sigma plus robuste cross-redeploy, persister dans une table
+   * `reddit_engagement_history` est une PR future.
+   */
+  private readonly engagementHistory: number[] = [];
+  private readonly ENGAGEMENT_HISTORY_MAX = 24;
+  private readonly ENGAGEMENT_MIN_SAMPLES_FOR_SIGMA = 10;
+
   // Tickers communs détectables — on évite de matcher des mots de 3 lettres
   // génériques (THE, AND, FOR…). Mapping élargi côté NewsRanker SECTOR_MAP.
   private static readonly KNOWN_TICKERS = new Set([
@@ -81,7 +99,61 @@ export class RedditService {
     });
     const out = all.slice(0, limit);
     this.cache.set(cacheKey, { data: out, asOf: Date.now() });
+
+    // P1 PR E — record engagement (somme des scores) pour rolling sigma.
+    // Note : ne push QUE si on a vraiment fetché (cache hit ne re-push pas).
+    this.recordEngagement(out);
+
     return out;
+  }
+
+  /**
+   * P1 PR E — Push la somme des scores des posts dans l'historique
+   * d'engagement (capped à ENGAGEMENT_HISTORY_MAX). Ignoré si items vide.
+   */
+  private recordEngagement(items: EodhdNewsItem[]): void {
+    if (items.length === 0) return;
+    const totalScore = items.reduce((sum, item) => {
+      const scoreTag = item.tags.find((t) => t.startsWith('score:'));
+      const score = scoreTag ? parseInt(scoreTag.slice(6), 10) : 0;
+      return sum + (Number.isFinite(score) && score > 0 ? score : 0);
+    }, 0);
+    this.engagementHistory.push(totalScore);
+    if (this.engagementHistory.length > this.ENGAGEMENT_HISTORY_MAX) {
+      this.engagementHistory.shift();
+    }
+  }
+
+  /**
+   * P1 PR E — Z-score de l'engagement courant vs rolling baseline.
+   *
+   * Sigma = (current - mean(history)) / stddev(history).
+   *
+   * Retourne null si :
+   *  - Insufficient samples (<10)
+   *  - Stddev = 0 (tous les samples identiques, division par zéro)
+   *
+   * Le classifier teste `redditSpikeSigma > 5` pour trigger NEWS_SHOCK.
+   */
+  getSpikeSigma(): number | null {
+    if (this.engagementHistory.length < this.ENGAGEMENT_MIN_SAMPLES_FOR_SIGMA) {
+      return null;
+    }
+    const current = this.engagementHistory[this.engagementHistory.length - 1];
+    const baseline = this.engagementHistory.slice(0, -1); // exclut le sample courant
+    if (baseline.length === 0) return null;
+    const mean = baseline.reduce((s, x) => s + x, 0) / baseline.length;
+    const variance = baseline.reduce((s, x) => s + (x - mean) * (x - mean), 0) / baseline.length;
+    const stddev = Math.sqrt(variance);
+    if (stddev === 0) return null;
+    return (current - mean) / stddev;
+  }
+
+  /**
+   * P1 PR E — Test helper / admin reset.
+   */
+  resetEngagementHistory(): void {
+    this.engagementHistory.length = 0;
   }
 
   // ────────────────────────────────────────────────────────────────────

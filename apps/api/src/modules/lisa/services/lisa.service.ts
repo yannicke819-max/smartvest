@@ -50,6 +50,7 @@ import { EodhdOptionsService } from './eodhd-options.service';
 import { BinanceLiquidationsService } from './binance-liquidations.service';
 import { ApiCostTrackerService, BudgetExceededError } from './api-cost-tracker.service';
 import { MarketRegimeService } from './market-regime.service';
+import { RedditService } from './reddit.service';
 import { computeAtrPct, computeRealizedVolPct } from '@smartvest/ai-analyst';
 import {
   buildYahooChartUrl,
@@ -133,6 +134,9 @@ export class LisaService {
     private readonly apiCostTracker: ApiCostTrackerService,
     // P1 — classifier de régime tactique
     private readonly marketRegime: MarketRegimeService,
+    // P1 PR E — direct access pour redditSpikeSigma (déjà injecté via newsAggregator
+    // mais on a besoin du sigma rolling explicit, pas le résultat ranked)
+    private readonly redditService: RedditService,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
     if (anthropicKey) {
@@ -574,14 +578,24 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
           sentiment: r.sentiment,
         }));
 
-        // P1 — re-classify le régime tactique avec le newsScore enrichi.
+        // P1 — re-classify le régime tactique avec le newsScore enrichi
+        // + reddit spike sigma (PR E). Le sigma est null tant que l'history
+        // RedditService n'a pas accumulé 10+ samples (post-redeploy).
         // NewsRanker scores 0-100, classifier seuil > 7 sur échelle 0-10
         // → on divise par 10 pour aligner. Top item = max score.final.
         const topNewsScore = ranked.length > 0 ? ranked[0].scores.final / 10 : null;
+        const redditSpikeSigma = this.redditService.getSpikeSigma();
+
+        const extras: { newsScore?: number; redditSpikeSigma?: number } = {};
         if (topNewsScore != null && Number.isFinite(topNewsScore)) {
-          const reclassified = await this.marketRegime.reclassifyWithExtras({
-            newsScore: topNewsScore,
-          });
+          extras.newsScore = topNewsScore;
+        }
+        if (redditSpikeSigma != null && Number.isFinite(redditSpikeSigma)) {
+          extras.redditSpikeSigma = redditSpikeSigma;
+        }
+
+        if (Object.keys(extras).length > 0) {
+          const reclassified = await this.marketRegime.reclassifyWithExtras(extras);
           if (reclassified && marketSnapshot.tacticalRegime) {
             marketSnapshot.tacticalRegime = {
               regime: reclassified.regime,
