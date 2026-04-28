@@ -102,9 +102,16 @@ describe('ThesisCategory preprocess', () => {
     if (r.ok) expect(r.data).toBe('event_driven');
   });
 
-  it('still rejects truly nonsense values (preserves enum strictness)', () => {
-    expect(parse('definitely_not_a_category').ok).toBe(false);
-    expect(parse('xyz').ok).toBe(false);
+  // P5-LLM ext — Permissive fallback : tout string inconnu → 'flow_timing'
+  // (préfère ouvrir le pipeline avec valeur safe vs throw 400 prod).
+  it("permissive fallback : 'tail_hedge' / 'capitulation' / 'dry_powder' → 'flow_timing'", () => {
+    expect((parse('tail_hedge') as { ok: true; data: string }).data).toBe('flow_timing');
+    expect((parse('capitulation') as { ok: true; data: string }).data).toBe('flow_timing');
+    expect((parse('dry_powder') as { ok: true; data: string }).data).toBe('flow_timing');
+    expect((parse('rotation') as { ok: true; data: string }).data).toBe('flow_timing');
+    expect((parse('barbell') as { ok: true; data: string }).data).toBe('flow_timing');
+    expect((parse('definitely_not_a_category') as { ok: true; data: string }).data).toBe('flow_timing');
+    expect((parse('xyz') as { ok: true; data: string }).data).toBe('flow_timing');
   });
 
   it('still rejects non-string types', () => {

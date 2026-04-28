@@ -121,10 +121,22 @@ const ASSET_CLASS_PREFIXES = [
   'options', 'option', 'derivatives', 'derivative',
 ];
 
+const THESIS_CATEGORY_CANONICAL = [
+  'hidden_gem',
+  'turnaround',
+  'flow_timing',
+  'watchlist',
+  'contrarian',
+  'mean_reversion',
+  'event_driven',
+] as const;
+
 export const ThesisCategory = z.preprocess(
   (v) => {
     if (typeof v !== 'string') return v;
     const normalized = v.trim().toLowerCase();
+    // Canonical values pass-through FIRST (avant les fallbacks)
+    if ((THESIS_CATEGORY_CANONICAL as readonly string[]).includes(normalized)) return normalized;
     if (CATEGORY_ALIASES[normalized]) return CATEGORY_ALIASES[normalized];
     // Asset class fallback : "equity_us_small", "commodities_metals_precious",
     // "crypto_bitcoin" → flow_timing (le LLM a mis l'asset class dans category,
@@ -132,7 +144,12 @@ export const ThesisCategory = z.preprocess(
     for (const prefix of ASSET_CLASS_PREFIXES) {
       if (normalized.startsWith(prefix)) return 'flow_timing';
     }
-    return normalized;
+    // P5-LLM ext — Permissive final fallback : tout autre string (hedge,
+    // tail_hedge, dry_powder, capitulation, rotation, barbell, defensive,
+    // etc.) → flow_timing. Préfère un mapping permissif vs un 400 prod
+    // qui bloque tout le cycle. Le decision_log proposal_generated capture
+    // déjà la thèse complète pour audit.
+    return 'flow_timing';
   },
   z.enum([
     'hidden_gem',       // pépite cachée, sous-couverte
@@ -167,14 +184,71 @@ export type ThesisCategory = 'hidden_gem' | 'turnaround' | 'flow_timing' | 'watc
  *
  * Cf. PATCH 5 risk-05-stop-by-thesis-kind.
  */
-export const ThesisKind = z.enum([
-  'momentum',
-  'mean_reversion',
-  'breakout',
-  'event',
-  'macro_hedge',
-]);
-export type ThesisKind = z.infer<typeof ThesisKind>;
+/**
+ * P5-LLM ext — ThesisKind preprocess : Lisa LLM utilise parfois d'autres
+ * mots clés (trend, hedge, tail_hedge, catalyst, breakout_long...) au lieu
+ * des 5 valeurs canoniques. Pattern cohérent avec ThesisCategory.
+ * Permissive fallback : 'momentum' (le moins contraignant côté ATR multiplier).
+ */
+const THESIS_KIND_ALIASES: Record<string, 'momentum' | 'mean_reversion' | 'breakout' | 'event' | 'macro_hedge'> = {
+  // momentum aliases
+  'trend': 'momentum',
+  'trend_following': 'momentum',
+  'long_momentum': 'momentum',
+  'directional': 'momentum',
+  // mean reversion aliases
+  'mean-reversion': 'mean_reversion',
+  'meanreversion': 'mean_reversion',
+  'reversion': 'mean_reversion',
+  'mean': 'mean_reversion',
+  'reversal': 'mean_reversion',
+  'oversold_bounce': 'mean_reversion',
+  'capitulation': 'mean_reversion',
+  // breakout aliases
+  'break': 'breakout',
+  'break_out': 'breakout',
+  'break-out': 'breakout',
+  'range_break': 'breakout',
+  // event-driven aliases
+  'event_driven': 'event',
+  'event-driven': 'event',
+  'eventdriven': 'event',
+  'catalyst': 'event',
+  'catalyst_driven': 'event',
+  'news': 'event',
+  'earnings': 'event',
+  // macro_hedge aliases
+  'hedge': 'macro_hedge',
+  'tail_hedge': 'macro_hedge',
+  'tail-hedge': 'macro_hedge',
+  'tailhedge': 'macro_hedge',
+  'safe_haven': 'macro_hedge',
+  'safehaven': 'macro_hedge',
+  'safe-haven': 'macro_hedge',
+  'defensive': 'macro_hedge',
+  'macro': 'macro_hedge',
+};
+
+export const ThesisKind = z.preprocess(
+  (v) => {
+    if (typeof v !== 'string') return v;
+    const normalized = v.trim().toLowerCase();
+    if (THESIS_KIND_ALIASES[normalized]) return THESIS_KIND_ALIASES[normalized];
+    // Permissive fallback : value inconnue → 'momentum' (default safe).
+    // Évite les 400 cascade post-preprocess category fix.
+    const canonical = ['momentum', 'mean_reversion', 'breakout', 'event', 'macro_hedge'];
+    if (canonical.includes(normalized)) return normalized;
+    return 'momentum';
+  },
+  z.enum([
+    'momentum',
+    'mean_reversion',
+    'breakout',
+    'event',
+    'macro_hedge',
+  ]),
+);
+export type ThesisKind = 'momentum' | 'mean_reversion' | 'breakout' | 'event' | 'macro_hedge';
 
 /**
  * PATCH 5 — Multiplicateurs ATR par type de thèse.
