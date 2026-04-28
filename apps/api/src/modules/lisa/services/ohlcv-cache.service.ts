@@ -18,6 +18,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../supabase/supabase.service';
+import { aggregateActiveWatchlists } from '@smartvest/ai-analyst';
 
 interface EodhdEodBar {
   date: string;
@@ -218,25 +219,71 @@ export class OhlcvCacheService {
   }
 
   /**
-   * Récupère la liste de tickers de la watchlist active.
-   * Lit `watchlist_universe` table via le nom env `REBOUND_UNIVERSE`
-   * (default 'sp500'). Fallback TS constants si DB inaccessible.
+   * P3-C → P4-A — Récupère la liste de tickers actifs.
+   *
+   * Modes :
+   *   - Si env `REBOUND_UNIVERSE` set à un nom unique : behaviour P3-C
+   *     (lit la row correspondante, ignore les session_window).
+   *   - Sinon (mode P4-A H24) : aggrège TOUTES les watchlists dont la
+   *     fenêtre session_open_utc/session_close_utc inclut `now`.
+   *     Permet la couverture multi-bourses (Asie nuit, Europe matin,
+   *     US après-midi) sur un seul cron tick.
+   *
+   * Fallback TS si DB inaccessible.
    */
-  async getActiveUniverse(): Promise<string[]> {
-    const name = this.config.get<string>('REBOUND_UNIVERSE') ?? 'sp500';
-    const { data, error } = await this.supabase
+  async getActiveUniverse(now: Date = new Date()): Promise<string[]> {
+    const explicitName = this.config.get<string>('REBOUND_UNIVERSE');
+
+    // Mode legacy : single watchlist par nom (P3-C compat).
+    if (explicitName && explicitName.length > 0) {
+      const { data, error } = await this.supabase
+        .getClient()
+        .from('watchlist_universe')
+        .select('tickers')
+        .eq('name', explicitName)
+        .maybeSingle();
+      if (error) {
+        this.logger.warn(`watchlist_universe ${explicitName} fetch failed: ${error.message}`);
+      }
+      const tickers = (data?.tickers as string[] | undefined) ?? null;
+      if (tickers && tickers.length > 0) return tickers;
+      return fallbackTsUniverse(explicitName);
+    }
+
+    // Mode P4-A : aggrège watchlists actives.
+    const { data: rows, error } = await this.supabase
       .getClient()
       .from('watchlist_universe')
-      .select('tickers')
-      .eq('name', name)
-      .maybeSingle();
+      .select('name, exchange, session_open_utc, session_close_utc, tickers');
+
     if (error) {
-      this.logger.warn(`watchlist_universe ${name} fetch failed: ${error.message}`);
+      this.logger.warn(`watchlist_universe fetch all failed: ${error.message}`);
+      return fallbackTsUniverse('sp500');
     }
-    const tickers = (data?.tickers as string[] | undefined) ?? null;
-    if (tickers && tickers.length > 0) return tickers;
-    // Fallback TS constant
-    return fallbackTsUniverse(name);
+
+    const watchlists = (rows ?? []).map((r) => ({
+      name: r.name as string,
+      exchange: (r.exchange as string | null) ?? 'US',
+      sessionOpenUtc: r.session_open_utc as string | null,
+      sessionCloseUtc: r.session_close_utc as string | null,
+      tickers: (r.tickers as string[] | null) ?? [],
+    }));
+
+    // Fallback US si aucun row n'a de session window définie (DB pas encore migrée 0081)
+    const usFallback = watchlists.find((w) => w.name === 'sp500')?.tickers
+      ?? fallbackTsUniverse('sp500');
+
+    const { active, activeExchanges } = aggregateActiveWatchlists(
+      watchlists,
+      now,
+      usFallback,
+    );
+    if (activeExchanges.length > 0) {
+      this.logger.debug(
+        `[ohlcv-cache] active exchanges @${now.toISOString()}: ${activeExchanges.join(', ')} (${active.length} tickers)`,
+      );
+    }
+    return active;
   }
 
   private async getLastCachedDate(ticker: string): Promise<string | null> {
