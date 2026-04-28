@@ -3129,7 +3129,23 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     const targetExtrapolatedPct = targetPerDay * 7;
     const realised = metrics.netReturn7dPct;
 
-    // Règle HORS_TRAJECTOIRE : return négatif OU coûts > 50% gains
+    // Règle HORS_TRAJECTOIRE : drawdown 7d < seuil OU coûts > seuil_costs
+    //
+    // P0-D — incident 28/04 06:11+ UTC : avec `realised < 0` strict, un
+    // drawdown -0.01% (bruit) déclenchait HORS_TRAJECTOIRE → bot bloqué
+    // 6h sur 1 position latente, P&L 0 → impossible d'atteindre $100/j.
+    //
+    // Nouveau : seuil configurable via env, default -0.5% (drift normal
+    // accepté, vrai drawdown >0.5% déclenche). cost share threshold
+    // configurable aussi (default 0.5 = 50% pour préserver le sens
+    // original du guard).
+    const drawdownThresholdPct = Number(
+      this.config.get<string>('HORS_TRAJ_DRAWDOWN_THRESHOLD_PCT') ?? '-0.5',
+    );
+    const costShareThreshold = Number(
+      this.config.get<string>('HORS_TRAJ_COST_SHARE_THRESHOLD') ?? '0.5',
+    );
+
     const bruteGain = realised; // proxy — 7d return net suffit ici
     const costShare =
       metrics.avgDailyCostUsd7d !== null && bruteGain > 0
@@ -3137,14 +3153,36 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         : 0;
 
     let status: TrajectoryStatus;
-    if (realised < 0 || costShare > 0.5) {
+    let trigger: string | null = null;
+    if (realised < drawdownThresholdPct) {
       status = 'HORS_TRAJECTOIRE';
+      trigger = `realised=${realised.toFixed(3)}% < drawdown_threshold=${drawdownThresholdPct}%`;
+    } else if (costShare > costShareThreshold) {
+      status = 'HORS_TRAJECTOIRE';
+      trigger = `cost_share=${(costShare * 100).toFixed(1)}% > threshold=${(costShareThreshold * 100).toFixed(0)}%`;
     } else if (realised >= targetExtrapolatedPct * 1.1) {
       status = 'EN_AVANCE';
     } else if (realised >= targetExtrapolatedPct * 0.8) {
       status = 'DANS_LE_PLAN';
     } else {
       status = 'EN_RETARD';
+    }
+
+    // P0-D — diagnostic log INFO avec valeurs exactes (utile post-incident
+    // 28/04 où on voyait `HORS_TRAJECTOIRE` répété sans connaître pourquoi).
+    // Niveau log dépend du status :
+    //   - HORS_TRAJECTOIRE : log INFO (condition rare, on veut la voir)
+    //   - autres : log DEBUG (cycle nominal, pas de bruit)
+    const msg =
+      `[trajectory] status=${status} realised_7d=${realised.toFixed(3)}% ` +
+      `target_7d=${targetExtrapolatedPct.toFixed(3)}% ` +
+      `cost_share=${(costShare * 100).toFixed(1)}% ` +
+      `thresholds(drawdown=${drawdownThresholdPct}%, cost=${(costShareThreshold * 100).toFixed(0)}%)` +
+      (trigger ? ` TRIGGER=${trigger}` : '');
+    if (status === 'HORS_TRAJECTOIRE') {
+      this.logger.log(msg);
+    } else {
+      this.logger.debug(msg);
     }
 
     return { status, targetExtrapolatedPct };
