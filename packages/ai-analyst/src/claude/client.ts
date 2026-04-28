@@ -30,6 +30,17 @@ export interface ClaudeCallOptions {
   maxTokens?: number;
   /** @deprecated temperature n'est plus supporté par claude-opus-4-7+ */
   temperature?: number;
+  /** P0-A — Override per-call du budget journalier. Permet au caller de
+   *  relire `lisa_session_configs.daily_cost_budget_usd` à chaque cycle.
+   *  Si undefined, fallback sur le budget constructor du LlmRouter. */
+  budgetUsd?: number;
+  /** P0-A — Override per-call du flag soft-budget. À 100% du budget :
+   *  - `true` (default DB) : fallback Haiku + warn loggué
+   *  - `false` : throw `BudgetExceededError`
+   *  Si undefined, fallback sur la config constructor du LlmRouter
+   *  (par défaut `false` pour préserver le comportement legacy PR #15
+   *  des call sites qui n'ont pas migré). */
+  forceContinue?: boolean;
 }
 
 export interface ClaudeCallResult {
@@ -72,6 +83,8 @@ export class LisaClaudeClient {
       userMessage,
       task = 'thesis_generation',
       maxTokens = 16000,
+      budgetUsd,
+      forceContinue,
     } = options;
 
     const { cacheable, profileSpecific } = buildLisaSystemPrompt(profile);
@@ -91,16 +104,25 @@ export class LisaClaudeClient {
       },
     ];
 
-    const { response } = await this.router.call(task, {
-      max_tokens: maxTokens,
-      system: systemBlocks as unknown as Anthropic.TextBlockParam[],
-      messages: [
-        {
-          role: 'user',
-          content: userMessage,
-        },
-      ],
-    });
+    const { response } = await this.router.call(
+      task,
+      {
+        max_tokens: maxTokens,
+        system: systemBlocks as unknown as Anthropic.TextBlockParam[],
+        messages: [
+          {
+            role: 'user',
+            content: userMessage,
+          },
+        ],
+      },
+      // P0-A — propagation per-call (budget + force_continue) lus depuis
+      // lisa_session_configs côté caller à chaque cycle.
+      {
+        ...(budgetUsd !== undefined ? { budgetUsd } : {}),
+        ...(forceContinue !== undefined ? { forceContinue } : {}),
+      },
+    );
 
     // Extract text content (Claude can return multiple content blocks)
     const rawText = response.content
@@ -144,6 +166,8 @@ export class LisaClaudeClient {
       task = 'thesis_generation',
       maxTokens = 16000,
       tool,
+      budgetUsd,
+      forceContinue,
     } = options;
 
     const { cacheable, profileSpecific } = buildLisaSystemPrompt(profile);
@@ -152,13 +176,20 @@ export class LisaClaudeClient {
       { type: 'text' as const, text: profileSpecific },
     ];
 
-    const { response } = await this.router.call(task, {
-      max_tokens: maxTokens,
-      system: systemBlocks as unknown as Anthropic.TextBlockParam[],
-      tools: [tool] as unknown as Anthropic.Tool[],
-      tool_choice: { type: 'tool', name: tool.name },
-      messages: [{ role: 'user', content: userMessage }],
-    });
+    const { response } = await this.router.call(
+      task,
+      {
+        max_tokens: maxTokens,
+        system: systemBlocks as unknown as Anthropic.TextBlockParam[],
+        tools: [tool] as unknown as Anthropic.Tool[],
+        tool_choice: { type: 'tool', name: tool.name },
+        messages: [{ role: 'user', content: userMessage }],
+      },
+      {
+        ...(budgetUsd !== undefined ? { budgetUsd } : {}),
+        ...(forceContinue !== undefined ? { forceContinue } : {}),
+      },
+    );
 
     const toolBlock = response.content.find(
       (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
