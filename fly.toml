@@ -15,7 +15,7 @@
 # pour que la connexion Binance fonctionne — `iad` (Washington DC) ne
 # convient pas.
 
-app = 'smartvest-w7jpuw'
+app = 'smartvest'
 primary_region = 'cdg'
 
 [build]
