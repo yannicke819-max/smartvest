@@ -15,3 +15,6 @@ export * from './simulation';
 export * from './llm';
 export * from './regime';
 export * from './strategies/rebound-tp';
+export * from './backtest/engine';
+export * from './backtest/metrics';
+export * from './backtest/runner';

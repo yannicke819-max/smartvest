@@ -307,6 +307,33 @@ REBOUND_WATCHLIST=AAPL.US,MSFT.US,NVDA.US,...   # CSV, override default
 MAX_CONCURRENT_REBOUND_POSITIONS=5
 ```
 
+### Backtest validation (P3-B)
+
+Avant de déployer du capital significatif sur la stratégie rebound-tp, valider l'expectancy via un backtest historique.
+
+```bash
+# Run par défaut (SP500 + NASDAQ100, 2 ans glissants, cfg default)
+EODHD_API_KEY=... npm run backtest:rebound -w @smartvest/ai-analyst
+
+# Args explicites + auto-tune
+EODHD_API_KEY=... SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
+  npm run backtest:rebound -w @smartvest/ai-analyst -- \
+    --universe=both --start=2024-04-28 --end=2026-04-28 --cfg=default --auto-tune
+```
+
+**Sortie** :
+- `tmp/backtest-rebound-<ts>.json` — payload complet (variants, metrics, verdict)
+- `tmp/backtest-rebound-<ts>.md` — rapport humain GO/NO-GO + breakdown
+- INSERT row dans `backtest_runs` (si SUPABASE_* setés)
+
+**Verdict** : `GO` si hit-rate (TP1+TP2+TP3) ≥ 55% ET expectancy > 0. Sinon `NO-GO`.
+
+**Auto-tune** : si NO-GO et `--auto-tune`, run 3 variantes alt (`rsi_25`, `vol_2_0`, `dd_20`) et sélectionne celle avec la meilleure expectancy. La variante gagnante est retournée mais **n'écrase PAS automatiquement les defaults env** — l'utilisateur doit ouvrir une PR manuelle pour patcher `REBOUND_*` après revue du rapport MD.
+
+**Fail-fast** :
+- `EODHD_API_KEY` manquante → exit 1
+- `> 50%` des fetches échouent → throw `data provider down`
+
 ### Scanner watchlist (P3-A.2)
 
 `ReboundScannerService` ferme la boucle d'entrée :

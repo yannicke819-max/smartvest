@@ -8,7 +8,8 @@
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc --noEmit",
-    "test": "jest --passWithNoTests"
+    "test": "jest --passWithNoTests",
+    "backtest:rebound": "node dist/cli/backtest-rebound.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
