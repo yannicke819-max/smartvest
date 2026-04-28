@@ -111,8 +111,16 @@ function formatAbsolute(iso: string | null): string {
   });
 }
 
+// P0 hotfix #2 — fallback statut pour les valeurs DB inconnues du
+// PROFILE_LABELS frontend. Évite le crash `.color`/`.label` sur undefined.
+const UNKNOWN_STATUS_CFG = {
+  label: 'Statut',
+  color: 'bg-slate-50 text-slate-500 border-slate-200',
+};
+
 function PositionRow({ pos }: { pos: LisaPosition }) {
-  const statusCfg = STATUS_LABELS[pos.status];
+  const statusCfg =
+    (pos.status && STATUS_LABELS[pos.status]) ?? UNKNOWN_STATUS_CFG;
   const pnl = pos.realizedPnlUsd ? parseFloat(pos.realizedPnlUsd) : null;
   const pnlPct = pos.realizedPnlPct;
   const pnlColor = pnl === null ? '' : pnl >= 0 ? 'text-emerald-600' : 'text-red-500';
