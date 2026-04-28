@@ -892,7 +892,25 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       const pct = capitalNum > 0 ? (notional / capitalNum) * 100 : 0;
       existingExposureByAssetClassPct[cls] = (existingExposureByAssetClassPct[cls] ?? 0) + pct;
     }
-    const enforcement = this.riskEnforcer.enforce(result.proposal, existingExposureByAssetClassPct);
+    // P1 — Régime tactique : applique sizingMultiplier sur les allocations
+    // AVANT les checks de cap. Lit le régime cached par MarketRegimeService
+    // (pas de re-fetch — le snapshot a déjà classifié post-fetchMarketSnapshot
+    // et possiblement re-classifié post-news ranking).
+    const cachedRegime = this.marketRegime.peekCurrentRegime();
+    const regimeSizing = cachedRegime
+      ? {
+          multiplier: cachedRegime.sizingMultiplier,
+          regime: cachedRegime.regime,
+          reason: cachedRegime.reasons.join(' · ').slice(0, 200),
+        }
+      : undefined;
+
+    const enforcement = this.riskEnforcer.enforce(
+      result.proposal,
+      existingExposureByAssetClassPct,
+      undefined, // existingExposureByThemePct (PATCH 3 — non câblé encore)
+      regimeSizing,
+    );
     const finalProposal = enforcement.adjustedProposal ?? result.proposal;
 
     if (!enforcement.adjustedProposal) {
