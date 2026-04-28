@@ -1917,7 +1917,18 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       .gte('timestamp', since)
       .order('timestamp', { ascending: true });
     if (error) throw new BadRequestException(error.message);
-    return data ?? [];
+    // P0 hotfix — Postgres numeric() columns are serialized as STRINGS by
+    // supabase-js (precision-preserving). The frontend `LisaSnapshot` type
+    // expects `return_from_inception_pct: number` and `drawdown_from_peak_pct: number`
+    // and components call `.toFixed()` on them → crash if string.
+    // We coerce to numbers here for these two fields, while keeping money
+    // columns (cash_usd, total_value_usd, etc.) as strings (Decimal-safe).
+    return (data ?? []).map((row) => ({
+      ...row,
+      return_from_inception_pct: parseFloat(String(row.return_from_inception_pct ?? 0)) || 0,
+      drawdown_from_peak_pct: parseFloat(String(row.drawdown_from_peak_pct ?? 0)) || 0,
+      open_positions_count: parseInt(String(row.open_positions_count ?? 0), 10) || 0,
+    }));
   }
 
   async getDecisionLog(userId: string, portfolioId: string, limit = 50) {
