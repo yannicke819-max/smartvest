@@ -370,6 +370,23 @@ EODHD_API_KEY=... SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
 - Audit : `lisa_decision_log` kind=`rebound_scan_completed` (hash chain) avec payload `{phase1_count, phase2_count, signals, opened, skipped_reasons}`
 - Lisa pipeline : `MarketSnapshot.reboundSignals` injecté dans le prompt sous `## Positions rebound ouvertes`
 
+### Couverture H24 multi-bourses (P4-A)
+
+Pour passer de 100% US (~7h/jour) à couverture H24, le scanner agrège dynamiquement les watchlists actives selon l'heure UTC :
+
+| Heure CEST | Heure UTC | Bourses actives |
+|---|---|---|
+| 02-04h | 00-02h | Nikkei (Asie nuit) |
+| 04-08h | 02-06h | Nikkei + HSI |
+| 08-10h | 06-08h | HSI + CAC + DAX |
+| 10-17h | 08-15h | CAC + DAX + FTSE (+ US dès 16:30 CEST) |
+| 17-23h | 15-21h | FTSE + US |
+| 23-02h | 21-00h | US-afterhours fallback puis Nikkei reprend |
+
+**Activation** : retirer l'env `REBOUND_UNIVERSE` → `OhlcvCacheService.getActiveUniverse(now)` aggrège les watchlists où `now ∈ [session_open_utc, session_close_utc]` (~5 bourses simultanées en pic 17h UTC).
+
+Pré-requis EODHD plan : « All World » pour `.PA / .DE / .L / .T / .HK`. Sans ça, fetch 404 silencieux → seul `sp500` produira des signaux. Vérifier `EODHD_PLAN_TIER` ou test manuel sur un ticker non-US.
+
 ### OHLCV cache daily (P3-C)
 
 `OhlcvCacheService` cron `'30 21 * * 1-5'` (21:30 UTC, post-close NYSE) :

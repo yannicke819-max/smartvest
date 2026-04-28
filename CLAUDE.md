@@ -30,6 +30,34 @@ P3-D — correctifs config issus de l'analyse logs 27-28/04 :
 
 ---
 
+## RÈGLE OPÉRATIONNELLE — COUVERTURE H24 MULTI-BOURSES (P4-A)
+
+P4-A — Le scanner rebound-tp couvre 5 bourses pour atteindre la couverture H24 :
+
+| Bourse | Code | Suffixe | Session UTC | CEST été |
+|---|---|---|---|---|
+| Nikkei 225 | TSE | `.T` | 00:00-06:00 | 02:00-08:00 |
+| Hang Seng | HKEX | `.HK` | 01:30-08:00 | 03:30-10:00 |
+| CAC 40 | EURONEXT | `.PA` | 07:00-15:30 | 09:00-17:30 |
+| DAX 40 | XETRA | `.DE` | 07:00-15:30 | 09:00-17:30 |
+| FTSE 100 | LSE | `.L` | 08:00-16:30 | 10:00-18:30 |
+| S&P 500 | NYSE | `.US` | 14:30-21:00 | 16:30-23:00 |
+
+**Mode H24** (`OhlcvCacheService.getActiveUniverse(now)`) :
+- Si `REBOUND_UNIVERSE` env set : behaviour P3-C (single watchlist par nom)
+- Sinon : aggrège TOUTES les watchlists dont `[session_open_utc, session_close_utc]` inclut `now` UTC
+- Fallback `sp500` (after-hours US) si rien actif
+
+**Source de vérité TS** : `packages/ai-analyst/src/strategies/universes.ts` pour US, mais les watchlists multi-exchange sont **uniquement en DB** (table `watchlist_universe` + migration 0081). Sync manuel TS à éviter pour ces univers — la table est l'autorité.
+
+**Crypto exclu** : aucune watchlist multi-exchange ne contient de crypto. Lisa peut toujours proposer BTC/ETH en thesis classique.
+
+**Coût EODHD** : EODHD plan US-only ne couvre PAS `.PA/.DE/.L/.T/.HK`. Vérifier l'abonnement (« All World » ou « Fundamentals + EOD All World ») avant d'activer le mode H24 en prod. Sans ce plan, le fetch retourne 404 et le scanner skip silencieusement → pas de crash mais pas de signaux non-US.
+
+**Sector cap** : actuellement global (`assets.sector` lookup). Cap par exchange = follow-up P4-B (assets.sector ne distingue pas la bourse).
+
+---
+
 ## RÈGLE OPÉRATIONNELLE — UNIVERS WATCHLIST PAR DÉFAUT
 
 P3-C — Le scanner rebound-tp scanne par défaut **`sp500`** (~200 mega-caps US, table `watchlist_universe`). Override possible :
