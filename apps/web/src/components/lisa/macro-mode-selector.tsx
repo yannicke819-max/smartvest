@@ -1,31 +1,38 @@
 'use client';
 
 import { useState } from 'react';
-import { TrendingUp, Wheat, Settings, AlertCircle } from 'lucide-react';
-import { useMacroMode, useApplyMacroMode } from '@/hooks/use-macro-mode';
+import { TrendingUp, Wheat, Rocket, Settings, AlertCircle } from 'lucide-react';
+import {
+  useOperatingMode,
+  useApplyOperatingMode,
+  type OperatingMode,
+} from '@/hooks/use-operating-mode';
 
 /**
- * MacroModeSelector — toggle radio en haut de /lisa pour sélectionner
- * la philosophie opérationnelle :
+ * P7-MODE-GAINERS-BADGE — Sélecteur 3-modes opératoires.
  *
- *   📈 INVESTMENT — buy-and-hold patient, long horizon
- *   🌾 HARVEST   — discipline journalière, sweep automatique
+ *   📈 INVESTMENT — buy-and-hold patient, long horizon (Lisa LLM)
+ *   🌾 HARVEST    — discipline journalière, sweep auto (Lisa LLM)
+ *   🚀 GAINERS    — scanner momentum 24/7 déterministe (bypass LLM)
  *
- * Détecte automatiquement le mode courant depuis la config session.
- * Au clic, applique un preset complet (profile + capital_discipline_mode +
- * risk_constraints + autopilot_aggressive). Les paramètres détaillés
- * restent modifiables dans les sections "Avancé".
+ * Source de vérité : `lisa_session_configs.strategy_mode` (toggle DB-level,
+ * pas besoin de redeploy Fly). Le clic confirme, applique le preset
+ * et invalide les query keys liées (macro-mode, daily-harvest, gainers-status).
+ *
+ * Le composant garde son nom historique `MacroModeSelector` pour minimiser
+ * la churn d'imports — la page /lisa l'instancie inchangée.
  */
 export function MacroModeSelector({ portfolioId }: { portfolioId: string }) {
-  const modeQuery = useMacroMode(portfolioId);
-  const applyMut = useApplyMacroMode(portfolioId);
-  const [confirmMode, setConfirmMode] = useState<'INVESTMENT' | 'HARVEST' | null>(null);
+  const modeQuery = useOperatingMode(portfolioId);
+  const applyMut = useApplyOperatingMode(portfolioId);
+  const [confirmMode, setConfirmMode] = useState<OperatingMode | null>(null);
+  const [applyError, setApplyError] = useState<string | null>(null);
 
-  const currentMode = modeQuery.data?.mode ?? 'CUSTOM';
+  const currentMode: OperatingMode = modeQuery.data?.mode ?? 'investment';
 
-  const handleSelect = (newMode: 'INVESTMENT' | 'HARVEST') => {
+  const handleSelect = (newMode: OperatingMode) => {
     if (currentMode === newMode) return;
-    // Demander confirmation pour éviter le reset accidentel des params custom
+    setApplyError(null);
     setConfirmMode(newMode);
   };
 
@@ -35,7 +42,7 @@ export function MacroModeSelector({ portfolioId }: { portfolioId: string }) {
       await applyMut.mutateAsync(confirmMode);
       setConfirmMode(null);
     } catch (e) {
-      alert(`Erreur: ${String(e).slice(0, 200)}`);
+      setApplyError(String((e as Error)?.message ?? e).slice(0, 240));
     }
   };
 
@@ -45,36 +52,36 @@ export function MacroModeSelector({ portfolioId }: { portfolioId: string }) {
         <div className="flex items-center gap-2">
           <Settings className="h-4 w-4 text-muted-foreground" />
           <h2 className="text-sm font-medium">Mode opératoire</h2>
-          {currentMode === 'CUSTOM' && (
-            <span className="text-[10px] uppercase rounded px-1.5 py-0.5 bg-amber-100 text-amber-700 dark:bg-amber-950/40">
-              Config custom
-            </span>
-          )}
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {/* INVESTMENT */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
         <ModeCard
-          mode="INVESTMENT"
           icon={TrendingUp}
           title="📈 Investment"
           subtitle="Buy-and-hold patient · long horizon"
           description="Stops larges (4%), target deployment 90%, capital qui croît avec les positions, pas de sweep automatique. Profil long-terme."
-          isActive={currentMode === 'INVESTMENT'}
-          onClick={() => handleSelect('INVESTMENT')}
+          isActive={currentMode === 'investment'}
+          onClick={() => handleSelect('investment')}
           color="blue"
         />
-        {/* HARVEST */}
         <ModeCard
-          mode="HARVEST"
           icon={Wheat}
           title="🌾 Harvest"
           subtitle="Discipline journalière · sweep automatique"
           description="Stops serrés (1.5%), take-profit absolu modifiable (défaut 2.5%), capital de travail FIXE, profits sweepés vers vault PER_TRADE. Reset chaque jour 09:00."
-          isActive={currentMode === 'HARVEST'}
-          onClick={() => handleSelect('HARVEST')}
+          isActive={currentMode === 'harvest'}
+          onClick={() => handleSelect('harvest')}
           color="emerald"
+        />
+        <ModeCard
+          icon={Rocket}
+          title="🚀 Gainers"
+          subtitle="Scanner momentum 24/7 · 100% autonome · zero LLM"
+          description="Cron 15min cross-asset (US/EU/Asia equities + crypto majors). Filtre déterministe : changePct≥3%, volRatio≥1.5, closeToHigh≥80%. Ouverture directe via paperBroker, max 5 positions × $200, SL -3% TP +8%."
+          isActive={currentMode === 'gainers'}
+          onClick={() => handleSelect('gainers')}
+          color="orange"
         />
       </div>
 
@@ -84,20 +91,24 @@ export function MacroModeSelector({ portfolioId }: { portfolioId: string }) {
         ci-dessous, même après application d&apos;un preset.
       </p>
 
-      {/* Modal de confirmation */}
       {confirmMode && (
         <div className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/20 p-3 space-y-2">
           <div className="flex items-start gap-2">
             <AlertCircle className="h-4 w-4 text-amber-700 dark:text-amber-400 flex-shrink-0 mt-0.5" />
             <div className="text-xs space-y-1">
               <p className="font-medium">
-                Confirmer le passage en mode {confirmMode === 'INVESTMENT' ? '📈 Investment' : '🌾 Harvest'} ?
+                Confirmer le passage en mode {LABEL_FOR[confirmMode]} ?
               </p>
               <p className="text-muted-foreground">
-                Cette action écrase les paramètres suivants : profile, capital_discipline_mode,
-                risk_constraints (caps, stops, leverage), autopilot_aggressive, cycle_minutes.
-                Les autres champs (capital, objectifs, kill-switch) sont préservés.
+                {confirmMode === 'gainers'
+                  ? 'Active le scanner Gainers (24/7 cross-asset). Autopilot activé, kill-switch désarmé. Profile et capital_discipline_mode actuels préservés.'
+                  : 'Cette action écrase les paramètres suivants : profile, capital_discipline_mode, risk_constraints (caps, stops, leverage), autopilot_aggressive, cycle_minutes. Capital, objectifs, kill-switch préservés.'}
               </p>
+              {applyError && (
+                <p className="text-red-700 dark:text-red-400 font-medium">
+                  Erreur : {applyError}
+                </p>
+              )}
             </div>
           </div>
           <div className="flex gap-2">
@@ -109,7 +120,10 @@ export function MacroModeSelector({ portfolioId }: { portfolioId: string }) {
               {applyMut.isPending ? 'Application…' : 'Confirmer'}
             </button>
             <button
-              onClick={() => setConfirmMode(null)}
+              onClick={() => {
+                setConfirmMode(null);
+                setApplyError(null);
+              }}
               className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
             >
               Annuler
@@ -121,42 +135,59 @@ export function MacroModeSelector({ portfolioId }: { portfolioId: string }) {
   );
 }
 
+const LABEL_FOR: Record<OperatingMode, string> = {
+  investment: '📈 Investment',
+  harvest: '🌾 Harvest',
+  gainers: '🚀 Gainers',
+};
+
+type CardColor = 'blue' | 'emerald' | 'orange';
+
+const ACTIVE_STYLES: Record<CardColor, string> = {
+  blue: 'border-blue-500 bg-blue-50 dark:bg-blue-950/30 ring-2 ring-blue-500/20',
+  emerald: 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/30 ring-2 ring-emerald-500/20',
+  orange: 'border-orange-500 bg-orange-50 dark:bg-orange-950/30 ring-2 ring-orange-500/20',
+};
+
+const ICON_COLORS: Record<CardColor, string> = {
+  blue: 'text-blue-600',
+  emerald: 'text-emerald-600',
+  orange: 'text-orange-600',
+};
+
+const BADGE_COLORS: Record<CardColor, string> = {
+  blue: 'bg-blue-600 text-white',
+  emerald: 'bg-emerald-600 text-white',
+  orange: 'bg-orange-600 text-white',
+};
+
 function ModeCard(props: {
-  mode: 'INVESTMENT' | 'HARVEST';
   icon: typeof TrendingUp;
   title: string;
   subtitle: string;
   description: string;
   isActive: boolean;
   onClick: () => void;
-  color: 'blue' | 'emerald';
+  color: CardColor;
 }) {
   const Icon = props.icon;
-
-  const activeStyles = props.color === 'blue'
-    ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/30 ring-2 ring-blue-500/20'
-    : 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/30 ring-2 ring-emerald-500/20';
 
   return (
     <button
       onClick={props.onClick}
       className={`text-left rounded-lg border p-3 space-y-2 transition-all ${
         props.isActive
-          ? activeStyles
+          ? ACTIVE_STYLES[props.color]
           : 'hover:bg-muted/50 hover:border-foreground/20'
       }`}
     >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Icon className={`h-4 w-4 ${props.color === 'blue' ? 'text-blue-600' : 'text-emerald-600'}`} />
+          <Icon className={`h-4 w-4 ${ICON_COLORS[props.color]}`} />
           <h3 className="text-sm font-medium">{props.title}</h3>
         </div>
         {props.isActive && (
-          <span className={`text-[10px] uppercase rounded px-1.5 py-0.5 font-medium ${
-            props.color === 'blue'
-              ? 'bg-blue-600 text-white'
-              : 'bg-emerald-600 text-white'
-          }`}>
+          <span className={`text-[10px] uppercase rounded px-1.5 py-0.5 font-medium ${BADGE_COLORS[props.color]}`}>
             Actif
           </span>
         )}
