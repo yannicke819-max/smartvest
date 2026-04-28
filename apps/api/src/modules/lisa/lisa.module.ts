@@ -38,6 +38,7 @@ import { ProfitSweepService } from './services/profit-sweep.service';
 import { DailyProfitGovernor } from './services/daily-profit-governor.service';
 import { MacroModeService } from './services/macro-mode.service';
 import { ApiCostTrackerService } from './services/api-cost-tracker.service';
+import { ReboundMonitorService } from './services/rebound-monitor.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule, BotLabModule],
@@ -82,6 +83,8 @@ import { ApiCostTrackerService } from './services/api-cost-tracker.service';
     ApiCostTrackerService,
     // P1 — classifier de régime tactique (BULL/BEAR/RANGE/VOL_SPIKE/NEWS_SHOCK)
     MarketRegimeService,
+    // P3-A — cron monitor pour rebound_positions (TP/SL/timeout toutes les 5 min)
+    ReboundMonitorService,
   ],
   exports: [
     LisaService,

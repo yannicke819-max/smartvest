@@ -14,3 +14,4 @@ export * from './allocation';
 export * from './simulation';
 export * from './llm';
 export * from './regime';
+export * from './strategies/rebound-tp';
