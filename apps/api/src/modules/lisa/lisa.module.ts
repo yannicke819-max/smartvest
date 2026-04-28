@@ -41,6 +41,7 @@ import { ApiCostTrackerService } from './services/api-cost-tracker.service';
 import { ReboundMonitorService } from './services/rebound-monitor.service';
 import { ReboundScannerService } from './services/rebound-scanner.service';
 import { OhlcvCacheService } from './services/ohlcv-cache.service';
+import { TopGainersScannerService } from './services/top-gainers-scanner.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule, BotLabModule],
@@ -91,6 +92,8 @@ import { OhlcvCacheService } from './services/ohlcv-cache.service';
     ReboundScannerService,
     // P3-C — cache OHLCV daily (cron 21:30 UTC) + watchlist universe
     OhlcvCacheService,
+    // P5-PIVOT-TOP-GAINERS — scanner momentum cross-asset (gated par STRATEGY_MODE=top_gainers)
+    TopGainersScannerService,
   ],
   exports: [
     LisaService,
