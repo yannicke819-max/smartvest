@@ -40,6 +40,7 @@ import { MacroModeService } from './services/macro-mode.service';
 import { ApiCostTrackerService } from './services/api-cost-tracker.service';
 import { ReboundMonitorService } from './services/rebound-monitor.service';
 import { ReboundScannerService } from './services/rebound-scanner.service';
+import { OhlcvCacheService } from './services/ohlcv-cache.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule, BotLabModule],
@@ -88,6 +89,8 @@ import { ReboundScannerService } from './services/rebound-scanner.service';
     ReboundMonitorService,
     // P3-A.2 — cron scanner watchlist (toutes les 15 min, heures marché US)
     ReboundScannerService,
+    // P3-C — cache OHLCV daily (cron 21:30 UTC) + watchlist universe
+    OhlcvCacheService,
   ],
   exports: [
     LisaService,
