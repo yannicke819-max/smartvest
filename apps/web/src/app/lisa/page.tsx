@@ -52,6 +52,22 @@ const PROFILE_LABELS: Record<SessionProfile, { label: string; description: strin
   },
 };
 
+// P0 hotfix #2 — fallback descriptor pour les profils DB inconnus du
+// frontend (ex: 'swing_active' historique avant le mapping P3-D, ou
+// nouveaux profils ajoutés côté DB sans update du PROFILE_LABELS).
+// Évite le crash `Cannot read properties of undefined (reading 'description')`
+// au render `PROFILE_LABELS[profile].description`.
+const UNKNOWN_PROFILE_LABEL = {
+  label: 'Profil personnalisé',
+  description: 'Profil DB non documenté côté UI — comportement déterminé par la config.',
+};
+const profileLabelOf = (
+  p: SessionProfile | string | undefined,
+): { label: string; description: string } => {
+  if (!p) return UNKNOWN_PROFILE_LABEL;
+  return PROFILE_LABELS[p as SessionProfile] ?? UNKNOWN_PROFILE_LABEL;
+};
+
 export default function LisaPage() {
   const portfoliosQuery = usePortfolios();
   const qc = useQueryClient();
@@ -546,7 +562,7 @@ export default function LisaPage() {
               ))}
             </select>
             <p className="text-[11px] text-muted-foreground">
-              {PROFILE_LABELS[profile].description}
+              {profileLabelOf(profile).description}
             </p>
           </div>
 
