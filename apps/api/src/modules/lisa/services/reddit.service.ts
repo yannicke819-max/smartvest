@@ -4,36 +4,38 @@ import type { EodhdNewsItem } from './eodhd-enrichment.service';
 
 /**
  * RedditService — flux retail/sentiment depuis Reddit (r/wallstreetbets,
- * r/stocks, r/investing, r/CryptoCurrency).
+ * r/stocks, r/investing, r/CryptoCurrency, r/options).
  *
- * Auth : OAuth client_credentials (gratuit, créer une app sur
- * https://www.reddit.com/prefs/apps en mode "script", récupérer
- * client_id + client_secret + user-agent custom).
+ * Deux modes d'accès :
  *
- * Variables env requises :
- *  - REDDIT_CLIENT_ID
- *  - REDDIT_CLIENT_SECRET
- *  - REDDIT_USER_AGENT (ex: "smartvest-news/1.0 by u/yourname")
+ * 1. **OAuth client_credentials** (préférentiel quand approuvé Reddit)
+ *    Variables env : REDDIT_CLIENT_ID + REDDIT_CLIENT_SECRET + REDDIT_USER_AGENT
+ *    URL : https://oauth.reddit.com/r/{name}/hot?...
  *
- * Si une de ces variables est absente, le service est désactivé proprement
- * (retourne []). Pas d'erreur levée — le pipeline news fonctionne sans.
+ * 2. **RSS/JSON public** (P5-REDDIT-RSS-FALLBACK, no auth)
+ *    Activé si :
+ *      - REDDIT_USE_RSS=true (override explicite)
+ *      - OU aucune credential OAuth présente
+ *    URL : https://www.reddit.com/r/{name}/hot.json?limit=25
+ *    Requiert User-Agent custom (REDDIT_USER_AGENT ou default
+ *    'smartvest-news/1.0' — sinon 429 systématique).
+ *    Rate limit ~60 req/min sans auth → cache 5 min.
  *
- * Subreddits exploités :
- *  - wallstreetbets : sentiment retail US options/meme stocks
- *  - stocks : analyse plus posée
- *  - investing : long-term sentiment
- *  - CryptoCurrency : crypto specific
- *
- * Détection de tickers : regex \$TICKER ou TICKER en MAJUSCULES dans le
- * titre. Sentiment : heuristique sur upvote_ratio + score + flair (DD = +,
- * Loss = -, Gain = +).
+ * Dans les 2 modes, l'output est strictement identique (EodhdNewsItem),
+ * et le rolling engagement history (PR E redditSpikeSigma) est conservé.
  */
 @Injectable()
 export class RedditService {
   private readonly logger = new Logger(RedditService.name);
   private accessToken: { value: string; expiresAt: number } | null = null;
   private readonly cache: Map<string, { data: EodhdNewsItem[]; asOf: number }> = new Map();
-  private readonly CACHE_MS = 10 * 60 * 1000; // 10 min (Reddit rate limit strict)
+
+  /** P5-REDDIT-RSS-FALLBACK — Cache plus court en mode RSS public (rate
+   *  limit Reddit ~60 req/min sans auth → 5 min suffit pour ne pas se
+   *  faire ban tout en gardant la fraîcheur). */
+  private get cacheMs(): number {
+    return this.useRssMode() ? 5 * 60 * 1000 : 10 * 60 * 1000;
+  }
 
   /**
    * P1 PR E — Rolling history des engagements pour computing redditSpikeSigma.
@@ -69,11 +71,36 @@ export class RedditService {
   constructor(private readonly config: ConfigService) {}
 
   isConfigured(): boolean {
+    // P5-REDDIT-RSS-FALLBACK — RSS mode dispense des credentials OAuth.
+    if (this.useRssMode()) return true;
     return Boolean(
       this.config.get<string>('REDDIT_CLIENT_ID')
       && this.config.get<string>('REDDIT_CLIENT_SECRET')
       && this.config.get<string>('REDDIT_USER_AGENT'),
     );
+  }
+
+  /**
+   * P5-REDDIT-RSS-FALLBACK — Détecte si on doit utiliser le mode public.
+   * Activé explicitement (REDDIT_USE_RSS=true) OU implicitement quand
+   * aucune credential OAuth n'est présente. La logique préfère OAuth
+   * quand dispo (rate limit plus généreux + user score plus précis).
+   */
+  private useRssMode(): boolean {
+    const explicit = this.config.get<string>('REDDIT_USE_RSS');
+    if (explicit === 'true' || explicit === '1') return true;
+    const hasOAuth = Boolean(
+      this.config.get<string>('REDDIT_CLIENT_ID')
+      && this.config.get<string>('REDDIT_CLIENT_SECRET'),
+    );
+    return !hasOAuth;
+  }
+
+  /** P5-REDDIT-RSS-FALLBACK — User-Agent custom OBLIGATOIRE en mode RSS
+   *  (axios/node-fetch default = 429 immédiat). Lit REDDIT_USER_AGENT,
+   *  fallback safe 'smartvest-news/1.0'. */
+  private getUserAgent(): string {
+    return this.config.get<string>('REDDIT_USER_AGENT') ?? 'smartvest-news/1.0';
   }
 
   /** Top hot posts sur les subreddits financiers, last 24h. */
@@ -82,9 +109,11 @@ export class RedditService {
 
     const cacheKey = `hot:${limit}`;
     const cached = this.cache.get(cacheKey);
-    if (cached && Date.now() - cached.asOf < this.CACHE_MS) return cached.data;
+    if (cached && Date.now() - cached.asOf < this.cacheMs) return cached.data;
 
-    const subreddits = ['wallstreetbets', 'stocks', 'investing', 'CryptoCurrency'];
+    // P5-REDDIT-RSS-FALLBACK — élargi à 5 subreddits (ajout `options`)
+    // pour capter les flux retail options (squeeze candidats).
+    const subreddits = ['wallstreetbets', 'stocks', 'investing', 'CryptoCurrency', 'options'];
     const tasks = subreddits.map((s) => this.fetchSubreddit(s, Math.ceil(limit / subreddits.length)));
     const results = await Promise.allSettled(tasks);
     const all = results
@@ -159,6 +188,15 @@ export class RedditService {
   // ────────────────────────────────────────────────────────────────────
 
   private async fetchSubreddit(name: string, limit: number): Promise<EodhdNewsItem[]> {
+    if (this.useRssMode()) return this.fetchSubredditPublic(name, limit);
+    return this.fetchSubredditOAuth(name, limit);
+  }
+
+  /**
+   * P5-REDDIT-RSS-FALLBACK — Mode OAuth (préférentiel quand dispo).
+   * Endpoint : oauth.reddit.com (rate limit 100 req/min/account).
+   */
+  private async fetchSubredditOAuth(name: string, limit: number): Promise<EodhdNewsItem[]> {
     const token = await this.getAccessToken();
     if (!token) return [];
 
@@ -167,26 +205,95 @@ export class RedditService {
       const res = await fetch(url, {
         headers: {
           Authorization: `Bearer ${token}`,
-          'User-Agent': this.config.get<string>('REDDIT_USER_AGENT') ?? 'smartvest-news/1.0',
+          'User-Agent': this.getUserAgent(),
         },
         signal: AbortSignal.timeout(8000),
       });
       if (!res.ok) {
-        this.logger.debug(`reddit ${name} HTTP ${res.status}`);
+        this.logger.debug(`reddit oauth ${name} HTTP ${res.status}`);
         return [];
       }
       const json = await res.json() as RedditListing;
-      if (!json.data?.children) return [];
-
-      return json.data.children
-        .filter((c): c is { kind: string; data: RedditPost } =>
-          c.kind === 't3' && Boolean(c.data) && !c.data?.stickied)
-        .map((c) => this.normalizePost(c.data, name))
-        .filter((p): p is EodhdNewsItem => p !== null);
+      return this.parseListing(json, name);
     } catch (e) {
-      this.logger.debug(`reddit ${name} fetch error: ${String(e).slice(0, 120)}`);
+      this.logger.debug(`reddit oauth ${name} fetch error: ${String(e).slice(0, 120)}`);
       return [];
     }
+  }
+
+  /**
+   * P5-REDDIT-RSS-FALLBACK — Mode public (no auth, drop-in fallback).
+   * Endpoint : www.reddit.com/r/{name}/hot.json (rate limit ~60 req/min).
+   *
+   * Pièges critiques :
+   *  - User-Agent OBLIGATOIRE custom (default node-fetch → 429 immédiat)
+   *  - Reddit renvoie parfois 200 + page HTML login si rate-limit
+   *    soft → check Content-Type=application/json
+   *  - 429 → backoff exponentiel (2 retries max, 1s puis 3s)
+   */
+  private async fetchSubredditPublic(name: string, limit: number): Promise<EodhdNewsItem[]> {
+    const url = `https://www.reddit.com/r/${name}/hot.json?limit=${limit}&raw_json=1`;
+    const ua = this.getUserAgent();
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const res = await fetch(url, {
+          headers: {
+            'User-Agent': ua,
+            'Accept': 'application/json',
+          },
+          signal: AbortSignal.timeout(8000),
+        });
+
+        // Rate-limit : backoff exponentiel
+        if (res.status === 429) {
+          if (attempt < 2) {
+            const wait = 1000 * Math.pow(3, attempt); // 1s, 3s
+            this.logger.debug(`reddit rss ${name} 429, retry in ${wait}ms (${attempt + 1}/3)`);
+            await new Promise((r) => setTimeout(r, wait));
+            continue;
+          }
+          this.logger.warn(`reddit rss ${name} 429 final — giving up`);
+          return [];
+        }
+
+        if (!res.ok) {
+          this.logger.debug(`reddit rss ${name} HTTP ${res.status}`);
+          return [];
+        }
+
+        // Reddit peut 200 + page HTML login (auth wall) — check Content-Type
+        const contentType = res.headers.get('content-type') ?? '';
+        if (!contentType.toLowerCase().includes('application/json')) {
+          this.logger.warn(`reddit rss ${name} non-JSON response (Content-Type=${contentType.slice(0, 60)}) — auth wall ?`);
+          return [];
+        }
+
+        const json = await res.json() as RedditListing;
+        return this.parseListing(json, name);
+      } catch (e) {
+        this.logger.debug(`reddit rss ${name} fetch error: ${String(e).slice(0, 120)}`);
+        if (attempt < 2) {
+          await new Promise((r) => setTimeout(r, 1000));
+          continue;
+        }
+        return [];
+      }
+    }
+    return [];
+  }
+
+  /**
+   * Parsing commun listing → EodhdNewsItem[].
+   * Filtre sticky posts + posts sans données.
+   */
+  private parseListing(json: RedditListing, subreddit: string): EodhdNewsItem[] {
+    if (!json.data?.children) return [];
+    return json.data.children
+      .filter((c): c is { kind: string; data: RedditPost } =>
+        c.kind === 't3' && Boolean(c.data) && !c.data?.stickied)
+      .map((c) => this.normalizePost(c.data, subreddit))
+      .filter((p): p is EodhdNewsItem => p !== null);
   }
 
   private normalizePost(post: RedditPost, subreddit: string): EodhdNewsItem | null {
