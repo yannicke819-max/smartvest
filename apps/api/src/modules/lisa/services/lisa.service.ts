@@ -52,8 +52,11 @@ import { ApiCostTrackerService, BudgetExceededError } from './api-cost-tracker.s
 import {
   buildYahooChartUrl,
   buildStooqCsvUrl,
+  buildAlphaVantageGlobalQuoteUrl,
   parseYahooChartResponse,
   parseStooqCsvResponse,
+  parseAlphaVantageGlobalQuoteResponse,
+  fetchWithRetry,
 } from '../helpers/macro-fallback.helper';
 
 /**
@@ -75,6 +78,25 @@ export class LisaService {
   private readonly riskEnforcer: RiskEnforcer;
   private readonly paperBroker: PaperBrokerService;
   private readonly riskMonitor: RiskMonitorService;
+
+  /**
+   * P0-B — Cache last-known macro per indicator. Quand toutes les sources
+   * live (yahoo / eodhd / alphavantage / stooq) ET le proxy ETF échouent
+   * dans `fetchCascade`, on retourne la dernière valeur connue (TTL 24h)
+   * marquée `dataQuality.stale=true` plutôt que la valeur fallback
+   * hardcoded — Lisa peut continuer 1-2 cycles sur un VIX un peu daté
+   * mais réaliste, sinon elle lit `vix=18.5` et classifie un faux régime.
+   */
+  private readonly lastKnownMacroValues = new Map<string, { value: number; timestamp: number }>();
+  private readonly LAST_KNOWN_TTL_MS = 24 * 60 * 60 * 1000;
+
+  /**
+   * P0-B — Compteur metric `macro_quote_source{symbol,source,status}` pour
+   * observabilité. Clé = `${indicator}:${source}:${status}`, valeur =
+   * nombre d'occurrences. Exposé via `getMacroQuoteSourceCounters()` pour
+   * dump dans /metrics ou inspection ad-hoc côté admin.
+   */
+  private readonly quoteSourceCounters = new Map<string, number>();
 
   constructor(
     private readonly config: ConfigService,
@@ -1982,7 +2004,8 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     eodhdTicker: string | null;
     /** PR D — `yahoo` + `stooq` ajoutés pour la cascade multi-provider
      *  VIX/DXY (incident 27/04). */
-    source: 'eodhd' | 'fallback' | 'supabase_quotes' | 'yahoo' | 'stooq';
+    /** P0-B — `alphavantage` ajouté pour cascade VIX/DXY 3e source. */
+    source: 'eodhd' | 'fallback' | 'supabase_quotes' | 'yahoo' | 'stooq' | 'alphavantage';
     success: boolean;
     statusCode?: number;
     latencyMs?: number;
@@ -2188,92 +2211,155 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       };
     }
 
-    const dataQuality = { live: [] as string[], proxy: [] as string[], fallback: [] as string[] };
+    const dataQuality = {
+      live: [] as string[],
+      proxy: [] as string[],
+      fallback: [] as string[],
+      stale: [] as string[],
+    };
+
+    // P0-B — Counters in-memory pour metric macro_quote_source.
+    const incCounter = (symbol: string, source: string, status: 'ok' | 'fail') => {
+      const key = `${symbol}:${source}:${status}`;
+      this.quoteSourceCounters.set(key, (this.quoteSourceCounters.get(key) ?? 0) + 1);
+    };
+
+    const alphaKey = this.config.get<string>('ALPHAVANTAGE_API_KEY') ?? null;
 
     const fetchNum = async (ticker: string): Promise<number | null> => {
-      const tStart = Date.now();
+      // P0-B — wrapping fetchWithRetry : timeout 1500ms, retry 2x, backoff 250ms.
       this.realtimePrice.recordEodhdCall();
-      try {
-        const url = `https://eodhd.com/api/real-time/${encodeURIComponent(ticker)}?api_token=${eodhKey}&fmt=json`;
-        const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-        const latencyMs = Date.now() - tStart;
-        if (!res.ok) {
-          this.logEodhdCall({ ticker, eodhdTicker: ticker, source: 'eodhd', success: false, statusCode: res.status, latencyMs, calledBy: 'market_snapshot', errorMessage: `HTTP_${res.status}` });
-          return null;
-        }
-        const d = await res.json() as Record<string, unknown>;
-        const v = Number(d['close'] ?? d['previousClose'] ?? d['open'] ?? d['last']);
-        const ok = isFinite(v) && v > 0;
-        if (ok) {
-          this.logEodhdCall({ ticker, eodhdTicker: ticker, source: 'eodhd', success: true, statusCode: res.status, latencyMs, priceUsd: v, calledBy: 'market_snapshot' });
-        } else {
+      const v = await fetchWithRetry(async (signal) => {
+        const tStart = Date.now();
+        try {
+          const url = `https://eodhd.com/api/real-time/${encodeURIComponent(ticker)}?api_token=${eodhKey}&fmt=json`;
+          const res = await fetch(url, { signal });
+          const latencyMs = Date.now() - tStart;
+          if (!res.ok) {
+            this.logEodhdCall({ ticker, eodhdTicker: ticker, source: 'eodhd', success: false, statusCode: res.status, latencyMs, calledBy: 'market_snapshot', errorMessage: `HTTP_${res.status}` });
+            return null;
+          }
+          const d = await res.json() as Record<string, unknown>;
+          const v = Number(d['close'] ?? d['previousClose'] ?? d['open'] ?? d['last']);
+          const ok = isFinite(v) && v > 0;
+          if (ok) {
+            this.logEodhdCall({ ticker, eodhdTicker: ticker, source: 'eodhd', success: true, statusCode: res.status, latencyMs, priceUsd: v, calledBy: 'market_snapshot' });
+            return v;
+          }
           this.logEodhdCall({ ticker, eodhdTicker: ticker, source: 'eodhd', success: false, statusCode: res.status, latencyMs, calledBy: 'market_snapshot', errorMessage: 'empty_price_field' });
+          return null;
+        } catch (e) {
+          this.logEodhdCall({ ticker, eodhdTicker: ticker, source: 'eodhd', success: false, latencyMs: Date.now() - tStart, calledBy: 'market_snapshot', errorMessage: String(e).slice(0, 200) });
+          throw e; // remonte pour que fetchWithRetry retente
         }
-        return ok ? v : null;
-      } catch (e) {
-        this.logEodhdCall({ ticker, eodhdTicker: ticker, source: 'eodhd', success: false, latencyMs: Date.now() - tStart, calledBy: 'market_snapshot', errorMessage: String(e).slice(0, 200) });
-        return null;
-      }
+      }, { maxAttempts: 3, backoffMs: 250, timeoutMs: 1500 });
+      incCounter(ticker, 'eodhd', v != null ? 'ok' : 'fail');
+      return v;
     };
 
     /**
-     * PR D — fallback multi-provider pour VIX/DXY (incident 27/04 :
-     * VIX.INDX EODHD répétitivement empty_price_field en prod). Wrapper
-     * Yahoo Finance + Stooq pour augmenter le ratio "live" avant de
-     * tomber en proxy ETF (VXX/UUP).
+     * P0-B — Yahoo Finance fallback pour VIX/DXY. PRIMARY source au lieu
+     * de secondary (PR #19 avait yahoo en 2nd, mais yahoo est plus fiable
+     * sur VIX que EODHD VIX.INDX qui retourne empty_price_field).
      *
-     * Pas de clé API. Logged via logEodhdCall avec source='yahoo'/'stooq'
-     * pour observability.
+     * Wrap fetchWithRetry : timeout 1500ms, 2 retries, backoff 250ms.
+     * Logged via logEodhdCall avec source='yahoo' pour observability.
      */
     const fetchYahoo = async (symbol: string): Promise<number | null> => {
-      const tStart = Date.now();
-      try {
-        const url = buildYahooChartUrl(symbol);
-        const res = await fetch(url, {
-          signal: AbortSignal.timeout(5000),
-          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SmartVest/1.0)' },
-        });
-        const latencyMs = Date.now() - tStart;
-        if (!res.ok) {
-          this.logEodhdCall({ ticker: symbol, eodhdTicker: symbol, source: 'yahoo', success: false, statusCode: res.status, latencyMs, calledBy: 'market_snapshot', errorMessage: `HTTP_${res.status}` });
-          return null;
-        }
-        const json = await res.json() as unknown;
-        const v = parseYahooChartResponse(json);
-        if (v != null) {
-          this.logEodhdCall({ ticker: symbol, eodhdTicker: symbol, source: 'yahoo', success: true, statusCode: res.status, latencyMs, priceUsd: v, calledBy: 'market_snapshot' });
-        } else {
+      const v = await fetchWithRetry(async (signal) => {
+        const tStart = Date.now();
+        try {
+          const url = buildYahooChartUrl(symbol);
+          const res = await fetch(url, {
+            signal,
+            headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SmartVest/1.0)' },
+          });
+          const latencyMs = Date.now() - tStart;
+          if (!res.ok) {
+            this.logEodhdCall({ ticker: symbol, eodhdTicker: symbol, source: 'yahoo', success: false, statusCode: res.status, latencyMs, calledBy: 'market_snapshot', errorMessage: `HTTP_${res.status}` });
+            return null;
+          }
+          const json = await res.json() as unknown;
+          const parsed = parseYahooChartResponse(json);
+          if (parsed != null) {
+            this.logEodhdCall({ ticker: symbol, eodhdTicker: symbol, source: 'yahoo', success: true, statusCode: res.status, latencyMs, priceUsd: parsed, calledBy: 'market_snapshot' });
+            return parsed;
+          }
           this.logEodhdCall({ ticker: symbol, eodhdTicker: symbol, source: 'yahoo', success: false, statusCode: res.status, latencyMs, calledBy: 'market_snapshot', errorMessage: 'parser_returned_null' });
+          return null;
+        } catch (e) {
+          this.logEodhdCall({ ticker: symbol, eodhdTicker: symbol, source: 'yahoo', success: false, latencyMs: Date.now() - tStart, calledBy: 'market_snapshot', errorMessage: String(e).slice(0, 200) });
+          throw e;
         }
-        return v;
-      } catch (e) {
-        this.logEodhdCall({ ticker: symbol, eodhdTicker: symbol, source: 'yahoo', success: false, latencyMs: Date.now() - tStart, calledBy: 'market_snapshot', errorMessage: String(e).slice(0, 200) });
-        return null;
-      }
+      }, { maxAttempts: 3, backoffMs: 250, timeoutMs: 1500 });
+      incCounter(symbol, 'yahoo', v != null ? 'ok' : 'fail');
+      return v;
     };
 
     const fetchStooq = async (symbol: string): Promise<number | null> => {
-      const tStart = Date.now();
-      try {
-        const url = buildStooqCsvUrl(symbol);
-        const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-        const latencyMs = Date.now() - tStart;
-        if (!res.ok) {
-          this.logEodhdCall({ ticker: symbol, eodhdTicker: symbol, source: 'stooq', success: false, statusCode: res.status, latencyMs, calledBy: 'market_snapshot', errorMessage: `HTTP_${res.status}` });
-          return null;
-        }
-        const text = await res.text();
-        const v = parseStooqCsvResponse(text);
-        if (v != null) {
-          this.logEodhdCall({ ticker: symbol, eodhdTicker: symbol, source: 'stooq', success: true, statusCode: res.status, latencyMs, priceUsd: v, calledBy: 'market_snapshot' });
-        } else {
+      const v = await fetchWithRetry(async (signal) => {
+        const tStart = Date.now();
+        try {
+          const url = buildStooqCsvUrl(symbol);
+          const res = await fetch(url, { signal });
+          const latencyMs = Date.now() - tStart;
+          if (!res.ok) {
+            this.logEodhdCall({ ticker: symbol, eodhdTicker: symbol, source: 'stooq', success: false, statusCode: res.status, latencyMs, calledBy: 'market_snapshot', errorMessage: `HTTP_${res.status}` });
+            return null;
+          }
+          const text = await res.text();
+          const parsed = parseStooqCsvResponse(text);
+          if (parsed != null) {
+            this.logEodhdCall({ ticker: symbol, eodhdTicker: symbol, source: 'stooq', success: true, statusCode: res.status, latencyMs, priceUsd: parsed, calledBy: 'market_snapshot' });
+            return parsed;
+          }
           this.logEodhdCall({ ticker: symbol, eodhdTicker: symbol, source: 'stooq', success: false, statusCode: res.status, latencyMs, calledBy: 'market_snapshot', errorMessage: 'parser_returned_null' });
+          return null;
+        } catch (e) {
+          this.logEodhdCall({ ticker: symbol, eodhdTicker: symbol, source: 'stooq', success: false, latencyMs: Date.now() - tStart, calledBy: 'market_snapshot', errorMessage: String(e).slice(0, 200) });
+          throw e;
         }
-        return v;
-      } catch (e) {
-        this.logEodhdCall({ ticker: symbol, eodhdTicker: symbol, source: 'stooq', success: false, latencyMs: Date.now() - tStart, calledBy: 'market_snapshot', errorMessage: String(e).slice(0, 200) });
+      }, { maxAttempts: 3, backoffMs: 250, timeoutMs: 1500 });
+      incCounter(symbol, 'stooq', v != null ? 'ok' : 'fail');
+      return v;
+    };
+
+    /**
+     * P0-B — Alpha Vantage GLOBAL_QUOTE fallback (3e source live après
+     * yahoo + eodhd). Free tier 5 req/min, suffisant pour VIX/DXY 1×/5min.
+     * Inerte (no-op, retourne null) si `ALPHAVANTAGE_API_KEY` non set —
+     * le caller fall through à stooq / proxy ETF.
+     */
+    const fetchAlphaVantage = async (symbol: string): Promise<number | null> => {
+      const url = buildAlphaVantageGlobalQuoteUrl(symbol, alphaKey);
+      if (!url) {
+        // Pas de clé — on ne compte pas comme fail (skip silencieux).
         return null;
       }
+      const v = await fetchWithRetry(async (signal) => {
+        const tStart = Date.now();
+        try {
+          const res = await fetch(url, { signal });
+          const latencyMs = Date.now() - tStart;
+          if (!res.ok) {
+            this.logEodhdCall({ ticker: symbol, eodhdTicker: symbol, source: 'alphavantage', success: false, statusCode: res.status, latencyMs, calledBy: 'market_snapshot', errorMessage: `HTTP_${res.status}` });
+            return null;
+          }
+          const json = await res.json() as unknown;
+          const parsed = parseAlphaVantageGlobalQuoteResponse(json);
+          if (parsed != null) {
+            this.logEodhdCall({ ticker: symbol, eodhdTicker: symbol, source: 'alphavantage', success: true, statusCode: res.status, latencyMs, priceUsd: parsed, calledBy: 'market_snapshot' });
+            return parsed;
+          }
+          this.logEodhdCall({ ticker: symbol, eodhdTicker: symbol, source: 'alphavantage', success: false, statusCode: res.status, latencyMs, calledBy: 'market_snapshot', errorMessage: 'parser_returned_null_or_rate_limit' });
+          return null;
+        } catch (e) {
+          this.logEodhdCall({ ticker: symbol, eodhdTicker: symbol, source: 'alphavantage', success: false, latencyMs: Date.now() - tStart, calledBy: 'market_snapshot', errorMessage: String(e).slice(0, 200) });
+          throw e;
+        }
+      }, { maxAttempts: 3, backoffMs: 250, timeoutMs: 1500 });
+      incCounter(symbol, 'alphavantage', v != null ? 'ok' : 'fail');
+      return v;
     };
 
     /**
@@ -2291,7 +2377,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       indicator: string,
       attempts: Array<{
         ticker: string;
-        source?: 'eodhd' | 'yahoo' | 'stooq';
+        source?: 'eodhd' | 'yahoo' | 'stooq' | 'alphavantage';
         multiplier?: number;
         quality: 'live' | 'proxy';
       }>,
@@ -2302,19 +2388,43 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         if (source === 'eodhd') v = await fetchNum(a.ticker);
         else if (source === 'yahoo') v = await fetchYahoo(a.ticker);
         else if (source === 'stooq') v = await fetchStooq(a.ticker);
+        else if (source === 'alphavantage') v = await fetchAlphaVantage(a.ticker);
         if (v !== null) {
           const finalValue = a.multiplier ? v * a.multiplier : v;
           if (a.quality === 'live') {
-            // Marque le provider qui a finalement servi la valeur live :
-            // utile pour distinguer un fix EODHD d'un fix Yahoo en prod.
-            dataQuality.live.push(source === 'eodhd' ? indicator : `${indicator}(via ${source}:${a.ticker})`);
+            // P0-B — toujours tagger la source réelle utilisée (vs PR #19
+            // qui ne taggait que les non-eodhd). Permet de distinguer
+            // `vix(via eodhd:VIX.INDX)` de `vix(via yahoo:^VIX)` dans les
+            // dashboards d'observability.
+            dataQuality.live.push(`${indicator}(via ${source}:${a.ticker})`);
           } else {
             dataQuality.proxy.push(`${indicator}(via ${source}:${a.ticker})`);
           }
+          // P0-B — on conserve la valeur en last-known cache pour stale
+          // serving sur les cycles suivants en cas de panne providers.
+          this.lastKnownMacroValues.set(indicator, { value: finalValue, timestamp: Date.now() });
           return finalValue;
         }
       }
+
+      // P0-B — Toutes les sources ont échoué. On tente le last-known cache
+      // (TTL 24h) AVANT de tomber sur le fallback hardcoded. La valeur est
+      // marquée `dataQuality.stale=true` pour que le caller (Lisa) sache
+      // qu'elle est datée.
+      const cached = this.lastKnownMacroValues.get(indicator);
+      if (cached && Date.now() - cached.timestamp < this.LAST_KNOWN_TTL_MS) {
+        dataQuality.stale.push(`${indicator}(last_known_age=${Math.round((Date.now() - cached.timestamp) / 60_000)}min)`);
+        this.logger.error(
+          `[macro] ${indicator} all sources failed — serving last-known $${cached.value.toFixed(2)} (age ${Math.round((Date.now() - cached.timestamp) / 60_000)}min)`,
+        );
+        return cached.value;
+      }
+
+      // Pas de last-known utilisable → fallback hardcoded final.
       dataQuality.fallback.push(indicator);
+      this.logger.error(
+        `[macro] ${indicator} all sources failed AND no last-known cache — falling through to hardcoded default`,
+      );
       return null;
     };
 
@@ -2324,26 +2434,35 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       spy, qqq, eurusd, usdjpy,
       silver, hyg, lqd,
     ] = await Promise.all([
-      // VIX cascade — PR D : 4 sources avant proxy ETF
-      // EODHD VIX.INDX → Yahoo ^VIX → Stooq ^vix → VXX.US (proxy ETF)
-      // Justification : EODHD VIX.INDX retourne empty_price_field
-      // fréquemment (incident 27/04 — Lisa lisait la valeur fallback
-      // hardcoded 18.5 toute la journée). Yahoo + Stooq sont des sources
-      // gratuites no-auth qui exposent VIX en quasi-realtime aux heures
-      // de marché US.
+      // VIX cascade — P0-B : YAHOO PRIMARY (était 2nd en PR #19 → ne
+      // résolvait jamais en prod 28/04 04:00 UTC). Ordre :
+      //   1. yahoo:^VIX        (primary, no auth, fiable historiquement)
+      //   2. eodhd:VIX.INDX    (souvent empty_price_field mais on essaie)
+      //   3. alphavantage:VIX  (3e source no-auth après free tier API key)
+      //   4. stooq:^vix        (4e fallback CSV public)
+      //   5. eodhd:VXX.US      (proxy ETF, decay vs VIX)
+      // Chaque attempt : retry 2 backoff 250ms timeout 1500ms (cf.
+      // fetchWithRetry). Si tout échoue → last-known cache (24h TTL)
+      // avant fallback hardcoded.
       fetchCascade('vix', [
-        { ticker: 'VIX.INDX', source: 'eodhd', quality: 'live' },
         { ticker: '^VIX', source: 'yahoo', quality: 'live' },
+        { ticker: 'VIX.INDX', source: 'eodhd', quality: 'live' },
+        { ticker: 'VIX', source: 'alphavantage', quality: 'live' },
         { ticker: '^vix', source: 'stooq', quality: 'live' },
-        { ticker: 'VXX.US', source: 'eodhd', quality: 'proxy' }, // proxy ETF, decay vs VIX
+        { ticker: 'VXX.US', source: 'eodhd', quality: 'proxy' },
       ]),
-      // DXY cascade — PR D : 5 sources avant proxy ETF UUP
-      // Yahoo expose DX-Y.NYB (ICE Dollar Index futures spot).
-      // Stooq expose ^dxy (fallback CSV).
+      // DXY cascade — P0-B : YAHOO PRIMARY (DX-Y.NYB), même rationale.
+      //   1. yahoo:DX-Y.NYB    (primary)
+      //   2. eodhd:DXY.INDX    (eodhd primary historique)
+      //   3. eodhd:USDX.INDX   (eodhd alternative)
+      //   4. alphavantage:DXY  (3e source live)
+      //   5. stooq:^dxy        (4e fallback CSV)
+      //   6. eodhd:UUP.US ×4.1 (proxy ETF)
       fetchCascade('dxy', [
+        { ticker: 'DX-Y.NYB', source: 'yahoo', quality: 'live' },
         { ticker: 'DXY.INDX', source: 'eodhd', quality: 'live' },
         { ticker: 'USDX.INDX', source: 'eodhd', quality: 'live' },
-        { ticker: 'DX-Y.NYB', source: 'yahoo', quality: 'live' },
+        { ticker: 'DXY', source: 'alphavantage', quality: 'live' },
         { ticker: '^dxy', source: 'stooq', quality: 'live' },
         { ticker: 'UUP.US', source: 'eodhd', multiplier: 4.1, quality: 'proxy' },
       ]),
@@ -2446,6 +2565,39 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       recentNews: [],
       upcomingEvents: [],
     };
+  }
+
+  /**
+   * P0-B — Snapshot read-only des compteurs `macro_quote_source{...}`.
+   * Format des clés : `${symbol}:${source}:${status}`. Exposé pour
+   * dump dans /metrics ou inspection ad-hoc côté admin.
+   *
+   * Exemple :
+   *   { '^VIX:yahoo:ok': 41, '^VIX:yahoo:fail': 2,
+   *     'VIX.INDX:eodhd:fail': 43, 'VXX.US:eodhd:ok': 2 }
+   */
+  getMacroQuoteSourceCounters(): Record<string, number> {
+    return Object.fromEntries(this.quoteSourceCounters);
+  }
+
+  /**
+   * P0-B — Reset compteurs (test helper / admin manual reset).
+   */
+  resetMacroQuoteSourceCounters(): void {
+    this.quoteSourceCounters.clear();
+  }
+
+  /**
+   * P0-B — Snapshot du cache last-known (debug). Retourne les valeurs
+   * stockées + leur âge en minutes.
+   */
+  getLastKnownMacroValues(): Array<{ indicator: string; value: number; ageMinutes: number }> {
+    const now = Date.now();
+    return Array.from(this.lastKnownMacroValues.entries()).map(([indicator, { value, timestamp }]) => ({
+      indicator,
+      value,
+      ageMinutes: Math.round((now - timestamp) / 60_000),
+    }));
   }
 
   /**

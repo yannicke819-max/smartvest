@@ -8,8 +8,11 @@
  * negative, jamais 0).
  */
 import {
+  buildAlphaVantageGlobalQuoteUrl,
   buildStooqCsvUrl,
   buildYahooChartUrl,
+  fetchWithRetry,
+  parseAlphaVantageGlobalQuoteResponse,
   parseStooqCsvResponse,
   parseYahooChartResponse,
 } from '../macro-fallback.helper';
@@ -226,5 +229,177 @@ describe('URL builders', () => {
     expect(buildStooqCsvUrl('^DXY')).toBe(
       'https://stooq.com/q/l/?s=%5Edxy&f=sd2t2ohlcv&h&e=csv',
     );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P0-B — Alpha Vantage parser + URL builder
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('parseAlphaVantageGlobalQuoteResponse', () => {
+  it('extracts price from "05. price" string field', () => {
+    const json = {
+      'Global Quote': {
+        '01. symbol': 'VIX',
+        '05. price': '22.45',
+        '08. previous close': '22.10',
+      },
+    };
+    expect(parseAlphaVantageGlobalQuoteResponse(json)).toBe(22.45);
+  });
+
+  it('returns null on rate-limit "Information" envelope (free tier 5/min hit)', () => {
+    const json = {
+      Information: 'We have detected your API key as ABC. Our standard API call frequency is 5 calls per minute and 500 calls per day.',
+    };
+    expect(parseAlphaVantageGlobalQuoteResponse(json)).toBeNull();
+  });
+
+  it('returns null on "Note" envelope (also rate-limit indicator)', () => {
+    const json = {
+      Note: 'Thank you for using Alpha Vantage! Our standard API call frequency is 5 calls per minute and 500 calls per day.',
+    };
+    expect(parseAlphaVantageGlobalQuoteResponse(json)).toBeNull();
+  });
+
+  it('returns null on "Error Message" envelope (invalid symbol)', () => {
+    const json = { 'Error Message': 'Invalid API call. Please retry or visit the documentation.' };
+    expect(parseAlphaVantageGlobalQuoteResponse(json)).toBeNull();
+  });
+
+  it('returns null on empty Global Quote object', () => {
+    const json = { 'Global Quote': {} };
+    expect(parseAlphaVantageGlobalQuoteResponse(json)).toBeNull();
+  });
+
+  it('returns null on missing Global Quote', () => {
+    expect(parseAlphaVantageGlobalQuoteResponse({})).toBeNull();
+  });
+
+  it('returns null on non-object input', () => {
+    expect(parseAlphaVantageGlobalQuoteResponse(null)).toBeNull();
+    expect(parseAlphaVantageGlobalQuoteResponse(undefined)).toBeNull();
+    expect(parseAlphaVantageGlobalQuoteResponse('not json')).toBeNull();
+    expect(parseAlphaVantageGlobalQuoteResponse(42)).toBeNull();
+  });
+
+  it('rejects 0 / negative / NaN price (corrupted data)', () => {
+    expect(parseAlphaVantageGlobalQuoteResponse({ 'Global Quote': { '05. price': '0' } })).toBeNull();
+    expect(parseAlphaVantageGlobalQuoteResponse({ 'Global Quote': { '05. price': '-1.5' } })).toBeNull();
+    expect(parseAlphaVantageGlobalQuoteResponse({ 'Global Quote': { '05. price': 'NaN' } })).toBeNull();
+    expect(parseAlphaVantageGlobalQuoteResponse({ 'Global Quote': { '05. price': '' } })).toBeNull();
+  });
+
+  it('rejects non-string price field (defensive against schema drift)', () => {
+    expect(parseAlphaVantageGlobalQuoteResponse({
+      'Global Quote': { '05. price': 22.45 }, // number instead of string
+    })).toBeNull();
+  });
+});
+
+describe('buildAlphaVantageGlobalQuoteUrl', () => {
+  it('builds URL when API key is provided', () => {
+    expect(buildAlphaVantageGlobalQuoteUrl('VIX', 'XYZ123')).toBe(
+      'https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=VIX&apikey=XYZ123',
+    );
+  });
+
+  it('uppercases symbol + URL-encodes both fields', () => {
+    expect(buildAlphaVantageGlobalQuoteUrl('vix', 'key with space')).toBe(
+      'https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=VIX&apikey=key%20with%20space',
+    );
+  });
+
+  it('returns null when apiKey is null/undefined/empty (caller falls through)', () => {
+    expect(buildAlphaVantageGlobalQuoteUrl('VIX', null)).toBeNull();
+    expect(buildAlphaVantageGlobalQuoteUrl('VIX', undefined)).toBeNull();
+    expect(buildAlphaVantageGlobalQuoteUrl('VIX', '')).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P0-B — fetchWithRetry helper
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('fetchWithRetry', () => {
+  it('returns the value on first attempt success (no retry)', async () => {
+    const fn = jest.fn().mockResolvedValue(22.5);
+    const result = await fetchWithRetry(fn, { maxAttempts: 3, backoffMs: 1, timeoutMs: 1500 });
+    expect(result).toBe(22.5);
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries up to maxAttempts when fn returns null', async () => {
+    const fn = jest.fn().mockResolvedValue(null);
+    const result = await fetchWithRetry(fn, { maxAttempts: 3, backoffMs: 1, timeoutMs: 1500 });
+    expect(result).toBeNull();
+    expect(fn).toHaveBeenCalledTimes(3);
+  });
+
+  it('returns the value on second attempt if first fails', async () => {
+    const fn = jest.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(22.5);
+    const result = await fetchWithRetry(fn, { maxAttempts: 3, backoffMs: 1, timeoutMs: 1500 });
+    expect(result).toBe(22.5);
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it('catches exceptions and retries (does not propagate)', async () => {
+    const fn = jest.fn()
+      .mockRejectedValueOnce(new Error('network'))
+      .mockRejectedValueOnce(new Error('timeout'))
+      .mockResolvedValueOnce(22.5);
+    const result = await fetchWithRetry(fn, { maxAttempts: 3, backoffMs: 1, timeoutMs: 1500 });
+    expect(result).toBe(22.5);
+    expect(fn).toHaveBeenCalledTimes(3);
+  });
+
+  it('passes a fresh AbortSignal to each attempt', async () => {
+    const signals: AbortSignal[] = [];
+    const fn = jest.fn(async (signal: AbortSignal) => {
+      signals.push(signal);
+      return null;
+    });
+    await fetchWithRetry(fn, { maxAttempts: 3, backoffMs: 1, timeoutMs: 1500 });
+    expect(signals).toHaveLength(3);
+    // Chaque signal est un objet distinct (timeout signal créé par tentative)
+    expect(signals[0]).not.toBe(signals[1]);
+    expect(signals[1]).not.toBe(signals[2]);
+  });
+
+  it('respects maxAttempts=1 (no retry)', async () => {
+    const fn = jest.fn().mockResolvedValue(null);
+    await fetchWithRetry(fn, { maxAttempts: 1, backoffMs: 1, timeoutMs: 1500 });
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('clamps maxAttempts < 1 to at least 1', async () => {
+    const fn = jest.fn().mockResolvedValue(null);
+    await fetchWithRetry(fn, { maxAttempts: 0, backoffMs: 1, timeoutMs: 1500 });
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses default 3 attempts / 250ms backoff / 1500ms timeout when opts omitted', async () => {
+    const fn = jest.fn().mockResolvedValue(null);
+    const tStart = Date.now();
+    await fetchWithRetry(fn); // pas de opts → defaults
+    const elapsed = Date.now() - tStart;
+    expect(fn).toHaveBeenCalledTimes(3);
+    // Default backoff = 250ms × 2 (entre attempts) = 500ms minimum
+    expect(elapsed).toBeGreaterThanOrEqual(450); // tolérance scheduler
+  });
+
+  it('returns null when all attempts throw exceptions', async () => {
+    const fn = jest.fn().mockRejectedValue(new Error('always fails'));
+    const result = await fetchWithRetry(fn, { maxAttempts: 3, backoffMs: 1, timeoutMs: 1500 });
+    expect(result).toBeNull();
+    expect(fn).toHaveBeenCalledTimes(3);
+  });
+
+  it('treats undefined return as failure (retries)', async () => {
+    const fn = jest.fn().mockResolvedValue(undefined);
+    await fetchWithRetry(fn, { maxAttempts: 3, backoffMs: 1, timeoutMs: 1500 });
+    expect(fn).toHaveBeenCalledTimes(3);
   });
 });

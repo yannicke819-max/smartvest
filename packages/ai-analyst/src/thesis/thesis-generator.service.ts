@@ -61,9 +61,14 @@ export interface MarketSnapshot {
    *  cycle (sauf si `LisaSessionConfig.allowDegradedMacro = true`).
    */
   dataQuality?: {
-    live: string[];      // indicateurs avec vraie valeur EODHD
+    live: string[];      // indicateurs avec vraie valeur (EODHD/Yahoo/Stooq/AlphaVantage)
     proxy: string[];     // indicateurs estimés via ETF (VXX→VIX, UUP→DXY)
     fallback: string[];  // indicateurs sur valeur hardcoded (DANGER)
+    /** P0-B — indicateurs servis par le cache "last-known" (toutes sources
+     *  live/proxy en échec mais une valeur antérieure est encore en mémoire).
+     *  Lisa peut tolérer ces valeurs sur 1-2 cycles avant de basculer
+     *  fallback hardcoded. Le caller incrémente `degraded` si trop de stale. */
+    stale?: string[];
     degraded: boolean;   // true si lecture macro non fiable (cf. règle ci-dessus)
   };
   /** News / événements récents 24-72h */
