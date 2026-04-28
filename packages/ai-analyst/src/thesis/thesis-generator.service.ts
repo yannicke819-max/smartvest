@@ -495,7 +495,7 @@ ${m.performanceAnalytics}
 
 ` : ''}${this.formatDailyHarvestBlock(req.dailyHarvestContext)}${req.adoptedPatternsBriefing ? `${req.adoptedPatternsBriefing}\n` : ''}## Recent news (24-72h) — analyse scorée et filtrée
 ${m.newsAnalysis ? m.newsAnalysis : (recentNewsBlock || '- (no recent news provided)')}${m.newsAnalysis ? '' : sentimentLine}
-${m.screenerCandidates ? `\n## Screener candidates (scans de découverte EODHD)\n${m.screenerCandidates}\n` : ''}${m.insiderSignals ? `\n## Insider signals (SEC Form 4, 30j)\n${m.insiderSignals}\n` : ''}${m.optionsSignals ? `\n## Options flow (IV ATM · put/call ratio)\n${m.optionsSignals}\n` : ''}${m.liquidationsSignals ? `\n## Crypto liquidations (waves reversal)\n${m.liquidationsSignals}\n` : ''}
+${m.screenerCandidates ? `\n## Screener candidates (scans de découverte EODHD)\n${m.screenerCandidates}\n` : ''}${m.insiderSignals ? `\n## Insider signals (SEC Form 4, 30j)\n${m.insiderSignals}\n` : ''}${m.optionsSignals ? `\n## Options flow (IV ATM · put/call ratio)\n${m.optionsSignals}\n` : ''}${m.liquidationsSignals ? `\n## Crypto liquidations (waves reversal)\n${m.liquidationsSignals}\n` : ''}${this.formatReboundOpenPositionsBlock(m.reboundSignals)}
 
 ## Upcoming events (7 days)
 ${upcomingEventsBlock || '- (no upcoming events provided)'}
@@ -664,6 +664,25 @@ défini, sans markdown, sans explications hors JSON.
 - Stop-loss : ${tr.stopLossPct}% · Take-profit : ${tr.takeProfitPct}%${ladder}
 - Tu peux dévier si tu as une raison solide (à expliciter dans [DIAGNOSTIC]).
 `;
+  }
+
+  /**
+   * P3-A.2 — Bloc « Positions rebound ouvertes » injecté dans le prompt
+   * pour informer Lisa des paper trades en cours sur la stratégie
+   * mean-reversion. Empêche Lisa de dupliquer un signal sur un ticker
+   * déjà ouvert et lui donne la visibilité TP/SL/timeStop.
+   *
+   * Inerte si reboundSignals est vide ou absent.
+   */
+  private formatReboundOpenPositionsBlock(
+    signals?: MarketSnapshot['reboundSignals'],
+  ): string {
+    if (!signals || signals.length === 0) return '';
+    const rows = signals.map((s) => {
+      const conf = s.confidence > 0 ? ` · conf=${(s.confidence * 100).toFixed(0)}%` : '';
+      return `- **${s.ticker}** entry=${s.entry} → TP1=${s.tp1} TP2=${s.tp2} TP3=${s.tp3} · SL=${s.sl} · time stop ${s.timeStopDays}j${conf}`;
+    });
+    return `\n## Positions rebound ouvertes (paper trading, sortie mécanique)\n${rows.join('\n')}\n→ Ne pas re-signaler ces tickers. Les sorties TP/SL sont gérées par ReboundMonitor (cron 5 min).\n`;
   }
 
   private formatDailyHarvestBlock(ctx?: DailyHarvestBriefingContext): string {

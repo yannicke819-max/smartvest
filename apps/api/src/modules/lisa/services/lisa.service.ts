@@ -505,6 +505,31 @@ export class LisaService {
       this.logger.warn(`EODHD enrichment partial failure: ${String(e).slice(0, 120)}`);
     }
 
+    // P3-A.2 — injecte les positions rebound OPEN dans le snapshot pour
+    // que Lisa connaisse les rebounds en cours (paper trading) et évite
+    // de doubler une position sur le même ticker. Mappage léger en mode
+    // "signals" (les TP/SL sont déjà figés à l'ouverture, pas négociables).
+    try {
+      const reboundOpen = await this.getReboundOpenPositions(portfolioId);
+      if (reboundOpen.length > 0) {
+        marketSnapshot.reboundSignals = reboundOpen.map((r) => ({
+          ticker: r.ticker,
+          entry: r.entry,
+          tp1: r.tp1,
+          tp2: r.tp2,
+          tp3: r.tp3,
+          sl: r.sl,
+          timeStopDays: Math.max(
+            0,
+            Math.round((new Date(r.timeStopAt).getTime() - Date.now()) / 86_400_000),
+          ),
+          confidence: r.confidence ?? 0,
+        }));
+      }
+    } catch (e) {
+      this.logger.debug(`rebound positions inject skipped: ${String(e).slice(0, 80)}`);
+    }
+
     // Persona "chasseur EV+" injectée en amont du user focus si le flag est actif.
     // N'ajoute AUCUN droit d'exécution réelle — elle modifie juste le cadrage de
     // l'analyse produite par Claude (plus de turnover, sizing plus agressif dans
@@ -1742,6 +1767,45 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       open_positions_count: snap.openPositionsCount,
       drawdown_from_peak_pct: snap.drawdownFromPeakPct,
     };
+  }
+
+  /**
+   * P3-A.2 — Liste les positions rebound OPEN d'un portfolio pour
+   * injection dans le prompt Lisa. Retourne un format léger (pas tout
+   * le row DB), prêt à être formaté par le builder de prompt.
+   */
+  async getReboundOpenPositions(portfolioId: string): Promise<Array<{
+    ticker: string;
+    entry: number;
+    tp1: number;
+    tp2: number;
+    tp3: number;
+    sl: number;
+    timeStopAt: string;
+    filledQtyPct: number;
+    confidence: number | null;
+  }>> {
+    const { data, error } = await this.supabase
+      .getClient()
+      .from('rebound_positions')
+      .select('ticker, entry_price, tp1, tp2, tp3, sl, time_stop_at, filled_qty_pct, scanner_confidence')
+      .eq('portfolio_id', portfolioId)
+      .eq('status', 'OPEN');
+    if (error) {
+      this.logger.warn(`getReboundOpenPositions failed: ${error.message}`);
+      return [];
+    }
+    return (data ?? []).map((r) => ({
+      ticker: String(r.ticker),
+      entry: parseFloat(r.entry_price as string),
+      tp1: parseFloat(r.tp1 as string),
+      tp2: parseFloat(r.tp2 as string),
+      tp3: parseFloat(r.tp3 as string),
+      sl: parseFloat(r.sl as string),
+      timeStopAt: r.time_stop_at as string,
+      filledQtyPct: parseFloat(r.filled_qty_pct as string),
+      confidence: r.scanner_confidence != null ? parseFloat(r.scanner_confidence as string) : null,
+    }));
   }
 
   /**
