@@ -1,0 +1,134 @@
+name: Backtest Rebound
+
+# Lance le runner historique rebound-tp à la demande depuis l'UI GitHub.
+# Aucun trigger automatique — le coût LLM/data est trop élevé pour
+# le faire tourner sur chaque push. L'utilisateur déclenche depuis
+# Actions → "Backtest Rebound" → Run workflow.
+#
+# Pré-requis (Settings → Secrets and variables → Actions) :
+#   - EODHD_API_KEY              (clé EODHD pour fetch OHLCV daily)
+#   - SUPABASE_URL               (insert row backtest_runs)
+#   - SUPABASE_SERVICE_ROLE_KEY  (idem, bypass RLS)
+#
+# Verdict GO/NO-GO visible directement dans Job summary après le run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      universe:
+        description: 'Univers de tickers à scanner'
+        required: true
+        type: choice
+        default: 'both'
+        options:
+          - sp500
+          - nasdaq100
+          - both
+      start:
+        description: 'Date début (YYYY-MM-DD)'
+        required: true
+        type: string
+        default: '2024-04-28'
+      end:
+        description: 'Date fin (YYYY-MM-DD)'
+        required: true
+        type: string
+        default: '2026-04-28'
+      cfg:
+        description: 'Config scanRebound de départ'
+        required: true
+        type: choice
+        default: 'default'
+        options:
+          - default
+          - strict
+      auto_tune:
+        description: 'Si NO_GO, run 3 variantes (rsi_25, vol_2_0, dd_20) et retourne la meilleure'
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  backtest:
+    name: Run rebound-tp backtest
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Env check (fail-fast secrets manquants)
+        env:
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          missing=()
+          [ -z "$EODHD_API_KEY" ] && missing+=("EODHD_API_KEY")
+          [ -z "$SUPABASE_URL" ] && missing+=("SUPABASE_URL")
+          [ -z "$SUPABASE_SERVICE_ROLE_KEY" ] && missing+=("SUPABASE_SERVICE_ROLE_KEY")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing required secrets: ${missing[*]}"
+            echo "::error::Add them in Settings → Secrets and variables → Actions"
+            exit 1
+          fi
+          echo "✓ All required secrets present"
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build ai-analyst (compile dist/cli/backtest-rebound.js)
+        run: npm run build --workspace=@smartvest/ai-analyst
+
+      - name: Run backtest
+        env:
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          AUTO_TUNE_FLAG=""
+          if [ "${{ inputs.auto_tune }}" = "true" ]; then
+            AUTO_TUNE_FLAG="--auto-tune"
+          fi
+          npm run backtest:rebound --workspace=@smartvest/ai-analyst -- \
+            --universe=${{ inputs.universe }} \
+            --start=${{ inputs.start }} \
+            --end=${{ inputs.end }} \
+            --cfg=${{ inputs.cfg }} \
+            $AUTO_TUNE_FLAG
+
+      - name: Append Markdown report to job summary
+        if: always()
+        run: |
+          # Le runner écrit dans le cwd du workspace appelant. npm workspaces
+          # exécute la commande depuis le package, donc tmp/ est sous
+          # packages/ai-analyst/tmp/.
+          MD=$(ls -t packages/ai-analyst/tmp/backtest-rebound-*.md 2>/dev/null | head -1)
+          if [ -z "$MD" ]; then
+            MD=$(ls -t tmp/backtest-rebound-*.md 2>/dev/null | head -1)
+          fi
+          if [ -n "$MD" ] && [ -f "$MD" ]; then
+            cat "$MD" >> "$GITHUB_STEP_SUMMARY"
+            echo "✓ Appended $MD to job summary"
+          else
+            echo "::warning::Markdown report not found — backtest may have failed before writing"
+          fi
+
+      - name: Upload backtest artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-rebound-${{ inputs.universe }}-${{ inputs.start }}-to-${{ inputs.end }}
+          path: |
+            packages/ai-analyst/tmp/backtest-rebound-*.json
+            packages/ai-analyst/tmp/backtest-rebound-*.md
+            tmp/backtest-rebound-*.json
+            tmp/backtest-rebound-*.md
+          retention-days: 30
+          if-no-files-found: warn
