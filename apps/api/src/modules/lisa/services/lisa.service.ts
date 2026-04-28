@@ -1486,16 +1486,20 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     //    Gate STRICT : pas de leverage implicite, pas de cash négatif.
     const snapshot = await this.paperBroker.computeSnapshot(portfolioId);
     let availableCash = new Decimal(snapshot.cashUsd);
-    // P10-FIX — Buffer absolu USD réduit $50 → $20 pour laisser passer les
+    // P10-FIX — Buffer absolu USD réduit $50 → $35 pour laisser passer les
     // rotations defense (NOC, GDX, etc. skippées sur 3 thèses live 28/04).
     // Env override `CASH_BUFFER_USD_OVERRIDE` permet de tuner runtime sans
-    // redeploy. Justification : un buffer absolu plus permissif laisse
-    // déployer plus de capital tout en gardant safety contre slippage/fees.
+    // redeploy. Justification : un buffer plus permissif laisse déployer
+    // plus de capital tout en gardant safety contre slippage/fees.
+    //
+    // Note postmortem : le ticket P10-FIX parlait d'un "ratio 50%→35%"
+    // mais le code utilise historiquement un buffer ABSOLU USD. On honore
+    // l'intent (réduction ~30%) en gardant la sémantique absolue : 50→35.
     const cashBufferOverride = this.config.get<string>('CASH_BUFFER_USD_OVERRIDE');
     const CASH_BUFFER_USD = new Decimal(
       cashBufferOverride && Number.isFinite(parseFloat(cashBufferOverride))
         ? cashBufferOverride
-        : '20',
+        : '35',
     );
 
     // Cap maxOpenPositions — garde-fou utilisateur (default 10, configurable
