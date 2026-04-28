@@ -1,5 +1,8 @@
 # fly.toml — SmartVest API (NestJS)
 #
+# Last forced redeploy : 2026-04-28 — sync Fly with main HEAD (P0 hotfix
+# #52 snapshot-history-types + #53 profile-label-defensive).
+#
 # auto_stop_machines = 'off' : la machine reste TOUJOURS up.
 # Indispensable pour que les crons Lisa tournent sans interruption :
 #   - autopilot (1 min)
