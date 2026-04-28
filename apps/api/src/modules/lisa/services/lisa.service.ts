@@ -269,6 +269,9 @@ export class LisaService {
       return_target_annual_pct: pick('return_target_annual_pct', 'returnTargetAnnualPct', existing?.return_target_annual_pct ?? null),
       daily_cost_budget_usd: pick('daily_cost_budget_usd', 'dailyCostBudgetUsd', existing?.daily_cost_budget_usd ?? null),
       performance_horizon_days: pick('performance_horizon_days', 'performanceHorizonDays', existing?.performance_horizon_days ?? 30),
+      // P9-UX — scanner cycle per-portfolio + path quality gate (migration 0089)
+      gainers_cycle_minutes: pick('gainers_cycle_minutes', 'gainersCycleMinutes', existing?.gainers_cycle_minutes ?? 15),
+      gainers_min_path_efficiency: pick('gainers_min_path_efficiency', 'gainersMinPathEfficiency', existing?.gainers_min_path_efficiency ?? 0.5),
     };
 
     // Validation : auto_approve exige uniquement un portefeuille de simulation
@@ -334,6 +337,20 @@ export class LisaService {
       this.logger.warn('Colonne allow_degraded_macro absente — retry sans ce champ');
       const { allow_degraded_macro: _omit, ...mergedFallback } = merged;
       void _omit;
+      const retry = await this.supabase.getClient()
+        .from('lisa_session_configs')
+        .upsert(mergedFallback, { onConflict: 'portfolio_id' })
+        .select()
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
+
+    // P9-UX — fallback si migration 0089_gainers_cycle_minutes pas encore appliquée
+    if (error && /gainers_cycle_minutes|gainers_min_path_efficiency/i.test(error.message)) {
+      this.logger.warn('Colonnes gainers_cycle_minutes / gainers_min_path_efficiency absentes — retry sans ces champs');
+      const { gainers_cycle_minutes: _gc, gainers_min_path_efficiency: _gpe, ...mergedFallback } = merged;
+      void _gc; void _gpe;
       const retry = await this.supabase.getClient()
         .from('lisa_session_configs')
         .upsert(mergedFallback, { onConflict: 'portfolio_id' })
