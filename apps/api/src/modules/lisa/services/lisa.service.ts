@@ -50,7 +50,7 @@ import { EodhdOptionsService } from './eodhd-options.service';
 import { BinanceLiquidationsService } from './binance-liquidations.service';
 import { ApiCostTrackerService, BudgetExceededError } from './api-cost-tracker.service';
 import { MarketRegimeService } from './market-regime.service';
-import { computeAtrPct } from '@smartvest/ai-analyst';
+import { computeAtrPct, computeRealizedVolPct } from '@smartvest/ai-analyst';
 import {
   buildYahooChartUrl,
   buildStooqCsvUrl,
@@ -2728,10 +2728,12 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       // - 24h ticker : btc24hReturnPct
       // - futures premium index : btcFundingPct
       // - 51 daily klines : ATR14 + ATR50 BTC pour détection RANGE
-      const [ticker24h, futureStats, dailyKlines] = await Promise.all([
+      // - 61 1m klines : realized 1h vol pour détection VOL_SPIKE intraday
+      const [ticker24h, futureStats, dailyKlines, minute1Klines] = await Promise.all([
         this.binanceMarket.getTicker24h('BTCUSDT').catch(() => null),
         this.binanceMarket.getFutureStats('BTCUSDT').catch(() => null),
         this.binanceMarket.getKlines('BTCUSDT', '1d', 51).catch(() => null),
+        this.binanceMarket.getKlines('BTCUSDT', '1m', 61).catch(() => null),
       ]);
 
       const btc24hReturnPct =
@@ -2751,6 +2753,13 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         atr50BtcPct = computeAtrPct(dailyKlines, 50);
       }
 
+      // P1 PR D — realized 1h vol depuis 1m klines (60 returns).
+      // Trigger VOL_SPIKE si > 3%. Complementary à VIX (cross-asset macro).
+      let realized1hPct: number | null = null;
+      if (minute1Klines && minute1Klines.length >= 61) {
+        realized1hPct = computeRealizedVolPct(minute1Klines, 60);
+      }
+
       const inputs = {
         btc24hReturnPct,
         btcFundingPct,
@@ -2758,7 +2767,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         atr14BtcPct,
         atr50BtcPct,
         newsScore: null as number | null,
-        realized1hPct: null as number | null,
+        realized1hPct,
         redditSpikeSigma: null as number | null,
       };
       tacticalRegime = await this.marketRegime.getCurrentRegime(inputs);
