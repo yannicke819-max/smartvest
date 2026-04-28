@@ -30,6 +30,7 @@ import { DailyHarvestTracker } from '@/components/lisa/daily-harvest-tracker';
 import { DailyHarvestPanel } from '@/components/lisa/daily-harvest-panel';
 import { MacroModeSelector } from '@/components/lisa/macro-mode-selector';
 import { GainersStatusTile } from '@/components/lisa/gainers-status-tile';
+import { AutopilotBudgetBadge } from '@/components/lisa/autopilot-budget-badge';
 import { LisaDecisionLog } from '@/components/lisa/decision-log';
 import { MechanicalAgentCard } from '@/components/lisa/mechanical-agent-card';
 import { OptionPositionsCard } from '@/components/lisa/option-positions-card';
@@ -523,6 +524,13 @@ export default function LisaPage() {
               </option>
             ))}
           </select>
+        </div>
+      )}
+
+      {/* P8-BR — Badge mini-widget budget API + statut pause */}
+      {selectedPortfolioId && (
+        <div className="flex items-center justify-end">
+          <AutopilotBudgetBadge portfolioId={selectedPortfolioId} />
         </div>
       )}
 

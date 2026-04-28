@@ -11,6 +11,7 @@ import { MaterialChangeDetectorService } from './material-change-detector.servic
 import { DailyProfitGovernor } from './daily-profit-governor.service';
 import { LisaReplayConnectorService } from '../../bot-lab/services/lisa-replay-connector.service';
 import { AdaptiveSafetyNet } from './adaptive-safety-net';
+import { ApiCostTrackerService } from './api-cost-tracker.service';
 
 /** Tickers macro et indices stratégiques que Lisa consulte en permanence.
  *  Warmed une fois au boot pour peupler le cache immédiatement, évite le
@@ -68,7 +69,73 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
     private readonly dailyProfitGovernor: DailyProfitGovernor,
     private readonly lisaReplay: LisaReplayConnectorService,
     private readonly config: ConfigService,
+    private readonly apiCostTracker: ApiCostTrackerService,
   ) {}
+
+  /**
+   * P8-BR — Auto-resume : pour un portfolio en pause budget, vérifie si
+   * le coût journalier est redescendu sous 90% du budget (rollover UTC à
+   * minuit OU budget bumped manuellement). Si oui : CLEAR paused_reason +
+   * log `autopilot_resumed`. Sinon : skip ce cycle pour ce portfolio.
+   *
+   * Retourne `true` si le cycle peut continuer (pas en pause OU resumed),
+   * `false` si on doit skipper (toujours en pause).
+   *
+   * Public pour permettre les tests unitaires `autopilot-budget-resume.spec`.
+   */
+  async maybeResumeOrSkip(cfg: Record<string, unknown>): Promise<boolean> {
+    const pausedReason = cfg.autopilot_paused_reason as string | null | undefined;
+    if (!pausedReason) return true; // pas en pause → cycle normal
+
+    if (pausedReason !== 'BUDGET_EXCEEDED') {
+      // MANUAL ou PROVIDER_OUTAGE → skip silencieux (resume manuel uniquement)
+      return false;
+    }
+
+    const budget = cfg.daily_cost_budget_usd as number | null | undefined;
+    if (budget == null || Number(budget) <= 0) {
+      // Budget retiré → reprise
+      await this.clearPausedReason(cfg, 'budget_unset');
+      return true;
+    }
+
+    const todayCostUsd = await this.apiCostTracker.getTodayTotalUsd().catch(() => 0);
+    const budgetNum = Number(budget);
+    if (todayCostUsd < budgetNum * 0.9) {
+      await this.clearPausedReason(cfg, `cost=$${todayCostUsd.toFixed(2)} < 90% of $${budgetNum.toFixed(2)}`);
+      return true;
+    }
+
+    // Toujours au-dessus du seuil → skip ce cycle, log discret toutes les
+    // ~30 min (sinon spam si cycle 7 min). Pas critique : la prochaine fois
+    // que le budget passe sous le seuil, le cycle reprend automatiquement.
+    this.logger.log(
+      `[autopilot:budget_paused] portfolio=${String(cfg.portfolio_id).slice(0, 8)} ` +
+      `cost=$${todayCostUsd.toFixed(2)} / budget=$${budgetNum.toFixed(2)} (≥90%) → skip cycle`,
+    );
+    return false;
+  }
+
+  private async clearPausedReason(
+    cfg: Record<string, unknown>,
+    reason: string,
+  ): Promise<void> {
+    await this.supabase.getClient()
+      .from('lisa_session_configs')
+      .update({ autopilot_paused_reason: null })
+      .eq('portfolio_id', cfg.portfolio_id as string);
+    this.logger.log(
+      `[autopilot:resumed] portfolio=${String(cfg.portfolio_id).slice(0, 8)} reason=${reason}`,
+    );
+    await this.decisionLog.append({
+      portfolioId: cfg.portfolio_id as string,
+      kind: 'autopilot_resumed',
+      summary: `Autopilot relancé automatiquement — ${reason}`,
+      rationale: `P8-BR auto-resume : la condition de pause (BUDGET_EXCEEDED) n'est plus remplie. Reprise sans intervention manuelle.`,
+      payload: { resume_trigger: reason },
+      triggeredBy: 'risk_monitor',
+    }).catch((e) => this.logger.warn(`[autopilot:resumed] log append failed: ${String(e).slice(0, 120)}`));
+  }
 
   /**
    * Cron BOT LAB auto-sync — toutes les 30 minutes.
@@ -218,6 +285,11 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
 
     for (const cfg of configs) {
       try {
+        // P8-BR — auto-resume si en pause budget et coût retombé < 90%,
+        // sinon skip ce cycle pour ce portfolio.
+        const canRun = await this.maybeResumeOrSkip(cfg);
+        if (!canRun) continue;
+
         // Skip si market_hours_only activé ET hors fenêtre.
         // Log discret pour que l'utilisateur puisse diagnostiquer l'inactivité.
         if (cfg.autopilot_market_hours_only === true && !inMarketHours) {

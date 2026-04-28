@@ -124,6 +124,45 @@ Migration `0086` crée `paper_trades` avec **toutes** les colonnes futures dès 
 
 ---
 
+## RÈGLE OPÉRATIONNELLE — AUTOPILOT BUDGET RESILIENCE — P8-BR
+
+P8-BR découple **kill-switch** (manuel/critique) de **budget-pause** (réversible). Avant : `autopilot_enabled` flippait à `false` sur `BudgetExceededError` → autopilot OFF silencieusement, intervention manuelle requise. Constat live 27-28/04 : 6h sans cycle, 0 trade.
+
+### Source de vérité
+
+`lisa_session_configs.autopilot_paused_reason TEXT NULL` (migration 0087) avec valeurs : `'BUDGET_EXCEEDED'` / `'MANUAL'` / `'PROVIDER_OUTAGE'`. **`autopilot_enabled` n'est plus jamais flippé par le hard-stop budget.**
+
+### Cycle de vie
+
+1. **Pause** (`LisaService.generateProposal`) : si `getTodayTotalUsd() >= daily_cost_budget_usd` → `UPDATE paused_reason='BUDGET_EXCEEDED'` + log `kind='autopilot_paused'` + throw `BudgetExceededError`.
+2. **Auto-resume** (`LisaAutopilotService.maybeResumeOrSkip`) au début de chaque cycle :
+   - `daily_cost_budget_usd IS NULL` → resume (budget retiré)
+   - `getTodayTotalUsd() < 0.9 × budget` → resume (rollover UTC à minuit OU bump budget)
+   - sinon → skip ce cycle pour ce portfolio (log discret)
+3. Le seuil **90%** est volontaire pour éviter le flap (resume → re-pause aussitôt si on était à 99% sans rollover).
+
+### Endpoint observable
+
+`GET /autopilot/cost-status?portfolioId=...` → `{ daily_used_usd, daily_budget_usd, pct, paused_reason, autopilot_enabled, kill_switch_active, next_reset_utc }`. Polling 30s côté UI.
+
+UI badge `<AutopilotBudgetBadge>` dans `/lisa` avec couleurs : 🟢 < 60% / 🟡 60-90% / 🔴 ≥ 90% ou paused.
+
+### Logs decision_log
+
+| `kind` | Quand | Résultat |
+|---|---|---|
+| `autopilot_paused` | budget atteint | Pause active, autopilot_enabled reste `true` |
+| `autopilot_resumed` | clear automatique | Reprise sans intervention manuelle, payload cite trigger |
+| `autopilot_disabled` | (legacy, plus émis depuis P8-BR) | — |
+
+### Backfill prod
+
+Pour les rows qui ont `autopilot_enabled=false` causé par BudgetExceededError pré-P8-BR, exécuter `pnpm tsx scripts/backfill-autopilot-paused-reason.ts --apply` (dry-run par défaut). Le script restore `enabled=true` + set `paused_reason='BUDGET_EXCEEDED'`, l'auto-resume prend le relais.
+
+Doc complète : `docs/autopilot.md` (matrice états × transitions × endpoint).
+
+---
+
 ## RÈGLE OPÉRATIONNELLE — MODES OPÉRATOIRES (3) — P7
 
 P7 introduit un toggle 3-modes opératoires en haut de `/lisa`. La source
