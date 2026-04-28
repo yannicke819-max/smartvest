@@ -151,10 +151,10 @@ describe('LlmRouter — env var override', () => {
   });
 });
 
-describe('LlmRouter — circuit breaker à 80% budget (Opus fallback)', () => {
-  it('falls back to Sonnet when budget>=80% AND task is Opus AND fallbackOnBudget=true', async () => {
+describe('LlmRouter — circuit breaker à 80% budget (Opus → Haiku fallback)', () => {
+  it('falls back to HAIKU (P0-A change, ex-Sonnet) when budget>=80% AND task is Opus AND fallbackOnBudget=true', async () => {
     const { client, create } = makeAnthropic();
-    create.mockResolvedValue(fakeMessage({ model: 'claude-sonnet-4-6' }));
+    create.mockResolvedValue(fakeMessage({ model: 'claude-haiku-4-5-20251001' }));
     const { tracker, record } = makeCostTracker(85); // 85$ déjà consommé
     const { logger, warn } = makeAuditLogger();
     const router = new LlmRouter(
@@ -166,21 +166,22 @@ describe('LlmRouter — circuit breaker à 80% budget (Opus fallback)', () => {
 
     const result = await router.call('thesis_generation', baseParams);
 
-    expect(create.mock.calls[0][0].model).toBe('claude-sonnet-4-6');
-    expect(result.modelUsed).toBe('claude-sonnet-4-6');
+    expect(create.mock.calls[0][0].model).toBe('claude-haiku-4-5-20251001');
+    expect(result.modelUsed).toBe('claude-haiku-4-5-20251001');
     expect(result.fallback).toBe(true);
+    expect(result.fallbackReason).toBe('budget_80pct_haiku');
     expect(warn).toHaveBeenCalledWith(
-      'opus_fallback',
+      'opus_haiku_fallback',
       expect.objectContaining({
         task: 'thesis_generation',
         originalModel: 'claude-opus-4-7',
-        fallbackModel: 'claude-sonnet-4-6',
+        fallbackModel: 'claude-haiku-4-5-20251001',
         todayCostUsd: 85,
         budgetUsd: 100,
       }),
     );
     expect(record).toHaveBeenCalledTimes(1);
-    expect(record.mock.calls[0][0].model).toBe('claude-sonnet-4-6');
+    expect(record.mock.calls[0][0].model).toBe('claude-haiku-4-5-20251001');
   });
 
   it('does NOT fall back when task is not Opus (Sonnet stays Sonnet at 85%)', async () => {
@@ -322,9 +323,9 @@ describe('LlmRouter — calcul du coût + persistance', () => {
     expect(record.mock.calls[0][0].costUsd).toBeCloseTo(expectedCost, 6);
   });
 
-  it('records the FALLBACK model (Sonnet), not the original (Opus), on circuit breaker', async () => {
+  it('records the FALLBACK model (Haiku, P0-A change), not the original (Opus), on circuit breaker', async () => {
     const { client, create } = makeAnthropic();
-    create.mockResolvedValue(fakeMessage({ inputTokens: 2000, outputTokens: 1000, model: 'claude-sonnet-4-6' }));
+    create.mockResolvedValue(fakeMessage({ inputTokens: 2000, outputTokens: 1000, model: 'claude-haiku-4-5-20251001' }));
     const { tracker, record } = makeCostTracker(85);
     const router = new LlmRouter(client, tracker, {
       dailyCostBudgetUsd: 100,
@@ -333,10 +334,11 @@ describe('LlmRouter — calcul du coût + persistance', () => {
 
     await router.call('thesis_generation', baseParams);
 
-    expect(record.mock.calls[0][0].model).toBe('claude-sonnet-4-6');
+    expect(record.mock.calls[0][0].model).toBe('claude-haiku-4-5-20251001');
     expect(record.mock.calls[0][0].task).toBe('thesis_generation');
-    // Coût Sonnet, pas Opus : (2000*3 + 1000*15) / 1M = 0.021
-    expect(record.mock.calls[0][0].costUsd).toBeCloseTo(0.021, 6);
+    // Coût Haiku : (2000 × $0.80 + 1000 × $4.0) / 1M = 0.0056
+    // Avant P0-A c'était Sonnet : (2000*3 + 1000*15) / 1M = 0.021 → 3.7× réduction
+    expect(record.mock.calls[0][0].costUsd).toBeCloseTo(0.0056, 6);
   });
 
   it('does NOT record on Anthropic error (no double-counting failed calls)', async () => {
@@ -380,5 +382,214 @@ describe('LlmRouter — boot-time validator', () => {
     expect(
       () => new LlmRouter(client, tracker, { dailyCostBudgetUsd: 100, fallbackOnBudget: true }),
     ).not.toThrow();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P0-A — soft-budget + per-call override + Haiku fallback
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('LlmRouter — P0-A soft-budget at 100%', () => {
+  it('soft-warns + falls back to Haiku at 100% with forceContinue=true (no throw)', async () => {
+    const { client, create } = makeAnthropic();
+    create.mockResolvedValue(fakeMessage({ inputTokens: 1500, outputTokens: 800, model: 'claude-haiku-4-5-20251001' }));
+    const { tracker, record } = makeCostTracker(105); // 105% spend
+    const { logger, warn } = makeAuditLogger();
+    const router = new LlmRouter(
+      client,
+      tracker,
+      { dailyCostBudgetUsd: 100, fallbackOnBudget: true },
+      logger,
+    );
+
+    const result = await router.call('thesis_generation', baseParams, { forceContinue: true });
+
+    expect(create.mock.calls[0][0].model).toBe('claude-haiku-4-5-20251001');
+    expect(result.modelUsed).toBe('claude-haiku-4-5-20251001');
+    expect(result.fallback).toBe(true);
+    expect(result.fallbackReason).toBe('budget_100pct_soft_haiku');
+    expect(warn).toHaveBeenCalledWith(
+      'cost_budget_warn',
+      expect.objectContaining({
+        task: 'thesis_generation',
+        todayCostUsd: 105,
+        budgetUsd: 100,
+        fallbackModel: 'claude-haiku-4-5-20251001',
+        reason: 'soft_haiku_100pct',
+      }),
+    );
+    expect(record).toHaveBeenCalledTimes(1);
+  });
+
+  it('soft-warn applies to ALL tasks (even Sonnet), pas seulement Opus, à 100%', async () => {
+    const { client, create } = makeAnthropic();
+    create.mockResolvedValue(fakeMessage({ model: 'claude-haiku-4-5-20251001' }));
+    const { tracker } = makeCostTracker(150);
+    const router = new LlmRouter(client, tracker, {
+      dailyCostBudgetUsd: 100,
+      fallbackOnBudget: true,
+    });
+
+    // Même une tâche Sonnet (binary_decision) tombe sur Haiku quand
+    // forceContinue=true à 100% — la prio est de continuer, pas la qualité.
+    const result = await router.call('binary_decision', baseParams, { forceContinue: true });
+    expect(result.modelUsed).toBe('claude-haiku-4-5-20251001');
+    expect(result.fallback).toBe(true);
+  });
+
+  it('throws BudgetExceededError at 100% when forceContinue=false (legacy strict mode preserved)', async () => {
+    const { client, create } = makeAnthropic();
+    const { tracker, record } = makeCostTracker(110);
+    const router = new LlmRouter(client, tracker, {
+      dailyCostBudgetUsd: 100,
+      fallbackOnBudget: true,
+    });
+
+    await expect(
+      router.call('thesis_generation', baseParams, { forceContinue: false }),
+    ).rejects.toThrow(BudgetExceededError);
+    expect(create).not.toHaveBeenCalled();
+    expect(record).not.toHaveBeenCalled();
+  });
+
+  it('default behavior at 100% (no options) = throw — preserves legacy tests', async () => {
+    // Sécurité rétrocompat : sans options.forceContinue, le router ne sait
+    // pas si l'opérateur veut soft-mode → on garde le hard-throw historique.
+    // C'est pourquoi les tests legacy au-dessus n'ont pas changé.
+    const { client } = makeAnthropic();
+    const { tracker } = makeCostTracker(110);
+    const router = new LlmRouter(client, tracker, {
+      dailyCostBudgetUsd: 100,
+      fallbackOnBudget: true,
+    });
+
+    await expect(router.call('thesis_generation', baseParams)).rejects.toThrow(BudgetExceededError);
+  });
+});
+
+describe('LlmRouter — P0-A per-call budget override', () => {
+  it('uses options.budgetUsd over constructor budget', async () => {
+    const { client, create } = makeAnthropic();
+    create.mockResolvedValue(fakeMessage({ model: 'claude-haiku-4-5-20251001' }));
+    const { tracker } = makeCostTracker(40);
+    // Constructor : budget $100 (40% spend = pas de fallback)
+    // Override per-call : budget $50 (40/50 = 80% → trigger fallback Opus→Haiku)
+    const router = new LlmRouter(client, tracker, {
+      dailyCostBudgetUsd: 100,
+      fallbackOnBudget: true,
+    });
+
+    const result = await router.call('thesis_generation', baseParams, { budgetUsd: 50 });
+
+    expect(result.fallback).toBe(true);
+    expect(result.fallbackReason).toBe('budget_80pct_haiku');
+  });
+
+  it('options.budgetUsd raised triggers MORE permissive behavior (no fallback at 30%)', async () => {
+    const { client, create } = makeAnthropic();
+    create.mockResolvedValue(fakeMessage({ model: 'claude-opus-4-7' }));
+    const { tracker } = makeCostTracker(15);
+    // Constructor : budget $20 (75% spend → just under 80%)
+    // Override per-call : budget $50 (15/50 = 30% → no fallback)
+    const router = new LlmRouter(client, tracker, {
+      dailyCostBudgetUsd: 20,
+      fallbackOnBudget: true,
+    });
+
+    const result = await router.call('thesis_generation', baseParams, { budgetUsd: 50 });
+
+    expect(result.fallback).toBe(false);
+    expect(result.modelUsed).toBe('claude-opus-4-7');
+  });
+
+  it('UI raise budget $20→$50 unblocks autopilot (incident 28/04 05:02 UTC repro)', async () => {
+    // Repro exact : router config $20 (statique env), spend $20.46, UI
+    // remonte à $50, le caller relit DB et passe budgetUsd: 50 par cycle.
+    const { client, create } = makeAnthropic();
+    create.mockResolvedValue(fakeMessage());
+    const { tracker } = makeCostTracker(20.46);
+    const router = new LlmRouter(client, tracker, {
+      dailyCostBudgetUsd: 20, // ancien env, jamais re-read
+      fallbackOnBudget: true,
+    });
+
+    // Sans override : throw (situation prod 28/04)
+    await expect(router.call('thesis_generation', baseParams)).rejects.toThrow(BudgetExceededError);
+
+    // Avec override DB → budget $50 → 41% spend → no fallback
+    const result = await router.call('thesis_generation', baseParams, { budgetUsd: 50 });
+    expect(result.fallback).toBe(false);
+  });
+});
+
+describe('LlmRouter — P0-A 80% Opus fallback now goes to Haiku (cost saving)', () => {
+  it('saves ~3.75× vs ex-Sonnet fallback (Haiku $0.80/M vs Sonnet $3/M input)', async () => {
+    const { client, create } = makeAnthropic();
+    create.mockResolvedValue(fakeMessage({ inputTokens: 5000, outputTokens: 2000, model: 'claude-haiku-4-5-20251001' }));
+    const { tracker, record } = makeCostTracker(85);
+    const router = new LlmRouter(client, tracker, {
+      dailyCostBudgetUsd: 100,
+      fallbackOnBudget: true,
+    });
+
+    await router.call('thesis_generation', baseParams);
+
+    // Haiku 5000 input × $0.80 + 2000 output × $4 = 0.012
+    // ex-Sonnet aurait coûté : 5000 × $3 + 2000 × $15 = 0.045 → 3.75× plus cher
+    expect(record.mock.calls[0][0].costUsd).toBeCloseTo(0.012, 6);
+  });
+
+  it('binary_decision (Sonnet) UNCHANGED at 80%+ (only Opus tasks swap to Haiku)', async () => {
+    const { client, create } = makeAnthropic();
+    create.mockResolvedValue(fakeMessage({ model: 'claude-sonnet-4-6' }));
+    const { tracker } = makeCostTracker(85);
+    const router = new LlmRouter(client, tracker, {
+      dailyCostBudgetUsd: 100,
+      fallbackOnBudget: true,
+    });
+
+    // binary_decision est déjà mappé à Sonnet — pas de fallback nécessaire,
+    // le modèle est déjà bon marché. Notre check `nominalModel.includes('opus')`
+    // garantit qu'on ne touche que les tâches Opus.
+    const result = await router.call('binary_decision', baseParams);
+    expect(result.fallback).toBe(false);
+    expect(result.modelUsed).toBe('claude-sonnet-4-6');
+  });
+
+  it('audit_explanation (Sonnet) UNCHANGED at 80%+ (preserved for human readability)', async () => {
+    const { client, create } = makeAnthropic();
+    create.mockResolvedValue(fakeMessage({ model: 'claude-sonnet-4-6' }));
+    const { tracker } = makeCostTracker(95);
+    const router = new LlmRouter(client, tracker, {
+      dailyCostBudgetUsd: 100,
+      fallbackOnBudget: true,
+    });
+
+    const result = await router.call('audit_explanation', baseParams);
+    expect(result.fallback).toBe(false);
+    expect(result.modelUsed).toBe('claude-sonnet-4-6');
+  });
+});
+
+describe('LlmRouter — P0-A combined matrix', () => {
+  it('100% + forceContinue=true takes priority over 80% Opus path', async () => {
+    // À 100%, on ne passe PAS par le check 80% Opus (le 100% short-circuits).
+    const { client, create } = makeAnthropic();
+    create.mockResolvedValue(fakeMessage({ model: 'claude-haiku-4-5-20251001' }));
+    const { tracker } = makeCostTracker(120);
+    const { logger, warn } = makeAuditLogger();
+    const router = new LlmRouter(
+      client,
+      tracker,
+      { dailyCostBudgetUsd: 100, fallbackOnBudget: true },
+      logger,
+    );
+
+    const result = await router.call('thesis_generation', baseParams, { forceContinue: true });
+
+    expect(result.fallbackReason).toBe('budget_100pct_soft_haiku');
+    // Pas de log opus_haiku_fallback car on a court-circuité au 100%
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith('cost_budget_warn', expect.anything());
   });
 });

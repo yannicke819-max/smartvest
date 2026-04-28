@@ -742,6 +742,22 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         return '';
       });
 
+    // P0-A — Lecture per-cycle de la config budget Claude depuis
+    // lisa_session_configs. Permet à l'UI de remonter le budget (ex.
+    // $20 → $50) sans redéployer (cf. incident 28/04 05:02 UTC où le
+    // router lisait l'env var statique au lieu de la config DB).
+    // - daily_cost_budget_usd : budget cumulé en USD (null = pas d'override,
+    //   le router applique sa config constructor / env LLM_ROUTER_DAILY_BUDGET_USD)
+    // - cost_force_continue : à 100% du budget, soft warn + Haiku (true,
+    //   default DB via migration 0074) ou hard throw (false, mode strict)
+    const budgetOverride = config.daily_cost_budget_usd != null
+      ? Number(config.daily_cost_budget_usd)
+      : undefined;
+    const forceContinueOverride = (config as Record<string, unknown>).cost_force_continue;
+    const forceContinue = typeof forceContinueOverride === 'boolean'
+      ? forceContinueOverride
+      : true; // default DB true (migration 0074) — fail-soft par défaut
+
     let result: Awaited<ReturnType<ThesisGeneratorService['generateTheses']>>;
     try {
       result = await this.thesisGenerator.generateTheses({
@@ -760,6 +776,8 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         earningsBySymbol,
         ...(dailyHarvestContext ? { dailyHarvestContext } : {}),
         ...(adoptedPatternsBriefing ? { adoptedPatternsBriefing } : {}),
+        ...(budgetOverride != null ? { budgetUsd: budgetOverride } : {}),
+        forceContinue,
       });
     } catch (e) {
       // Parse failure ou erreur Claude : on log dans le decision log et on

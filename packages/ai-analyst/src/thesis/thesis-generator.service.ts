@@ -268,6 +268,12 @@ export interface GenerateThesesRequest {
    *  Généré par PatternBriefingService côté back. Empty string si aucun
    *  pattern adopté actif. */
   adoptedPatternsBriefing?: string;
+  /** P0-A — Budget journalier USD à appliquer au LlmRouter pour CET appel.
+   *  Lu depuis lisa_session_configs.daily_cost_budget_usd côté caller. */
+  budgetUsd?: number;
+  /** P0-A — Si true (default DB) : à 100% du budget, soft-warn + fallback
+   *  Haiku au lieu de throw. Lu depuis lisa_session_configs.cost_force_continue. */
+  forceContinue?: boolean;
 }
 
 export interface GenerateThesesResponse {
@@ -315,6 +321,10 @@ export class ThesisGeneratorService {
       profile: req.config.profile,
       userMessage,
       tool: PROPOSAL_TOOL as unknown as { name: string; description: string; input_schema: Record<string, unknown> },
+      // P0-A — propagation du budget per-cycle (lu depuis
+      // lisa_session_configs côté lisa.service.ts à chaque generateProposal).
+      ...(req.budgetUsd !== undefined ? { budgetUsd: req.budgetUsd } : {}),
+      ...(req.forceContinue !== undefined ? { forceContinue: req.forceContinue } : {}),
     });
 
     const parsed = toolResult.input;
