@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { PerformanceService } from '../../performance/performance.service';
@@ -66,6 +67,7 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
     private readonly materialDetector: MaterialChangeDetectorService,
     private readonly dailyProfitGovernor: DailyProfitGovernor,
     private readonly lisaReplay: LisaReplayConnectorService,
+    private readonly config: ConfigService,
   ) {}
 
   /**
@@ -251,6 +253,9 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
           // PATCH 1 — kill-switch dataQuality. Si false (default), le cycle
           // sera skippé quand le snapshot macro est dégradé. Cf. PR#1 P0.
           cfg.allow_degraded_macro === true,
+          // P2-B — discipline mode plumbé pour override du filet de garantie
+          // par HARVEST_POLL_MS (default 5 min) en mode DAILY_HARVEST.
+          (cfg.capital_discipline_mode as string | null) ?? null,
         );
       } catch (e) {
         this.logger.error(
@@ -299,6 +304,7 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
     cycleMinutes: number,
     autoApprove: boolean = false,
     allowDegradedMacro: boolean = false,
+    disciplineMode: string | null = null,
   ): Promise<void> {
     // Mutex in-memory : skip si un cycle est déjà en cours pour ce portfolio
     if (this.runningCycles.has(portfolioId)) {
@@ -319,7 +325,7 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
     this.runningCycles.add(portfolioId);
     this.cycleStartedAt.set(portfolioId, Date.now());
     try {
-      await this.runPortfolioCycleInner(userId, portfolioId, cycleMinutes, autoApprove, allowDegradedMacro);
+      await this.runPortfolioCycleInner(userId, portfolioId, cycleMinutes, autoApprove, allowDegradedMacro, disciplineMode);
     } finally {
       this.runningCycles.delete(portfolioId);
       this.cycleStartedAt.delete(portfolioId);
@@ -332,6 +338,7 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
     cycleMinutes: number,
     autoApprove: boolean = false,
     allowDegradedMacro: boolean = false,
+    disciplineMode: string | null = null,
   ): Promise<void> {
     // 1. Rate limit baseline = MAX(dernier cycle_started OU completed,
     //    dernière proposal). Source de vérité = lisa_proposals.created_at
@@ -372,7 +379,15 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
     //    son appétit (5 min = très réactif, 60 min = passif). Default 30 min.
     const RATE_LIMIT_MIN = 3;
     const configuredCycleMin = Number(cycleMinutes) || 30;
-    const baseMin = Math.max(5, Math.min(60, configuredCycleMin));
+    // P2-B — En mode DAILY_HARVEST (scalping intraday TP 2.5%), on remplace
+    // la cadence DB (15min default ou 7min preset HARVEST) par HARVEST_POLL_MS
+    // (default 300_000ms = 5 min). Granularité 5 min capture mieux les pics
+    // intraday pour l'objectif $100/jour. Le clamp [5, 60] s'applique toujours.
+    const harvestPollMs = Number(this.config.get<string>('HARVEST_POLL_MS')) || 300_000;
+    const harvestPollMin = Math.round(harvestPollMs / 60_000);
+    const isDailyHarvest = disciplineMode === 'DAILY_HARVEST';
+    const effectiveCycleMin = isDailyHarvest ? harvestPollMin : configuredCycleMin;
+    const baseMin = Math.max(5, Math.min(60, effectiveCycleMin));
     // PATCH 4 — backoff progressif quand le régime est stable.
     // Le helper retient un compteur par portfolio (clé = portfolioId) et
     // étire le filet jusqu'à 8× le base quand 10+ cycles consécutifs n'ont
