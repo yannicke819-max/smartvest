@@ -1766,10 +1766,12 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     target: number;
     achievementPct: number;
     drift: number;
+    dailyTargetHit: boolean;
   }> {
     await this.assertPortfolioOwner(userId, portfolioId);
 
-    const TARGET_USD = 100;
+    // P3-A — DAILY_TARGET_USD configurable via env (default $100).
+    const TARGET_USD = Number(this.config.get<string>('DAILY_TARGET_USD')) || 100;
     const dayStartUtc = new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00.000Z').toISOString();
     const dayEndUtc = new Date(new Date(dayStartUtc).getTime() + 86_400_000).toISOString();
 
@@ -1805,6 +1807,10 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       target: TARGET_USD,
       achievementPct: round2(achievementPct),
       drift: round2(drift),
+      // P3-A — flag consommé par le cron pour freeze nouvelles entrées
+      // rebound + signalé à l'UI dashboard. Latent compte (un trade
+      // rebound non encore fermé est de l'avancement vers l'objectif).
+      dailyTargetHit: total >= TARGET_USD,
     };
   }
 

@@ -219,6 +219,104 @@ Variables d'environnement requises côté plateforme : voir `.env.example`.
 
 ---
 
+## Rebound TP strategy (P3-A)
+
+Stratégie mean-reversion sur tickers liquides survendus avec sortie mécanique TP1/TP2/TP3 + SL discipliné. Vise l'objectif **$100 nets/jour** en captant des rebonds courts post-capitulation, complémentaire au sizing macro de Lisa (PR #41).
+
+### Flow
+
+```
+                  ┌──────────────────────┐
+                  │  Lisa cycle (5 min)  │
+                  └──────────┬───────────┘
+                             │
+                             ▼
+          ┌──────────────────────────────────────┐
+          │  scanRebound(history, cfg)           │  ← pure helper
+          │  packages/ai-analyst/src/strategies/ │
+          └──────────┬───────────────────────────┘
+                     │
+        ┌────────────┼─────────────┐
+        ▼            ▼             ▼
+   condition 1  condition 2  …  condition 5
+   RSI<30       close<bbLower   reversal candle
+        │            │             │
+        └────┬───────┴─────────────┘
+             ▼
+    ┌────────────────────┐
+    │  ReboundSignal     │  { type: 'BUY' | 'HOLD', … }
+    └─────────┬──────────┘
+              │ if BUY
+              ▼
+   ┌────────────────────────────┐
+   │  INSERT rebound_positions  │  status='OPEN', filled=100%
+   └────────────┬───────────────┘
+                │
+                ▼
+   ┌────────────────────────────────┐
+   │  ReboundMonitorService cron    │  every 5 min
+   │  - fetch live price            │
+   │  - skip if fallback source     │
+   │  - SL hit  → status='SL_HIT'   │
+   │  - TP1 hit → status='TP1_HIT', filled=50%  │
+   │  - TP2 hit → status='TP2_HIT', filled=20%  │
+   │  - TP3 hit → status='TP3_HIT', filled=0%   │
+   │  - timeout → status='TIMEOUT'  │
+   └────────────────────────────────┘
+                │
+                ▼
+   ┌────────────────────────────┐
+   │  GET /lisa/daily-pnl       │  PR #42 + dailyTargetHit
+   │  realized + latent ≥ 100$  │  freeze nouvelles entrées
+   └────────────────────────────┘
+```
+
+### Conditions BUY (TOUTES requises sur la dernière bougie close)
+
+1. RSI(14) < `REBOUND_RSI_OVERSOLD` (default 30)
+2. close < BollingerLower(20, 2)
+3. drawdown 20-bar ≤ -`REBOUND_MIN_DD_PCT` (default 15%)
+4. volume > `REBOUND_VOL_SPIKE` × SMA(volume, 20) (default 1.5×)
+5. Bougie de retournement : close > open ET RSI[t] > RSI[t-1] ET RSI[t-1] < oversold
+
+### Niveaux et sortie mécanique
+
+| Palier | Niveau | Sortie qty | Status DB |
+|---|---|---|---|
+| TP1 | entry × 1.05 | 50% | `TP1_HIT` |
+| TP2 | entry × 1.10 | 30% | `TP2_HIT` |
+| TP3 | entry × 1.15 | 20% | `TP3_HIT` |
+| SL  | entry × 0.96 | 100% restants | `SL_HIT` |
+| Time stop | 10 jours après entrée | 100% restants | `TIMEOUT` |
+
+### Variables d'environnement
+
+```env
+REBOUND_RSI_OVERSOLD=30
+REBOUND_MIN_DD_PCT=15
+REBOUND_VOL_SPIKE=1.5
+REBOUND_TP1_PCT=5
+REBOUND_TP2_PCT=10
+REBOUND_TP3_PCT=15
+REBOUND_SL_PCT=4
+REBOUND_TIME_STOP_DAYS=10
+DAILY_TARGET_USD=100
+```
+
+### Garde-fous
+
+- **Source fallback** : si `LisaService.getLivePrice` retourne `source` préfixé par `fallback*`, le cron skip l'évaluation pour ne pas trigger une sortie sur prix corrompu (cf. CLAUDE.md « Garde-fous prix fallback »).
+- **Pas d'exécution réelle** : aucun appel `BrokerAdapter.placeOrder()`. Les positions sont simulées (paper trading), cohérent avec `MANUAL_EXPLICIT` par défaut.
+- **Daily target hit** : `GET /lisa/daily-pnl` expose `dailyTargetHit: boolean`. Le scanner ne doit pas créer de nouvelles positions quand cumul ≥ target (responsabilité du caller).
+
+### Tests
+
+`packages/ai-analyst/src/strategies/__tests__/rebound-tp.spec.ts` — 12 specs couvrant : capitulation full setup → BUY, bull trap → HOLD (RSI), no volume spike → HOLD, reversal candle baissière → HOLD, drawdown insuffisant → HOLD, NaN/négatifs → HOLD, custom TP/SL configs, threshold strict.
+
+Backtest hit-rate TP1 ≥ 55% : ticket P3-B séparé.
+
+---
+
 ## Contribution
 
 Règles de wording, feature flags, conventions de code : [`CLAUDE.md`](./CLAUDE.md).

@@ -134,6 +134,37 @@ export interface MarketSnapshot {
     takeProfitPct: number;
     takeProfitLadderPct: number[];
   };
+
+  /** P3-A — Indicateurs micro pré-calculés par ticker pour le scanner
+   *  rebound-tp. Optionnel : populé uniquement quand un caller a invoqué
+   *  scanRebound sur la watchlist. Permet à Lisa de raisonner sur les
+   *  signaux micro (RSI/BB/drawdown/volume) au-delà du contexte macro.
+   *
+   *  Map ticker → indicateurs sur la dernière bougie close.
+   *  Wiring complet du pipeline de scan attendu en P3-A.2.
+   */
+  reboundIndicators?: Record<string, {
+    rsi14: number;
+    bbLower20: number;
+    bbUpper20: number;
+    ma50?: number;
+    drawdown20Pct: number;
+    volSma20: number;
+  }>;
+
+  /** P3-A — Signaux BUY actifs prêts à être ouverts (filtrés par
+   *  scanRebound). Lisa peut combiner ces signaux avec son sizing macro
+   *  (deployment-scaler PR #41) pour décider quels rebounds prioriser. */
+  reboundSignals?: Array<{
+    ticker: string;
+    entry: number;
+    tp1: number;
+    tp2: number;
+    tp3: number;
+    sl: number;
+    timeStopDays: number;
+    confidence: number;
+  }>;
 }
 
 /**
