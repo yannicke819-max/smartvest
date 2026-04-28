@@ -49,6 +49,7 @@ import { EodhdInsiderService } from './eodhd-insider.service';
 import { EodhdOptionsService } from './eodhd-options.service';
 import { BinanceLiquidationsService } from './binance-liquidations.service';
 import { ApiCostTrackerService, BudgetExceededError } from './api-cost-tracker.service';
+import { MarketRegimeService } from './market-regime.service';
 import {
   buildYahooChartUrl,
   buildStooqCsvUrl,
@@ -103,6 +104,8 @@ export class LisaService {
     private readonly patternAdoption: PatternAdoptionService,
     // PATCH 4 — hard-stop budget journalier API
     private readonly apiCostTracker: ApiCostTrackerService,
+    // P1 — classifier de régime tactique
+    private readonly marketRegime: MarketRegimeService,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
     if (anthropicKey) {
@@ -2425,6 +2428,35 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       degraded: computeDataQualityDegraded(dataQuality.fallback),
     };
 
+    // P1 — Classifier le régime tactique courant à partir des indicateurs
+    // qu'on vient de fetcher. Le service cache 5 min en interne et persiste
+    // dans market_regimes_log. Si tous les inputs critiques sont absents,
+    // le classifier retourne NEUTRAL avec reason `inputs_unavailable`.
+    let tacticalRegime: ReturnType<typeof this.marketRegime.peekCurrentRegime> = null;
+    try {
+      const btc24hReturnPct = btc != null && fallback.btcUsd > 0
+        ? ((btc - fallback.btcUsd) / fallback.btcUsd) * 100
+        : null; // approx — compute avec last-known si dispo plus tard
+      const inputs = {
+        btc24hReturnPct: null as number | null,
+        btcFundingPct: null as number | null,
+        vix: vix ?? null,
+        atr14BtcPct: null as number | null,
+        atr50BtcPct: null as number | null,
+        newsScore: null as number | null,
+        realized1hPct: null as number | null,
+        redditSpikeSigma: null as number | null,
+      };
+      // btc24hReturnPct via fallback (approximation — V2 utilisera un
+      // historical price service dédié pour le calcul exact 24h).
+      if (btc24hReturnPct != null && Number.isFinite(btc24hReturnPct)) {
+        inputs.btc24hReturnPct = btc24hReturnPct;
+      }
+      tacticalRegime = await this.marketRegime.getCurrentRegime(inputs);
+    } catch (e) {
+      this.logger.warn(`[regime] classify failed (non-blocking): ${String(e).slice(0, 100)}`);
+    }
+
     // SPY ≈ SP500/10, QQQ ≈ NASDAQ/40
     return {
       timestamp: new Date().toISOString(),
@@ -2445,6 +2477,18 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       dataQuality: dataQualityWithDegraded,
       recentNews: [],
       upcomingEvents: [],
+      ...(tacticalRegime
+        ? {
+            tacticalRegime: {
+              regime: tacticalRegime.regime,
+              reasons: tacticalRegime.reasons,
+              sizingMultiplier: tacticalRegime.sizingMultiplier,
+              stopLossPct: tacticalRegime.stopLossPct,
+              takeProfitPct: tacticalRegime.takeProfitPct,
+              takeProfitLadderPct: tacticalRegime.takeProfitLadderPct,
+            },
+          }
+        : {}),
     };
   }
 
