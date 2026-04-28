@@ -21,6 +21,8 @@ export * from './strategies/session-windows';
 export * from './strategies/proposal-source-routing';
 export * from './strategies/top-gainers-filter';
 export * from './strategies/multi-tf-persistence';
+export * from './strategies/logistic-regression';
+export * from './strategies/empirical-law';
 export * from './backtest/engine';
 export * from './backtest/metrics';
 export * from './backtest/runner';

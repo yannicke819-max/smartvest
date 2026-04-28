@@ -5,6 +5,66 @@ Guide de travail pour Claude Code sur ce repo.
 
 ---
 
+## RÈGLE OPÉRATIONNELLE — PROBABILITÉ BAYESIENNE — P9
+
+P9 transforme P8 (mesure de persistance multi-TF) en moteur probabiliste : `P(trade gagnant | features)` via régression logistique entraînée sur l'historique `paper_trades`. Implémentation maison (Newton-Raphson + L2, ~50 LoC), pas de dépendance ML externe.
+
+### Pure helpers (`@smartvest/ai-analyst`)
+
+- `logistic-regression.ts` : `fitLogistic(X, y, names, opts)`, `predict(weights, features)`, `computeAuc`, `computeAccuracy`, `wilsonInterval` (95%)
+- `empirical-law.ts` : `computeEmpiricalLaw(trades, minSample)` retourne buckets `persistenceCount → { n, wins, pWinObserved, avgPnlPct, ciLow, ciHigh }`
+
+### Service `PersistenceProbabilityService`
+
+- `estimateProbability(features)` : charge weights (cache 5min), retourne `{ pWin, confidence, sampleSize, modelVersion, fallback }`
+- `getEmpiricalLaw({ lookbackDays, minSample })` : alimente l'endpoint UI dashboard
+- `trainAndPersist({ lookbackDays })` : fit Newton-Raphson + AUC + INSERT nouvelle version (`probability_model_weights`)
+
+### Garde-fous statistiques
+
+- `sample_size < 30` → fallback (caller utilise seuil P8 dur, marqueur `fallback=true`)
+- `auc < 0.55` → fit rejeté, version précédente conservée
+- L2 régularisation `λ=0.01` par défaut (mitigation overfit petit sample)
+
+### Endpoints
+
+```
+GET  /lisa/persistence-empirical-law?lookback_days=30&min_sample=20
+POST /lisa/persistence-empirical-law/refit  body { lookback_days?: number }
+```
+
+Retour empirical law :
+```json
+{
+  "trainedOn": 487,
+  "empiricalLaw": [
+    { "persistenceCount": "0/6", "n": 23, "pWinObserved": 0.13, "ciLow": 0.05, "ciHigh": 0.31 },
+    { "persistenceCount": "6/6", "n": 52, "pWinObserved": 0.78, "ciLow": 0.65, "ciHigh": 0.87 }
+  ],
+  "fittedCurve": "logistic",
+  "coefficients": { "intercept": -1.8, "persistenceCount": 0.62, ... },
+  "aucRoc": 0.71,
+  "accuracy": 0.68,
+  "modelVersion": "v1730000000",
+  "fallback": false
+}
+```
+
+### Migration `0088_probability_model_weights`
+
+Append-only : id, version (UNIQUE), weights JSONB, sample_size, auc_roc, accuracy, trained_at. Version courante = `trained_at MAX`.
+
+### Out of scope ce PR (deferred follow-up)
+
+- Cron Sunday 02:00 UTC (à wirer dans `LisaAutopilotService` ou nouveau service `ProbabilityRefitCron`)
+- Scanner integration `pWin` gate (dépend de données collectées sur quelques jours minimum)
+- UI dashboard (graph empirique + table coefficients + bouton refit)
+- Backtest CLI offline `pnpm backtest:persistence`
+
+L'endpoint `POST /persistence-empirical-law/refit` est utilisable manuellement pour bootstrapper le premier fit dès qu'il y a 30+ trades fermés.
+
+---
+
 ## RÈGLE OPÉRATIONNELLE — PERSISTANCE MULTI-TF — P8
 
 P8 ajoute une **dimension qualité** sur le scanner Gainers : avant d'ouvrir une position sur un top-1m gainer, on vérifie que la hausse est **persistante sur plusieurs timeframes** (1m / 5m / 10m / 15m / 30m / 1h) — pas juste un flash.

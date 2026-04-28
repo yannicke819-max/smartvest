@@ -44,6 +44,7 @@ import { OhlcvCacheService } from './services/ohlcv-cache.service';
 import { TopGainersScannerService } from './services/top-gainers-scanner.service';
 import { OperatingModeService } from './services/operating-mode.service';
 import { MultiTimeframePersistenceService } from './services/multi-tf-persistence.service';
+import { PersistenceProbabilityService } from './services/persistence-probability.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule, BotLabModule],
@@ -100,6 +101,8 @@ import { MultiTimeframePersistenceService } from './services/multi-tf-persistenc
     OperatingModeService,
     // P8-MULTI-TIMEFRAME-PERSISTENCE — fetch + score multi-TF (1m/5m/10m/15m/30m/1h)
     MultiTimeframePersistenceService,
+    // P9 — logistic regression P(win) sur features persistence + empirical law
+    PersistenceProbabilityService,
   ],
   exports: [
     LisaService,
