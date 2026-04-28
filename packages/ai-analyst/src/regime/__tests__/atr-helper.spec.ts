@@ -126,3 +126,105 @@ describe('computeAtrPct — edge cases', () => {
     expect(atr50).toBeLessThan(6);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// computeRealizedVolPct (P1 PR D)
+// ─────────────────────────────────────────────────────────────────────────────
+
+import { computeRealizedVolPct } from '../atr-helper';
+
+describe('computeRealizedVolPct — happy path', () => {
+  it('returns 0 when bars are flat (no movement)', () => {
+    const bars: OhlcBar[] = Array.from({ length: 61 }, () => bar(100, 100, 100));
+    const v = computeRealizedVolPct(bars, 60);
+    expect(v).toBe(0);
+  });
+
+  it('returns positive value for volatile bars', () => {
+    // Génère 61 closes alternants ±1% pour simuler choppy market
+    const bars: OhlcBar[] = Array.from({ length: 61 }, (_, i) => {
+      const close = i % 2 === 0 ? 100 : 101;
+      return bar(close + 0.5, close - 0.5, close);
+    });
+    const v = computeRealizedVolPct(bars, 60)!;
+    expect(v).toBeGreaterThan(0);
+    expect(v).toBeLessThan(20); // sanity bound
+  });
+
+  it('triggers VOL_SPIKE threshold (>3%) on extreme intraday moves', () => {
+    // Simulate très volatile : close varie 5% par bar
+    const bars: OhlcBar[] = [];
+    let close = 100;
+    for (let i = 0; i < 61; i++) {
+      close = close * (1 + (i % 2 === 0 ? 0.05 : -0.05)); // ±5% per bar
+      bars.push(bar(close * 1.01, close * 0.99, close));
+    }
+    const v = computeRealizedVolPct(bars, 60)!;
+    expect(v).toBeGreaterThan(3); // déclencherait VOL_SPIKE
+  });
+
+  it('low realized vol on smooth uptrend', () => {
+    // Hausse régulière 0.05% par bar = très lisse
+    const bars: OhlcBar[] = [];
+    let close = 100;
+    for (let i = 0; i < 61; i++) {
+      close = close * 1.0005;
+      bars.push(bar(close, close, close));
+    }
+    const v = computeRealizedVolPct(bars, 60)!;
+    expect(v).toBeGreaterThan(0);
+    expect(v).toBeLessThan(0.5); // smooth → low vol
+  });
+
+  it('default periods=60 (1h depuis 1m bars)', () => {
+    const bars: OhlcBar[] = Array.from({ length: 61 }, (_, i) =>
+      bar(100 + i * 0.1, 100 + i * 0.1, 100 + i * 0.1),
+    );
+    expect(computeRealizedVolPct(bars)).not.toBeNull();
+  });
+});
+
+describe('computeRealizedVolPct — edge cases', () => {
+  it('returns null when bars.length < periods + 1', () => {
+    const bars: OhlcBar[] = Array.from({ length: 60 }, () => bar(100, 100, 100));
+    expect(computeRealizedVolPct(bars, 60)).toBeNull();
+  });
+
+  it('returns null when periods < 2', () => {
+    const bars: OhlcBar[] = Array.from({ length: 100 }, () => bar(100, 100, 100));
+    expect(computeRealizedVolPct(bars, 1)).toBeNull();
+    expect(computeRealizedVolPct(bars, 0)).toBeNull();
+  });
+
+  it('returns null when bars is not array', () => {
+    expect(computeRealizedVolPct(null as unknown as OhlcBar[], 60)).toBeNull();
+    expect(computeRealizedVolPct(undefined as unknown as OhlcBar[], 60)).toBeNull();
+  });
+
+  it('returns null when close is 0 or negative', () => {
+    const bars: OhlcBar[] = Array.from({ length: 61 }, () => bar(100, 100, 100));
+    bars[10] = bar(0, 0, 0); // corruption
+    expect(computeRealizedVolPct(bars, 60)).toBeNull();
+  });
+
+  it('returns null when log return is non-finite (close jump from 0)', () => {
+    const bars: OhlcBar[] = Array.from({ length: 61 }, () => bar(100, 100, 100));
+    // Even though we filter close <= 0, a NaN in close should fail too
+    bars[5] = bar(NaN, NaN, NaN);
+    expect(computeRealizedVolPct(bars, 60)).toBeNull();
+  });
+
+  it('handles realistic BTC 1m bars (60 min, ~0.1% noise)', () => {
+    // BTC à ~70k avec bruit 1m 0.05-0.1%, typique heures liquides
+    const bars: OhlcBar[] = [];
+    let close = 70000;
+    for (let i = 0; i < 61; i++) {
+      const noise = (Math.sin(i * 0.5) * 0.001); // ±0.1%
+      close = close * (1 + noise);
+      bars.push(bar(close * 1.0005, close * 0.9995, close));
+    }
+    const v = computeRealizedVolPct(bars, 60)!;
+    expect(v).toBeGreaterThan(0);
+    expect(v).toBeLessThan(5); // realistic
+  });
+});
