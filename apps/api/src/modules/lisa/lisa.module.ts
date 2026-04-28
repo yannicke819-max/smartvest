@@ -42,6 +42,7 @@ import { ReboundMonitorService } from './services/rebound-monitor.service';
 import { ReboundScannerService } from './services/rebound-scanner.service';
 import { OhlcvCacheService } from './services/ohlcv-cache.service';
 import { TopGainersScannerService } from './services/top-gainers-scanner.service';
+import { OperatingModeService } from './services/operating-mode.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule, BotLabModule],
@@ -94,6 +95,8 @@ import { TopGainersScannerService } from './services/top-gainers-scanner.service
     OhlcvCacheService,
     // P5-PIVOT-TOP-GAINERS — scanner momentum cross-asset (gated par STRATEGY_MODE=top_gainers)
     TopGainersScannerService,
+    // P7-MODE-GAINERS-BADGE — toggle 3-modes opératoires (UI badge → DB strategy_mode)
+    OperatingModeService,
   ],
   exports: [
     LisaService,

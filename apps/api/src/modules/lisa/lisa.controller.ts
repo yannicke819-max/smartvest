@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, HttpCode, Param, Post, Query } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Headers, HttpCode, Param, Post, Query } from '@nestjs/common';
 import { extractUserId } from '../../common/extract-user-id';
 import { LisaService } from './services/lisa.service';
 import { DecisionLogService } from './services/decision-log.service';
@@ -11,6 +11,12 @@ import { SupabaseService } from '../supabase/supabase.service';
 import { DailySessionService } from './services/daily-session.service';
 import { ProfitSweepService } from './services/profit-sweep.service';
 import { MacroModeService, type MacroMode } from './services/macro-mode.service';
+import {
+  OperatingModeService,
+  OPERATING_MODES,
+  type OperatingMode,
+} from './services/operating-mode.service';
+import { TopGainersScannerService } from './services/top-gainers-scanner.service';
 import type { DailyHarvestConfig, CapitalDisciplineMode } from './types/capital-discipline.types';
 
 @Controller('lisa')
@@ -27,6 +33,8 @@ export class LisaController {
     private readonly dailySession: DailySessionService,
     private readonly profitSweep: ProfitSweepService,
     private readonly macroMode: MacroModeService,
+    private readonly operatingMode: OperatingModeService,
+    private readonly topGainersScanner: TopGainersScannerService,
   ) {}
 
   // ─────────────────────────────────────────────────────────────────
@@ -62,6 +70,138 @@ export class LisaController {
     }
     const result = await this.macroMode.applyMacroMode(userId, portfolioId, body.mode);
     return result;
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // P7-MODE-GAINERS-BADGE — toggle 3-modes opératoires (UI badge)
+  // ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Lit le mode opératoire courant depuis lisa_session_configs.strategy_mode.
+   * Source de vérité du badge UI (investment / harvest / gainers).
+   */
+  @Get('mode/:portfolioId')
+  async getOperatingMode(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    extractUserId(headers);
+    const mode = await this.operatingMode.getMode(portfolioId);
+    return { mode };
+  }
+
+  /**
+   * Bascule le mode opératoire. Body : `{ mode: 'investment'|'harvest'|'gainers' }`.
+   *
+   * Side-effects :
+   *  - investment / harvest : applique le preset MacroMode complet
+   *  - gainers              : autopilot_enabled forcé, kill-switch désarmé
+   *
+   * Garde-fou : gainers exige capital ≥ $1000.
+   * Audit : ligne mode_change_log écrite (best effort).
+   */
+  @Post('mode/:portfolioId')
+  @HttpCode(200)
+  async setOperatingMode(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+    @Body() body: { mode?: unknown; reason?: unknown },
+  ) {
+    const userId = extractUserId(headers);
+    const mode = body?.mode;
+    if (typeof mode !== 'string' || !OPERATING_MODES.includes(mode as OperatingMode)) {
+      throw new BadRequestException(
+        `mode invalide : attendu un de ${OPERATING_MODES.join('|')}`,
+      );
+    }
+    const userAgent = headers['user-agent'] ?? headers['User-Agent'];
+    const reason = typeof body?.reason === 'string' ? (body.reason as string) : undefined;
+    return this.operatingMode.applyMode(userId, portfolioId, mode as OperatingMode, {
+      userAgent,
+      reason,
+    });
+  }
+
+  /**
+   * Mini-tile temps réel pour le badge Gainers actif :
+   *   - countdown vers prochain scan (basé sur SCAN_INTERVAL_MINUTES + lastTickAt)
+   *   - positions ouvertes / max
+   *   - PnL session UTC (réalisé + latent best-effort)
+   *   - 3 derniers candidats vus au dernier tick
+   *
+   * Polling 30s côté UI.
+   */
+  @Get('gainers-status/:portfolioId')
+  async getGainersStatus(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    extractUserId(headers);
+
+    const intervalMinutes = this.topGainersScanner.getScanIntervalMinutes();
+    const lastTick = this.topGainersScanner.getLastTickAt();
+    let nextTickInSeconds: number;
+    if (lastTick) {
+      const elapsedMs = Date.now() - lastTick.getTime();
+      const periodMs = intervalMinutes * 60 * 1000;
+      nextTickInSeconds = Math.max(0, Math.floor((periodMs - elapsedMs) / 1000));
+    } else {
+      // Le premier tick n'a pas tourné — countdown indicatif depuis maintenant.
+      nextTickInSeconds = intervalMinutes * 60;
+    }
+
+    const supabase = this.supabase.getClient();
+
+    const { count: openCount } = await supabase
+      .from('lisa_positions')
+      .select('*', { count: 'exact', head: true })
+      .eq('portfolio_id', portfolioId)
+      .eq('status', 'open');
+
+    const startOfDayUtc = new Date();
+    startOfDayUtc.setUTCHours(0, 0, 0, 0);
+
+    const { data: closedToday } = await supabase
+      .from('lisa_positions')
+      .select('realized_pnl_usd')
+      .eq('portfolio_id', portfolioId)
+      .eq('status', 'closed')
+      .gte('exit_timestamp', startOfDayUtc.toISOString());
+
+    const sessionPnlUsd = (closedToday ?? []).reduce(
+      (acc, row) => acc + (parseFloat(String(row.realized_pnl_usd ?? '0')) || 0),
+      0,
+    );
+
+    // Derniers candidats : top 3 du dernier tick (decision passed/opened, ordre score desc).
+    const { data: lastLog } = await supabase
+      .from('top_gainers_log')
+      .select('symbol, change_pct, score, decision, captured_at')
+      .in('decision', ['passed', 'opened'])
+      .order('captured_at', { ascending: false })
+      .limit(20);
+
+    let lastCandidates: Array<{ symbol: string; changePct: number; score: number }> = [];
+    if (lastLog && lastLog.length > 0) {
+      const latestCapturedAt = lastLog[0].captured_at;
+      lastCandidates = lastLog
+        .filter((r) => r.captured_at === latestCapturedAt)
+        .slice(0, 3)
+        .map((r) => ({
+          symbol: String(r.symbol),
+          changePct: parseFloat(String(r.change_pct ?? '0')) || 0,
+          score: parseFloat(String(r.score ?? '0')) || 0,
+        }));
+    }
+
+    return {
+      nextTickInSeconds,
+      intervalMinutes,
+      openPositions: openCount ?? 0,
+      maxPositions: 3,
+      sessionPnlUsd,
+      lastCandidates,
+    };
   }
 
   /**

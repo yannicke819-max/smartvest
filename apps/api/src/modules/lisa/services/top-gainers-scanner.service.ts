@@ -94,6 +94,8 @@ const TOP_GAINERS_CRON_NAME = 'top-gainers-scanner';
 @Injectable()
 export class TopGainersScannerService implements OnModuleInit {
   private readonly logger = new Logger(TopGainersScannerService.name);
+  private scanIntervalMinutes = 15;
+  private lastTickAt: Date | null = null;
 
   constructor(
     private readonly supabase: SupabaseService,
@@ -103,6 +105,21 @@ export class TopGainersScannerService implements OnModuleInit {
     private readonly binanceMarket: BinanceMarketService,
     private readonly schedulerRegistry: SchedulerRegistry,
   ) {}
+
+  /**
+   * P7 — Expose l'intervalle pour /lisa/gainers-status (countdown UI).
+   */
+  getScanIntervalMinutes(): number {
+    return this.scanIntervalMinutes;
+  }
+
+  /**
+   * P7 — Timestamp du dernier tick (utilisé pour calculer nextTickInSeconds
+   * côté gainers-status). null tant que le premier cycle n'a pas tourné.
+   */
+  getLastTickAt(): Date | null {
+    return this.lastTickAt;
+  }
 
   /**
    * P5-PIVOT-TOP-GAINERS Guard 4 — Cron interval configurable via env
@@ -129,6 +146,7 @@ export class TopGainersScannerService implements OnModuleInit {
     if (validated > 60) {
       this.logger.warn('[top-gainers] interval >60min — opportunités intraday potentiellement ratées');
     }
+    this.scanIntervalMinutes = validated;
     // Cron expression : "*/N * * * *" (minute granularité, secondes à 0 par cron lib).
     const cronExpr = `*/${validated} * * * *`;
     try {
@@ -152,14 +170,18 @@ export class TopGainersScannerService implements OnModuleInit {
   }
 
   /**
-   * Run scanner — gated by STRATEGY_MODE=top_gainers env. Sans le flag,
-   * le cron tourne mais retourne immédiatement (pas de side-effect).
+   * Run scanner. P7 — gating priorité DB > env :
+   *
+   *   1. Charge les portfolios avec strategy_mode='gainers' AND autopilot_enabled
+   *      AND kill_switch désarmé. → toujours scannés, indépendamment de l'env.
+   *   2. Si aucun portfolio DB et env STRATEGY_MODE=top_gainers (legacy global),
+   *      on retombe sur le mode env-only.
+   *
+   * Le toggle UI bascule strategy_mode en DB → effet au cycle suivant, sans
+   * redeploy Fly.
    */
   async runScanner(): Promise<void> {
-    if (!this.isStrategyActive()) {
-      // Stratégie pas active globalement — ignorer le tick
-      return;
-    }
+    this.lastTickAt = new Date();
     try {
       await this.runScannerInner();
     } catch (e) {
@@ -167,24 +189,54 @@ export class TopGainersScannerService implements OnModuleInit {
     }
   }
 
-  /** Activation globale via env STRATEGY_MODE=top_gainers */
+  /**
+   * Activation globale via env STRATEGY_MODE=top_gainers — flag legacy
+   * conservé pour back-compat. La source de vérité est désormais
+   * `lisa_session_configs.strategy_mode='gainers'` (P7).
+   */
   isStrategyActive(): boolean {
     return this.config.get<string>('STRATEGY_MODE') === 'top_gainers';
   }
 
   private async runScannerInner(): Promise<void> {
-    // Charge tous les portfolios actifs en mode top_gainers
-    const { data: configs, error } = await this.supabase
+    // P7 — Priorité DB : portfolios en strategy_mode='gainers' (toggle UI).
+    const { data: dbConfigs, error: dbErr } = await this.supabase
       .getClient()
       .from('lisa_session_configs')
       .select('user_id, portfolio_id')
+      .eq('strategy_mode', 'gainers')
       .eq('autopilot_enabled', true)
       .eq('kill_switch_active', false);
-    if (error) {
-      this.logger.error(`[top-gainers] fetch configs failed: ${error.message}`);
+    if (dbErr) {
+      this.logger.error(`[top-gainers] fetch configs (db) failed: ${dbErr.message}`);
       return;
     }
-    if (!configs || configs.length === 0) return;
+
+    let configs = dbConfigs ?? [];
+
+    // Fallback env legacy : si aucun portfolio DB et env est set, on scanne
+    // tous les portfolios autopilot-enabled (back-compat avec déploiements
+    // pré-P7 qui utilisaient uniquement env STRATEGY_MODE).
+    if (configs.length === 0 && this.isStrategyActive()) {
+      const { data: envConfigs, error: envErr } = await this.supabase
+        .getClient()
+        .from('lisa_session_configs')
+        .select('user_id, portfolio_id')
+        .eq('autopilot_enabled', true)
+        .eq('kill_switch_active', false);
+      if (envErr) {
+        this.logger.error(`[top-gainers] fetch configs (env fallback) failed: ${envErr.message}`);
+        return;
+      }
+      configs = envConfigs ?? [];
+      if (configs.length > 0) {
+        this.logger.log(
+          `[top-gainers] using env STRATEGY_MODE fallback (${configs.length} portfolios)`,
+        );
+      }
+    }
+
+    if (configs.length === 0) return;
 
     // Fetch global candidates UNE SEULE fois (partagé entre tous les portfolios)
     const candidates = await this.fetchAllCandidates();

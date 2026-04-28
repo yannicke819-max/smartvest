@@ -29,6 +29,7 @@ import { LisaPositionsTable } from '@/components/lisa/positions-table';
 import { DailyHarvestTracker } from '@/components/lisa/daily-harvest-tracker';
 import { DailyHarvestPanel } from '@/components/lisa/daily-harvest-panel';
 import { MacroModeSelector } from '@/components/lisa/macro-mode-selector';
+import { GainersStatusTile } from '@/components/lisa/gainers-status-tile';
 import { LisaDecisionLog } from '@/components/lisa/decision-log';
 import { MechanicalAgentCard } from '@/components/lisa/mechanical-agent-card';
 import { OptionPositionsCard } from '@/components/lisa/option-positions-card';
@@ -525,8 +526,11 @@ export default function LisaPage() {
         </div>
       )}
 
-      {/* Macro Mode Selector — INVESTMENT vs HARVEST */}
+      {/* P7 — Mode opératoire 3-way (Investment / Harvest / Gainers) */}
       {selectedPortfolioId && <MacroModeSelector portfolioId={selectedPortfolioId} />}
+
+      {/* P7 — Mini-tile temps réel (visible uniquement en mode Gainers) */}
+      {selectedPortfolioId && <GainersStatusTile portfolioId={selectedPortfolioId} />}
 
       {/* Portfolio summary */}
       {selectedPortfolioId && (

@@ -5,6 +5,34 @@ Guide de travail pour Claude Code sur ce repo.
 
 ---
 
+## RÈGLE OPÉRATIONNELLE — MODES OPÉRATOIRES (3) — P7
+
+P7 introduit un toggle 3-modes opératoires en haut de `/lisa`. La source
+de vérité est `lisa_session_configs.strategy_mode` (migration 0085) :
+
+| Mode | Pipeline | Profile | Discipline | Stops | Cadence | Quand l'utiliser |
+|---|---|---|---|---|---|---|
+| 📈 `investment` | Lisa LLM | `long_term_investor` | `NONE` | larges (4%) | 60 min | buy-and-hold patient, long horizon |
+| 🌾 `harvest` | Lisa LLM | `hyper_active` | `DAILY_HARVEST` | serrés (1.5%) | 7 min | scalping intraday, sweep auto vers vault |
+| 🚀 `gainers` | Scanner momentum déterministe (bypass LLM) | inchangé | inchangé | 1.5% / TP 3% (paper-broker) | cron 15 min 24/7 | momentum cross-asset US/EU/Asia + crypto majors |
+
+**Endpoints** :
+- `GET /lisa/mode/:portfolioId` → `{ mode }`
+- `POST /lisa/mode/:portfolioId` body `{ mode, reason? }` → applique preset + écrit audit `mode_change_log`
+- `GET /lisa/gainers-status/:portfolioId` → countdown + open/max + session pnl + 3 derniers candidats (poll 30s)
+
+**Garde-fou capital** : passage en `gainers` exige `capital_usd ≥ $1000` (sinon `400 BadRequestException`). Les bascules `investment`↔`harvest` sans contrainte capital.
+
+**Side-effects par mode** :
+- `investment` / `harvest` → `MacroModeService.applyMacroMode()` (preset complet : profile, capital_discipline_mode, risk_constraints, autopilot_aggressive, cycle_minutes) + `strategy_mode` écrit
+- `gainers` → écrit uniquement `strategy_mode='gainers'` + `autopilot_enabled=true` + `kill_switch_active=false`. **Ne touche pas** au profile / capital_discipline_mode → revenir à investment/harvest restaure la config précédente sans perte.
+
+**Toggle scanner sans redeploy** : `TopGainersScannerService.runScannerInner()` lit en priorité les portfolios avec `strategy_mode='gainers'` (toggle UI). L'env `STRATEGY_MODE=top_gainers` reste comme fallback global pour back-compat (s'applique uniquement si aucun portfolio n'est en gainers DB-side). Le toggle UI est immédiat au cycle suivant.
+
+**Audit** : chaque bascule écrit une ligne `mode_change_log` (old_mode, new_mode, capital_usd, user_agent, reason) — RLS user-scoped pour SELECT.
+
+---
+
 ## RÈGLE OPÉRATIONNELLE — CONFIG LISA P3-D
 
 P3-D — correctifs config issus de l'analyse logs 27-28/04 :
