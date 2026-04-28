@@ -122,6 +122,18 @@ export interface MarketSnapshot {
    *  bucket, par conviction, par symbole. Calibre la confiance de Lisa
    *  sur des données empiriques de SON portfolio, pas des intuitions. */
   performanceAnalytics?: string;
+  /** P1 — Régime tactique courant (BULL/BEAR/RANGE/VOL_SPIKE/NEWS_SHOCK/
+   *  NEUTRAL) calculé par MarketRegimeService toutes les 5 min. Donne à
+   *  Lisa une vue déterministe du contexte sizing/SL/TP qu'elle peut
+   *  utiliser comme cadre tactique (≠ régime stratégique 14-valeurs). */
+  tacticalRegime?: {
+    regime: string;
+    reasons: string[];
+    sizingMultiplier: number;
+    stopLossPct: number;
+    takeProfitPct: number;
+    takeProfitLadderPct: number[];
+  };
 }
 
 /**
@@ -443,6 +455,7 @@ ${m.macroContext.gdpYoyPct != null ? `- GDP YoY : ${m.macroContext.gdpYoyPct >= 
 - S&P 500: ${m.sp500}
 - Nasdaq: ${m.nasdaq}
 ${this.formatDataQualityBlock(m.dataQuality)}
+${this.formatTacticalRegimeBlock(m.tacticalRegime)}
 ${m.lisaMemory ? `## YOUR PAST DECISIONS — mémoire contextuelle sur ce portefeuille
 ${m.lisaMemory}
 
@@ -590,6 +603,36 @@ défini, sans markdown, sans explications hors JSON.
       );
     }
     return lines.join('\n') + '\n';
+  }
+
+  /**
+   * P1 — Bloc de briefing tactique. Donne à Lisa la classification
+   * déterministe du régime courant (BULL/BEAR/RANGE/VOL_SPIKE/NEWS_SHOCK)
+   * + sizing / SL / TP attendus pour ce régime. Lisa peut DEVIER (elle
+   * reste libre de proposer un setup non-aligné si elle a une raison
+   * solide), mais le bloc agit comme garde-fou implicite et facilite
+   * l'audit a posteriori.
+   */
+  private formatTacticalRegimeBlock(tr?: MarketSnapshot['tacticalRegime']): string {
+    if (!tr) return '';
+    const ladder = tr.takeProfitLadderPct.length > 0
+      ? ` (ladder ${tr.takeProfitLadderPct.map((p) => `${p}%`).join('/')})`
+      : '';
+    const sizingNote = tr.sizingMultiplier === 0
+      ? '⛔ skip 30 min recommandé'
+      : tr.sizingMultiplier === 1
+      ? 'taille nominale'
+      : tr.sizingMultiplier > 1
+      ? `+${Math.round((tr.sizingMultiplier - 1) * 100)}%`
+      : `-${Math.round((1 - tr.sizingMultiplier) * 100)}%`;
+    return `
+## TACTICAL REGIME — cadre déterministe (BULL/BEAR/RANGE/VOL_SPIKE/NEWS_SHOCK)
+- Régime : **${tr.regime}**
+- Raisons : ${tr.reasons.join(' · ')}
+- Sizing recommandé : ${sizingNote} (× ${tr.sizingMultiplier.toFixed(2)})
+- Stop-loss : ${tr.stopLossPct}% · Take-profit : ${tr.takeProfitPct}%${ladder}
+- Tu peux dévier si tu as une raison solide (à expliciter dans [DIAGNOSTIC]).
+`;
   }
 
   private formatDailyHarvestBlock(ctx?: DailyHarvestBriefingContext): string {

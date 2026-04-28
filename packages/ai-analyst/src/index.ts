@@ -13,3 +13,4 @@ export * from './thesis';
 export * from './allocation';
 export * from './simulation';
 export * from './llm';
+export * from './regime';

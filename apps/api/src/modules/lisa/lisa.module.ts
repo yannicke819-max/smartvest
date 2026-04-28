@@ -17,6 +17,7 @@ import { EodhdScreenerService } from './services/eodhd-screener.service';
 import { EodhdInsiderService } from './services/eodhd-insider.service';
 import { EodhdOptionsService } from './services/eodhd-options.service';
 import { BinanceLiquidationsService } from './services/binance-liquidations.service';
+import { MarketRegimeService } from './services/market-regime.service';
 import { EodhdFxWsService } from './services/eodhd-fx-ws.service';
 import { PortfolioCorrelationService } from './services/portfolio-correlation.service';
 import { AgentLisaSyncService } from './services/agent-lisa-sync.service';
@@ -79,6 +80,8 @@ import { ApiCostTrackerService } from './services/api-cost-tracker.service';
     MacroModeService,
     // PATCH 4 — running total + hard-stop budget API
     ApiCostTrackerService,
+    // P1 — classifier de régime tactique (BULL/BEAR/RANGE/VOL_SPIKE/NEWS_SHOCK)
+    MarketRegimeService,
   ],
   exports: [
     LisaService,
