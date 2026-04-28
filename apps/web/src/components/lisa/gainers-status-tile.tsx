@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Rocket, TrendingUp, TrendingDown } from 'lucide-react';
 import {
   useGainersStatus,
@@ -143,11 +143,27 @@ function CycleSelector({
   currentCycle: number;
 }) {
   const mut = useUpdateGainersCycle(portfolioId);
+  // Optimistic local state: keeps the user's selection visible while the
+  // mutation round-trips. Without this, the controlled <select> snaps back
+  // to currentCycle (stale server value) every 30 s poll or during the
+  // ~500 ms before the invalidated query refetches.
+  const [localCycle, setLocalCycle] = useState(currentCycle);
   const [warn, setWarn] = useState<string | null>(null);
+  const pendingRef = useRef(false);
+
+  // Sync from server only when no mutation is in flight (avoids overwriting
+  // the optimistic value before the server acknowledges the change).
+  useEffect(() => {
+    if (!pendingRef.current) {
+      setLocalCycle(currentCycle);
+    }
+  }, [currentCycle]);
 
   const handleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const next = parseInt(e.target.value, 10);
     if (!Number.isFinite(next)) return;
+    setLocalCycle(next);
+    pendingRef.current = true;
     if (next === 1) {
       setWarn('Coût API ×15 vs 15 min — surveille daily_cost_budget_usd');
     } else if (next < 5) {
@@ -155,7 +171,11 @@ function CycleSelector({
     } else {
       setWarn(null);
     }
-    mut.mutate(next);
+    mut.mutate(next, {
+      onSettled: () => {
+        pendingRef.current = false;
+      },
+    });
   };
 
   return (
@@ -165,7 +185,7 @@ function CycleSelector({
         {mut.isPending && <span className="text-orange-600">…</span>}
       </label>
       <select
-        value={currentCycle}
+        value={localCycle}
         onChange={handleChange}
         disabled={mut.isPending}
         className="h-6 rounded border bg-background px-1.5 text-xs"
