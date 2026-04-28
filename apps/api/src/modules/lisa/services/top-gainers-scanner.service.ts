@@ -29,10 +29,12 @@ import { SupabaseService } from '../../supabase/supabase.service';
 import { LisaService } from './lisa.service';
 import { DecisionLogService } from './decision-log.service';
 import { BinanceMarketService } from './binance-market.service';
+import { MultiTimeframePersistenceService } from './multi-tf-persistence.service';
 import {
   selectTopGainers,
   type TopGainerCandidate,
   type TopGainerAssetClass,
+  type PersistenceResult,
 } from '@smartvest/ai-analyst';
 
 interface EodhdScreenerRow {
@@ -104,7 +106,28 @@ export class TopGainersScannerService implements OnModuleInit {
     private readonly config: ConfigService,
     private readonly binanceMarket: BinanceMarketService,
     private readonly schedulerRegistry: SchedulerRegistry,
+    private readonly mtfPersistence: MultiTimeframePersistenceService,
   ) {}
+
+  /**
+   * P8 — Resolve config min persistence score.
+   * Priority chain : DB > env > default(0.67).
+   * `lisa_session_configs.gainers_min_persistence_score` est par-portfolio
+   * mais le seuil est globalement uniforme dans v1 (1 valeur côté scanner).
+   * Le caller passe `portfolioMinScore` quand il a la row sous la main ;
+   * sinon on retombe sur env / default.
+   */
+  resolveMinPersistenceScore(portfolioMinScore?: number | null): number {
+    if (typeof portfolioMinScore === 'number' && Number.isFinite(portfolioMinScore)) {
+      return Math.max(0, Math.min(1, portfolioMinScore));
+    }
+    const envRaw = this.config.get<string>('GAINERS_MIN_PERSISTENCE_SCORE');
+    if (envRaw) {
+      const n = parseFloat(envRaw);
+      if (Number.isFinite(n) && n >= 0 && n <= 1) return n;
+    }
+    return 0.67;
+  }
 
   /**
    * P7 — Expose l'intervalle pour /lisa/gainers-status (countdown UI).
@@ -274,8 +297,11 @@ export class TopGainersScannerService implements OnModuleInit {
   /**
    * Fetch candidates depuis toutes les sources : EODHD multi-exchange + Binance crypto.
    * Yahoo / Coinbase / Kraken / OANDA → deferred PR.
+   *
+   * P8 — Exposé en public pour l'endpoint /lisa/gainers-persistence-snapshot
+   * (le caller filtre top-N + branche le multi-tf service).
    */
-  private async fetchAllCandidates(): Promise<TopGainerCandidate[]> {
+  async fetchAllCandidates(): Promise<TopGainerCandidate[]> {
     const apiKey = this.config.get<string>('EODHD_API_KEY');
     const tasks: Promise<TopGainerCandidate[]>[] = [];
 
@@ -394,6 +420,28 @@ export class TopGainersScannerService implements OnModuleInit {
       return;
     }
 
+    // P8 — Charge le seuil min de persistance pour ce portfolio (DB > env > 0.67)
+    const { data: cfgRow } = await this.supabase
+      .getClient()
+      .from('lisa_session_configs')
+      .select('gainers_min_persistence_score')
+      .eq('portfolio_id', portfolioId)
+      .maybeSingle();
+    const minScore = this.resolveMinPersistenceScore(
+      cfgRow?.gainers_min_persistence_score != null
+        ? Number(cfgRow.gainers_min_persistence_score)
+        : null,
+    );
+
+    // P8 — Calcule la persistance multi-TF pour les top candidats (parallèle)
+    const persistenceMap = await this.mtfPersistence.analyzeBatch(
+      top.map((c) => ({
+        symbol: c.symbol,
+        exchange: c.exchange,
+        currentPrice: c.close,
+      })),
+    );
+
     // Guard 3 v1 — cap conservatif : 1 position/cycle (test prudent avant
     // bump à 3 dans v2). Permet de valider le pipeline end-to-end.
     const maxThisCycle = Math.min(slotsAvailable, MAX_POSITIONS_PER_CYCLE_V1);
@@ -403,10 +451,36 @@ export class TopGainersScannerService implements OnModuleInit {
       const baseSym = cand.symbol.replace(/USDT$|USDC$/, '').toUpperCase();
       if (openSymbols.has(cand.symbol.toUpperCase()) || openSymbols.has(baseSym)) continue;
 
+      // P8 gate — persistance multi-TF
+      const persistence = persistenceMap.get(cand.symbol.toUpperCase());
+      if (persistence) {
+        if (persistence.availableCount === 0 || Number.isNaN(persistence.persistenceScore)) {
+          this.logger.log(
+            `[top-gainers] ${cand.symbol} no TF data → skip (gate persistence)`,
+          );
+          continue;
+        }
+        if (persistence.persistenceScore < minScore) {
+          this.logger.log(
+            `[top-gainers] ${cand.symbol} persistenceScore=${persistence.persistenceScore.toFixed(2)} (${persistence.persistenceCount}) < min=${minScore.toFixed(2)} → skip`,
+          );
+          continue;
+        }
+        this.logger.log(
+          `[top-gainers] ${cand.symbol} persistence=${persistence.persistenceCount} score=${persistence.persistenceScore.toFixed(2)} ≥ ${minScore.toFixed(2)} → OPEN`,
+        );
+      } else {
+        // Si la donnée TF est indispo (provider down) on n'ouvre pas — gate
+        // strict pour éviter d'ouvrir aveuglément.
+        this.logger.log(`[top-gainers] ${cand.symbol} no persistence data → skip`);
+        continue;
+      }
+
       const insertedPosId = await this.openTopGainerPosition(
         userId,
         portfolioId,
         cand,
+        persistence,
       ).catch((e) => {
         this.logger.warn(
           `[top-gainers] open ${cand.symbol} failed: ${String(e).slice(0, 120)}`,
@@ -423,11 +497,15 @@ export class TopGainersScannerService implements OnModuleInit {
   /**
    * Crée une pseudo-proposal + thèse minimale, puis call paperBroker.openPosition.
    * Le paperBroker existant exige (proposalId, thesisId) → on synthétise ces 2.
+   *
+   * P8 — Si `persistence` fourni, persiste les métriques multi-TF au moment
+   * de l'open dans `paper_trades` (forward-compat avec P9).
    */
   private async openTopGainerPosition(
     userId: string,
     portfolioId: string,
     cand: TopGainerCandidate & { score: number; assetClass: TopGainerAssetClass },
+    persistence?: PersistenceResult,
   ): Promise<string | null> {
     const proposalId = randomUUID();
     const thesisId = randomUUID();
@@ -491,14 +569,67 @@ export class TopGainersScannerService implements OnModuleInit {
         this.logger.log(`[top-gainers] ${cand.symbol}: approveProposal returned 0 (rejected by gates)`);
         return null;
       }
+      const openedPos = result.openedPositions[0];
       this.logger.log(
         `[top-gainers] ${cand.symbol} opened (${result.openedPositions.length} pos, score=${cand.score})`,
       );
-      return result.openedPositions[0].id;
+
+      // P8 — best-effort persist du snapshot persistance dans paper_trades
+      // (forward-compat avec P9 qui ajoutera features_at_entry / p_win).
+      if (persistence) {
+        await this.persistPaperTrade(userId, portfolioId, cand, openedPos, persistence)
+          .catch((e) =>
+            this.logger.debug(`[top-gainers] persistPaperTrade ${cand.symbol} failed: ${String(e).slice(0, 120)}`),
+          );
+      }
+
+      return openedPos.id;
     } catch (e) {
       this.logger.warn(`[top-gainers] approveProposal ${cand.symbol} failed: ${String(e).slice(0, 120)}`);
       return null;
     }
+  }
+
+  /**
+   * P8 — Insert append-only dans paper_trades. Ne fait pas échouer le flow
+   * principal en cas de pb (best effort, table optionnelle ce PR).
+   */
+  private async persistPaperTrade(
+    userId: string,
+    portfolioId: string,
+    cand: TopGainerCandidate & { score: number; assetClass: TopGainerAssetClass },
+    openedPos: { id: string; entryPrice?: string | number; entryNotionalUsd?: string | number },
+    persistence: PersistenceResult,
+  ): Promise<void> {
+    const entryPrice = Number(openedPos.entryPrice ?? cand.close);
+    const sizeUsd = Number(openedPos.entryNotionalUsd ?? 0);
+    const stopLoss = entryPrice * (1 - 0.015);
+    const takeProfit = entryPrice * (1 + 0.03);
+    const tfChanges = {
+      tf1m: persistence.tf1m,
+      tf5m: persistence.tf5m,
+      tf10m: persistence.tf10m,
+      tf15m: persistence.tf15m,
+      tf30m: persistence.tf30m,
+      tf1h: persistence.tf1h,
+    };
+    await this.supabase.getClient().from('paper_trades').insert({
+      user_id: userId,
+      portfolio_id: portfolioId,
+      symbol: cand.symbol,
+      asset_class: cand.assetClass,
+      exchange: cand.exchange ?? null,
+      entry_price: String(entryPrice),
+      size_usd: String(sizeUsd || 0),
+      stop_loss: String(stopLoss),
+      take_profit: String(takeProfit),
+      status: 'open',
+      strategy: 'top_gainers_v1',
+      scanner_position_id: openedPos.id,
+      persistence_score_at_entry: String(persistence.persistenceScore.toFixed(2)),
+      persistence_count_at_entry: persistence.persistenceCount,
+      tf_changes_at_entry: tfChanges,
+    });
   }
 
   /**
