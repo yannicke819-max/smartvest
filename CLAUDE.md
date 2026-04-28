@@ -30,6 +30,35 @@ P3-D — correctifs config issus de l'analyse logs 27-28/04 :
 
 ---
 
+## RÈGLE OPÉRATIONNELLE — MODE HARVEST = REBOUND-ONLY (P4-B)
+
+P4-B — En mode `capital_discipline_mode = 'DAILY_HARVEST'`, le pipeline
+proposal court-circuite la news-aggregation et n'expose à Lisa que les
+sources compatibles avec un horizon de scalping intraday :
+
+| Mode | Sources actives |
+|---|---|
+| `DAILY_HARVEST` (TP 2.5% / SL 1.5%) | `rebound_tp_scanner` + `mechanical_stops` |
+| `NONE` / `INVESTMENT` | `rebound_tp_scanner` + `momentum_breakout` + `narrative_stocktwits` + `sentiment_macro` + `mechanical_stops` |
+
+Justification : narrative StockTwits / momentum breakout / sentiment macro
+ont un horizon 1-4 semaines. Un stop -1.5% les ferme avant que le
+catalyseur n'ait eu le temps de jouer → 40% proposal_failed observés
+27-28/04. En harvest, on les exclut totalement.
+
+**Implémentation** : `getProposalSources(mode)` + `shouldRunNewsAggregator(mode)`
+dans `packages/ai-analyst/src/strategies/proposal-source-routing.ts`.
+Le caller (`LisaService.generateProposal`) skip `newsAggregator.aggregate`
+quand mode harvest + écrit `lisa_decision_log` kind=`news_aggregator_skipped_harvest_mode`
+pour audit.
+
+**Effets attendus** : ~600ms latence économisée par cycle, 4 calls API
+news skip, biais narratif retail muté. Lisa reçoit alors uniquement le
+bloc `## Positions rebound ouvertes` + indicateurs macro + tactical
+regime → décisions purement mécaniques.
+
+---
+
 ## RÈGLE OPÉRATIONNELLE — COUVERTURE H24 MULTI-BOURSES (P4-A)
 
 P4-A — Le scanner rebound-tp couvre 5 bourses pour atteindre la couverture H24 :

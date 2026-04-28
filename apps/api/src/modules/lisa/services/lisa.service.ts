@@ -55,6 +55,8 @@ import {
   computeAtrPct,
   computeRealizedVolPct,
   computeRegimeAdjustedDeployment,
+  shouldRunNewsAggregator,
+  getProposalSources,
 } from '@smartvest/ai-analyst';
 import {
   buildYahooChartUrl,
@@ -602,11 +604,38 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     const fundamentalsBySymbol = new Map<string, typeof fundamentalsArr[number]>();
     uniqueSymbols.forEach((s, i) => fundamentalsBySymbol.set(s, fundamentalsArr[i]));
 
+    // P4-B — Routing sources de propositions par mode opératoire.
+    // En harvest (TP 2.5% / SL 1.5%, horizon scalping intraday), on
+    // court-circuite news-aggregator + sentiment retail pour ne garder
+    // que rebound_tp_scanner + mechanical_stops. Économie ~600ms latence
+    // + 4 calls API + risque biais narratif.
+    const disciplineMode = (config.capital_discipline_mode as string | null | undefined) ?? null;
+    const proposalSources = getProposalSources(disciplineMode);
+    const newsActive = shouldRunNewsAggregator(disciplineMode);
+
+    if (!newsActive) {
+      this.logger.log(
+        `[proposal-sources] mode=${disciplineMode ?? 'NONE'} → sources=[${proposalSources.join(',')}] (news skipped)`,
+      );
+      // Audit non-bloquant
+      this.decisionLog.append({
+        portfolioId,
+        kind: 'news_aggregator_skipped_harvest_mode',
+        summary: 'News pipeline skip (mode harvest = rebound-only)',
+        rationale: `proposal_sources=[${proposalSources.join(',')}]`,
+        payload: { discipline_mode: disciplineMode, proposal_sources: proposalSources },
+        triggeredBy: 'autopilot_cron',
+      }).catch((e) => this.logger.debug(`audit append failed: ${String(e).slice(0, 80)}`));
+    }
+
     // News pipeline complet — agrégation multi-source (EODHD + StockTwits
     // + Reddit + Twitter), scoring 4 axes + convergence cross-source,
     // dédup, bucketing. Substitue le dump naïf des 10 dernières headlines
     // par un bloc analytique avec scoring détaillé par item.
-    try {
+    // P4-B — short-circuit en mode harvest.
+    if (!newsActive) {
+      // Skip block — Lisa raisonnera uniquement sur rebound + mechanical
+    } else try {
       const aggregate = await this.newsAggregator.aggregate(uniqueSymbols, 30);
       if (aggregate.items.length > 0) {
         const halfLifeHours = sessionConfig.profile === 'hyper_active' ? 3
