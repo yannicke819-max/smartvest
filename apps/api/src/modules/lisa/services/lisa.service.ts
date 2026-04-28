@@ -2567,16 +2567,39 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
 
     // P1 — Classifier le régime tactique courant à partir des indicateurs
     // qu'on vient de fetcher. Le service cache 5 min en interne et persiste
-    // dans market_regimes_log. Si tous les inputs critiques sont absents,
-    // le classifier retourne NEUTRAL avec reason `inputs_unavailable`.
+    // dans market_regimes_log.
+    //
+    // PR feat/regime-inputs-binance — enrichissement des inputs depuis
+    // Binance Spot/Futures :
+    //  - btc24hReturnPct exact via /api/v3/ticker/24hr (priceChangePct)
+    //  - btcFundingPct via /fapi/v1/premiumIndex (fundingRatePct, 8h period)
+    //
+    // Inputs encore null (cycles à venir) :
+    //  - atr14BtcPct, atr50BtcPct → EodhdTechnicalService BTC bars
+    //  - newsScore → NewsRankerService aggregate
+    //  - realized1hPct → BinanceMarketService 1m klines 60min
+    //  - redditSpikeSigma → RedditService
     let tacticalRegime: ReturnType<typeof this.marketRegime.peekCurrentRegime> = null;
     try {
-      const btc24hReturnPct = btc != null && fallback.btcUsd > 0
-        ? ((btc - fallback.btcUsd) / fallback.btcUsd) * 100
-        : null; // approx — compute avec last-known si dispo plus tard
+      // Fetch Binance enrichment (avec timeout court + parallèle pour éviter
+      // de bloquer le snapshot si Binance ralentit).
+      const [ticker24h, futureStats] = await Promise.all([
+        this.binanceMarket.getTicker24h('BTCUSDT').catch(() => null),
+        this.binanceMarket.getFutureStats('BTCUSDT').catch(() => null),
+      ]);
+
+      const btc24hReturnPct =
+        ticker24h && Number.isFinite(ticker24h.priceChangePct)
+          ? ticker24h.priceChangePct
+          : null;
+      const btcFundingPct =
+        futureStats && Number.isFinite(futureStats.fundingRatePct)
+          ? futureStats.fundingRatePct
+          : null;
+
       const inputs = {
-        btc24hReturnPct: null as number | null,
-        btcFundingPct: null as number | null,
+        btc24hReturnPct,
+        btcFundingPct,
         vix: vix ?? null,
         atr14BtcPct: null as number | null,
         atr50BtcPct: null as number | null,
@@ -2584,11 +2607,6 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         realized1hPct: null as number | null,
         redditSpikeSigma: null as number | null,
       };
-      // btc24hReturnPct via fallback (approximation — V2 utilisera un
-      // historical price service dédié pour le calcul exact 24h).
-      if (btc24hReturnPct != null && Number.isFinite(btc24hReturnPct)) {
-        inputs.btc24hReturnPct = btc24hReturnPct;
-      }
       tacticalRegime = await this.marketRegime.getCurrentRegime(inputs);
     } catch (e) {
       this.logger.warn(`[regime] classify failed (non-blocking): ${String(e).slice(0, 100)}`);
