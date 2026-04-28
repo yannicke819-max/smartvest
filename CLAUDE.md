@@ -5,6 +5,31 @@ Guide de travail pour Claude Code sur ce repo.
 
 ---
 
+## RÈGLE OPÉRATIONNELLE — CONFIG LISA P3-D
+
+P3-D — correctifs config issus de l'analyse logs 27-28/04 :
+
+- **Profile par défaut : `active_trading`** (cycle 30 min). `hyper_active`
+  (cycle 7 min) reste autorisé **uniquement** quand
+  `capital_discipline_mode = 'DAILY_HARVEST'` (scalping intraday volontaire).
+- **`maxOpenPositions` default = 3** (anti-dilution). Aligné avec
+  `MAX_CONCURRENT_REBOUND_POSITIONS=3`.
+- **`maxExposurePerAssetClassPct` default = 40%** (déjà le cas dans
+  `types/index.ts`, migration 0080 corrige les rows < 40 historiques).
+- **Crypto exclu du scanner rebound-tp** (volatilité incompatible avec
+  stop -4%). Lisa peut proposer BTC/ETH en thesis classique (catégorie
+  `crypto`) — mais jamais via le scanner watchlist `sp500`.
+- **Plafond retail social 30%** dans le briefing news (StockTwits + Reddit
+  + Twitter combinés ≤ 30% des items envoyés à Lisa). EODHD tier 1
+  (Reuters/Bloomberg/MarketWatch) reste prioritaire. Cf.
+  `capRetailSocialItems` dans `news-aggregator.service.ts`.
+- **Persona bloc 08-rebound-priority** ajouté au system prompt cacheable :
+  Lisa doit prioriser les signaux `rebound_open_positions` sur les
+  thèses narratives. Conviction ≥ 8 + catalyseur structurant requis
+  pour proposer une thèse "narrative" hors scanner.
+
+---
+
 ## RÈGLE OPÉRATIONNELLE — UNIVERS WATCHLIST PAR DÉFAUT
 
 P3-C — Le scanner rebound-tp scanne par défaut **`sp500`** (~200 mega-caps US, table `watchlist_universe`). Override possible :

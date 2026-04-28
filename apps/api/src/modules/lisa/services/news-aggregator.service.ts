@@ -66,13 +66,30 @@ export class NewsAggregatorService {
     pushResult('reddit', redditRes);
     pushResult('twitter', twitterRes);
 
+    // P3-D fix 5 — cap retail social (StockTwits + Reddit + Twitter) à
+    // STOCKTWITS_MAX_RATIO du total pour éviter que Lisa raisonne
+    // narrativement sur des flux retail bruyants. EODHD (Reuters/Bloomberg
+    // tier 1) reste prioritaire. Ratio configurable via env, default 30%.
+    const cappedAll = capRetailSocialItems(all, this.STOCKTWITS_MAX_RATIO);
+    const droppedRetail = all.length - cappedAll.length;
+    if (droppedRetail > 0) {
+      this.logger.debug(
+        `[news-aggregator] capped retail social: -${droppedRetail} items dropped to respect ${(this.STOCKTWITS_MAX_RATIO * 100).toFixed(0)}% ratio`,
+      );
+    }
+
     const elapsedMs = Date.now() - tStart;
     this.logger.debug(
-      `news aggregate ${all.length} items in ${elapsedMs}ms — ${sources.map((s) => `${s.provider}=${s.count}${s.ok ? '' : '✗'}`).join(' ')}`,
+      `news aggregate ${cappedAll.length}/${all.length} items in ${elapsedMs}ms — ${sources.map((s) => `${s.provider}=${s.count}${s.ok ? '' : '✗'}`).join(' ')}`,
     );
 
-    return { items: all, sources, elapsedMs };
+    return { items: cappedAll, sources, elapsedMs };
   }
+
+  /** P3-D — Plafond retail social (StockTwits/Reddit/Twitter) sur le
+   *  briefing news fourni à Lisa. Default 0.30 (30%). Surchargeable via
+   *  env STOCKTWITS_MAX_RATIO mais on garde le name pour compat. */
+  private readonly STOCKTWITS_MAX_RATIO = 0.30;
 
   /** État de configuration (utile pour endpoint diagnostique). */
   status(): {
@@ -88,6 +105,44 @@ export class NewsAggregatorService {
       twitter: this.twitter.isConfigured(),
     };
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pure helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * P3-D — Plafonne les items retail (stocktwits/reddit/twitter) à
+ * `maxRatio` du total. Conserve les items EODHD entiers (tier 1
+ * Reuters/Bloomberg/MarketWatch). Coupe d'abord les items retail
+ * sans symbole reconnu (les plus bruyants).
+ *
+ * Pure function pour test direct.
+ */
+export function capRetailSocialItems(
+  items: EodhdNewsItem[],
+  maxRatio: number,
+): EodhdNewsItem[] {
+  const RETAIL: NewsProvider[] = ['stocktwits', 'reddit', 'twitter'];
+  const isRetail = (n: EodhdNewsItem) => RETAIL.includes((n.provider ?? 'eodhd') as NewsProvider);
+
+  const eodhd = items.filter((n) => !isRetail(n));
+  const retail = items.filter((n) => isRetail(n));
+
+  if (items.length === 0) return [];
+  // total cible où retail = maxRatio × total → eodhd = (1 - maxRatio) × total
+  // donc total max = eodhd / (1 - maxRatio), et retailKeep = total - eodhd
+  if (maxRatio <= 0) return eodhd;
+  if (maxRatio >= 1) return items;
+  const totalMax = Math.floor(eodhd.length / (1 - maxRatio));
+  const retailKeep = Math.max(0, totalMax - eodhd.length);
+  if (retail.length <= retailKeep) return items; // ratio déjà respecté
+
+  // Priorisation : items retail avec symbole > sans symbole
+  const retailWithSym = retail.filter((n) => n.symbols && n.symbols.length > 0);
+  const retailNoSym = retail.filter((n) => !n.symbols || n.symbols.length === 0);
+  const kept = [...retailWithSym, ...retailNoSym].slice(0, retailKeep);
+  return [...eodhd, ...kept];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

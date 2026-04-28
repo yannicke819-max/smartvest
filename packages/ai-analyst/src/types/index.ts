@@ -371,8 +371,11 @@ export const RiskConstraints = z.object({
   maxDrawdown30DaysPct: z.number().min(0).default(25.0),
   /** Taille max d'une position unique en % capital */
   maxPositionSizePct: z.number().min(0).max(100).default(25.0),
-  /** Nombre max de positions simultanées */
-  maxOpenPositions: z.number().int().min(1).default(10),
+  /** Nombre max de positions simultanées.
+   *  P3-D — abaissé de 10 → 3 pour éviter dilution du capital sur
+   *  des positions narratives quand le scanner rebound capture déjà
+   *  les meilleurs setups. Cohérent avec MAX_CONCURRENT_REBOUND_POSITIONS=3. */
+  maxOpenPositions: z.number().int().min(1).default(3),
   /** Levier effectif max */
   maxLeverage: z.number().min(1).default(1.5),
   /** Exposition max par classe d'actifs */

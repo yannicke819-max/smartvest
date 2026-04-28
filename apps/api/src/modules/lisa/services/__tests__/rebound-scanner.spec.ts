@@ -305,11 +305,11 @@ describe('ReboundScannerService', () => {
       expect(wl).toContain('AAPL.US');
     });
 
-    it('uses MAX_CONCURRENT_REBOUND_POSITIONS env (default 5 if unset)', async () => {
+    it('uses MAX_CONCURRENT_REBOUND_POSITIONS env (default 3 if unset, P3-D)', async () => {
       const state: MockState = { configs: [], openPositions: [], inserts: [], insertConflict: false };
       const scanner1 = buildScanner({ state, env: {} });
       // @ts-expect-error access private
-      expect(scanner1.getMaxConcurrent()).toBe(5);
+      expect(scanner1.getMaxConcurrent()).toBe(3);
 
       const scanner2 = buildScanner({ state, env: { MAX_CONCURRENT_REBOUND_POSITIONS: '8' } });
       // @ts-expect-error access private
