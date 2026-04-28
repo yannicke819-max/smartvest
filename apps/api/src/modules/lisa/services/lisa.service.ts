@@ -356,6 +356,22 @@ export class LisaService {
     return !!userFocus && userFocus.startsWith('WAKE-UP');
   }
 
+  /**
+   * P5-LLM-THESES — Vrai si le userFocus correspond aux focus génériques
+   * de l'autopilot cron (pas un focus explicite utilisateur). Sert au
+   * logging : quand Lisa retourne theses=[] sur un focus utilisateur
+   * EXPLICITE (scénarios concrets), c'est un signal de mauvais prompt.
+   */
+  private isAutopilotGenericFocus(userFocus?: string): boolean {
+    if (!userFocus) return true;
+    const trimmed = userFocus.trim().toLowerCase();
+    return (
+      trimmed.startsWith('autopilot agressif') ||
+      trimmed.startsWith('autopilot cycle') ||
+      trimmed.startsWith('wake-up')
+    );
+  }
+
   async generateProposal(userId: string, portfolioId: string, userFocus?: string): Promise<AllocationProposal> {
     if (!this.thesisGenerator) {
       throw new BadRequestException('Thesis generator unavailable: ANTHROPIC_API_KEY not configured on backend');
@@ -1063,6 +1079,26 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       triggeredBy: 'user_manual',
     });
 
+    // P5-LLM-THESES — Visibilité : Lisa a retourné theses=[] alors que
+    // l'utilisateur a explicité des scénarios. Indique un problème de prompt
+    // (Lisa "se protège" en regime=neutral). Persona block 05 a été
+    // renforcé pour exiger ≥1 thèse — ce log capture les cas restants
+    // pour analyse + tuning futur.
+    if (finalProposal.theses.length === 0 && userFocus && !this.isAutopilotGenericFocus(userFocus)) {
+      await this.logDecision(portfolioId, 'proposal_rejected', {
+        summary: `Empty theses despite explicit user focus (${userFocus.slice(0, 80)})`,
+        rationale: `gate=empty_theses_with_user_focus · Lisa a retourné theses=[] alors que userFocus n'est PAS le focus autopilot générique. Vérifier persona block 05-profile-overrides + tuning prompt. regime=${finalProposal.detectedRegime}.`,
+        payload: {
+          proposalId: finalProposal.id,
+          theses_count: 0,
+          regime: finalProposal.detectedRegime,
+          user_focus_excerpt: userFocus.slice(0, 200),
+          gate: 'empty_theses_with_user_focus',
+        },
+        triggeredBy: 'user_manual',
+      }).catch(() => null);
+    }
+
     // Écrire la directive mécanique — l'agent sans-LLM l'utilise pendant 35 min
     await this.writeDirective(portfolioId, finalProposal, result.closeRecommendations ?? [], trajectoryStatus, config.profile as SessionProfile).catch(
       (e) => this.logger.warn(`writeDirective failed (non-blocking): ${String(e)}`),
@@ -1301,6 +1337,22 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     }
     const theses = proposal.theses as Array<Record<string, unknown>>;
     const allocationsRaw = proposal.allocations as Array<{ thesisId: string; pctCapital: number; amountUsd: string }>;
+
+    // P5-LLM-THESES — Guard : refuser explicitement les proposals à theses=[].
+    // Avant ce guard, l'UI cliquait "Approuver" sur une proposal vide et
+    // recevait silencieusement openedPositions=[] avec un toast "positions
+    // ouvertes" trompeur. Maintenant 400 explicite + audit decision_log.
+    if (!Array.isArray(theses) || theses.length === 0) {
+      await this.logDecision(portfolioId, 'proposal_rejected', {
+        summary: `Proposal ${proposalId.slice(0, 8)} : theses=[] — aucune action`,
+        rationale: `gate=empty_theses · Lisa a généré 0 thèse tradeable. Vérifier le user focus / scénarios envoyés au LLM. UI ne devrait pas afficher "positions ouvertes" sur une proposal vide.`,
+        payload: { proposal_id: proposalId, theses_count: 0, gate: 'empty_theses' },
+        triggeredBy: 'user_manual',
+      }).catch(() => null);
+      throw new BadRequestException(
+        'Aucune thèse à exécuter dans cette proposition. Régénérer avec scénarios concrets ou attendre prochain cycle.',
+      );
+    }
     const closeRecommendations = (proposal.close_recommendations as Array<{ positionId: string; reason: string }> | null) ?? [];
     const marketMomentum = (proposal.market_momentum as 'bullish_strong' | 'neutral' | 'bearish' | null) ?? 'neutral';
 
