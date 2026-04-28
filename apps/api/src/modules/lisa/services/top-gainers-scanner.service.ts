@@ -99,6 +99,12 @@ export class TopGainersScannerService implements OnModuleInit {
   private scanIntervalMinutes = 15;
   private lastTickAt: Date | null = null;
 
+  /** P9-UX — Cache des cycles per-portfolio (évite re-query DB à chaque tick). */
+  private cycleCache = new Map<string, { cycle: number; asOf: number }>();
+  /** P9-UX — Track lastScanAt per portfolio pour gating per-cycle. */
+  private lastScanByPortfolio = new Map<string, number>();
+  private readonly CYCLE_CACHE_TTL_MS = 30_000;
+
   constructor(
     private readonly supabase: SupabaseService,
     private readonly lisa: LisaService,
@@ -142,6 +148,35 @@ export class TopGainersScannerService implements OnModuleInit {
    */
   getLastTickAt(): Date | null {
     return this.lastTickAt;
+  }
+
+  /**
+   * P9-UX — Lit le cycle gainers d'un portfolio depuis la DB avec cache 30s.
+   * Default 15 min si la colonne est absente OU non set.
+   */
+  async getCycleMinutes(portfolioId: string): Promise<number> {
+    const cached = this.cycleCache.get(portfolioId);
+    if (cached && Date.now() - cached.asOf < this.CYCLE_CACHE_TTL_MS) {
+      return cached.cycle;
+    }
+    const { data } = await this.supabase
+      .getClient()
+      .from('lisa_session_configs')
+      .select('gainers_cycle_minutes')
+      .eq('portfolio_id', portfolioId)
+      .maybeSingle();
+    const raw = Number(data?.gainers_cycle_minutes ?? 15);
+    const cycle = Number.isFinite(raw) ? Math.max(1, Math.min(60, raw)) : 15;
+    this.cycleCache.set(portfolioId, { cycle, asOf: Date.now() });
+    return cycle;
+  }
+
+  /**
+   * P9-UX — Renvoie le timestamp du dernier scan effectif pour un portfolio
+   * (utilisé pour calculer nextTickInSeconds côté UI).
+   */
+  getLastScanForPortfolio(portfolioId: string): number | null {
+    return this.lastScanByPortfolio.get(portfolioId) ?? null;
   }
 
   /**
@@ -278,17 +313,22 @@ export class TopGainersScannerService implements OnModuleInit {
 
     if (top.length === 0) return;
 
-    // Pour chaque portfolio, ouvre les top 3
+    // P9-UX — Pour chaque portfolio, gate par per-portfolio cycle puis scan.
+    const now = Date.now();
     for (const cfg of configs) {
+      const portfolioId = cfg.portfolio_id as string;
       try {
-        await this.scanPortfolio(
-          cfg.user_id as string,
-          cfg.portfolio_id as string,
-          top,
-        );
+        const cycleMin = await this.getCycleMinutes(portfolioId);
+        const lastScan = this.lastScanByPortfolio.get(portfolioId) ?? 0;
+        if (lastScan > 0 && now - lastScan < cycleMin * 60_000) {
+          // Pas encore l'heure pour ce portfolio
+          continue;
+        }
+        this.lastScanByPortfolio.set(portfolioId, now);
+        await this.scanPortfolio(cfg.user_id as string, portfolioId, top);
       } catch (e) {
         this.logger.warn(
-          `[top-gainers] portfolio ${String(cfg.portfolio_id).slice(0, 8)} failed: ${String(e).slice(0, 120)}`,
+          `[top-gainers] portfolio ${portfolioId.slice(0, 8)} failed: ${String(e).slice(0, 120)}`,
         );
       }
     }
@@ -424,7 +464,7 @@ export class TopGainersScannerService implements OnModuleInit {
     const { data: cfgRow } = await this.supabase
       .getClient()
       .from('lisa_session_configs')
-      .select('gainers_min_persistence_score')
+      .select('gainers_min_persistence_score, gainers_min_path_efficiency')
       .eq('portfolio_id', portfolioId)
       .maybeSingle();
     const minScore = this.resolveMinPersistenceScore(
@@ -432,6 +472,10 @@ export class TopGainersScannerService implements OnModuleInit {
         ? Number(cfgRow.gainers_min_persistence_score)
         : null,
     );
+    // P9-UX ADDENDUM — Path efficiency gate (null désactive)
+    const minPathEff = cfgRow?.gainers_min_path_efficiency != null
+      ? Math.max(0, Math.min(1, Number(cfgRow.gainers_min_path_efficiency)))
+      : null;
 
     // P8 — Calcule la persistance multi-TF pour les top candidats (parallèle)
     const persistenceMap = await this.mtfPersistence.analyzeBatch(
@@ -466,8 +510,20 @@ export class TopGainersScannerService implements OnModuleInit {
           );
           continue;
         }
+        // P9-UX ADDENDUM — Path quality gate (skip pump-and-dump qui passent persistence)
+        if (
+          minPathEff != null &&
+          persistence.pathQuality &&
+          persistence.pathQuality.overallEfficiency != null &&
+          persistence.pathQuality.overallEfficiency < minPathEff
+        ) {
+          this.logger.log(
+            `[top-gainers] ${cand.symbol} pathEff=${persistence.pathQuality.overallEfficiency.toFixed(2)} (${persistence.pathQuality.overallSmoothness}) < min=${minPathEff.toFixed(2)} → skip`,
+          );
+          continue;
+        }
         this.logger.log(
-          `[top-gainers] ${cand.symbol} persistence=${persistence.persistenceCount} score=${persistence.persistenceScore.toFixed(2)} ≥ ${minScore.toFixed(2)} → OPEN`,
+          `[top-gainers] ${cand.symbol} persistence=${persistence.persistenceCount} score=${persistence.persistenceScore.toFixed(2)} pathEff=${persistence.pathQuality?.overallEfficiency?.toFixed(2) ?? 'n/a'} (${persistence.pathQuality?.overallSmoothness ?? 'n/a'}) → OPEN`,
         );
       } else {
         // Si la donnée TF est indispo (provider down) on n'ouvre pas — gate
