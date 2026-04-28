@@ -115,6 +115,26 @@ export function canOpen(
   return { ok: true };
 }
 
+/**
+ * P1 — Sizing multiplier dérivé du régime tactique courant. Appliqué par
+ * `RiskEnforcer.enforce()` AVANT les checks de size pour que les caps
+ * absolus opèrent sur la valeur post-shrink.
+ *
+ * Cas typiques (cf. classifyTacticalRegime) :
+ *   - BULL       : multiplier 1.2  (+20%)
+ *   - NEUTRAL/RANGE/NEWS_SHOCK : multiplier 1.0 (no-op)
+ *   - BEAR       : multiplier 0.7  (-30%)
+ *   - VOL_SPIKE  : multiplier 0.0  (skip cycle)
+ */
+export interface RegimeSizingOption {
+  /** Facteur multiplicateur sur pctCapital + amountUsd. 0 = skip total. */
+  multiplier: number;
+  /** Nom du régime (BULL/BEAR/...) pour audit + warning message. */
+  regime: string;
+  /** Reasons textuelles concises (cf. classifier output). Optionnel. */
+  reason?: string;
+}
+
 export interface RiskEnforcementResult {
   /** True si la proposition passe toutes les contraintes */
   passes: boolean;
@@ -150,11 +170,67 @@ export class RiskEnforcer {
    *   + RTX equity = 1 thème geopolitical_safehaven concentré).
    */
   enforce(
-    proposal: AllocationProposal,
+    proposalInput: AllocationProposal,
     existingExposureByAssetClassPct?: Record<string, number>,
     existingExposureByThemePct?: Record<string, number>,
+    regimeSizing?: RegimeSizingOption,
   ): RiskEnforcementResult {
     const violations: RiskEnforcementResult['violations'] = [];
+
+    // P1 — RegimeSizing : applique le sizingMultiplier du régime tactique
+    // courant (BULL +20%, BEAR -30%, VOL_SPIKE skip=0, RANGE/NEWS_SHOCK
+    // 1.0 nominal). Appliqué AVANT tous les autres checks de size pour
+    // que les caps absolus se calculent sur la valeur post-shrink.
+    //
+    // Si multiplier === 0 (VOL_SPIKE), on drop TOUT (équivalent skip
+    // cycle — Lisa peut quand même proposer mais le sizing est neutralisé,
+    // RiskEnforcer ajoute un warning pour audit).
+    let proposal: AllocationProposal = proposalInput;
+    if (regimeSizing && Number.isFinite(regimeSizing.multiplier)) {
+      const m = regimeSizing.multiplier;
+      if (m <= 0) {
+        proposal = {
+          ...proposalInput,
+          allocations: proposalInput.allocations.map((a) => ({
+            ...a,
+            pctCapital: 0,
+            amountUsd: '0',
+          })),
+          cashReservePct: 100,
+          warnings: [
+            ...proposalInput.warnings,
+            `[regime] sizing×${m} (regime=${regimeSizing.regime}) → cycle skip, cash à 100%`,
+          ],
+        };
+        violations.push({
+          code: 'REGIME_SKIP',
+          severity: 'warning',
+          message: `Regime ${regimeSizing.regime} (multiplier=${m}) : cycle skip — toutes les allocations mises à 0`,
+        });
+      } else if (m !== 1.0) {
+        const adjusted = proposalInput.allocations.map((a) => ({
+          ...a,
+          pctCapital: a.pctCapital * m,
+          amountUsd: String(Number(a.amountUsd) * m),
+        }));
+        const totalAfter = adjusted.reduce((s, a) => s + a.pctCapital, 0);
+        proposal = {
+          ...proposalInput,
+          allocations: adjusted,
+          cashReservePct: Math.max(0, Math.min(100, 100 - totalAfter)),
+          warnings: [
+            ...proposalInput.warnings,
+            `[regime] sizing×${m.toFixed(2)} (regime=${regimeSizing.regime}${regimeSizing.reason ? ` — ${regimeSizing.reason}` : ''})`,
+          ],
+        };
+        violations.push({
+          code: 'REGIME_SIZING_APPLIED',
+          severity: 'warning',
+          message: `Regime ${regimeSizing.regime} : multiplier=${m.toFixed(2)} appliqué (allocations × ${m.toFixed(2)})`,
+        });
+      }
+    }
+
     const constraints = proposal.constraints;
 
     // 1. Sum des allocations <= 100%
