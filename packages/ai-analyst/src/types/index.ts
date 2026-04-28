@@ -56,16 +56,95 @@ export type MarketRegime = z.infer<typeof MarketRegime>;
 // ─────────────────────────────────────────────────────────────────────────────
 // Thèse Lisa — le cœur du raisonnement agnostic cross-asset
 // ─────────────────────────────────────────────────────────────────────────────
-export const ThesisCategory = z.enum([
-  'hidden_gem',       // pépite cachée, sous-couverte
-  'turnaround',       // retournement fondamental
-  'flow_timing',      // opportunité de flux / microstructure
-  'watchlist',        // pas encore mûre, à surveiller
-  'contrarian',       // consensus erroné identifié
-  'mean_reversion',   // anomalie statistique corrigeable
-  'event_driven',     // catalyseur spécifique (earnings, merger, news)
-]);
-export type ThesisCategory = z.infer<typeof ThesisCategory>;
+/**
+ * P5-LLM — ThesisCategory enum (DESCRIBE l'edge source, pas l'asset class).
+ *
+ * Lisa LLM confond parfois ce champ avec l'asset class (retourne
+ * "equity_us_small", "commodities_metals_precious", etc. dans `category`).
+ * Le preprocess ci-dessous normalise les alias avant validation enum stricte.
+ *
+ * Mapping LLM aliases → canonical :
+ *   - asset class names (equity*, commodity*, crypto*, fx*, bond*) → 'flow_timing'
+ *     (catch-all : si LLM met l'asset class dans category, c'est qu'il y a
+ *     un timing/flow signal sur cet asset → flow_timing est le moins
+ *     contraignant côté validation, et on n'inactive pas la thèse)
+ *   - synonymes (event-driven, eventdriven, mean-reversion) → canonical
+ *   - troncations (event, mean) → expansion vers canonical
+ *   - mots clés (catalyst, breakout) → mapping logique
+ */
+const CATEGORY_ALIASES: Record<string, 'hidden_gem' | 'turnaround' | 'flow_timing' | 'watchlist' | 'contrarian' | 'mean_reversion' | 'event_driven'> = {
+  // Synonymes / variations orthographiques
+  'event-driven': 'event_driven',
+  'eventdriven': 'event_driven',
+  'event': 'event_driven',
+  'catalyst': 'event_driven',
+  'catalyst_driven': 'event_driven',
+  'mean-reversion': 'mean_reversion',
+  'meanreversion': 'mean_reversion',
+  'mean': 'mean_reversion',
+  'reversion': 'mean_reversion',
+  'flow': 'flow_timing',
+  'flow-timing': 'flow_timing',
+  'flowtiming': 'flow_timing',
+  'timing': 'flow_timing',
+  'micro': 'flow_timing',
+  'microstructure': 'flow_timing',
+  'momentum': 'flow_timing',
+  'breakout': 'flow_timing',
+  'turn-around': 'turnaround',
+  'turn_around': 'turnaround',
+  'recovery': 'turnaround',
+  'fundamental': 'turnaround',
+  'hidden-gem': 'hidden_gem',
+  'hiddengem': 'hidden_gem',
+  'gem': 'hidden_gem',
+  'undervalued': 'hidden_gem',
+  'sleeper': 'hidden_gem',
+  'watch-list': 'watchlist',
+  'watch_list': 'watchlist',
+  'watch': 'watchlist',
+  'monitor': 'watchlist',
+  'observe': 'watchlist',
+  'contra': 'contrarian',
+  'against': 'contrarian',
+  'opposite': 'contrarian',
+};
+
+/** Liste des préfixes asset-class que le LLM met parfois dans category. */
+const ASSET_CLASS_PREFIXES = [
+  'equity', 'stock', 'stocks',
+  'commodity', 'commodities', 'metals', 'energy',
+  'crypto', 'btc', 'bitcoin', 'eth', 'ethereum',
+  'fx', 'forex', 'currency', 'currencies',
+  'bond', 'bonds', 'fixed_income', 'fixedincome', 'rates', 'treasuries',
+  'credit', 'hy', 'highyield', 'high_yield', 'ig',
+  'options', 'option', 'derivatives', 'derivative',
+];
+
+export const ThesisCategory = z.preprocess(
+  (v) => {
+    if (typeof v !== 'string') return v;
+    const normalized = v.trim().toLowerCase();
+    if (CATEGORY_ALIASES[normalized]) return CATEGORY_ALIASES[normalized];
+    // Asset class fallback : "equity_us_small", "commodities_metals_precious",
+    // "crypto_bitcoin" → flow_timing (le LLM a mis l'asset class dans category,
+    // on assume un signal flow/timing sur cette asset class)
+    for (const prefix of ASSET_CLASS_PREFIXES) {
+      if (normalized.startsWith(prefix)) return 'flow_timing';
+    }
+    return normalized;
+  },
+  z.enum([
+    'hidden_gem',       // pépite cachée, sous-couverte
+    'turnaround',       // retournement fondamental
+    'flow_timing',      // opportunité de flux / microstructure
+    'watchlist',        // pas encore mûre, à surveiller
+    'contrarian',       // consensus erroné identifié
+    'mean_reversion',   // anomalie statistique corrigeable
+    'event_driven',     // catalyseur spécifique (earnings, merger, news)
+  ]),
+);
+export type ThesisCategory = 'hidden_gem' | 'turnaround' | 'flow_timing' | 'watchlist' | 'contrarian' | 'mean_reversion' | 'event_driven';
 
 /**
  * PATCH 5 — Type de thèse pour calibrer la POSTURE DE RISQUE.
