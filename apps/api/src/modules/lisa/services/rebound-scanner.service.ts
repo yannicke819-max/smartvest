@@ -1,17 +1,24 @@
 /**
- * P3-A.2 — Rebound watchlist scan loop.
+ * P3-A.2 + P3-C — Rebound watchlist scan loop avec pre-filter cache.
  *
  * Cron toutes les 15 minutes pendant heures marché US (lun-ven, 14:30-21:00
  * UTC). Pour chaque portfolio actif :
- *   1. Charge la watchlist (hardcodée pour le moment, cf. WATCHLIST_DEFAULT).
- *   2. Pour chaque ticker → fetch 60 daily bars via EODHD `/api/eod/`.
- *   3. Appel `scanRebound(history)`. Si BUY ET pas de position OPEN
- *      existante sur (portfolio_id, ticker) → INSERT rebound_positions.
+ *   1. Charge la watchlist (table `watchlist_universe` selon REBOUND_UNIVERSE,
+ *      default 'sp500' ~200 tickers ; fallback TS si DB inaccessible).
+ *   2. PHASE 1 — Pre-filter sur cache `ohlcv_cache_daily` :
+ *      pour chaque ticker, calcule RSI(14) sur les bougies en cache. Garde
+ *      uniquement les tickers où RSI < REBOUND_PREFILTER_RSI_MAX (default 35).
+ *      Typiquement 30-50 candidats sur 500 → réduit le coût EODHD live ×10.
+ *   3. PHASE 2 — Full scan sur candidats uniquement :
+ *      fetch les bougies live (ou cache si frais < 1h), run scanRebound,
+ *      sector cap, INSERT rebound_positions sur signal BUY.
  *   4. Garde-fous :
- *      - dailyTargetHit (cumul réalisé+latent ≥ DAILY_TARGET_USD) → freeze
+ *      - dailyTargetHit → freeze
  *      - count(OPEN) ≥ MAX_CONCURRENT_REBOUND_POSITIONS → skip
+ *      - sector cap REBOUND_SECTOR_CAP_PCT (default 20%) — cf. assets.sector
  *      - hors heures marché US → no-op
- *   5. Audit `lisa_decision_log` kind='rebound_scan_completed'.
+ *   5. Audit `lisa_decision_log` kind='rebound_scan_completed' avec
+ *      payload {phase1_count, phase2_count, signals, opened, skipped_reasons}.
  *
  * Pas d'exécution réelle. Les positions insérées sont du paper trading
  * géré ensuite par ReboundMonitorService (PR #43).
@@ -23,18 +30,13 @@ import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { LisaService } from './lisa.service';
 import { DecisionLogService } from './decision-log.service';
-import { scanRebound, type Candle, type ReboundCfg } from '@smartvest/ai-analyst';
-
-/**
- * Watchlist par défaut : 12 tickers US liquides à mid/high cap, couvrant
- * tech méga-cap, semi, ETF index, énergie. Choix pour avoir une diversité
- * sectorielle sans table watchlist dédiée. Surchargeable par env
- * `REBOUND_WATCHLIST` (CSV).
- */
-const WATCHLIST_DEFAULT = [
-  'AAPL.US', 'MSFT.US', 'NVDA.US', 'META.US', 'GOOGL.US', 'TSLA.US',
-  'AMD.US', 'AVGO.US', 'SPY.US', 'QQQ.US', 'IWM.US', 'XOM.US',
-];
+import { OhlcvCacheService } from './ohlcv-cache.service';
+import {
+  scanRebound,
+  evaluatePrefilter,
+  type Candle,
+  type ReboundCfg,
+} from '@smartvest/ai-analyst';
 
 interface EodhdEodBar {
   date: string;
@@ -62,6 +64,7 @@ export class ReboundScannerService {
     private readonly lisa: LisaService,
     private readonly decisionLog: DecisionLogService,
     private readonly config: ConfigService,
+    private readonly ohlcvCache: OhlcvCacheService,
   ) {}
 
   /**
@@ -105,7 +108,10 @@ export class ReboundScannerService {
       return;
     }
 
-    const watchlist = this.getWatchlist();
+    // P3-C — Watchlist via DB table (`watchlist_universe`) avec fallback
+    // TS const si l'accès DB échoue. Permet hot-swap de l'univers via SQL
+    // sans redeploy.
+    const watchlist = await this.getWatchlistAsync();
     for (const cfg of configs) {
       const portfolioId = cfg.portfolio_id as string;
       const userId = cfg.user_id as string;
@@ -162,32 +168,84 @@ export class ReboundScannerService {
       return;
     }
 
-    // ── Loop watchlist ───────────────────────────────────────────────
     const cfg = this.scannerCfg();
     const slotsAvailable = maxConcurrent - openCount;
 
-    for (const eodhdTicker of watchlist) {
-      // Duplicate guard : skip si position OPEN existe déjà sur ce ticker.
+    // ── PHASE 1 — Pre-filter cache (RSI < threshold) ────────────────
+    // Lecture parallèle du cache pour les 500 tickers, calc RSI pur,
+    // filtre les tickers déjà OPEN. Pas de fetch réseau.
+    const rsiThreshold = this.getPrefilterRsiMax();
+    const eligible = watchlist.filter((t) => {
+      const base = t.split('.')[0];
+      return !openTickers.has(t) && !openTickers.has(base);
+    });
+
+    const phase1Results = await Promise.all(
+      eligible.map(async (ticker) => {
+        const bars = await this.ohlcvCache.getCachedBars(ticker, 30).catch(() => null);
+        const result = evaluatePrefilter(ticker, bars ?? null, rsiThreshold);
+        return { ticker, bars, result };
+      }),
+    );
+
+    const candidates = phase1Results.filter((r) => r.result.passes);
+    const phase1Count = eligible.length;
+    const phase2Count = candidates.length;
+
+    if (phase2Count === 0) {
+      // Pas de candidat oversold dans toute la watchlist — exit propre.
+      await this.writeAudit(
+        portfolioId,
+        watchlist.length,
+        0,
+        0,
+        skipped,
+        phase1Count,
+        phase2Count,
+      );
+      return;
+    }
+
+    // P3-C — sector cap : compte exposition par secteur sur les positions
+    // OPEN. Cap REBOUND_SECTOR_CAP_PCT (default 20% = max 1 position de
+    // ce secteur si MAX_CONCURRENT=5).
+    const sectorCapPct = this.getSectorCapPct();
+    const sectorByTicker = await this.fetchSectorByTickers(
+      [...openTickers, ...candidates.map((c) => c.ticker.split('.')[0])],
+    );
+    const sectorOpenCounts = new Map<string, number>();
+    for (const baseTicker of openTickers) {
+      const sector = sectorByTicker.get(baseTicker) ?? 'unknown';
+      sectorOpenCounts.set(sector, (sectorOpenCounts.get(sector) ?? 0) + 1);
+    }
+    const maxPerSector = Math.max(1, Math.floor((maxConcurrent * sectorCapPct) / 100));
+
+    // ── PHASE 2 — Full scan sur candidats uniquement ────────────────
+    for (const cand of candidates) {
+      const eodhdTicker = cand.ticker;
       const baseSymbol = eodhdTicker.split('.')[0];
-      if (openTickers.has(eodhdTicker) || openTickers.has(baseSymbol)) {
-        skipped.push({ reason: 'already_open', ticker: eodhdTicker });
+
+      // Sector cap
+      const sector = sectorByTicker.get(baseSymbol) ?? 'unknown';
+      const currentSectorCount = sectorOpenCounts.get(sector) ?? 0;
+      if (currentSectorCount >= maxPerSector) {
+        skipped.push({ reason: `sector_cap_${sector}`, ticker: eodhdTicker });
         continue;
       }
 
-      // Fetch bars (60 demandés, minimum 20 requis par scanRebound).
-      const bars = await this.getDailyBars(eodhdTicker, 60).catch(() => null);
+      // Full bars : si cache a déjà 30 bars utiles ET ces bars sont
+      // récentes, on les réutilise directement. Sinon fetch live.
+      let bars: Candle[] | null = cand.bars;
+      if (!bars || bars.length < 20) {
+        bars = await this.getDailyBars(eodhdTicker, 60).catch(() => null);
+      }
       if (!bars || bars.length < 20) {
         skipped.push({ reason: 'insufficient_bars', ticker: eodhdTicker });
         continue;
       }
 
-      // Run scanner
       const sig = scanRebound(bars, cfg);
-      if (sig.type !== 'BUY') {
-        // Diagnostic dispo via sig.reason — on l'évite pour ne pas bloater
-        // l'audit (la majorité des scans sont HOLD).
-        continue;
-      }
+      if (sig.type !== 'BUY') continue;
       signalsFound++;
 
       if (opened >= slotsAvailable) {
@@ -195,41 +253,100 @@ export class ReboundScannerService {
         continue;
       }
 
-      // INSERT rebound_positions.
-      const inserted = await this.insertReboundPosition(
-        portfolioId,
-        baseSymbol,
-        sig,
-      );
+      const inserted = await this.insertReboundPosition(portfolioId, baseSymbol, sig);
       if (inserted) {
         opened++;
+        sectorOpenCounts.set(sector, currentSectorCount + 1);
         this.logger.log(
-          `[rebound-scanner] ${baseSymbol} BUY signaled → INSERT rebound_position (entry=${sig.entry}, tp1=${sig.tp1}, sl=${sig.sl}, conf=${sig.confidence})`,
+          `[rebound-scanner] ${baseSymbol} (sector=${sector}) BUY → INSERT rebound_position (entry=${sig.entry}, tp1=${sig.tp1}, sl=${sig.sl}, conf=${sig.confidence})`,
         );
       } else {
         skipped.push({ reason: 'insert_failed', ticker: eodhdTicker });
       }
     }
 
-    await this.writeAudit(portfolioId, watchlist.length, signalsFound, opened, skipped);
+    await this.writeAudit(
+      portfolioId,
+      watchlist.length,
+      signalsFound,
+      opened,
+      skipped,
+      phase1Count,
+      phase2Count,
+    );
+  }
+
+  /**
+   * P3-C — Lookup sector pour une liste de tickers via la table `assets`.
+   * `assets.industry` n'existe pas dans le schéma actuel — on utilise
+   * `assets.sector` (champ existant 0001_init_schema). Tickers absents
+   * de la table reçoivent 'unknown' qui n'est jamais cap-bloqué (mais
+   * compte vers le total OPEN).
+   */
+  private async fetchSectorByTickers(baseSymbols: Iterable<string>): Promise<Map<string, string>> {
+    const list = Array.from(new Set([...baseSymbols].filter(Boolean)));
+    if (list.length === 0) return new Map();
+    const { data, error } = await this.supabase
+      .getClient()
+      .from('assets')
+      .select('ticker, sector')
+      .in('ticker', list);
+    if (error) {
+      this.logger.warn(`[rebound-scanner] assets.sector fetch failed: ${error.message}`);
+      return new Map();
+    }
+    const map = new Map<string, string>();
+    for (const row of data ?? []) {
+      const t = row.ticker as string | null;
+      const s = row.sector as string | null;
+      if (t && s) map.set(t, s);
+    }
+    return map;
   }
 
   // ── Helpers ──────────────────────────────────────────────────────────
 
+  /**
+   * P3-C — Watchlist via DB table `watchlist_universe` (param REBOUND_UNIVERSE,
+   * default 'sp500'). Override env CSV `REBOUND_WATCHLIST` override la DB.
+   * Fallback final TS si aucune source disponible.
+   */
+  private async getWatchlistAsync(): Promise<string[]> {
+    const csvOverride = this.config.get<string>('REBOUND_WATCHLIST');
+    if (csvOverride && csvOverride.trim().length > 0) {
+      return csvOverride.split(',').map((t) => t.trim()).filter((t) => t.length > 0);
+    }
+    return this.ohlcvCache.getActiveUniverse();
+  }
+
+  /**
+   * Synchrone — utilisé uniquement par les tests legacy (env CSV).
+   */
   private getWatchlist(): string[] {
     const env = this.config.get<string>('REBOUND_WATCHLIST');
     if (env && env.trim().length > 0) {
-      return env
-        .split(',')
-        .map((t) => t.trim())
-        .filter((t) => t.length > 0);
+      return env.split(',').map((t) => t.trim()).filter((t) => t.length > 0);
     }
-    return WATCHLIST_DEFAULT;
+    // Mini-fallback sync pour test compat — 12 mega-caps
+    return [
+      'AAPL.US', 'MSFT.US', 'NVDA.US', 'META.US', 'GOOGL.US', 'TSLA.US',
+      'AMD.US', 'AVGO.US', 'SPY.US', 'QQQ.US', 'IWM.US', 'XOM.US',
+    ];
   }
 
   private getMaxConcurrent(): number {
     const v = Number(this.config.get<string>('MAX_CONCURRENT_REBOUND_POSITIONS'));
     return Number.isFinite(v) && v > 0 ? Math.floor(v) : 5;
+  }
+
+  private getPrefilterRsiMax(): number {
+    const v = Number(this.config.get<string>('REBOUND_PREFILTER_RSI_MAX'));
+    return Number.isFinite(v) && v > 0 ? v : 35;
+  }
+
+  private getSectorCapPct(): number {
+    const v = Number(this.config.get<string>('REBOUND_SECTOR_CAP_PCT'));
+    return Number.isFinite(v) && v > 0 ? v : 20;
   }
 
   private scannerCfg(): ReboundCfg {
@@ -379,14 +496,24 @@ export class ReboundScannerService {
     signalsFound: number,
     opened: number,
     skipped: SkipReason[],
+    phase1Count: number = 0,
+    phase2Count: number = 0,
   ): Promise<void> {
     try {
+      const phasesNote = phase1Count > 0 ? ` · phase1=${phase1Count} · phase2=${phase2Count}` : '';
       await this.decisionLog.append({
         portfolioId,
         kind: 'rebound_scan_completed',
-        summary: `Scan ${scanned} tickers · signals=${signalsFound} · opened=${opened} · skipped=${skipped.length}`,
+        summary: `Scan ${scanned} tickers${phasesNote} · signals=${signalsFound} · opened=${opened} · skipped=${skipped.length}`,
         rationale: skipped.slice(0, 6).map((s) => `${s.reason}${s.ticker ? `(${s.ticker})` : ''}`).join(', '),
-        payload: { scanned, signals_found: signalsFound, opened, skipped_reasons: skipped },
+        payload: {
+          scanned,
+          phase1_count: phase1Count,
+          phase2_count: phase2Count,
+          signals_found: signalsFound,
+          opened,
+          skipped_reasons: skipped,
+        },
         triggeredBy: 'mechanical_cron',
       });
     } catch (e) {

@@ -350,21 +350,34 @@ EODHD_API_KEY=... SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
 - `EODHD_API_KEY` manquante → exit 1
 - `> 50%` des fetches échouent → throw `data provider down`
 
-### Scanner watchlist (P3-A.2)
+### Scanner watchlist (P3-A.2 + P3-C)
 
-`ReboundScannerService` ferme la boucle d'entrée :
+`ReboundScannerService` ferme la boucle d'entrée avec **scan 2-phase** :
 
 - Cron `'0 */15 * * * 1-5'` toutes les 15 min, lun-ven
 - Body check heures marché US (14:30-21:00 UTC) — sinon no-op
-- Pour chaque portfolio actif × chaque ticker watchlist :
-  - Fetch 60 daily bars via EODHD `/api/eod/{ticker}` (cache 1h)
+- **Watchlist** : table `watchlist_universe` (default `sp500` ~200 tickers, override env `REBOUND_UNIVERSE=sp500|nasdaq100|mega12` ou `REBOUND_WATCHLIST=CSV`)
+- **Phase 1 — Pre-filter** sur cache `ohlcv_cache_daily` :
+  - lecture des 30 dernières bougies par ticker (~aucun fetch réseau)
+  - calc RSI(14) pur · garde si RSI < `REBOUND_PREFILTER_RSI_MAX` (default 35)
+  - typique : 30-50 candidats sur 500
+- **Phase 2 — Full scan** sur candidats uniquement :
+  - Fetch live 60 bars EODHD si cache pas assez frais (cache 1h)
   - Run `scanRebound(bars, cfg)`
-  - Si BUY ET pas de position OPEN sur ce (portfolio, ticker) → INSERT
+  - **Sector cap** : si secteur déjà à `REBOUND_SECTOR_CAP_PCT` × MAX (default 20% → 1 position) → skip
+  - Si BUY ET pas de position OPEN ET race-condition guard → INSERT
 - Garde-fous : `dailyTargetHit` freeze, `openCount >= MAX_CONCURRENT` skip
-- Audit : `lisa_decision_log` kind=`rebound_scan_completed` (hash chain)
-- Lisa pipeline : `MarketSnapshot.reboundSignals` injecté dans le prompt sous `## Positions rebound ouvertes` pour empêcher les doubles signaux
+- Audit : `lisa_decision_log` kind=`rebound_scan_completed` (hash chain) avec payload `{phase1_count, phase2_count, signals, opened, skipped_reasons}`
+- Lisa pipeline : `MarketSnapshot.reboundSignals` injecté dans le prompt sous `## Positions rebound ouvertes`
 
-Watchlist par défaut : 12 tickers US liquides (mega-cap tech + ETF index + énergie). Surchargeable via env CSV.
+### OHLCV cache daily (P3-C)
+
+`OhlcvCacheService` cron `'30 21 * * 1-5'` (21:30 UTC, post-close NYSE) :
+- UPSERT `ohlcv_cache_daily` pour chaque ticker dans la watchlist active
+- Throttling 10 req/sec (env `OHLCV_FETCH_RPS`)
+- Fail-fast si > 50% des fetches échouent (pas de fallback synthétique)
+
+Coût EODHD : ~500 fetches/jour (1×/jour) au lieu de 500 × 26 ticks = 13 000 fetches/jour. **×26 économie**.
 
 ### Garde-fous
 

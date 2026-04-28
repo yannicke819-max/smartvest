@@ -15,6 +15,8 @@ export * from './simulation';
 export * from './llm';
 export * from './regime';
 export * from './strategies/rebound-tp';
+export * from './strategies/universes';
+export * from './strategies/rsi-prefilter';
 export * from './backtest/engine';
 export * from './backtest/metrics';
 export * from './backtest/runner';

@@ -5,6 +5,23 @@ Guide de travail pour Claude Code sur ce repo.
 
 ---
 
+## RÈGLE OPÉRATIONNELLE — UNIVERS WATCHLIST PAR DÉFAUT
+
+P3-C — Le scanner rebound-tp scanne par défaut **`sp500`** (~200 mega-caps US, table `watchlist_universe`). Override possible :
+
+- env `REBOUND_UNIVERSE=sp500|nasdaq100|mega12` → choix de la watchlist nommée
+- env `REBOUND_WATCHLIST=A.US,B.US,...` → CSV ad hoc, override la table
+
+**Source de vérité TS** : `packages/ai-analyst/src/strategies/universes.ts` (`SP500_UNIVERSE`, `NASDAQ100_UNIVERSE`, `MEGA12_UNIVERSE`). À chaque update du fichier TS, **synchroniser manuellement** la migration corrective sur `watchlist_universe` (sinon DB et TS divergent silencieusement).
+
+**Fallback** : si la DB est inaccessible, le scanner tombe sur `mega12` (12 tickers, le plus conservateur côté coût EODHD) — pas sur les listes étendues, pour éviter saturer EODHD pendant un incident DB.
+
+**OHLCV cache** : table `ohlcv_cache_daily` populée par `OhlcvCacheService` cron 21:30 UTC lun-ven. Le scanner phase 1 lit ce cache (RSI pré-filter, ~30-50 candidats sur 500), phase 2 fetch live uniquement les candidats. Coût EODHD : ~30 fetches/tick au lieu de 500 = **×16 économie**.
+
+**Sector cap** : `REBOUND_SECTOR_CAP_PCT` (default 20%). Avec `MAX_CONCURRENT=5`, max 1 position par secteur. Lookup via `assets.sector` (champ existant ; `assets.industry` n'existe pas dans le schéma actuel — ne pas le référencer).
+
+---
+
 ## RÈGLE OPÉRATIONNELLE PERMANENTE — AUTO-MERGE SUR MAIN
 
 Pour TOUTE PR que tu ouvres sur ce repo :

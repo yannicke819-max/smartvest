@@ -63,6 +63,7 @@ function makeSupabaseMock(state: MockState) {
     chain.gte = () => chain;
     chain.lt = () => chain;
     chain.not = () => chain;
+    chain.in = () => chain;
     chain.order = () => chain;
     chain.limit = () => chain;
     chain.maybeSingle = async () => {
@@ -143,11 +144,26 @@ function buildScanner(opts: {
     REBOUND_WATCHLIST: 'AAPL.US',
     ...(opts.env ?? {}),
   });
+  // P3-C : OhlcvCacheService mock minimal — phase 1 lit getCachedBars,
+  // dispatch reads getActiveUniverse. On stube les deux pour retourner
+  // les bars de buyFixture (passe le pre-filter RSI) et la watchlist
+  // depuis l'env CSV.
+  const ohlcvCache = {
+    getCachedBars: jest.fn(async (ticker: string) => {
+      const k = ticker.split('.')[0] + '.US';
+      return opts.barsByTicker?.[k] ?? opts.barsByTicker?.[ticker] ?? buyFixture();
+    }),
+    getActiveUniverse: jest.fn(async () => {
+      const csv = opts.env?.REBOUND_WATCHLIST ?? 'AAPL.US';
+      return csv.split(',').map((t) => t.trim()).filter(Boolean);
+    }),
+  };
   const scanner = new ReboundScannerService(
     supabase as never,
     lisa as never,
     decisionLog as never,
     config as never,
+    ohlcvCache as never,
   );
   // Override fetch via getDailyBars : on patche la méthode privée pour
   // retourner un fixture déterministe sans appel réseau.
