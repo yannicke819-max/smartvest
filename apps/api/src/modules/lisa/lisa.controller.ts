@@ -18,6 +18,7 @@ import {
 } from './services/operating-mode.service';
 import { TopGainersScannerService } from './services/top-gainers-scanner.service';
 import { MultiTimeframePersistenceService } from './services/multi-tf-persistence.service';
+import { PersistenceProbabilityService } from './services/persistence-probability.service';
 import { summarizeByTf, type PersistenceResult } from '@smartvest/ai-analyst';
 import type { DailyHarvestConfig, CapitalDisciplineMode } from './types/capital-discipline.types';
 
@@ -38,6 +39,7 @@ export class LisaController {
     private readonly operatingMode: OperatingModeService,
     private readonly topGainersScanner: TopGainersScannerService,
     private readonly mtfPersistence: MultiTimeframePersistenceService,
+    private readonly persistenceProbability: PersistenceProbabilityService,
   ) {}
 
   // ─────────────────────────────────────────────────────────────────
@@ -284,6 +286,72 @@ export class LisaController {
       candidates: candidatesOut,
       summary,
     };
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // P9 — empirical law endpoint
+  // ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Loi empirique P(win) par bucket persistenceCount + courbe logistic fittée.
+   *
+   *   GET /lisa/persistence-empirical-law?lookback_days=30&min_sample=20
+   *
+   * Réponse :
+   * ```json
+   * {
+   *   "trainedOn": 487,
+   *   "empiricalLaw": [{ persistenceCount: "4/6", n: 89, pWinObserved: 0.61, ... }],
+   *   "fittedCurve": "logistic",
+   *   "coefficients": { intercept: -1.8, persistenceCount: 0.62, ... },
+   *   "aucRoc": 0.71,
+   *   "accuracy": 0.68,
+   *   "modelVersion": "v1730000000",
+   *   "fallback": false
+   * }
+   * ```
+   *
+   * `fallback=true` si aucun modèle entraîné OU sample_size < 30.
+   * Le caller UI affiche alors un disclaimer "modèle en bootstrap, fallback
+   * sur seuil P8 dur".
+   */
+  @Get('persistence-empirical-law')
+  async getPersistenceEmpiricalLaw(
+    @Headers() headers: Record<string, string>,
+    @Query('lookback_days') lookbackRaw?: string,
+    @Query('min_sample') minSampleRaw?: string,
+  ) {
+    extractUserId(headers);
+    const lookbackDays = clampInt(lookbackRaw, 1, 365, 30);
+    const minSample = clampInt(minSampleRaw, 1, 1000, 20);
+    const result = await this.persistenceProbability.getEmpiricalLaw({
+      lookbackDays,
+      minSample,
+    });
+    return {
+      ...result,
+      fittedCurve: result.coefficients ? 'logistic' : null,
+      lookbackDays,
+      minSample,
+    };
+  }
+
+  /**
+   * Refit manuel du modèle (bouton UI "Refit maintenant"). Retourne le
+   * statut + version + métriques. Cron Sunday automatique en plus.
+   */
+  @Post('persistence-empirical-law/refit')
+  @HttpCode(200)
+  async refitPersistenceModel(
+    @Headers() headers: Record<string, string>,
+    @Body() body: { lookback_days?: number },
+  ) {
+    extractUserId(headers);
+    const lookbackDays = clampInt(
+      body?.lookback_days != null ? String(body.lookback_days) : undefined,
+      1, 365, 30,
+    );
+    return this.persistenceProbability.trainAndPersist({ lookbackDays });
   }
 
   private async resolveTopN(portfolioId: string, raw: string | undefined): Promise<number> {
@@ -834,4 +902,14 @@ function parseMarkets(raw: string | undefined): Set<string> | null {
     .filter((s) => allowed.has(s));
   if (list.length === 0) return null;
   return new Set(list);
+}
+
+/**
+ * P9 — Helper clamp pour query params numériques.
+ */
+function clampInt(raw: string | undefined, min: number, max: number, def: number): number {
+  if (!raw) return def;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n)) return def;
+  return Math.max(min, Math.min(max, n));
 }
