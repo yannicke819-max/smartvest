@@ -23,6 +23,7 @@ export * from './strategies/top-gainers-filter';
 export * from './strategies/multi-tf-persistence';
 export * from './strategies/logistic-regression';
 export * from './strategies/empirical-law';
+export * from './strategies/path-quality';
 export * from './backtest/engine';
 export * from './backtest/metrics';
 export * from './backtest/runner';

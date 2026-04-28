@@ -5,6 +5,51 @@ Guide de travail pour Claude Code sur ce repo.
 
 ---
 
+## RÈGLE OPÉRATIONNELLE — GAINERS UX + PATH QUALITY — P9-UX
+
+P9-UX livre 2 features UX critiques + 1 dimension qualité (addendum) sur le scanner Gainers :
+
+### 1. Cycle scanner configurable par portfolio
+
+`lisa_session_configs.gainers_cycle_minutes` (1..60, default 15). UI `<select>` dans `GainersStatusTile` (8 valeurs : 1, 5, 10, 15, 20, 30, 45, 60). Toast warn à 1 min (coût API ×15).
+
+`TopGainersScannerService.runScannerInner()` lit ce champ avec cache 30s + tracking `lastScanByPortfolio` Map en mémoire. Skip portfolios dont le cycle n'est pas écoulé. Effective cycle = max(env SCAN_INTERVAL_MINUTES, DB cycle).
+
+### 2. Slider topN dynamique avec debounce
+
+Slider `<input type="range" min=5 max=100 step=5>` avec ticks visuels [5, 10, 20, 50, 100]. **Debounce 300ms** avant refetch backend pour éviter spam pendant le drag. Titre tableau "Top {N} candidats" + sous-titre "Top {N} en hausse 1min" interpolés. Tableau slicé à `topN`, summary counters utilisent `topN` comme denominator.
+
+### 3. Path quality / smoothness (ADDENDUM)
+
+Détecte les pump-and-dump qui passent le gate persistence mais dont le path est chaotique.
+
+```
+pathEfficiency = |end - start| / Σ|p_i - p_{i-1}|     ∈ [0, 1]
+pullbackDepth  = (max - minAfterMax) / max
+classification : smooth (eff≥0.7 AND pullback≤1%) / choppy (eff<0.4 OR pullback>2%) / mixed
+```
+
+Calculé pour chaque TF (5/10/15/30/60m) à partir des candles 1m (Binance) ou 5m (EODHD) déjà fetchées pour persistence. `overallEfficiency` = moyenne, `overallSmoothness` = choppy si ≥1 TF choppy, smooth si tous smooth, sinon mixed.
+
+**Gate scanner optionnel** : `gainers_min_path_efficiency` (0..1 ou null pour désactiver, default 0.5). Skip si `overallEfficiency < min`.
+
+**UI** : colonne "Path" avec badge 🟢/🟡/🔴 + tooltip `eff X% · label`. Toggle "Cacher choppy" filtre client-side.
+
+### Endpoint snapshot enrichi
+
+`GET /lisa/gainers-persistence-snapshot/:portfolioId?topN=20&markets=crypto,us` retourne désormais `pathQuality` par candidat avec `overallEfficiency`, `overallSmoothness`, et metrics par TF (`pathEfficiency`, `pullbackDepth`, `monotonicity`, `smoothnessLabel`, `n`).
+
+### Migration `0089_gainers_cycle_minutes`
+
+```sql
+ADD COLUMN gainers_cycle_minutes INT DEFAULT 15 CHECK (1..60);
+ADD COLUMN gainers_min_path_efficiency NUMERIC(3,2) DEFAULT 0.5 CHECK (NULL OR 0..1);
+```
+
+Doc complète : `docs/scanner-gainers.md`.
+
+---
+
 ## RÈGLE OPÉRATIONNELLE — PROBABILITÉ BAYESIENNE — P9
 
 P9 transforme P8 (mesure de persistance multi-TF) en moteur probabiliste : `P(trade gagnant | features)` via régression logistique entraînée sur l'historique `paper_trades`. Implémentation maison (Newton-Raphson + L2, ~50 LoC), pas de dépendance ML externe.

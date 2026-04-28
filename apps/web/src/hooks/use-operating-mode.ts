@@ -64,6 +64,24 @@ export function useGainersStatus(portfolioId: string | null, enabled: boolean) {
  * Réponse littérale à la question user : « 20 valeurs en hausse 1min →
  * combien sont aussi en hausse 5/10/15/30/60min ? ».
  */
+export interface PathQualityMetric {
+  pathEfficiency: number;
+  pullbackDepth: number;
+  monotonicity: number;
+  smoothnessLabel: 'smooth' | 'mixed' | 'choppy';
+  n: number;
+}
+
+export interface PathQualityByTf {
+  overallEfficiency: number | null;
+  overallSmoothness: 'smooth' | 'mixed' | 'choppy' | null;
+  tf5m: PathQualityMetric | null;
+  tf10m: PathQualityMetric | null;
+  tf15m: PathQualityMetric | null;
+  tf30m: PathQualityMetric | null;
+  tf1h: PathQualityMetric | null;
+}
+
 export interface PersistenceCandidate {
   symbol: string;
   market: string;
@@ -75,6 +93,8 @@ export interface PersistenceCandidate {
   tf1h: number | null;
   persistenceScore: number | null;
   persistenceCount: string | null;
+  /** P9-UX ADDENDUM — null si pas dispo. */
+  pathQuality?: PathQualityByTf | null;
 }
 
 export interface PersistenceSnapshot {
@@ -109,5 +129,25 @@ export function usePersistenceSnapshot(
       ),
     enabled: !!portfolioId && enabled,
     refetchInterval: 60_000,
+  });
+}
+
+/**
+ * P9-UX — Update gainers_cycle_minutes via POST /lisa/config/:portfolioId.
+ * L'endpoint upsertSessionConfig accepte un body partiel. On poste juste
+ * le champ qu'on veut modifier.
+ */
+export function useUpdateGainersCycle(portfolioId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (gainersCycleMinutes: number) =>
+      apiFetch<unknown>(`/lisa/config/${portfolioId}`, {
+        method: 'POST',
+        body: JSON.stringify({ gainers_cycle_minutes: gainersCycleMinutes }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['gainers-status', portfolioId] });
+      qc.invalidateQueries({ queryKey: ['lisa-config', portfolioId] });
+    },
   });
 }
