@@ -43,6 +43,7 @@ import { ReboundScannerService } from './services/rebound-scanner.service';
 import { OhlcvCacheService } from './services/ohlcv-cache.service';
 import { TopGainersScannerService } from './services/top-gainers-scanner.service';
 import { OperatingModeService } from './services/operating-mode.service';
+import { MultiTimeframePersistenceService } from './services/multi-tf-persistence.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule, BotLabModule],
@@ -97,6 +98,8 @@ import { OperatingModeService } from './services/operating-mode.service';
     TopGainersScannerService,
     // P7-MODE-GAINERS-BADGE — toggle 3-modes opératoires (UI badge → DB strategy_mode)
     OperatingModeService,
+    // P8-MULTI-TIMEFRAME-PERSISTENCE — fetch + score multi-TF (1m/5m/10m/15m/30m/1h)
+    MultiTimeframePersistenceService,
   ],
   exports: [
     LisaService,

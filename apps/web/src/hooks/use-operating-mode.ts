@@ -57,3 +57,57 @@ export function useGainersStatus(portfolioId: string | null, enabled: boolean) {
     refetchInterval: 30_000,
   });
 }
+
+/**
+ * P8 — Snapshot multi-TF persistance pour le top N candidats.
+ * Sources : EODHD multi-exchange + Binance crypto, fetch parallèle, cache 30s.
+ * Réponse littérale à la question user : « 20 valeurs en hausse 1min →
+ * combien sont aussi en hausse 5/10/15/30/60min ? ».
+ */
+export interface PersistenceCandidate {
+  symbol: string;
+  market: string;
+  tf1m: number | null;
+  tf5m: number | null;
+  tf10m: number | null;
+  tf15m: number | null;
+  tf30m: number | null;
+  tf1h: number | null;
+  persistenceScore: number | null;
+  persistenceCount: string | null;
+}
+
+export interface PersistenceSnapshot {
+  capturedAt: string;
+  topN: number;
+  marketsScanned: string[];
+  candidates: PersistenceCandidate[];
+  summary: {
+    oneMinute: number;
+    fiveMinutes: number;
+    tenMinutes: number;
+    fifteenMinutes: number;
+    thirtyMinutes: number;
+    oneHour: number;
+  };
+}
+
+export function usePersistenceSnapshot(
+  portfolioId: string | null,
+  topN: number,
+  enabled: boolean,
+  markets?: string,
+) {
+  const qs = new URLSearchParams();
+  qs.set('topN', String(topN));
+  if (markets) qs.set('markets', markets);
+  return useQuery({
+    queryKey: ['persistence-snapshot', portfolioId, topN, markets ?? ''],
+    queryFn: () =>
+      apiFetch<PersistenceSnapshot>(
+        `/lisa/gainers-persistence-snapshot/${portfolioId}?${qs.toString()}`,
+      ),
+    enabled: !!portfolioId && enabled,
+    refetchInterval: 60_000,
+  });
+}

@@ -17,6 +17,8 @@ import {
   type OperatingMode,
 } from './services/operating-mode.service';
 import { TopGainersScannerService } from './services/top-gainers-scanner.service';
+import { MultiTimeframePersistenceService } from './services/multi-tf-persistence.service';
+import { summarizeByTf, type PersistenceResult } from '@smartvest/ai-analyst';
 import type { DailyHarvestConfig, CapitalDisciplineMode } from './types/capital-discipline.types';
 
 @Controller('lisa')
@@ -35,6 +37,7 @@ export class LisaController {
     private readonly macroMode: MacroModeService,
     private readonly operatingMode: OperatingModeService,
     private readonly topGainersScanner: TopGainersScannerService,
+    private readonly mtfPersistence: MultiTimeframePersistenceService,
   ) {}
 
   // ─────────────────────────────────────────────────────────────────
@@ -202,6 +205,126 @@ export class LisaController {
       sessionPnlUsd,
       lastCandidates,
     };
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // P8-MULTI-TIMEFRAME-PERSISTENCE — snapshot endpoint
+  // ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Réponse littérale à la question utilisateur :
+   * « 20 valeurs en hausse depuis 1min — combien sont aussi en hausse
+   *   depuis 5/10/15/30/60 minutes ? »
+   *
+   * topN priorité query string > DB > env > default(20). Range [5, 100].
+   * markets : CSV optionnel (crypto, us, eu, asia). Défaut = tous.
+   *
+   * Cache 30s côté MultiTimeframePersistenceService → safe à appeler depuis
+   * un poll UI.
+   */
+  @Get('gainers-persistence-snapshot/:portfolioId')
+  async getGainersPersistenceSnapshot(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+    @Query('topN') topNRaw?: string,
+    @Query('markets') marketsRaw?: string,
+  ) {
+    extractUserId(headers);
+
+    const topN = await this.resolveTopN(portfolioId, topNRaw);
+    const allowedMarkets = parseMarkets(marketsRaw);
+
+    const allCandidates = await this.topGainersScanner.fetchAllCandidates();
+    const filtered = allowedMarkets
+      ? allCandidates.filter((c) => allowedMarkets.has(classifyMarket(c.exchange)))
+      : allCandidates;
+
+    // Top par changePct desc — la "hausse depuis 1min" est approximée par
+    // le change_p journalier des sources (EODHD : 1d ; Binance : 24h).
+    // Le signal multi-TF live couvre les TFs courts (1m/5m/...) en phase 2.
+    const top = [...filtered]
+      .sort((a, b) => (b.changePct ?? 0) - (a.changePct ?? 0))
+      .slice(0, topN);
+
+    const persistenceMap = await this.mtfPersistence.analyzeBatch(
+      top.map((c) => ({
+        symbol: c.symbol,
+        exchange: c.exchange,
+        currentPrice: c.close,
+      })),
+    );
+
+    const results: PersistenceResult[] = [];
+    const candidatesOut = top.map((c) => {
+      const r = persistenceMap.get(c.symbol.toUpperCase());
+      if (r) results.push(r);
+      return {
+        symbol: c.symbol,
+        market: c.exchange ?? 'unknown',
+        tf1m: r?.tf1m ?? null,
+        tf5m: r?.tf5m ?? null,
+        tf10m: r?.tf10m ?? null,
+        tf15m: r?.tf15m ?? null,
+        tf30m: r?.tf30m ?? null,
+        tf1h: r?.tf1h ?? null,
+        persistenceScore: r ? (Number.isNaN(r.persistenceScore) ? null : r.persistenceScore) : null,
+        persistenceCount: r?.persistenceCount ?? null,
+      };
+    });
+
+    const summary = summarizeByTf(results);
+
+    // Best-effort log dans gainers_persistence_log (audit historique 7j).
+    void this.persistSnapshotLog(topN, allowedMarkets, candidatesOut, summary).catch(() => null);
+
+    return {
+      capturedAt: new Date().toISOString(),
+      topN,
+      marketsScanned: allowedMarkets ? Array.from(allowedMarkets) : ['all'],
+      candidates: candidatesOut,
+      summary,
+    };
+  }
+
+  private async resolveTopN(portfolioId: string, raw: string | undefined): Promise<number> {
+    // 1. Query string
+    if (raw) {
+      const n = parseInt(raw, 10);
+      if (Number.isFinite(n) && n >= 5 && n <= 100) return n;
+      throw new BadRequestException(`topN doit être entre 5 et 100 (reçu: ${raw})`);
+    }
+    // 2. DB
+    const { data } = await this.supabase.getClient()
+      .from('lisa_session_configs')
+      .select('gainers_persistence_top_n')
+      .eq('portfolio_id', portfolioId)
+      .maybeSingle();
+    if (data?.gainers_persistence_top_n != null) {
+      const n = Number(data.gainers_persistence_top_n);
+      if (Number.isFinite(n) && n >= 5 && n <= 100) return n;
+    }
+    // 3. Env
+    const envRaw = process.env.GAINERS_PERSISTENCE_TOP_N;
+    if (envRaw) {
+      const n = parseInt(envRaw, 10);
+      if (Number.isFinite(n) && n >= 5 && n <= 100) return n;
+    }
+    // 4. Default
+    return 20;
+  }
+
+  private async persistSnapshotLog(
+    topN: number,
+    markets: Set<string> | null,
+    candidates: unknown[],
+    summary: Record<string, number>,
+  ): Promise<void> {
+    await this.supabase.getClient().from('gainers_persistence_log').insert({
+      top_n: topN,
+      markets_scanned: markets ? Array.from(markets) : ['all'],
+      snapshot_json: { candidates },
+      summary,
+    });
   }
 
   /**
@@ -667,4 +790,48 @@ export class LisaController {
     const userId = extractUserId(headers);
     return this.lisa.getDailyPnl(userId, portfolioId);
   }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// P8 — Helpers locaux pour le snapshot endpoint (markets filter)
+// ─────────────────────────────────────────────────────────────────
+
+const MARKET_GROUPS: Record<string, string> = {
+  US: 'us',
+  NYSE: 'us',
+  NASDAQ: 'us',
+  AMEX: 'us',
+  TO: 'us',
+  LSE: 'eu',
+  XETRA: 'eu',
+  PA: 'eu',
+  SW: 'eu',
+  MI: 'eu',
+  MC: 'eu',
+  BME: 'eu',
+  AS: 'eu',
+  AMS: 'eu',
+  TSE: 'asia',
+  HK: 'asia',
+  AU: 'asia',
+  KO: 'asia',
+  NSE: 'asia',
+  BSE: 'asia',
+  BINANCE: 'crypto',
+};
+
+function classifyMarket(exchange: string | undefined | null): string {
+  if (!exchange) return 'unknown';
+  return MARKET_GROUPS[exchange.toUpperCase()] ?? 'unknown';
+}
+
+function parseMarkets(raw: string | undefined): Set<string> | null {
+  if (!raw) return null;
+  const allowed = new Set(['crypto', 'us', 'eu', 'asia']);
+  const list = raw
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => allowed.has(s));
+  if (list.length === 0) return null;
+  return new Set(list);
 }
