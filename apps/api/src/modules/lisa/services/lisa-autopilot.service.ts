@@ -545,6 +545,25 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
             this.logger.error(`Auto-approve failed for ${proposal.id}: ${String(e)}`);
           }
         }
+      } else if (!autoApprove && proposal.theses.length > 0) {
+        // P5-EXEC — Visibilité critique : log explicite quand autoApprove=false
+        // bloque l'exécution malgré thèses générées. Sans ce log, "silence"
+        // entre proposal_generated et autopilot_cycle_completed (incident
+        // 13:17 → 0 position alors que 3 thèses valides).
+        await this.decisionLog.append({
+          portfolioId,
+          kind: 'proposal_rejected',
+          summary: `Proposal ${proposal.id.slice(0, 8)} non-exécutée (${proposal.theses.length} thèses, auto_approve=false)`,
+          rationale: `gate=auto_approve_disabled · autopilot_auto_approve=false · Activer via SQL : UPDATE lisa_session_configs SET autopilot_auto_approve=true, autopilot_expires_at=now()+interval '24 hours' WHERE portfolio_id='${portfolioId}'`,
+          payload: {
+            proposal_id: proposal.id,
+            theses_count: proposal.theses.length,
+            gate: 'auto_approve_disabled',
+            autopilot_enabled: true,
+            autopilot_auto_approve: false,
+          },
+          triggeredBy: 'autopilot_cron',
+        }).catch((e) => this.logger.warn(`proposal_rejected log append failed: ${String(e).slice(0, 120)}`));
       }
 
       const momentumTag = proposal.marketMomentum === 'bullish_strong'

@@ -1688,6 +1688,28 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       }
     }
 
+    // P5-EXEC — Summary visibility : si approveProposal a été appelée avec
+    // des thèses mais 0 position ouverte (tous les gates ont rejeté), log un
+    // résumé top-level pour visibilité dashboard. Les rejets individuels
+    // sont déjà loggés (position_skipped_*, proposal_cooldown_active,
+    // proposal_capped_by_max_positions) mais sans aggregate, le user voit
+    // proposal_generated puis silence.
+    if (opened.length === 0 && allocations.length > 0) {
+      await this.logDecision(portfolioId, 'proposal_rejected', {
+        summary: `Proposal ${proposalId.slice(0, 8)} : 0 position ouverte sur ${allocations.length} allocation(s) — tous les gates ont rejeté`,
+        rationale: `Voir les decision_log précédents pour le détail par thèse : kind in (position_skipped_duplicate_symbol, position_skipped_insufficient_cash, position_skipped_fallback_price, proposal_cooldown_active, proposal_capped_by_max_positions). Si rien n'apparaît : exception silencieuse côté paperBroker.openPosition.`,
+        payload: {
+          proposal_id: proposalId,
+          allocations_count: allocations.length,
+          opened_count: 0,
+          skipped_count: skipped,
+          closed_recommended_count: closedRecommended,
+          gate: 'all_gates_rejected_or_silent_failure',
+        },
+        triggeredBy: 'user_manual',
+      }).catch(() => null);
+    }
+
     // Mark proposal as executed
     await this.supabase.getClient()
       .from('lisa_proposals')
