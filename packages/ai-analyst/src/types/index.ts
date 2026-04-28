@@ -206,7 +206,31 @@ export const ThesisInvalidation = z.object({
     description: z.string(),
     metricType: z.string().min(1).max(50),
     thresholdValue: z.string().nullable(),
-    thresholdDirection: z.enum(['above', 'below', 'cross', 'occurs']).nullable(),
+    /** P0 hotfix — Claude Opus utilise parfois le vocabulaire mathématique
+     *  (gte/lte/gt/lt/eq) au lieu du vocabulaire produit (above/below/cross).
+     *  Preprocess normalise les alias avant validation enum stricte. */
+    thresholdDirection: z.preprocess(
+      (v) => {
+        if (v == null) return v;
+        if (typeof v !== 'string') return v;
+        const normalized = v.toLowerCase().trim();
+        const aliases: Record<string, 'above' | 'below' | 'cross' | 'occurs'> = {
+          gte: 'above',
+          gt: 'above',
+          'greater_than': 'above',
+          'greater_than_or_equal': 'above',
+          lte: 'below',
+          lt: 'below',
+          'less_than': 'below',
+          'less_than_or_equal': 'below',
+          eq: 'cross',
+          equals: 'cross',
+          equal: 'cross',
+        };
+        return aliases[normalized] ?? normalized;
+      },
+      z.enum(['above', 'below', 'cross', 'occurs']).nullable(),
+    ),
   })),
   /** Conditions d'échec simples non quantifiables */
   qualitativeConditions: z.array(z.string()),

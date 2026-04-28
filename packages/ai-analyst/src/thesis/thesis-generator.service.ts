@@ -1235,7 +1235,16 @@ Les symboles suivants sont **DÉJÀ DANS TON PORTEFEUILLE** : ${heldSymbolsList}
     // Filtre les éléments non-objets que Claude glisse parfois dans le tableau
     // (strings orphelines, null, artefacts de parsing). Sans ça, `t.id = …`
     // jette "Cannot create property 'id' on string '['" et casse le cycle.
-    const thesesRawUnfiltered = (root.theses as Array<unknown>) ?? [];
+    //
+    // P0 hotfix — Claude Opus renvoie parfois `theses: { theses: [...] }`
+    // (double wrapping) ou `theses: undefined` sur 0 result. Sans guard
+    // Array.isArray, `.filter()` jette "is not a function" et casse le cycle.
+    const rootTheses = root.theses as unknown;
+    const thesesRawUnfiltered: unknown[] = Array.isArray(rootTheses)
+      ? rootTheses
+      : (rootTheses && typeof rootTheses === 'object' && Array.isArray((rootTheses as { theses?: unknown[] }).theses))
+        ? (rootTheses as { theses: unknown[] }).theses
+        : [];
     const thesesRaw = thesesRawUnfiltered.filter(
       (t): t is Record<string, unknown> => t !== null && typeof t === 'object' && !Array.isArray(t),
     );
