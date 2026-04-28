@@ -336,7 +336,8 @@ export class ReboundScannerService {
 
   private getMaxConcurrent(): number {
     const v = Number(this.config.get<string>('MAX_CONCURRENT_REBOUND_POSITIONS'));
-    return Number.isFinite(v) && v > 0 ? Math.floor(v) : 5;
+    // P3-D — default 5 → 3 pour aligner avec maxOpenPositions=3 (anti-dilution).
+    return Number.isFinite(v) && v > 0 ? Math.floor(v) : 3;
   }
 
   private getPrefilterRsiMax(): number {
