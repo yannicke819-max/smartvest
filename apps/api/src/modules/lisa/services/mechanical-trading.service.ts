@@ -168,6 +168,40 @@ export class MechanicalTradingService {
   ) {}
 
   /**
+   * PR F — DEGRADED_OPEN mode pour HORS_TRAJECTOIRE.
+   *
+   * Quand le portfolio est en HORS_TRAJECTOIRE (réalisé négatif OU coûts >
+   * 50% des gains 7j), le comportement par défaut est de SKIP toutes les
+   * ouvertures (cf. ligne ~430 + CLAUDE.md). Mais en prod 27/04 ce
+   * comportement bloque 96% des cycles → 0.00 EUR de valeur de marché.
+   *
+   * Le mode dégradé active des micro-positions d'apprentissage :
+   *   - taille / 5 (sizingMultiplier × 0.2)
+   *   - SL serré 0.5 × ATR14 (vs 1-2.2× selon thesis.kind normalement)
+   *   - max 2 positions concurrentes total
+   *   - whitelist tickers via env (RTX, LMT, GDX confirmés profitables)
+   *
+   * Strictement opt-in via `MECH_DEGRADED_MODE=true`. Whitelist via
+   * `MECH_DEGRADED_WHITELIST=RTX,LMT,GDX` (CSV, case-insensitive). Pas de
+   * whitelist → mode dégradé désactivé même si le flag est on (sécurité).
+   */
+  private getDegradedConfig(): { enabled: boolean; whitelist: Set<string> } {
+    const enabledEnv = (process.env.MECH_DEGRADED_MODE ?? '').toLowerCase();
+    const enabled = enabledEnv === 'true' || enabledEnv === '1';
+    const rawWhitelist = process.env.MECH_DEGRADED_WHITELIST ?? '';
+    const whitelist = new Set(
+      rawWhitelist
+        .split(',')
+        .map((s) => s.trim().toUpperCase())
+        .filter((s) => s.length > 0),
+    );
+    // Garde-fou : sans whitelist explicite, on désactive même si le flag
+    // est on. Évite qu'un opérateur active le mode et ouvre n'importe
+    // quel ticker en HORS_TRAJECTOIRE.
+    return { enabled: enabled && whitelist.size > 0, whitelist };
+  }
+
+  /**
    * BOT LAB Phase 4 — boucle feedback : enregistre les triggers de patterns
    * adoptés quand un trade est fermé. Permet de mesurer dans la durée si
    * les patterns adoptés tiennent leurs promesses sur les vrais trades Lisa.
@@ -427,11 +461,41 @@ export class MechanicalTradingService {
       directive.trajectoryStatus === 'HORS_TRAJECTOIRE' &&
       htConsecutiveZero >= 30 &&
       directive.targetSymbols.length >= 1;
-    if (directive.trajectoryStatus === 'HORS_TRAJECTOIRE' && !htBypassAllowed) {
+
+    // PR F — DEGRADED_OPEN : autorise des micro-ouvertures d'apprentissage
+    // en HORS_TRAJECTOIRE, sous whitelist ticker stricte + sizing /5 + SL
+    // serré 0.5×ATR. Strictement opt-in via env MECH_DEGRADED_MODE=true
+    // ET whitelist non-vide via MECH_DEGRADED_WHITELIST=RTX,LMT,GDX.
+    // Cf. PR feat/mech-degraded-open (incident 27/04 — 96% cycles bloqués).
+    const degradedConfig = this.getDegradedConfig();
+    const degradedActive =
+      directive.trajectoryStatus === 'HORS_TRAJECTOIRE' &&
+      !htBypassAllowed &&
+      degradedConfig.enabled;
+
+    if (directive.trajectoryStatus === 'HORS_TRAJECTOIRE' && !htBypassAllowed && !degradedActive) {
       this.logger.debug(`${portfolioId}: HORS_TRAJECTOIRE — ouvertures suspendues, protection capital`);
       await this.writeDefensiveCycleSummary(portfolioId, currentPositions)
         .catch((e) => this.logger.debug(`defensive summary failed: ${String(e).slice(0, 80)}`));
       return;
+    }
+    if (degradedActive) {
+      this.logger.log(
+        `[MECH_DEGRADED] ${portfolioId.slice(0, 8)} — HORS_TRAJECTOIRE + flag actif → micro-ouvertures (size/5, SL 0.5×ATR, max 2 concurrent, whitelist=${[...degradedConfig.whitelist].join(',')})`,
+      );
+      await this.decisionLog.append({
+        portfolioId,
+        kind: 'autopilot_cycle_completed',
+        summary: `[MECH_DEGRADED] HORS_TRAJECTOIRE bypass-learn activé — sizing /5, SL serré, whitelist ${[...degradedConfig.whitelist].length} tickers`,
+        rationale:
+          'MECH_DEGRADED_MODE=true : autorise des micro-positions d\'apprentissage sur tickers historiquement profitables même en HORS_TRAJECTOIRE, plutôt que de figer le bot et accumuler 0 P&L pendant des heures.',
+        payload: {
+          whitelist: [...degradedConfig.whitelist],
+          consecutive_zero_cycles: htConsecutiveZero,
+          target_symbols_count: directive.targetSymbols.length,
+        },
+        triggeredBy: 'mechanical_cron',
+      });
     }
     if (htBypassAllowed) {
       this.logger.log(
@@ -614,6 +678,14 @@ export class MechanicalTradingService {
       sizingMultiplier = 0.7;
     }
 
+    // PR F — DEGRADED_OPEN : taille / 5 (micro-positions d'apprentissage).
+    // S'applique APRÈS le multiplicateur de trajectoire pour préserver la
+    // logique métier (HORS_TRAJECTOIRE n'a pas de multiplicateur dédié dans
+    // le flow nominal — le mode dégradé est l'unique cas où on peut ouvrir).
+    if (degradedActive) {
+      sizingMultiplier *= 0.2;
+    }
+
     // Plafond de nouvelles ouvertures par cycle selon trajectoire
     const openCapFromTrajectory =
       directive.trajectoryStatus === 'EN_RETARD' ? 4 :
@@ -628,9 +700,17 @@ export class MechanicalTradingService {
       isHyperAggressive && rawMaxNewOpens != null && rawMaxNewOpens === 0
         ? null // ignore le blocage total
         : rawMaxNewOpens;
-    const openCap = effectiveMaxNewOpens != null
+    let openCap = effectiveMaxNewOpens != null
       ? Math.min(openCapFromTrajectory, effectiveMaxNewOpens)
       : openCapFromTrajectory;
+
+    // PR F — DEGRADED_OPEN : max 2 positions concurrentes total (positions
+    // déjà tenues + nouvelles ouvertures du cycle). Cap dur, indépendant
+    // du multiplicateur d'overrides Lisa.
+    if (degradedActive) {
+      const remainingSlots = Math.max(0, 2 - currentPositions.length);
+      openCap = Math.min(openCap, remainingSlots);
+    }
 
     // Override Lisa : conviction minimum (surcharge le seuil EN_AVANCE).
     // En mode hyper_active, on cap le minConviction à 6 max — sinon Lisa
@@ -744,6 +824,14 @@ export class MechanicalTradingService {
     for (const target of directive.targetSymbols) {
       if (activePositions.length + slotsUsed >= maxPositions) break;
       if (slotsUsed >= openCap) break; // plafond trajectoire (éventuellement réduit par override)
+
+      // PR F — DEGRADED_OPEN : whitelist ticker stricte. Si en mode dégradé
+      // ET le ticker n'est PAS dans la whitelist, on skip (pas d'ouverture
+      // sauvage en HORS_TRAJECTOIRE).
+      if (degradedActive && !degradedConfig.whitelist.has(target.symbol.toUpperCase())) {
+        this.logger.debug(`[MECH_DEGRADED] skip ${target.symbol}: not in whitelist`);
+        continue;
+      }
 
       // Filtre conviction (trajectoire + override Lisa)
       if (target.convictionScore < minConviction) continue;
@@ -938,7 +1026,13 @@ export class MechanicalTradingService {
         target.thesisKind,
         capitalUsd.toNumber(),
       );
-      const stopPct = Math.max(atrDerived.stopPct * stopsMult, 0.3);
+      // PR F — DEGRADED_OPEN : SL serré à 0.5×ATR14 indépendamment du
+      // thesis.kind (qui ferait 1×-2.2×). Plancher 0.3% identique au flow
+      // nominal. Si ATR indispo (atr14Pct null), on tombe sur le calcul
+      // habituel — pas de fail-soft trompeur en degraded mode.
+      const stopPct = degradedActive && atrDerived.atr14Pct != null
+        ? Math.max(atrDerived.atr14Pct * 0.5, 0.3)
+        : Math.max(atrDerived.stopPct * stopsMult, 0.3);
       const tpPct = Math.max(target.takeProfitPct ?? Math.max(atrDerived.stopPct * 2, 4), 0.5);
 
       const stopPrice = target.direction === 'long'
@@ -948,6 +1042,11 @@ export class MechanicalTradingService {
         ? price.mul(1 + tpPct / 100).toFixed(6)
         : price.mul(1 - tpPct / 100).toFixed(6);
 
+      if (degradedActive) {
+        this.logger.log(
+          `[MECH] DEGRADED_OPEN ${target.symbol} size=${notional.toFixed(2)} sl=${stopPct.toFixed(2)}% reason=HORS_TRAJ_LEARN`,
+        );
+      }
       this.logger.log(
         `[MÉCANIQUE] ${target.symbol} stop=${stopPct.toFixed(2)}% tp=${tpPct.toFixed(2)}% ` +
         `(source=${atrDerived.source}, ATR14=${atrDerived.atr14Pct?.toFixed(2) ?? 'n/a'}%, ` +
