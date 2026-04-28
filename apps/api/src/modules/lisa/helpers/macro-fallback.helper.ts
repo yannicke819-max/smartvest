@@ -134,3 +134,117 @@ export function buildStooqCsvUrl(symbol: string): string {
   const s = encodeURIComponent(symbol.toLowerCase());
   return `https://stooq.com/q/l/?s=${s}&f=sd2t2ohlcv&h&e=csv`;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P0-B — Alpha Vantage (3e source live, conditionnel API key)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Parse la réponse JSON Alpha Vantage `GLOBAL_QUOTE`.
+ *
+ * Shape attendu :
+ * ```
+ * { "Global Quote": { "01. symbol": "VIX", "05. price": "22.45", ... } }
+ * ```
+ *
+ * Plusieurs codes d'erreur possibles (Alpha Vantage retourne HTTP 200 même
+ * en cas d'API limit hit ou symbol invalide) :
+ *  - `{ "Information": "rate limit..." }` → null
+ *  - `{ "Note": "Thank you for using..." }` → null (free tier 5/min hit)
+ *  - `{ "Error Message": "Invalid API call" }` → null
+ *  - `{ "Global Quote": {} }` (objet vide) → null
+ *
+ * Retourne null si le JSON ne match aucun de ces formats valides.
+ */
+export function parseAlphaVantageGlobalQuoteResponse(json: unknown): number | null {
+  if (!json || typeof json !== 'object') return null;
+  const obj = json as Record<string, unknown>;
+
+  // Cas erreur explicite : Information / Note / Error Message
+  if ('Information' in obj || 'Note' in obj || 'Error Message' in obj) return null;
+
+  const gq = obj['Global Quote'] as Record<string, unknown> | undefined;
+  if (!gq || typeof gq !== 'object' || Object.keys(gq).length === 0) return null;
+
+  // Le price est sur la clé "05. price" (préfixe ordinal Alpha Vantage).
+  const priceStr = gq['05. price'];
+  if (typeof priceStr !== 'string') return null;
+  const v = Number(priceStr);
+  return Number.isFinite(v) && v > 0 ? v : null;
+}
+
+/**
+ * Construit l'URL Alpha Vantage `GLOBAL_QUOTE`.
+ *
+ * Free tier : 5 req/min, 500 req/jour. Suffisant pour VIX/DXY (1 appel par
+ * cycle de 5 min = 12 appels/heure = bien sous la limite). On évite les
+ * indicateurs nécessitant `function=TIME_SERIES_INTRADAY` (rate limit
+ * différent et plus strict).
+ *
+ * Symboles connus :
+ *  - VIX : symbol="VIX"
+ *  - DXY : symbol="DXY" (NB : Alpha Vantage couvre l'index, pas le futures)
+ *
+ * Retourne null si pas de clé API (caller fallback sur la source suivante).
+ */
+export function buildAlphaVantageGlobalQuoteUrl(symbol: string, apiKey: string | null | undefined): string | null {
+  if (!apiKey) return null;
+  const s = encodeURIComponent(symbol.toUpperCase());
+  const k = encodeURIComponent(apiKey);
+  return `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${s}&apikey=${k}`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P0-B — Retry / timeout / backoff helper
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface RetryOptions {
+  /** Nombre de tentatives totales (1 = pas de retry). Default 3 (= 1 try + 2 retries). */
+  maxAttempts?: number;
+  /** Délai entre tentatives en ms. Default 250. */
+  backoffMs?: number;
+  /** Timeout par tentative en ms. Default 1500. */
+  timeoutMs?: number;
+}
+
+/**
+ * P0-B — Wrapper avec retry + timeout + backoff exponentiel léger.
+ *
+ * Stratégie :
+ *   - Tentative 1 : timeout 1500ms (configurable)
+ *   - Si échec (null retourné OU exception) : wait 250ms (configurable)
+ *   - Tentative 2 : même timeout
+ *   - Si échec : wait 250ms
+ *   - Tentative 3 : dernier essai
+ *   - Si tout échoue : retourne null
+ *
+ * `fn` doit retourner null sur "soft fail" (HTTP 4xx/5xx, parsing failed,
+ * etc.) ou throw pour les exceptions réseau. On traite les deux pareil.
+ *
+ * Le timeout est appliqué via `AbortSignal.timeout()` que `fn` doit
+ * propager à son `fetch()` interne. Si `fn` ignore ce signal, le timeout
+ * est inopérant — c'est la responsabilité du caller de respecter le signal.
+ */
+export async function fetchWithRetry<T>(
+  fn: (signal: AbortSignal) => Promise<T | null>,
+  opts: RetryOptions = {},
+): Promise<T | null> {
+  const maxAttempts = Math.max(1, opts.maxAttempts ?? 3);
+  const backoffMs = Math.max(0, opts.backoffMs ?? 250);
+  const timeoutMs = Math.max(100, opts.timeoutMs ?? 1500);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const signal = AbortSignal.timeout(timeoutMs);
+      const result = await fn(signal);
+      if (result !== null && result !== undefined) return result;
+    } catch {
+      // Soft-swallow — on réessaie. Le caller fait le tracking d'erreur
+      // via son propre logEodhdCall si pertinent.
+    }
+    if (attempt < maxAttempts && backoffMs > 0) {
+      await new Promise((r) => setTimeout(r, backoffMs));
+    }
+  }
+  return null;
+}
