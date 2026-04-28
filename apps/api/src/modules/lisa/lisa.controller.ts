@@ -505,4 +505,26 @@ export class LisaController {
     );
     return { sessions };
   }
+
+  /**
+   * P2-D — Telemetry P&L journalier vs objectif fixe $100/jour.
+   *
+   *   GET /lisa/daily-pnl/:portfolioId
+   *
+   * Retourne :
+   *   { realized, latent, target: 100, achievementPct, drift }
+   *
+   * realized       = closes UTC du jour depuis lisa_positions
+   * latent         = unrealizedPnlUsd live snapshot
+   * achievementPct = (realized + latent) / target × 100, clamp [0, 999]
+   * drift          = realized + latent - target (peut être négatif)
+   */
+  @Get('daily-pnl/:portfolioId')
+  async getDailyPnl(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    const userId = extractUserId(headers);
+    return this.lisa.getDailyPnl(userId, portfolioId);
+  }
 }
