@@ -88,12 +88,39 @@ export class EodhdIntradayService {
    * defaultCount = 20 → couvre 1h40 en 5m, suffisant pour détecter
    * momentum, breakout, range.
    */
+  /**
+   * P19k — EODHD intraday endpoint a des suffixes d'exchange différents du
+   * screener / Yahoo. Mapping observé via doc officielle :
+   *   - KO (KOSPI scanner code) → .KOSE (intraday endpoint required)
+   *   - SS (Shanghai scanner code) → .SHG (EODHD code)
+   *   - SZ (Shenzhen scanner code) → .SHE
+   *   - Autres exchanges (.US, .LSE, .XETRA, .PA, .HK, .TO, etc.) : pass-through
+   *
+   * Sans cette normalisation, EODHD retournait 404 silently sur tous les
+   * tickers Korea/China → fallback chain donnait l'impression que EODHD ne
+   * fonctionnait pas alors que la clé et l'endpoint étaient OK.
+   */
+  private normalizeForEodhdIntraday(eodhdTicker: string): string {
+    if (!eodhdTicker.includes('.')) return eodhdTicker;
+    const lastDot = eodhdTicker.lastIndexOf('.');
+    const base = eodhdTicker.slice(0, lastDot);
+    const suffix = eodhdTicker.slice(lastDot + 1).toUpperCase();
+    switch (suffix) {
+      case 'KO':   return `${base}.KOSE`;   // KOSPI
+      case 'SS':   return `${base}.SHG`;    // Shanghai Stock Exchange
+      case 'SZ':   return `${base}.SHE`;    // Shenzhen Stock Exchange
+      default:     return eodhdTicker;       // .US, .LSE, .XETRA, .PA, .HK, .TO, .NSE, .BSE, .KQ etc.
+    }
+  }
+
   async getCandles(
     eodhdTicker: string,
     interval: '1m' | '5m' | '1h' = '5m',
     count = 20,
   ): Promise<CandleSeries | null> {
-    const cacheKey = `${eodhdTicker}::${interval}`;
+    // P19k — Normaliser le suffix avant cache key + URL pour cohérence.
+    const normalized = this.normalizeForEodhdIntraday(eodhdTicker);
+    const cacheKey = `${normalized}::${interval}`;
     const cached = this.cache.get(cacheKey);
     if (cached && Date.now() - cached.asOf < this.cacheTtlMs(interval)) {
       return cached;
