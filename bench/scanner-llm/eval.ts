@@ -116,21 +116,23 @@ function generateReport(all: BenchMetrics[]): string {
   ].join('\n');
 }
 
-const dataset = JSON.parse(fs.readFileSync(DATASET_PATH, 'utf8')) as BenchPrompt[];
-const allResults = loadResults();
+(() => {
+  const dataset = JSON.parse(fs.readFileSync(DATASET_PATH, 'utf8')) as BenchPrompt[];
+  const allResults = loadResults();
 
-if (allResults.length === 0) {
-  console.error('No results found in results/. Run npm run bench:scanner-eu first.');
-  process.exit(1);
-}
+  if (allResults.length === 0) {
+    console.error('No results found in results/. Run npm run bench:scanner-eu first.');
+    process.exit(1);
+  }
 
-const byProvider = Map.groupBy(allResults, (r) => r.provider);
-const metrics: BenchMetrics[] = [];
-for (const [, results] of byProvider) metrics.push(computeMetrics(results, dataset));
-addComposite(metrics);
+  const byProvider = Map.groupBy(allResults, (r) => r.provider);
+  const metrics: BenchMetrics[] = [];
+  for (const [, results] of byProvider) metrics.push(computeMetrics(results, dataset));
+  addComposite(metrics);
 
-const report = generateReport(metrics);
-const reportPath = path.join(import.meta.dirname, 'REPORT.md');
-fs.writeFileSync(reportPath, report);
-console.log(`REPORT.md written → ${reportPath}`);
-console.table(metrics.map((m) => ({ provider: m.provider, composite: fmt(m.compositeScore), precision: pct(m.precision), cost: fmt(m.totalCostUsd, 4) })));
+  const report = generateReport(metrics);
+  const reportPath = path.join(import.meta.dirname, 'REPORT.md');
+  fs.writeFileSync(reportPath, report);
+  console.log(`REPORT.md written → ${reportPath}`);
+  console.table(metrics.map((m) => ({ provider: m.provider, composite: fmt(m.compositeScore), precision: pct(m.precision), cost: fmt(m.totalCostUsd, 4) })));
+})();
