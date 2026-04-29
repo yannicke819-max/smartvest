@@ -31,7 +31,7 @@ export interface CachedCandle {
   volume: number;
 }
 
-export type CacheSource = 'yahoo' | 'eodhd' | 'eodhd_ticks' | 'binance';
+export type CacheSource = 'yahoo' | 'eodhd' | 'eodhd_1m' | 'eodhd_ticks' | 'binance';
 
 export interface CachedSeries {
   symbol: string;

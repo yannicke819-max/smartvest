@@ -75,7 +75,7 @@ export interface PathQualityByTf {
  * ticker mais qu'on a une série fraîche (<15 min) en cache Supabase.
  * UI badge orange "stale-cache" (vs `none` rouge si vraiment rien).
  */
-export type CoverageSource = 'eodhd' | 'eodhd_ticks' | 'yahoo' | 'binance' | 'cache_stale' | 'none';
+export type CoverageSource = 'eodhd' | 'eodhd_1m' | 'eodhd_ticks' | 'yahoo' | 'binance' | 'cache_stale' | 'none';
 
 export interface PersistenceWithPath extends PersistenceResult {
   pathQuality?: PathQualityByTf;
@@ -301,12 +301,41 @@ export class MultiTimeframePersistenceService {
     }
 
     // P19j — Log explicit bascule yahoo→eodhd pour visibilité prod.
-    // Le logger debug n'apparaît pas par défaut côté Fly (level INFO+).
-    // On utilise log() qui est INFO. Aggrégation du spam = follow-up si nécessaire,
-    // pour l'instant on veut voir TOUS les bascules.
-    this.logger.log(`[provider-router] yahoo null for ${eodhdTicker}, falling back to EODHD`);
+    this.logger.log(`[provider-router] yahoo null for ${eodhdTicker}, falling back to EODHD 1m`);
 
-    // 2. EODHD intraday (fallback payant, plus stable IP-side)
+    // P19v (29/04/2026) — 2. EODHD intraday 1m (PRIMAIRE EODHD).
+    //
+    // Fix structurel pour `tf1m: 0/20` toujours blanc dans l'UI : avant P19v,
+    // on appelait directement `getCandles(ticker, '5m', 13)` puis l'extracteur
+    // `extractPricesFromFiveMinSeries` forçait `'1m': null` (résolution 5m
+    // insuffisante). Résultat : `tf1m=null` pour TOUTES les equities, le
+    // `summarizeByTf` les comptait comme 0 positifs → "1m: 0/20" trompeur.
+    //
+    // Maintenant on tente EODHD intraday 1m natif (plan ALL-IN-ONE le supporte
+    // — vérifié curl LIVE 286 candles AAPL 24h). On fetch 65 candles (1h05min,
+    // marge 5min sur le tf1h qui regarde 60 candles en arrière). Si on a ≥ 60
+    // candles, on utilise `extractPricesFromOneMinSeries` qui populates ALL
+    // 6 TFs nativement (incl. tf1m).
+    //
+    // Quota impact : ~+19k calls/jour worst-case (1 call/ticker × 20 × 6
+    // cycles/h × 16h). Plan ALL-IN-ONE = 100k/jour, on reste à ~38k total.
+    const oneMinSeries = await this.eodhd.getCandles(eodhdTicker, '1m', 65).catch(() => null);
+    if (oneMinSeries && oneMinSeries.candles.length >= 60) {
+      const prices = extractPricesFromOneMinSeries(oneMinSeries.candles);
+      const persistence = evaluatePersistence(c.currentPrice, prices);
+      const pathQuality = computePathQualityForTfsFromOneMin(oneMinSeries.candles);
+      void this.intradayCache.write(cacheKey, 'eodhd_1m', eodhdCandlesToCached(oneMinSeries.candles));
+      this.logger.log(
+        `[provider-router] eodhd 1m OK for ${eodhdTicker} (${oneMinSeries.candles.length} candles), coverage=eodhd_1m`,
+      );
+      return { ...persistence, pathQuality, coverage: 'eodhd_1m' };
+    }
+
+    this.logger.log(
+      `[provider-router] eodhd 1m insufficient (${oneMinSeries?.candles.length ?? 0}/60) for ${eodhdTicker}, falling back to EODHD 5m`,
+    );
+
+    // 2bis. EODHD intraday 5m (fallback dégradé — tf1m=null mais 5 TFs OK)
     const series = await this.eodhd.getCandles(eodhdTicker, '5m', 13).catch(() => null);
     if (series && series.candles.length > 0) {
       const prices = extractPricesFromFiveMinSeries(series.candles);
