@@ -5,6 +5,51 @@ Guide de travail pour Claude Code sur ce repo.
 
 ---
 
+## EODHD API Reference (OFFICIAL SKILL — vendor/eodhd-claude-skills)
+
+P19k.2 — Le skill officiel EODHD `eodhd-claude-skills` est vendoré dans
+`vendor/eodhd-claude-skills/` (copie depuis github.com/EodHistoricalData/eodhd-claude-skills,
+sans submodule pour compat Fly/Vercel CI).
+
+**Pour TOUTE implémentation touchant l'API EODHD** (intraday, eod, real-time,
+fundamentals, screener, websockets, fx, crypto, news, technical indicators,
+splits/dividends, exchange-symbol-list, delisted) :
+
+1. **TOUJOURS** consulter `vendor/eodhd-claude-skills/skills/eodhd-api/references/endpoints/<endpoint>.md`
+   AVANT d'écrire du code (72 endpoints documentés avec params, shape réponse,
+   exemples curl). Index : `endpoints/` (un fichier par endpoint).
+
+2. **TOUJOURS** consulter `vendor/eodhd-claude-skills/skills/eodhd-api/references/general/symbol-format.md`
+   pour le **suffix mapping** (autorité officielle, pas de devinette) :
+     - Korea Stock Exchange = `.KO` (PAS `.KOSE` — ex: `005930.KO` Samsung)
+     - KOSDAQ = `.KQ`
+     - Shanghai = `.SHG` (Moutai = `600519.SHG`)
+     - Shenzhen = `.SHE`
+     - HK = `.HK` avec leading zeros (`0700.HK` Tencent, PAS `700.HK`)
+     - LSE = `.LSE`, XETRA = `.XETRA`, Paris = `.PA`, Amsterdam = `.AS`, Swiss = `.SW`
+     - Frankfurt sur F : `.F` ≠ `.XETRA` (different exchanges, BMW.F vs BMW.XETRA)
+     - Forex = `EURUSD.FOREX` (pas de séparateur)
+     - Crypto = `BTC-USD.CC`
+     - US class shares : `BRK-B.US` (hyphen replaces dot)
+
+3. Respecter `references/general/` pour : auth (`api_token` query param),
+   `fmt=json` obligatoire (sinon CSV → parse error), pagination, rate limits
+   (notre plan ALL-IN-ONE = 100k calls/jour, pas de limite pratique).
+
+4. `vendor/eodhd-claude-skills/skills/eodhd-api/scripts/eodhd_client.py` est
+   le client de référence Python ; reproduire la même logique en TS.
+
+5. **Plan SmartVest** = ALL-IN-ONE $99.99/mo (cf. `references/general/pricing-and-plans.md`).
+   100 000 calls/jour. Aucune contrainte budgétaire en pratique.
+
+6. Quick reference SmartVest-spécifique (10 endpoints qu'on utilise) :
+   `docs/EODHD_QUICK_REFERENCE.md` — avec URL canonique, params, response
+   shape, suffix mapping appliqué, snippet code TS.
+
+7. Définition complète du skill : `vendor/eodhd-claude-skills/skills/eodhd-api/SKILL.md`.
+
+---
+
 ## RÈGLE OPÉRATIONNELLE — GAINERS UX + PATH QUALITY — P9-UX
 
 P9-UX livre 2 features UX critiques + 1 dimension qualité (addendum) sur le scanner Gainers :
