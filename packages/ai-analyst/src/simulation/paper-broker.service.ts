@@ -33,6 +33,66 @@ export interface PaperBrokerDeps {
   fetchLivePrice: (symbol: string) => Promise<PriceQuote>;
 }
 
+/**
+ * P19u (29/04/2026) — Modèle de frais réaliste basé sur IBKR Pro Tiered.
+ *
+ * Le modèle précédent (`estimatedCostBps = 10`) facturait 10bps de la
+ * notional sur chaque côté, soit **$5 round-trip sur $2500 = 0.20%**. C'est
+ * **~100x trop cher** vs IBKR Pro réel ($0.005/share, min $0.35, capped 1%).
+ *
+ * Symptôme prod (29/04 ce soir) : 7 trades fermés all TP_HIT avec exit > entry,
+ * gross calculé +$4.74, net affiché -$27.84 → écart de -$32.58 de fees
+ * fictifs invisibles. Win rate = 0% car fees > gross PnL sur trades à
+ * petit move (+0.03% à +0.21% TP).
+ *
+ * Modèle implémenté :
+ *  - US equities + ETFs : `max($0.35, $0.005/share)` clamped à `1% × notional`
+ *  - EU + Asia equities : 5bps × notional (proxy moyenne plans IBKR EU)
+ *  - Crypto via Paxos    : 0.085% × notional (avg maker/taker)
+ *  - FX                  : 1bp × notional
+ *  - Default fallback    : 5bps × notional
+ *
+ * Hypothèse simplifiée : l'asset class drive tout, pas de tier IBKR exact
+ * (le tier dépend du volume mensuel — non modelé en paper sim).
+ */
+export function computeRealisticFee(
+  qty: Decimal,
+  price: Decimal,
+  assetClass: string | undefined,
+): Decimal {
+  const ac = (assetClass ?? '').toLowerCase();
+  if (qty.lte(0) || price.lte(0)) return new Decimal(0);
+
+  // Crypto via IBKR/Paxos — average 0.085% (maker-taker mix)
+  if (ac.startsWith('crypto')) {
+    return qty.mul(price).mul(0.00085);
+  }
+  // EU equities — 5bps proxy (réel IBKR EU varie par exchange + tier)
+  if (ac === 'eu_equity') {
+    return qty.mul(price).mul(0.0005);
+  }
+  // Asia equities — 5bps proxy
+  if (ac === 'asia_equity') {
+    return qty.mul(price).mul(0.0005);
+  }
+  // FX major / cross — typiquement 0.5-1bp ; on prend 1bp
+  if (ac.startsWith('fx_')) {
+    return qty.mul(price).mul(0.0001);
+  }
+  // Commodity / Rates — 5bps proxy
+  if (ac === 'commodity' || ac === 'rates') {
+    return qty.mul(price).mul(0.0005);
+  }
+  // Default — US equities + ETFs IBKR Pro Tiered :
+  //   $0.005/share, min $0.35, max 1% of trade value
+  const perShare = qty.mul(0.005);
+  const minFee = new Decimal(0.35);
+  const maxFee = qty.mul(price).mul(0.01);
+  let fee = Decimal.max(perShare, minFee);
+  if (fee.gt(maxFee)) fee = maxFee;
+  return fee;
+}
+
 export class PaperBrokerService {
   private readonly supabase: SupabaseClient;
   private readonly fetchLivePrice: PaperBrokerDeps['fetchLivePrice'];
@@ -87,11 +147,23 @@ export class PaperBrokerService {
       );
     }
 
-    // Coût entrée estimé (bps → USD)
-    const costBps = (expression.estimatedCostBps as number) ?? 10;
-    const estimatedCost = notional.mul(costBps).dividedBy(10000);
+    // P19u — Calcul fee réaliste (IBKR Pro Tiered) au lieu du modèle bps fixe
+    // de l'ancien code. Two-pass : qty tentative (no fee) → fee → qty finale.
+    const tentativeQty = notional.dividedBy(livePrice);
+    const estimatedCost = computeRealisticFee(
+      tentativeQty,
+      livePrice,
+      expression.assetClass as string | undefined,
+    );
 
-    // Notional net après coût
+    // Garde-fou : si le fee dépasse la notional (cas pathologique), reject.
+    if (estimatedCost.gte(notional)) {
+      throw new Error(
+        `openPosition rejected: entry fee ${estimatedCost.toFixed(2)} >= notional ${notional.toFixed(2)} (symbol=${expression.symbol})`,
+      );
+    }
+
+    // Notional net après coût → quantité finale
     const notionalNet = notional.minus(estimatedCost);
     const quantity = notionalNet.dividedBy(livePrice);
     if (quantity.lte(0) || !quantity.isFinite()) {
@@ -187,9 +259,27 @@ export class PaperBrokerService {
     }
     const grossPnl = priceDelta.mul(qty);
 
-    // Deduct exit cost (estimate same bps as entry)
-    const exitCost = exitPx.mul(qty).mul(10).dividedBy(10000); // ~10bps default
-    const netPnl = grossPnl.minus(exitCost);
+    // P19u — Realistic exit fee (IBKR Pro tiered) + closed_invalidated refund.
+    //
+    // Modèle précédent : 10bps × notional côté exit = ~$2.50 sur trade $2500.
+    // ~50× IBKR Pro réel ($0.05 round-trip pour 5 shares × $500). Cf. doc fonction.
+    //
+    // closed_invalidated = trade tué par news shock / material change avant
+    // que le TP/SL hit. Le PaperBroker considère ça comme "no real trade
+    // happened" — refund both sides of fees, garde uniquement le price delta.
+    let exitCost: Decimal;
+    let entryFeeRefund: Decimal;
+    if (cmd.reason === 'closed_invalidated') {
+      exitCost = new Decimal(0);
+      // Refund the entry fee (was already absorbed by the reduced quantity at
+      // open time). We add it back to net PnL so the close is fee-neutral.
+      const entryCostStored = position.estimatedEntryCostUsd;
+      entryFeeRefund = entryCostStored ? new Decimal(entryCostStored) : new Decimal(0);
+    } else {
+      exitCost = computeRealisticFee(qty, exitPx, position.assetClass);
+      entryFeeRefund = new Decimal(0);
+    }
+    const netPnl = grossPnl.minus(exitCost).plus(entryFeeRefund);
 
     const pnlPct = entryNotional.isZero()
       ? 0
