@@ -1265,20 +1265,30 @@ Les symboles suivants sont **DÉJÀ DANS TON PORTEFEUILLE** : ${heldSymbolsList}
         t.id = newId;
       }
       positionMap.set(i, newId);
-      // Normalize common assetClass aliases Claude invents despite the prompt
-      const exprs = t.expressions as Array<Record<string, unknown>> | undefined;
+      // Normalize common assetClass aliases Claude invents despite the prompt.
+      // Defense-in-depth : Claude peut retourner expressions comme array de
+      // strings (ex: ["confidenceScore"]) au lieu d'array d'objets sous le
+      // forced regime thesis (P13). Le cast TS ne valide rien à l'exécution —
+      // on filtre explicitement les non-objets avant d'écrire .assetClass.
+      const exprs = t.expressions as unknown;
       if (Array.isArray(exprs)) {
         for (const e of exprs) {
-          e.assetClass = this.normalizeAssetClass(e.assetClass, e.symbol);
+          if (e !== null && typeof e === 'object' && !Array.isArray(e)) {
+            const obj = e as Record<string, unknown>;
+            obj.assetClass = this.normalizeAssetClass(obj.assetClass, obj.symbol);
+          }
         }
       }
     }
-    // Also normalize pools scan asset classes
+    // Also normalize pools scan asset classes — même garde-fou.
     for (const key of ['favored', 'avoided'] as const) {
-      const pools = ((root.poolsScan as Record<string, unknown>)?.[key]) as Array<Record<string, unknown>> | undefined;
+      const pools = (root.poolsScan as Record<string, unknown> | undefined)?.[key];
       if (Array.isArray(pools)) {
         for (const p of pools) {
-          p.assetClass = this.normalizeAssetClass(p.assetClass);
+          if (p !== null && typeof p === 'object' && !Array.isArray(p)) {
+            const obj = p as Record<string, unknown>;
+            obj.assetClass = this.normalizeAssetClass(obj.assetClass);
+          }
         }
       }
     }
@@ -1357,14 +1367,18 @@ Les symboles suivants sont **DÉJÀ DANS TON PORTEFEUILLE** : ${heldSymbolsList}
       detectedRegime: (mc.regime as MarketRegime) ?? 'fragmented_no_consensus',
       marketMomentum,
       regimeSummary: (mc.regimeSummary as string) ?? '',
-      favoredPockets: ((poolsScan.favored as Array<Record<string, unknown>>) ?? []).map((p) => ({
-        assetClass: p.assetClass as AllocationProposal['favoredPockets'][number]['assetClass'],
-        rationale: p.rationale as string,
-      })),
-      avoidedPockets: ((poolsScan.avoided as Array<Record<string, unknown>>) ?? []).map((p) => ({
-        assetClass: p.assetClass as AllocationProposal['avoidedPockets'][number]['assetClass'],
-        rationale: p.rationale as string,
-      })),
+      favoredPockets: (Array.isArray(poolsScan.favored) ? poolsScan.favored : [])
+        .filter((p): p is Record<string, unknown> => p !== null && typeof p === 'object' && !Array.isArray(p))
+        .map((p) => ({
+          assetClass: p.assetClass as AllocationProposal['favoredPockets'][number]['assetClass'],
+          rationale: p.rationale as string,
+        })),
+      avoidedPockets: (Array.isArray(poolsScan.avoided) ? poolsScan.avoided : [])
+        .filter((p): p is Record<string, unknown> => p !== null && typeof p === 'object' && !Array.isArray(p))
+        .map((p) => ({
+          assetClass: p.assetClass as AllocationProposal['avoidedPockets'][number]['assetClass'],
+          rationale: p.rationale as string,
+        })),
       theses,
       allocations,
       cashReservePct,
