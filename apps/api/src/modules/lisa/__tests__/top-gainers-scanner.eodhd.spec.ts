@@ -90,19 +90,32 @@ describe('fetchEodhdScreener — URL construction (P18c regression guard)', () =
     expect(decoded).not.toMatch(/\["change_p","[<>=]"/);
   });
 
-  it('uses adjusted_close (NOT close) as the price filter field', async () => {
+  it('uses adjusted_close (NOT close) as the price filter field — P19o threshold $2', async () => {
     const svc = makeService();
     await (svc as any).fetchEodhdScreener('US', 'test-key');
     const decoded = decodeURIComponent(capturedUrl!);
-    expect(decoded).toContain('["adjusted_close",">",1]');
+    // P19o (29/04/2026) — bumped from $1 to $2 to exclude penny stocks
+    // that EODHD intraday returns empty for.
+    expect(decoded).toContain('["adjusted_close",">",2]');
     expect(decoded).not.toMatch(/\["close","[<>=]"/);
   });
 
-  it('keeps avgvol_200d filter (still a valid EODHD filter field)', async () => {
+  it('uses avgvol_200d > 500_000 (P19o tightened from 100k) for liquidity guarantee', async () => {
     const svc = makeService();
     await (svc as any).fetchEodhdScreener('US', 'test-key');
     const decoded = decodeURIComponent(capturedUrl!);
-    expect(decoded).toContain('["avgvol_200d",">",100000]');
+    // P19o (29/04/2026) — issue #107 : avgvol > 100k laissait passer micro-caps
+    // (BIYA, ATER, SBLX...) sans coverage intraday EODHD. Bump à 500k = trades
+    // fiables.
+    expect(decoded).toContain('["avgvol_200d",">",500000]');
+    expect(decoded).not.toContain('"avgvol_200d",">",100000');
+  });
+
+  it('requires market_capitalization > 50M (P19o, exclude nano-caps OTC-style)', async () => {
+    const svc = makeService();
+    await (svc as any).fetchEodhdScreener('US', 'test-key');
+    const decoded = decodeURIComponent(capturedUrl!);
+    expect(decoded).toContain('["market_capitalization",">",50000000]');
   });
 
   it('sorts by refund_1d_p.desc (NOT change_p.desc)', async () => {

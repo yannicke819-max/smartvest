@@ -115,6 +115,24 @@ export class EodhdIntradayService {
     }
   }
 
+  /**
+   * P19o (29/04/2026) — Fenêtre from/to par interval.
+   *
+   * L'ancienne formule `count * interval * 2` donnait ~2.16h pour 5m × 13
+   * candles : trop étroit pour des micro-caps qui ne tradent pas en continu
+   * (overnight, weekends, low-volume tickers) → array vide → coverage='none'
+   * → UI Top 20 toutes lignes "—". Cf. issue #107.
+   *
+   * Ranges max EODHD intraday : 1m=120 jours, 5m=600 jours, 1h=7200 jours.
+   * On reste très large par rapport au max ; le `.slice(-count)` en aval
+   * garde uniquement les N candles les plus récentes côté client.
+   */
+  private windowForInterval(interval: '1m' | '5m' | '1h'): number {
+    if (interval === '1m') return 24 * 3600;          // 1 jour
+    if (interval === '5m') return 5 * 24 * 3600;      // 5 jours (couvre weekends)
+    return 30 * 24 * 3600;                             // 30 jours pour 1h
+  }
+
   async getCandles(
     eodhdTicker: string,
     interval: '1m' | '5m' | '1h' = '5m',
@@ -137,9 +155,8 @@ export class EodhdIntradayService {
       return null;
     }
 
-    const intervalSeconds = interval === '1m' ? 60 : interval === '5m' ? 300 : 3600;
     const toUnix = Math.floor(Date.now() / 1000);
-    const fromUnix = toUnix - count * intervalSeconds * 2; // x2 marge pour weekends/holidays
+    const fromUnix = toUnix - this.windowForInterval(interval);
 
     const tStart = Date.now();
     try {
@@ -189,6 +206,49 @@ export class EodhdIntradayService {
     } catch (e) {
       this.logger.warn(`Intraday fetch failed for ${eodhdTicker}: ${String(e).slice(0, 80)}`);
       this.logCall({ ticker: eodhdTicker, success: false, latencyMs: Date.now() - tStart, errorMessage: String(e).slice(0, 200) });
+      return null;
+    }
+  }
+
+  /**
+   * P19o (29/04/2026) — Quote ponctuel via `/api/real-time/{SYMBOL}`.
+   *
+   * Use case : quand `getCandles()` retourne une série vide (ticker à trades
+   * sparses), le scanner peut au moins peupler la colonne UI %change avec
+   * un quote unique. La persistance multi-TF reste impossible avec un seul
+   * point — pour ça il faut élargir la fenêtre intraday (cf. P19o ci-dessus).
+   *
+   * Endpoint : `GET /api/real-time/{SYMBOL}?api_token=&fmt=json`. Retourne
+   * `{ code, timestamp, open, high, low, close, volume, change, change_p }`.
+   * Ref : `vendor/eodhd-claude-skills/skills/eodhd-api/references/endpoints/live-price-data.md`
+   */
+  async getQuote(
+    eodhdTicker: string,
+  ): Promise<{ price: number; changePct: number; timestamp: number } | null> {
+    const key = this.apiKey();
+    if (!key) return null;
+    const normalized = this.normalizeForEodhdIntraday(eodhdTicker);
+    const tStart = Date.now();
+    try {
+      const url =
+        `https://eodhd.com/api/real-time/${encodeURIComponent(normalized)}` +
+        `?api_token=${encodeURIComponent(key)}&fmt=json`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      const latencyMs = Date.now() - tStart;
+      if (!res.ok) {
+        this.logger.debug(`[eodhd:real-time] ${normalized} HTTP ${res.status} (${latencyMs}ms)`);
+        return null;
+      }
+      const data = (await res.json()) as Record<string, unknown>;
+      const price = Number(data?.close ?? 0);
+      const changePct = Number(data?.change_p ?? 0);
+      const timestamp =
+        typeof data?.timestamp === 'number'
+          ? data.timestamp
+          : Math.floor(Date.now() / 1000);
+      if (!Number.isFinite(price) || price <= 0) return null;
+      return { price, changePct, timestamp };
+    } catch {
       return null;
     }
   }

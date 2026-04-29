@@ -574,11 +574,20 @@ export class TopGainersScannerService implements OnModuleInit {
    */
   private async fetchEodhdScreener(exchange: string, apiKey: string): Promise<TopGainerCandidate[]> {
     const exLower = exchange.toLowerCase();
+    // P19o (29/04/2026) — Resserre les filtres pour garantir la coverage
+    // EODHD intraday. L'ancien filtre laissait passer des micro-caps illiquides
+    // (BIYA, ATER, SBLX, OMCL, KNSA...) qui dominaient le Top 20 mais
+    // retournaient `[]` sur l'endpoint intraday → coverage='none' → UI "—".
+    // Cf. issue #107.
+    //   - avgvol_200d > 500_000  : 5× plus liquide → trades fiables intraday
+    //   - adjusted_close > 2     : exclut les penny stocks
+    //   - market_capitalization > 50_000_000 : exclut les nano-caps OTC-style
     const filters = encodeURIComponent(JSON.stringify([
       ['exchange', '=', exLower],
       ['refund_1d_p', '>', 3],
-      ['adjusted_close', '>', 1],
-      ['avgvol_200d', '>', 100_000],
+      ['adjusted_close', '>', 2],
+      ['avgvol_200d', '>', 500_000],
+      ['market_capitalization', '>', 50_000_000],
     ]));
     const url = `https://eodhd.com/api/screener?api_token=${encodeURIComponent(apiKey)}&filters=${filters}&sort=refund_1d_p.desc&limit=20&offset=0&fmt=json`;
     try {
