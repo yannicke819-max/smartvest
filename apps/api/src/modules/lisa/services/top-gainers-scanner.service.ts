@@ -321,6 +321,9 @@ export class TopGainersScannerService implements OnModuleInit {
 
     if (top.length === 0) return;
 
+    // P18 — LLM re-ranking (inert when SCANNER_LLM_ROUTER_ENABLED=false)
+    const rankedTop = await this.rankCandidates(top);
+
     // P9-UX — Pour chaque portfolio, gate par per-portfolio cycle puis scan.
     const now = Date.now();
     for (const cfg of configs) {
@@ -333,7 +336,7 @@ export class TopGainersScannerService implements OnModuleInit {
           continue;
         }
         this.lastScanByPortfolio.set(portfolioId, now);
-        await this.scanPortfolio(cfg.user_id as string, portfolioId, top);
+        await this.scanPortfolio(cfg.user_id as string, portfolioId, rankedTop);
       } catch (e) {
         this.logger.warn(
           `[top-gainers] portfolio ${portfolioId.slice(0, 8)} failed: ${String(e).slice(0, 120)}`,
@@ -540,6 +543,15 @@ export class TopGainersScannerService implements OnModuleInit {
         continue;
       }
 
+      // P18 — LLM signal validation (inert when SCANNER_LLM_ROUTER_ENABLED=false)
+      const signal = await this.analyzeSignal(cand, persistence);
+      if (!signal.pass) {
+        this.logger.log(
+          `[top-gainers:signal] ${cand.symbol} rejected (quality=${signal.signal_quality.toFixed(2)}): ${signal.reason}`,
+        );
+        continue;
+      }
+
       const insertedPosId = await this.openTopGainerPosition(
         userId,
         portfolioId,
@@ -574,13 +586,15 @@ export class TopGainersScannerService implements OnModuleInit {
     const proposalId = randomUUID();
     const thesisId = randomUUID();
 
-    // Pseudo-thèse minimale + pseudo-allocation 30% capital.
+    // P18 — LLM thesis generation (inert when SCANNER_LLM_ROUTER_ENABLED=false)
+    const llmThesis = await this.generateThesis(cand);
+
     const thesis = {
       id: thesisId,
-      summary: `TopGainer ${cand.symbol} +${cand.changePct.toFixed(1)}% (${cand.assetClass})`,
+      summary: llmThesis.summary,
       conviction: 0.7,
-      conviction_score: 7,
-      category: 'flow_timing',
+      conviction_score: llmThesis.conviction_score,
+      category: llmThesis.category,
       kind: 'momentum',
       preferredExpressionIndex: 0,
       expressions: [
@@ -694,6 +708,129 @@ export class TopGainersScannerService implements OnModuleInit {
       persistence_count_at_entry: persistence.persistenceCount,
       tf_changes_at_entry: tfChanges,
     });
+  }
+
+  /**
+   * P18 — Analyse signal LLM : valide si le top candidat est un genuine momentum signal.
+   * Fallback déterministe (pass=true) si router off ou échec LLM — comportement P17 préservé.
+   */
+  private async analyzeSignal(
+    cand: TopGainerCandidate & { score: number; assetClass: TopGainerAssetClass },
+    persistence: PersistenceResult,
+  ): Promise<{ pass: boolean; signal_quality: number; reason: string }> {
+    const fallback = { pass: true, signal_quality: 1.0, reason: 'deterministic_fallback' };
+    if (!this.llmRouter.isEnabled()) return fallback;
+    try {
+      const user = JSON.stringify({
+        symbol: cand.symbol,
+        assetClass: cand.assetClass,
+        exchange: cand.exchange,
+        changePct: cand.changePct,
+        price: cand.close,
+        volume: cand.volume,
+        avgVol50d: cand.avgVol50d,
+        persistenceScore: persistence.persistenceScore,
+        persistenceCount: persistence.persistenceCount,
+        tf1m: persistence.tf1m,
+        tf5m: persistence.tf5m,
+        tf10m: persistence.tf10m,
+        tf15m: persistence.tf15m,
+        tf30m: persistence.tf30m,
+        tf1h: persistence.tf1h,
+      });
+      const res = await this.llmRouter.call({
+        system:
+          'You are a momentum scanner validating top market gainers. Assess if this is a genuine momentum signal or noise (pump-and-dump, thin volume, etc.). Return ONLY a JSON object: {"pass":true,"signal_quality":0.85,"reason":"brief reason max 60 chars"}. signal_quality in [0,1]. Set pass=false when signal_quality<0.4.',
+        user,
+        temperature: 0.1,
+        maxTokens: 128,
+      });
+      const parsed = JSON.parse(res.content) as { pass: boolean; signal_quality: number; reason: string };
+      this.logger.log(
+        `[scanner-llm:signal] symbol=${cand.symbol} provider=${res.providerId} latencyMs=${res.latencyMs} costUsd=${res.costUsd.toFixed(6)} pass=${parsed.pass} signal_quality=${parsed.signal_quality}`,
+      );
+      return parsed;
+    } catch (e) {
+      this.logger.warn(`[scanner-llm:signal] ${cand.symbol} failed — deterministic fallback: ${String(e).slice(0, 100)}`);
+      return fallback;
+    }
+  }
+
+  /**
+   * P18 — Re-ranking LLM : réordonne les top candidats par probabilité de continuation.
+   * Fallback : ordre déterministe si router off ou échec LLM — comportement P17 préservé.
+   */
+  private async rankCandidates(
+    top: Array<TopGainerCandidate & { score: number; assetClass: TopGainerAssetClass }>,
+  ): Promise<Array<TopGainerCandidate & { score: number; assetClass: TopGainerAssetClass }>> {
+    if (!this.llmRouter.isEnabled() || top.length <= 1) return top;
+    try {
+      const user = JSON.stringify(
+        top.map((c) => ({ symbol: c.symbol, assetClass: c.assetClass, changePct: c.changePct, score: c.score, exchange: c.exchange })),
+      );
+      const res = await this.llmRouter.call({
+        system:
+          'You are a momentum scanner. Re-rank these candidates by expected momentum continuation probability. Return ONLY a JSON array of symbols in rank order, most promising first. Example: ["BTCUSDT","AAPL"]. Preserve all symbols.',
+        user,
+        temperature: 0.1,
+        maxTokens: 128,
+      });
+      const ranked: string[] = JSON.parse(res.content);
+      const reordered = [
+        ...ranked
+          .map((sym) => top.find((c) => c.symbol === sym))
+          .filter((c): c is TopGainerCandidate & { score: number; assetClass: TopGainerAssetClass } => c !== undefined),
+        ...top.filter((c) => !ranked.includes(c.symbol)),
+      ];
+      const reordering = ranked.join(',') !== top.map((c) => c.symbol).join(',');
+      this.logger.log(
+        `[scanner-llm:ranking] symbols=${top.map((c) => c.symbol).join(',')} provider=${res.providerId} latencyMs=${res.latencyMs} costUsd=${res.costUsd.toFixed(6)} reordered=${reordering}`,
+      );
+      return reordered;
+    } catch (e) {
+      this.logger.warn(`[scanner-llm:ranking] failed — deterministic order preserved: ${String(e).slice(0, 100)}`);
+      return top;
+    }
+  }
+
+  /**
+   * P18 — Génération de thèse LLM : produit un résumé descriptif pour la position.
+   * Fallback : template déterministe si router off ou échec LLM — comportement P17 préservé.
+   */
+  private async generateThesis(
+    cand: TopGainerCandidate & { score: number; assetClass: TopGainerAssetClass },
+  ): Promise<{ summary: string; category: string; conviction_score: number }> {
+    const fallback = {
+      summary: `TopGainer ${cand.symbol} +${cand.changePct.toFixed(1)}% (${cand.assetClass})`,
+      category: 'flow_timing',
+      conviction_score: 7,
+    };
+    if (!this.llmRouter.isEnabled()) return fallback;
+    try {
+      const user = JSON.stringify({
+        symbol: cand.symbol,
+        assetClass: cand.assetClass,
+        changePct: cand.changePct,
+        exchange: cand.exchange,
+        score: cand.score,
+        volume: cand.volume,
+      });
+      const res = await this.llmRouter.call({
+        system:
+          'You are a momentum trading thesis writer. Write a concise intraday thesis for this top gainer. Return ONLY JSON: {"summary":"one-line thesis max 100 chars","category":"flow_timing|technical_breakout|momentum","conviction_score":7}. conviction_score 1-10.',
+        user,
+        temperature: 0.2,
+        maxTokens: 128,
+      });
+      const parsed = JSON.parse(res.content) as { summary: string; category: string; conviction_score: number };
+      this.logger.log(
+        `[scanner-llm:thesis] symbol=${cand.symbol} provider=${res.providerId} latencyMs=${res.latencyMs} costUsd=${res.costUsd.toFixed(6)} category=${parsed.category} conviction=${parsed.conviction_score}`,
+      );
+      return parsed;
+    } catch (e) {
+      this.logger.warn(`[scanner-llm:thesis] ${cand.symbol} failed — deterministic fallback: ${String(e).slice(0, 100)}`);
+      return fallback;
+    }
   }
 
   /**
