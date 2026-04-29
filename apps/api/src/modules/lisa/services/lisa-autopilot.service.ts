@@ -87,33 +87,62 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
     const pausedReason = cfg.autopilot_paused_reason as string | null | undefined;
     if (!pausedReason) return true; // pas en pause → cycle normal
 
-    if (pausedReason !== 'BUDGET_EXCEEDED') {
-      // MANUAL ou PROVIDER_OUTAGE → skip silencieux (resume manuel uniquement)
+    // P8-BR — Budget pause (cumulatif coût API journalier dépassé)
+    if (pausedReason === 'BUDGET_EXCEEDED') {
+      const budget = cfg.daily_cost_budget_usd as number | null | undefined;
+      if (budget == null || Number(budget) <= 0) {
+        // Budget retiré → reprise
+        await this.clearPausedReason(cfg, 'budget_unset');
+        return true;
+      }
+      const todayCostUsd = await this.apiCostTracker.getTodayTotalUsd().catch(() => 0);
+      const budgetNum = Number(budget);
+      if (todayCostUsd < budgetNum * 0.9) {
+        await this.clearPausedReason(cfg, `cost=$${todayCostUsd.toFixed(2)} < 90% of $${budgetNum.toFixed(2)}`);
+        return true;
+      }
+      this.logger.log(
+        `[autopilot:budget_paused] portfolio=${String(cfg.portfolio_id).slice(0, 8)} ` +
+        `cost=$${todayCostUsd.toFixed(2)} / budget=$${budgetNum.toFixed(2)} (≥90%) → skip cycle`,
+      );
       return false;
     }
 
-    const budget = cfg.daily_cost_budget_usd as number | null | undefined;
-    if (budget == null || Number(budget) <= 0) {
-      // Budget retiré → reprise
-      await this.clearPausedReason(cfg, 'budget_unset');
-      return true;
+    // P19c — Anthropic credit exhausted (réversible). On laisse passer au prochain
+    // cycle pour permettre une nouvelle tentative. Si la tentative échoue de
+    // nouveau avec credit_exhausted, le flag sera re-set par lisa.service.
+    // Si elle réussit (crédit rechargé), on clear le flag dans le path success.
+    // Cycle = 7-30 min selon profile, donc retry tolérable côté coût (1 call rate de probe).
+    if (pausedReason === 'ANTHROPIC_CREDIT_EXHAUSTED') {
+      this.logger.log(
+        `[autopilot:anthropic_paused] portfolio=${String(cfg.portfolio_id).slice(0, 8)} ` +
+        `→ retry this cycle (probe credit, will re-pause if still exhausted)`,
+      );
+      return true; // laisse le cycle Lisa s'exécuter ; clear géré côté success path
     }
 
-    const todayCostUsd = await this.apiCostTracker.getTodayTotalUsd().catch(() => 0);
-    const budgetNum = Number(budget);
-    if (todayCostUsd < budgetNum * 0.9) {
-      await this.clearPausedReason(cfg, `cost=$${todayCostUsd.toFixed(2)} < 90% of $${budgetNum.toFixed(2)}`);
-      return true;
-    }
-
-    // Toujours au-dessus du seuil → skip ce cycle, log discret toutes les
-    // ~30 min (sinon spam si cycle 7 min). Pas critique : la prochaine fois
-    // que le budget passe sous le seuil, le cycle reprend automatiquement.
-    this.logger.log(
-      `[autopilot:budget_paused] portfolio=${String(cfg.portfolio_id).slice(0, 8)} ` +
-      `cost=$${todayCostUsd.toFixed(2)} / budget=$${budgetNum.toFixed(2)} (≥90%) → skip cycle`,
-    );
+    // MANUAL ou autres → skip silencieux (resume manuel uniquement)
     return false;
+  }
+
+  /**
+   * P19c — Public helper appelé par lisa.service.ts dans le path success
+   * de generateProposal pour clear le paused_reason='ANTHROPIC_CREDIT_EXHAUSTED'
+   * dès qu'un appel réussit (= crédit rechargé).
+   */
+  async clearAnthropicCreditPause(portfolioId: string): Promise<void> {
+    const { data } = await this.supabase.getClient()
+      .from('lisa_session_configs')
+      .select('autopilot_paused_reason, portfolio_id')
+      .eq('portfolio_id', portfolioId)
+      .maybeSingle();
+    const reason = (data?.autopilot_paused_reason as string | null | undefined);
+    if (reason === 'ANTHROPIC_CREDIT_EXHAUSTED') {
+      await this.clearPausedReason(
+        { portfolio_id: portfolioId },
+        'anthropic_credit_restored_after_successful_proposal',
+      );
+    }
   }
 
   private async clearPausedReason(

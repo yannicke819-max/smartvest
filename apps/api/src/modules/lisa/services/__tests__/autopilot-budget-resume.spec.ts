@@ -177,6 +177,59 @@ describe('LisaAutopilotService.maybeResumeOrSkip', () => {
     expect(ok).toBe(false);
   });
 
+  // ── P19c — ANTHROPIC_CREDIT_EXHAUSTED reversible pause ──────────────────
+
+  it('P19c — paused ANTHROPIC_CREDIT_EXHAUSTED → returns true (probe credit, retry cycle)', async () => {
+    const state = emptyState();
+    const service = makeService(state);
+    const cfg = {
+      portfolio_id: PORTFOLIO_ID,
+      autopilot_paused_reason: 'ANTHROPIC_CREDIT_EXHAUSTED',
+      daily_cost_budget_usd: 100,
+    };
+    const ok = await service.maybeResumeOrSkip(cfg);
+    // Returns true → cycle continues (probe). lisa.service will re-pause if
+    // credit still exhausted, OR clear paused_reason on success.
+    expect(ok).toBe(true);
+    // No automatic clear here — clear happens in lisa.service success path.
+    expect(state.configUpdates).toEqual([]);
+  });
+
+  it('P19c — clearAnthropicCreditPause clears reason when ANTHROPIC_CREDIT_EXHAUSTED is set', async () => {
+    const state = emptyState();
+    // Need a richer mock that supports `select(...).eq(...).maybeSingle()`
+    const supabaseRich = {
+      getClient: () => ({
+        from: () => {
+          const chain: Record<string, unknown> = {};
+          chain.select = () => chain;
+          chain.eq = () => chain;
+          chain.maybeSingle = () => Promise.resolve({
+            data: { autopilot_paused_reason: 'ANTHROPIC_CREDIT_EXHAUSTED', portfolio_id: PORTFOLIO_ID },
+            error: null,
+          });
+          chain.update = (values: Record<string, unknown>) => {
+            state.configUpdates.push(values);
+            return chain;
+          };
+          return chain;
+        },
+      }),
+    };
+    const decisionLog = {
+      append: jest.fn(async (entry: { kind: string }) => {
+        state.decisionLogs.push({ kind: entry.kind, portfolioId: PORTFOLIO_ID });
+      }),
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const service = new (LisaAutopilotService as any)(
+      supabaseRich, null, decisionLog, null, null, null, null, null, null, null,
+    );
+    await service.clearAnthropicCreditPause(PORTFOLIO_ID);
+    expect(state.configUpdates.some((u) => u.autopilot_paused_reason === null)).toBe(true);
+    expect(state.decisionLogs.some((l) => l.kind === 'autopilot_resumed')).toBe(true);
+  });
+
   it('integration scenario: 3-cycle pause → bump budget → resume', async () => {
     const state = emptyState({ costToday: 51 });
     const service = makeService(state);
