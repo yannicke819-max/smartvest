@@ -126,7 +126,11 @@ function generateReport(all: BenchMetrics[]): string {
     process.exit(1);
   }
 
-  const byProvider = Map.groupBy(allResults, (r) => r.provider);
+  const byProvider = allResults.reduce((acc, r) => {
+    if (!acc.has(r.provider)) acc.set(r.provider, []);
+    acc.get(r.provider)!.push(r);
+    return acc;
+  }, new Map<string, RunResult[]>());
   const metrics: BenchMetrics[] = [];
   for (const [, results] of byProvider) metrics.push(computeMetrics(results, dataset));
   addComposite(metrics);
