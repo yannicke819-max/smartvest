@@ -137,6 +137,9 @@ export class TopGainersScannerService implements OnModuleInit {
   } | null = null;
   private readonly EU_SESSIONS_CACHE_TTL_MS = 60_000;
 
+  /** P18e — Compteur cumulatif des candidats skip pour absence de persistence. */
+  private skippedNoPersistenceCounter = 0;
+
   constructor(
     private readonly supabase: SupabaseService,
     private readonly lisa: LisaService,
@@ -216,6 +219,11 @@ export class TopGainersScannerService implements OnModuleInit {
    */
   getLastScanForPortfolio(portfolioId: string): number | null {
     return this.lastScanByPortfolio.get(portfolioId) ?? null;
+  }
+
+  /** P18e — Métrique cumulative observability. */
+  getSkippedNoPersistenceCounter(): number {
+    return this.skippedNoPersistenceCounter;
   }
 
   /**
@@ -635,6 +643,9 @@ export class TopGainersScannerService implements OnModuleInit {
     // bump à 3 dans v2). Permet de valider le pipeline end-to-end.
     const maxThisCycle = Math.min(slotsAvailable, MAX_POSITIONS_PER_CYCLE_V1);
     let opened = 0;
+    // P18e — accumule les skips pour log agrégé en fin de cycle (au lieu de
+    // N lignes "no persistence data → skip" qui polluent les logs Fly).
+    const skippedNoPersistence: string[] = [];
     for (const cand of top) {
       if (opened >= maxThisCycle) break;
       const baseSym = cand.symbol.replace(/USDT$|USDC$/, '').toUpperCase();
@@ -671,9 +682,11 @@ export class TopGainersScannerService implements OnModuleInit {
           `[top-gainers] ${cand.symbol} persistence=${persistence.persistenceCount} score=${persistence.persistenceScore.toFixed(2)} pathEff=${persistence.pathQuality?.overallEfficiency?.toFixed(2) ?? 'n/a'} (${persistence.pathQuality?.overallSmoothness ?? 'n/a'}) → OPEN`,
         );
       } else {
+        // P18e — Skip silencieux ; aggregé dans le log de fin de cycle.
         // Si la donnée TF est indispo (provider down) on n'ouvre pas — gate
         // strict pour éviter d'ouvrir aveuglément.
-        this.logger.log(`[top-gainers] ${cand.symbol} no persistence data → skip`);
+        this.skippedNoPersistenceCounter++;
+        skippedNoPersistence.push(cand.symbol);
         continue;
       }
 
@@ -701,6 +714,14 @@ export class TopGainersScannerService implements OnModuleInit {
         opened++;
         await this.markLogOpened(cand.symbol, portfolioId, insertedPosId).catch(() => null);
       }
+    }
+
+    // P18e — Log agrégé une fois par cycle (au lieu de N lignes par-symbol).
+    if (skippedNoPersistence.length > 0) {
+      const sample = skippedNoPersistence.slice(0, 5).join(', ');
+      this.logger.log(
+        `[top-gainers] cycle skip-summary: scanned=${top.length}, retained=${opened}, skipped_no_persistence=${skippedNoPersistence.length} (sample: ${sample})`,
+      );
     }
   }
 
