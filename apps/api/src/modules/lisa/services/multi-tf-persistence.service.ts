@@ -24,6 +24,7 @@ import {
 } from '@smartvest/ai-analyst';
 import { BinanceMarketService } from './binance-market.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
+import { YahooIntradayService } from './yahoo-intraday.service';
 
 interface Candidate {
   symbol: string;
@@ -32,21 +33,16 @@ interface Candidate {
 }
 
 /**
- * P18e — Marchés EODHD couverts par le plan All-In-One pour intraday 5m.
- * Tout ticker dont l'exchange n'est pas dans cette liste sera skip
- * silencieusement (avec compteur dédié) avant l'appel EODHD — économise
- * les calls et les 422 sur tickers Toronto/India/etc. non supportés en intraday.
+ * P19a — Le pré-filtre exchange-whitelist a été RETIRÉ : on ne droppe plus
+ * les marchés non-EODHD (KO, TO, NSE, BSE, ...). À la place, on ajoute un
+ * fallback Yahoo Finance derrière EODHD pour récupérer l'intraday sur les
+ * marchés non couverts. Le coverage de chaque ticker est annoté dans le
+ * résultat (`coverage:'eodhd' | 'yahoo' | 'none'`) pour que l'UI puisse
+ * afficher un badge dégradé plutôt que de hide.
  *
- * Source : `EU_EXCHANGES` + `NON_EU_EXCHANGES` de `top-gainers-scanner.service.ts`
- * (P18d), filtré aux exchanges où EODHD fournit des candles 5m.
+ * Le compteur `skippedUnsupportedMarketCounter` reste à zéro depuis P19a
+ * (legacy compteur preserved pour back-compat metric API).
  */
-const SUPPORTED_EQUITY_EXCHANGES = new Set([
-  'US',
-  'LSE', 'XETRA', 'PA', 'SW', 'MI', 'MC', 'BME', 'AS', 'AMS',
-  'TSE', 'HK', 'AU', 'KO',
-]);
-// TO (Toronto) / NSE / BSE intraday souvent indisponible sur le plan EODHD courant
-// → pas dans la whitelist, skip pré-filtré.
 
 /**
  * P9-UX ADDENDUM — Path quality par TF (5/10/15/30/60m), dérivé des candles
@@ -64,8 +60,20 @@ export interface PathQualityByTf {
   overallSmoothness: 'smooth' | 'mixed' | 'choppy' | null;
 }
 
+/**
+ * P19a — Annotation de la source de données intraday utilisée pour calculer
+ * la persistance. UI peut afficher un badge selon la valeur :
+ *   - 'eodhd'  → intraday EODHD (primaire, plein détail)
+ *   - 'yahoo'  → fallback Yahoo Finance (Korea KOSPI, small-caps US, etc.)
+ *   - 'binance'→ klines crypto natifs
+ *   - 'none'   → aucun vendor n'a retourné d'intraday (ticker visible mais
+ *               availableCount=0, badge orange en UI)
+ */
+export type CoverageSource = 'eodhd' | 'yahoo' | 'binance' | 'none';
+
 export interface PersistenceWithPath extends PersistenceResult {
   pathQuality?: PathQualityByTf;
+  coverage?: CoverageSource;
 }
 
 interface CacheEntry {
@@ -89,6 +97,7 @@ export class MultiTimeframePersistenceService {
   constructor(
     private readonly binance: BinanceMarketService,
     private readonly eodhd: EodhdIntradayService,
+    private readonly yahoo: YahooIntradayService,
   ) {}
 
   /** P18e — Métriques cumulatives pour observability. */
@@ -138,53 +147,52 @@ export class MultiTimeframePersistenceService {
     const out = new Map<string, PersistenceWithPath>();
     if (candidates.length === 0) return out;
 
-    // Split crypto vs equity + pré-filtre exchanges non supportés (P18e)
+    // P19a — pas de pré-filtre exchange. Le routing multi-vendor décide
+    // (EODHD primaire, Yahoo fallback, sinon coverage='none' annoté).
     const crypto: Candidate[] = [];
     const equity: Candidate[] = [];
-    const skippedUnsupported: string[] = [];
     for (const c of candidates) {
-      if (this.isCrypto(c)) {
-        crypto.push(c);
-        continue;
-      }
-      const ex = String(c.exchange ?? 'US').toUpperCase();
-      if (!SUPPORTED_EQUITY_EXCHANGES.has(ex)) {
-        this.skippedUnsupportedMarketCounter++;
-        skippedUnsupported.push(`${c.symbol}@${ex}`);
-        continue;
-      }
-      equity.push(c);
-    }
-    if (skippedUnsupported.length > 0) {
-      this.logger.debug(
-        `[mtf-persist] skipped_unsupported_market: ${skippedUnsupported.length} (sample: ${skippedUnsupported.slice(0, 3).join(', ')})`,
-      );
+      if (this.isCrypto(c)) crypto.push(c);
+      else equity.push(c);
     }
 
-    // Accumule les "no data" symbols pour log agrégé en fin de batch
-    const noIntradaySymbols: string[] = [];
-    const trackNoData = (c: Candidate) => {
-      this.noIntradayCounter++;
-      noIntradaySymbols.push(c.symbol);
-    };
+    // P19a — accumule les couvertures par bucket pour log structuré en fin
+    // de batch (au lieu d'un seul "no intraday" qui masque les fallbacks).
+    const yahooFallbackUsed: string[] = [];
+    const noCoverageSymbols: string[] = [];
 
     await Promise.all([
       this.runWithCap(crypto, MAX_PARALLEL_PER_SOURCE, async (c) => {
         const r = await this.analyzeQuiet(c).catch(() => null);
-        if (r) out.set(c.symbol.toUpperCase(), r);
-        else trackNoData(c);
+        if (r) {
+          out.set(c.symbol.toUpperCase(), r);
+        } else {
+          this.noIntradayCounter++;
+          noCoverageSymbols.push(c.symbol);
+        }
       }),
       this.runWithCap(equity, MAX_PARALLEL_PER_SOURCE, async (c) => {
         const r = await this.analyzeQuiet(c).catch(() => null);
-        if (r) out.set(c.symbol.toUpperCase(), r);
-        else trackNoData(c);
+        if (r) {
+          out.set(c.symbol.toUpperCase(), r);
+          if (r.coverage === 'yahoo') yahooFallbackUsed.push(c.symbol);
+        } else {
+          this.noIntradayCounter++;
+          noCoverageSymbols.push(c.symbol);
+        }
       }),
     ]);
 
-    if (noIntradaySymbols.length > 0) {
-      const sample = noIntradaySymbols.slice(0, 5).join(', ');
+    if (yahooFallbackUsed.length > 0) {
+      const sample = yahooFallbackUsed.slice(0, 5).join(', ');
       this.logger.log(
-        `[mtf-persist] no intraday for ${noIntradaySymbols.length} tickers (sample: ${sample})`,
+        `[mtf-persist] yahoo fallback used for ${yahooFallbackUsed.length} ticker(s) (sample: ${sample})`,
+      );
+    }
+    if (noCoverageSymbols.length > 0) {
+      const sample = noCoverageSymbols.slice(0, 5).join(', ');
+      this.logger.log(
+        `[mtf-persist] no intraday coverage for ${noCoverageSymbols.length} ticker(s) — UI will show degraded badge (sample: ${sample})`,
       );
     }
 
@@ -218,17 +226,40 @@ export class MultiTimeframePersistenceService {
     const prices = extractPricesFromOneMinSeries(candles);
     const persistence = evaluatePersistence(c.currentPrice, prices);
     const pathQuality = computePathQualityForTfsFromOneMin(candles);
-    return { ...persistence, pathQuality };
+    return { ...persistence, pathQuality, coverage: 'binance' };
   }
 
+  /**
+   * P19a — Equity intraday avec fallback chain :
+   *   1. EODHD intraday (primaire — US/EU/major Asia)
+   *   2. Yahoo Finance (fallback — Korea KOSPI, small-caps obscures, etc.)
+   *   3. null (coverage='none' annoté par le caller pour UI badge dégradé)
+   *
+   * Annote la `coverage` source utilisée pour observability + UI.
+   */
   private async fetchEquityPersistenceQuiet(c: Candidate): Promise<PersistenceWithPath | null> {
     const eodhdTicker = this.toEodhdTicker(c);
-    const series = await this.eodhd.getCandles(eodhdTicker, '5m', 13);
-    if (!series || series.candles.length === 0) return null;
-    const prices = extractPricesFromFiveMinSeries(series.candles);
-    const persistence = evaluatePersistence(c.currentPrice, prices);
-    const pathQuality = computePathQualityForTfsFromFiveMin(series.candles);
-    return { ...persistence, pathQuality };
+
+    // 1. EODHD intraday (primaire)
+    const series = await this.eodhd.getCandles(eodhdTicker, '5m', 13).catch(() => null);
+    if (series && series.candles.length > 0) {
+      const prices = extractPricesFromFiveMinSeries(series.candles);
+      const persistence = evaluatePersistence(c.currentPrice, prices);
+      const pathQuality = computePathQualityForTfsFromFiveMin(series.candles);
+      return { ...persistence, pathQuality, coverage: 'eodhd' };
+    }
+
+    // 2. Yahoo Finance (fallback gratuit, no auth)
+    const yahooCandles = await this.yahoo.getCandles(eodhdTicker, '5m').catch(() => null);
+    if (yahooCandles && yahooCandles.length > 0) {
+      const prices = extractPricesFromFiveMinSeries(yahooCandles);
+      const persistence = evaluatePersistence(c.currentPrice, prices);
+      const pathQuality = computePathQualityForTfsFromFiveMin(yahooCandles);
+      return { ...persistence, pathQuality, coverage: 'yahoo' };
+    }
+
+    // 3. Aucun vendor disponible
+    return null;
   }
 
   // ───────────────────────────────────────────────────────────────────
