@@ -574,22 +574,24 @@ export class TopGainersScannerService implements OnModuleInit {
    */
   private async fetchEodhdScreener(exchange: string, apiKey: string): Promise<TopGainerCandidate[]> {
     const exLower = exchange.toLowerCase();
-    // P19o (29/04/2026) — Resserre les filtres pour garantir la coverage
-    // EODHD intraday. L'ancien filtre laissait passer des micro-caps illiquides
-    // (BIYA, ATER, SBLX, OMCL, KNSA...) qui dominaient le Top 20 mais
-    // retournaient `[]` sur l'endpoint intraday → coverage='none' → UI "—".
-    // Cf. issue #107.
-    //   - avgvol_200d > 500_000  : 5× plus liquide → trades fiables intraday
-    //   - adjusted_close > 2     : exclut les penny stocks
-    //   - market_capitalization > 50_000_000 : exclut les nano-caps OTC-style
+    // P19o.4 (29/04/2026) — Audit vs spec officielle EODHD
+    // (`vendor/eodhd-claude-skills/.../endpoints/stock-screener-data.md`) :
+    //
+    //   1. `avgvol_200d` n'existe PAS dans la liste des Supported Filter Fields.
+    //      Seul `avgvol_50d` est documenté → patch.
+    //   2. `adjusted_close` n'est PAS documenté comme filter field non plus
+    //      (présent dans la response shape uniquement). Risk : silently ignored
+    //      par EODHD → on déplace le seuil price >= 2 EN POST-FILTRE côté
+    //      `mapEodhdRow` (sur le champ response `adjusted_close ?? last_price`).
+    //   3. Sort syntax officielle : `&sort=field&order=a|d` (2 params séparés)
+    //      vs notre `sort=field.desc` non-standard. Patch pour s'aligner.
     const filters = encodeURIComponent(JSON.stringify([
       ['exchange', '=', exLower],
       ['refund_1d_p', '>', 3],
-      ['adjusted_close', '>', 2],
-      ['avgvol_200d', '>', 500_000],
+      ['avgvol_50d', '>', 500_000],
       ['market_capitalization', '>', 50_000_000],
     ]));
-    const url = `https://eodhd.com/api/screener?api_token=${encodeURIComponent(apiKey)}&filters=${filters}&sort=refund_1d_p.desc&limit=20&offset=0&fmt=json`;
+    const url = `https://eodhd.com/api/screener?api_token=${encodeURIComponent(apiKey)}&filters=${filters}&sort=refund_1d_p&order=d&limit=20&offset=0&fmt=json`;
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
       if (!res.ok) {
@@ -624,6 +626,10 @@ export class TopGainersScannerService implements OnModuleInit {
     const avgVol50d = num(r.avgvol_50d ?? r.avgvol_200d);
     const marketCap = num(r.market_capitalization ?? r.market_cap);
     if (!Number.isFinite(close) || close <= 0) return null;
+    // P19o.4 — Post-filter price >= 2 (le filtre `adjusted_close > 2` côté
+    // screener n'est pas documenté comme valid filter field — risk silently
+    // ignored. On le déplace ici pour garantir l'effet : exclut les penny stocks.
+    if (close < 2) return null;
     return {
       symbol,
       exchange,
