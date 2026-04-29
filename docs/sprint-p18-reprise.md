@@ -73,17 +73,38 @@ Réponse attendue :
 
 ## ⚠️ Anomalies détectées en fin de sprint
 
-### Anomalie 1 — Deploy hors CI
+### Anomalie 1 — Deploy hors CI (CLOS)
 
 **Symptôme** : entre `10:46:22Z` et `10:57:20Z` (29/04/2026), `fly_image_ref` a changé de `deployment-01KQCDDVJ0FY1FDA0V47HGHH50` (ULID, build via fly.yml avec --build-arg) à `deployment-ed3dfdae1aaafd6fdeee32e3f7998bc7` (hex, build sans --build-arg). Résultat : `git_sha` et `build_time` sont passés de populés à `null`.
 
-**Cause probable** : `flyctl deploy` manuel direct, ou retry depuis Fly UI bypassant le workflow GitHub Actions.
+**Cause** : Fly auto-restart d'une machine après signal de health ou restart programmé (confirmé par utilisateur 29/04/2026 13:00 CEST). Pas une intervention humaine étrangère, comportement Fly normal.
 
-**Impact** : `/version` partiellement utile — `fly_image_ref` reste populé pour identifier la release, mais le commit SHA est perdu.
+**Impact résiduel** : `/version` partiellement utile sur deploys hors CI — `fly_image_ref` reste populé pour identifier la release, mais le commit SHA est perdu.
 
-**Mitigation suggérée** :
-- Documenter dans le runbook : "ne pas utiliser flyctl deploy direct ni Fly UI retry — toujours passer par push to main"
-- OU : ajouter un wrapper `scripts/fly-deploy.sh` qui force les `--build-arg` pour les redéploiements manuels
+**Mitigation runbook** :
+- Pour `flyctl deploy` manuel, passer explicitement `--build-arg GIT_SHA=$(git rev-parse HEAD) --build-arg BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)`.
+- OU : créer un wrapper `scripts/fly-deploy.sh` qui force ces flags.
+- L'absence de `git_sha` dans `/version` est une fingerprint utilisable : un null indique un deploy non-CI.
+
+### ✅ P18h.1 — fly_image_ref validation finale (29/04/2026 11:04 UTC)
+
+Confirmation post-redeploy manuel utilisateur :
+
+```json
+{
+  "fly_image_ref": "registry.fly.io/smartvest:deployment-53a93e12e24f2754ddcc4f28ae123ea3",
+  "fly_app_name": "smartvest",
+  "fly_region": "cdg",
+  "fly_machine_id": "d8d4070a719018"
+}
+```
+
+3 hashes distincts observés sur la même machine en moins d'1h :
+- `deployment-01KQCDDVJ0FY1FDA0V47HGHH50` (10:46Z, fly.yml CI build)
+- `deployment-ed3dfdae1aaafd6fdeee32e3f7998bc7` (10:57Z, Fly auto-restart)
+- `deployment-53a93e12e24f2754ddcc4f28ae123ea3` (11:04Z, flyctl manual)
+
+→ **`FLY_IMAGE_REF` change à chaque deploy effectif**, validation finale du P18h.1 fix (l'auto-injection Fly runtime fonctionne 100%).
 
 ## 🛠️ Architecture évoluée pendant le sprint
 
