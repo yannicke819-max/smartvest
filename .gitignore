@@ -28,3 +28,8 @@ supabase/.branches/
 # Docs copiés au build time pour bundling Vercel (cf. apps/web/scripts/copy-docs.mjs).
 # Source de vérité = docs/ à la racine.
 apps/web/content/docs/
+
+# P16 bench — API keys + raw JSONL outputs (EU providers)
+.env.bench
+bench/scanner-llm/results/
+bench/scanner-llm/*.jsonl
