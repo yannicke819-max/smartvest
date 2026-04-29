@@ -8,6 +8,13 @@ FROM node:20-alpine AS builder
 ARG CACHEBUST=11
 RUN echo "cachebust=$CACHEBUST"
 
+# P18h — Build metadata exposée via GET /version. Passées par fly.yml :
+#   --build-arg GIT_SHA=${{ github.sha }} --build-arg BUILD_TIME=$(date -u +%FT%TZ)
+ARG GIT_SHA=
+ARG BUILD_TIME=
+ENV GIT_SHA=$GIT_SHA
+ENV BUILD_TIME=$BUILD_TIME
+
 WORKDIR /repo
 
 COPY package.json package-lock.json tsconfig.base.json ./
@@ -42,6 +49,13 @@ RUN echo "✅ LisaModule present in build output"
 FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
+
+# P18h — re-declare build args in runner stage (ARG doesn't cross stages)
+# and bake into runtime ENV. Runtime container reads via process.env.
+ARG GIT_SHA=
+ARG BUILD_TIME=
+ENV GIT_SHA=$GIT_SHA
+ENV BUILD_TIME=$BUILD_TIME
 
 COPY --from=builder /repo/package.json /repo/package-lock.json ./
 COPY --from=builder /repo/node_modules ./node_modules
