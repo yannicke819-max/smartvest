@@ -46,6 +46,7 @@ import { TopGainersScannerService } from './services/top-gainers-scanner.service
 import { OperatingModeService } from './services/operating-mode.service';
 import { MultiTimeframePersistenceService } from './services/multi-tf-persistence.service';
 import { YahooIntradayService } from './services/yahoo-intraday.service';
+import { IntradayCacheService } from './services/intraday-cache.service';
 import { PersistenceProbabilityService } from './services/persistence-probability.service';
 import { ScannerLlmRouterService } from './services/scanner-llm-router.service';
 
@@ -106,6 +107,8 @@ import { ScannerLlmRouterService } from './services/scanner-llm-router.service';
     MultiTimeframePersistenceService,
     // P19a — Yahoo Finance intraday fallback (Korea KOSPI, small-caps, etc.)
     YahooIntradayService,
+    // P19i — Intraday OHLCV cache Supabase (last_known < 15 min, fallback chain)
+    IntradayCacheService,
     // P9 — logistic regression P(win) sur features persistence + empirical law
     PersistenceProbabilityService,
     // P17 — LLM router multi-vendor pour scanner Gainers (Gemini/GPT-nano/Codestral/Claude)

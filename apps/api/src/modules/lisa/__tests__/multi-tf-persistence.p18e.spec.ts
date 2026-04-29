@@ -43,9 +43,15 @@ beforeEach(() => {
 const mockYahoo = {
   getCandles: jest.fn(),
 } as any;
+// P19i — IntradayCacheService injecté en 4e arg. Tests P18e n'utilisent
+// pas le cache, donc mock no-op (read returns null, write returns false).
+const mockIntradayCache = {
+  read: jest.fn().mockResolvedValue(null),
+  write: jest.fn().mockResolvedValue(false),
+} as any;
 
 function makeService(): MultiTimeframePersistenceService {
-  return new MultiTimeframePersistenceService(mockBinance, mockEodhd, mockYahoo);
+  return new MultiTimeframePersistenceService(mockBinance, mockEodhd, mockYahoo, mockIntradayCache);
 }
 
 // ── 1. Aggregated log — single line for N misses ─────────────────────────────
@@ -154,8 +160,7 @@ describe('analyzeBatch — P19a Yahoo fallback chain', () => {
     expect(svc.getNoIntradayCounter()).toBe(3);
   });
 
-  it('uses Yahoo result with coverage="yahoo" when EODHD returns null but Yahoo succeeds', async () => {
-    mockEodhd.getCandles.mockResolvedValue(null);
+  it('P19i — uses Yahoo result with coverage="yahoo" — Yahoo PRIMAIRE (P19i reordered)', async () => {
     const baseTime = Date.parse('2026-04-29T09:00:00.000Z');
     const fakeCandles = Array.from({ length: 13 }, (_, i) => ({
       datetime: new Date(baseTime + i * 5 * 60_000).toISOString(),
@@ -168,30 +173,30 @@ describe('analyzeBatch — P19a Yahoo fallback chain', () => {
       { symbol: '199820', exchange: 'KO', currentPrice: 105 },
     ]);
 
-    expect(mockEodhd.getCandles).toHaveBeenCalledTimes(1);
     expect(mockYahoo.getCandles).toHaveBeenCalledTimes(1);
+    expect(mockEodhd.getCandles).not.toHaveBeenCalled();
     const persist = result.get('199820');
     expect(persist).toBeDefined();
     expect(persist!.coverage).toBe('yahoo');
   });
 
-  it('does NOT call Yahoo when EODHD already provides intraday (eodhd primaire wins)', async () => {
+  it('P19i — does NOT call EODHD when Yahoo already provides intraday (yahoo primaire wins)', async () => {
     const baseTime = Date.parse('2026-04-29T09:00:00.000Z');
-    const fakeCandles = Array.from({ length: 13 }, (_, i) => ({
+    const fakeYahooCandles = Array.from({ length: 13 }, (_, i) => ({
       datetime: new Date(baseTime + i * 5 * 60_000).toISOString(),
       open: 100 + i, high: 101 + i, low: 99 + i, close: 100 + i, volume: 1000,
     }));
-    mockEodhd.getCandles.mockResolvedValue({ candles: fakeCandles });
+    mockYahoo.getCandles.mockResolvedValue(fakeYahooCandles);
 
     const svc = makeService();
     const result = await svc.analyzeBatch([
       { symbol: 'AAPL', exchange: 'US', currentPrice: 180 },
     ]);
 
-    expect(mockEodhd.getCandles).toHaveBeenCalledTimes(1);
-    expect(mockYahoo.getCandles).not.toHaveBeenCalled();
+    expect(mockYahoo.getCandles).toHaveBeenCalledTimes(1);
+    expect(mockEodhd.getCandles).not.toHaveBeenCalled();
     const persist = result.get('AAPL');
-    expect(persist!.coverage).toBe('eodhd');
+    expect(persist!.coverage).toBe('yahoo');
   });
 
   it('crypto bypasses both EODHD and Yahoo (uses Binance with coverage="binance")', async () => {
