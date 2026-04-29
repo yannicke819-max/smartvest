@@ -30,6 +30,7 @@ import { LisaService } from './lisa.service';
 import { DecisionLogService } from './decision-log.service';
 import { BinanceMarketService } from './binance-market.service';
 import { MultiTimeframePersistenceService } from './multi-tf-persistence.service';
+import { ScannerLlmRouterService } from './scanner-llm-router.service';
 import {
   selectTopGainers,
   type TopGainerCandidate,
@@ -113,6 +114,13 @@ export class TopGainersScannerService implements OnModuleInit {
     private readonly binanceMarket: BinanceMarketService,
     private readonly schedulerRegistry: SchedulerRegistry,
     private readonly mtfPersistence: MultiTimeframePersistenceService,
+    /**
+     * P17 — LLM router multi-vendor (Gemini Flash-Lite primaire + fallback chain).
+     * Quand SCANNER_LLM_ROUTER_ENABLED=true, sera utilisé pour analyse signal /
+     * ranking / thesis. Tant que false, l'injection est inerte (router.isEnabled() = false).
+     * Wiring des call sites = follow-up post-validation utilisateur.
+     */
+    private readonly llmRouter: ScannerLlmRouterService,
   ) {}
 
   /**

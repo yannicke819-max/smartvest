@@ -46,6 +46,7 @@ import { TopGainersScannerService } from './services/top-gainers-scanner.service
 import { OperatingModeService } from './services/operating-mode.service';
 import { MultiTimeframePersistenceService } from './services/multi-tf-persistence.service';
 import { PersistenceProbabilityService } from './services/persistence-probability.service';
+import { ScannerLlmRouterService } from './services/scanner-llm-router.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule, BotLabModule],
@@ -104,6 +105,8 @@ import { PersistenceProbabilityService } from './services/persistence-probabilit
     MultiTimeframePersistenceService,
     // P9 — logistic regression P(win) sur features persistence + empirical law
     PersistenceProbabilityService,
+    // P17 — LLM router multi-vendor pour scanner Gainers (Gemini/GPT-nano/Codestral/Claude)
+    ScannerLlmRouterService,
   ],
   exports: [
     LisaService,
