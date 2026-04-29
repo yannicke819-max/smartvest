@@ -3183,21 +3183,30 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     // 2. Positions fermées — win rate + streak + frictions 7 j
     const { data: closedPositions } = await client
       .from('lisa_positions')
-      .select('realized_pnl_usd, exit_timestamp, estimated_entry_cost_usd')
+      .select('realized_pnl_usd, exit_timestamp, estimated_entry_cost_usd, status')
       .eq('portfolio_id', portfolioId)
       .neq('status', 'open')
       .order('exit_timestamp', { ascending: false })
       .limit(200);
 
     let winRatePct: number | null = null;
+    let tpHitRatePct: number | null = null;
     let closedPositionsCount = 0;
     let recentStreak: RecentStreak = null;
     let tradingFrictionsUsd = 0;
 
     if (closedPositions && closedPositions.length > 0) {
       closedPositionsCount = closedPositions.length;
+      // P19u — Dual win-rate metric :
+      //   - winRatePct  = trades nets gagnants / total (économique, après fees)
+      //   - tpHitRatePct = trades dont status='closed_target' / total (intent-based)
+      // Avant P19u : seul winRatePct exposé. Avec fees IBKR forfaitaires irréalistes
+      // (10bps × 2), 5/7 TP_HIT comptaient comme LOSS car fees > gross PnL → Lisa
+      // apprenait "TP n'est pas un win" alors que la stratégie A FONCTIONNÉ.
       const wins = closedPositions.filter((p) => Number(p.realized_pnl_usd ?? 0) > 0).length;
+      const tpHits = closedPositions.filter((p) => p.status === 'closed_target').length;
       winRatePct = (wins / closedPositionsCount) * 100;
+      tpHitRatePct = (tpHits / closedPositionsCount) * 100;
 
       const firstPnl = Number(closedPositions[0].realized_pnl_usd ?? 0);
       if (firstPnl !== 0) {
@@ -3286,6 +3295,10 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       drawdownFromPeakPct,
       realizedVolatility7dPct,
       winRatePct,
+      // P19u — Dual win-rate : tpHitRatePct expose le taux de TP touchés
+      // indépendant du PnL net (anti-bias UI quand fees mangent les profits
+      // sur micro-moves). UI affiche les deux : "TP hit rate" + "Net win rate".
+      tpHitRatePct,
       closedPositionsCount,
       recentStreak,
       avgDailyCostUsd7d,
