@@ -31,5 +31,7 @@ apps/web/content/docs/
 
 # P16 bench — API keys + raw JSONL outputs (EU providers)
 .env.bench
+bench/scanner-llm/.env.bench
 bench/scanner-llm/results/
 bench/scanner-llm/*.jsonl
+bench/scanner-llm/REPORT.md
