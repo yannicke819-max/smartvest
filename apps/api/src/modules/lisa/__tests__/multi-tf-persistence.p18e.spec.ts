@@ -154,9 +154,9 @@ describe('analyzeBatch — P19a Yahoo fallback chain', () => {
       { symbol: '199820', exchange: 'KO', currentPrice: 50 },       // Korea KOSPI
     ]);
 
-    // EODHD tried first for all 3
-    expect(mockEodhd.getCandles).toHaveBeenCalledTimes(3);
-    // Yahoo fallback invoked for all 3 (since EODHD returned null)
+    // P19v — EODHD called twice per ticker (1m primary + 5m fallback) when both null
+    expect(mockEodhd.getCandles).toHaveBeenCalledTimes(6);
+    // Yahoo fallback invoked for all 3 (yahoo is primary in P19i chain)
     expect(mockYahoo.getCandles).toHaveBeenCalledTimes(3);
     // Counter stays at 0 (no pre-filter anymore — every ticker is tried)
     expect(svc.getSkippedUnsupportedMarketCounter()).toBe(0);
