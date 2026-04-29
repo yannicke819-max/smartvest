@@ -15,18 +15,31 @@
 import { Injectable, Logger } from '@nestjs/common';
 
 /**
- * Yahoo-finance2 is published ESM-only. We can't `import` or `require`
- * it from our CJS NestJS bundle, so we lazy-load via dynamic `import()`
- * (works in CJS for ESM modules) and cache the resolved module.
+ * Yahoo-finance2 is published ESM-only (`exports.import` only, no `require`).
+ *
+ * P19e (29/04/2026, observed in prod) — TypeScript with `module: CommonJS`
+ * transpiles `await import('yahoo-finance2')` to a bare `require('yahoo-finance2')`
+ * call, which Node.js rejects with `ERR_PACKAGE_PATH_NOT_EXPORTED` because
+ * the package's `package.json` `exports` field has only an `import` condition
+ * (no `require`). Result : 100% of intraday Yahoo fallback calls failed in
+ * prod, persistance multi-TF stayed at 0/20, no positions opened.
+ *
+ * Fix : use a `Function`-constructed dynamic import. The `Function` constructor
+ * compiles its body as runtime ES code that tsc never touches → the `import()`
+ * stays as an actual ESM dynamic import, not a `require()`.
+ *
+ * Cached after first successful resolve (next calls bypass the import overhead).
  */
 let _yahooFinanceModule: any = null;
+// eslint-disable-next-line @typescript-eslint/no-implied-eval
+const _importEsm: (m: string) => Promise<any> = new Function(
+  'specifier',
+  'return import(specifier);',
+) as (m: string) => Promise<any>;
+
 async function getYahooFinance(): Promise<any> {
   if (_yahooFinanceModule) return _yahooFinanceModule;
-  // ts-ignore : yahoo-finance2 is ESM-only ; with our `node` moduleResolution
-  // tsc cannot resolve its type declarations through dynamic `import()`. The
-  // runtime resolution works fine (Node walks up `node_modules`).
-  // @ts-ignore
-  const mod: any = await import('yahoo-finance2');
+  const mod: any = await _importEsm('yahoo-finance2');
   _yahooFinanceModule = mod.default ?? mod;
   return _yahooFinanceModule;
 }
