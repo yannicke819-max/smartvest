@@ -31,6 +31,13 @@ jobs:
         uses: superfly/flyctl-actions/setup-flyctl@master
 
       - name: Deploy to Fly
-        run: flyctl deploy --remote-only --wait-timeout 300 --strategy immediate
+        # P18h — Inject GIT_SHA + BUILD_TIME at build time so /version can
+        # report which commit/binary is actually running in prod.
+        run: |
+          BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          flyctl deploy --remote-only \
+            --build-arg GIT_SHA=${{ github.sha }} \
+            --build-arg BUILD_TIME=$BUILD_TIME \
+            --wait-timeout 300 --strategy immediate
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
