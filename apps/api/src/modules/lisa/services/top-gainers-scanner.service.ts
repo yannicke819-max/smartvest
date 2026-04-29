@@ -574,24 +574,33 @@ export class TopGainersScannerService implements OnModuleInit {
    */
   private async fetchEodhdScreener(exchange: string, apiKey: string): Promise<TopGainerCandidate[]> {
     const exLower = exchange.toLowerCase();
-    // P19o.4 (29/04/2026) — Audit vs spec officielle EODHD
-    // (`vendor/eodhd-claude-skills/.../endpoints/stock-screener-data.md`) :
+    // P19s (29/04/2026 18:53 UTC) — Fix 422 sur exchanges non-US.
     //
-    //   1. `avgvol_200d` n'existe PAS dans la liste des Supported Filter Fields.
-    //      Seul `avgvol_50d` est documenté → patch.
-    //   2. `adjusted_close` n'est PAS documenté comme filter field non plus
-    //      (présent dans la response shape uniquement). Risk : silently ignored
-    //      par EODHD → on déplace le seuil price >= 2 EN POST-FILTRE côté
-    //      `mapEodhdRow` (sur le champ response `adjusted_close ?? last_price`).
-    //   3. Sort syntax officielle : `&sort=field&order=a|d` (2 params séparés)
-    //      vs notre `sort=field.desc` non-standard. Patch pour s'aligner.
+    // Diagnostic via curl LIVE contre demo + observation Fly logs prod :
+    //   1. `avgvol_50d` n'est PAS un valid filter field — la doc
+    //      `stock-screener-data.md:52` est out-of-date. EODHD répond :
+    //        {"errors":{"filters.X.field":["The selected ... is invalid."]}}
+    //      → DROP du filter (post-filter volume géré côté `mapEodhdRow`).
+    //
+    //   2. Le format `&sort=field&order=d` (doc + P19o.4) déclenche le
+    //      Laravel validator EODHD :
+    //        {"errors":{"sort.0.direction":["The sort.0.direction field is required."]}}
+    //      Sur US (en prod ALL-IN-ONE) ça passe parfois silencieusement, sur
+    //      tous les autres exchanges (TSE/HK/KO/SS/SZ/TO/AS/NSE/BSE/AU) c'est
+    //      rejeté avec 422 → 0 candidats Asie/EU non-EU/Toronto.
+    //      → DROP de `sort` + `order` ; on trie client-side dans le snapshot
+    //        endpoint par changePct desc anyway.
+    //
+    //   3. Pour compenser la perte du tri EODHD-side (au cas où l'ordre
+    //      naturel ne soit pas changePct desc), on bump limit 20 → 100 (max
+    //      autorisé par la doc) pour garantir qu'on attrape les vrais top
+    //      gainers même si EODHD retourne dans un ordre arbitraire.
     const filters = encodeURIComponent(JSON.stringify([
       ['exchange', '=', exLower],
       ['refund_1d_p', '>', 3],
-      ['avgvol_50d', '>', 500_000],
       ['market_capitalization', '>', 50_000_000],
     ]));
-    const url = `https://eodhd.com/api/screener?api_token=${encodeURIComponent(apiKey)}&filters=${filters}&sort=refund_1d_p&order=d&limit=20&offset=0&fmt=json`;
+    const url = `https://eodhd.com/api/screener?api_token=${encodeURIComponent(apiKey)}&filters=${filters}&limit=100&offset=0&fmt=json`;
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
       if (!res.ok) {

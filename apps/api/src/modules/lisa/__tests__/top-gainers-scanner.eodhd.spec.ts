@@ -94,42 +94,66 @@ describe('fetchEodhdScreener — URL construction (P18c regression guard)', () =
     const svc = makeService();
     await (svc as any).fetchEodhdScreener('US', 'test-key');
     const decoded = decodeURIComponent(capturedUrl!);
-    // P19o.4 (29/04/2026) — `adjusted_close` is response-only per official
-    // stock-screener-data.md ; not in Supported Filter Fields list. Le seuil
-    // price >= 2 est désormais un POST-filter dans mapEodhdRow.
     expect(decoded).not.toMatch(/\["adjusted_close","[<>=]"/);
     expect(decoded).not.toMatch(/\["close","[<>=]"/);
   });
 
-  it('P19o.4 — uses avgvol_50d (NOT avgvol_200d, which is not in EODHD spec)', async () => {
+  it('P19s — does NOT include avgvol_50d nor avgvol_200d (rejected by EODHD validator)', async () => {
     const svc = makeService();
     await (svc as any).fetchEodhdScreener('US', 'test-key');
     const decoded = decodeURIComponent(capturedUrl!);
-    // P19o.4 — la doc officielle liste UNIQUEMENT `avgvol_50d` comme champ
-    // filter valide. `avgvol_200d` était silently ignored par EODHD.
-    expect(decoded).toContain('["avgvol_50d",">",500000]');
+    // P19s (29/04/2026) — Live curl confirmed both avgvol_50d AND avgvol_200d
+    // trigger `filters.X.field invalid` 422 on EODHD screener. Doc was wrong.
+    // Volume filtering moved to post-fetch in mapEodhdRow / evaluateTopGainerCandidate.
+    expect(decoded).not.toContain('avgvol_50d');
     expect(decoded).not.toContain('avgvol_200d');
   });
 
-  it('requires market_capitalization > 50M (P19o, exclude nano-caps OTC-style)', async () => {
+  it('requires market_capitalization > 50M (still valid filter per EODHD spec)', async () => {
     const svc = makeService();
     await (svc as any).fetchEodhdScreener('US', 'test-key');
     const decoded = decodeURIComponent(capturedUrl!);
     expect(decoded).toContain('["market_capitalization",">",50000000]');
   });
 
-  it('P19o.4 — uses canonical sort+order syntax (NOT field.desc shorthand)', async () => {
+  it('P19s — does NOT include sort or order param (Laravel validator rejects on non-US)', async () => {
     const svc = makeService();
     await (svc as any).fetchEodhdScreener('US', 'test-key');
     const decoded = decodeURIComponent(capturedUrl!);
-    // P19o.4 — Spec officielle stock-screener-data.md :
-    //   sort  : Field to sort by (e.g., market_capitalization, name)
-    //   order : Sort order: 'a' (ascending) or 'd' (descending)
-    // Notre `sort=refund_1d_p.desc` non-standard pouvait être silently ignored
-    // → top 20 par défaut alphabétique au lieu de top gainers desc.
-    expect(decoded).toContain('sort=refund_1d_p&order=d');
-    expect(decoded).not.toContain('sort=refund_1d_p.desc');
-    expect(decoded).not.toContain('sort=change_p.desc');
+    // P19s — Live Fly logs 18:53 UTC : 100% of non-US exchanges (TSE/HK/KO/SS
+    // /SZ/TO/AS/NSE/BSE) returned HTTP 422 with `sort.0.direction required`.
+    // EODHD validator expects nested array form. Drop sort entirely — we
+    // already sort client-side in the snapshot endpoint by changePct desc.
+    expect(decoded).not.toMatch(/[?&]sort=/);
+    expect(decoded).not.toMatch(/[?&]order=/);
+  });
+
+  it('P19s — bumps limit from 20 to 100 (max per spec) to compensate dropped sort', async () => {
+    const svc = makeService();
+    await (svc as any).fetchEodhdScreener('US', 'test-key');
+    const decoded = decodeURIComponent(capturedUrl!);
+    // Limit 100 = doc max. Compensates dropped sort: even if EODHD's natural
+    // order isn't changePct desc, we capture 5x more candidates so the
+    // client-side sort still surfaces the real top gainers.
+    expect(decoded).toContain('limit=100');
+    expect(decoded).not.toContain('limit=20');
+  });
+
+  it('P19s — non-US exchanges (TSE, HK, KO, SS, SZ) build same URL pattern (no exchange-specific bug)', async () => {
+    const svc = makeService();
+    const exchanges = ['TSE', 'HK', 'KO', 'SS', 'SZ', 'TO', 'AS', 'NSE', 'BSE', 'AU'];
+    for (const ex of exchanges) {
+      capturedUrl = undefined;
+      await (svc as any).fetchEodhdScreener(ex, 'test-key');
+      expect(capturedUrl).toBeDefined();
+      const decoded = decodeURIComponent(capturedUrl!);
+      // Same canonical filter set on every exchange
+      expect(decoded).toContain(`["exchange","=","${ex.toLowerCase()}"]`);
+      expect(decoded).toContain('["refund_1d_p",">",3]');
+      expect(decoded).toContain('["market_capitalization",">",50000000]');
+      expect(decoded).not.toMatch(/[?&]sort=/);
+      expect(decoded).not.toContain('avgvol_50d');
+    }
   });
 
   it('logs HTTP error body at warn level for diagnostic (was debug, now warn)', async () => {
