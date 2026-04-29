@@ -72,18 +72,110 @@ const YAHOO_USER_AGENT =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) ' +
   'Chrome/120.0.0.0 Safari/537.36';
 
+/**
+ * P19h — Circuit breaker config.
+ *
+ * Au 1er crash provider Yahoo (HTTP 5xx, 429, 403, parse JSON KO, timeout),
+ * on ouvre le circuit pendant `BASE_COOLDOWN_MS`. Backoff exponentiel
+ * jusqu'à `MAX_COOLDOWN_MS` si crashes répétés. Reset auto sur succès
+ * d'une probe après cooldown.
+ *
+ * Pendant l'ouverture du circuit :
+ *  - 0 spam log (1 seul WARN à l'ouverture, 1 seul LOG à la fermeture)
+ *  - getCandles return null silently → MTF service marque coverage='none'
+ *  - Pas d'appel HTTP, économie réseau + Yahoo IP plus rate-limited
+ *
+ * Override env optionnels :
+ *  - YAHOO_CIRCUIT_BASE_COOLDOWN_MS (default 60_000 = 60s)
+ *  - YAHOO_CIRCUIT_MAX_COOLDOWN_MS  (default 300_000 = 5min)
+ *  - YAHOO_CIRCUIT_DISABLE          (default false — set 'true' pour désactiver)
+ */
+const DEFAULT_BASE_COOLDOWN_MS = 60_000;       // 60s
+const DEFAULT_MAX_COOLDOWN_MS = 300_000;       // 5 min
+
 @Injectable()
 export class YahooIntradayService {
   private readonly logger = new Logger(YahooIntradayService.name);
+
+  /** P19h — Circuit breaker state. 'closed' = normal, 'open' = skip Yahoo. */
+  private circuitState: 'closed' | 'open' = 'closed';
+  /** P19h — Wall-clock ms until which the circuit stays open. 0 when closed. */
+  private circuitOpenUntilMs = 0;
+  /** P19h — Consecutive failures since last success (drives backoff). */
+  private consecutiveFailures = 0;
+  /** P19h — Cumulative breaker openings (observability). */
+  private circuitOpenCount = 0;
+
+  /** P19h — Allow tests / external code to read state. */
+  getCircuitStatus(): { state: 'closed' | 'open'; openUntilMs: number; consecutiveFailures: number; openCount: number } {
+    return {
+      state: this.circuitState,
+      openUntilMs: this.circuitOpenUntilMs,
+      consecutiveFailures: this.consecutiveFailures,
+      openCount: this.circuitOpenCount,
+    };
+  }
+
+  /** P19h — Test helper / admin reset. Closes the circuit immediately. */
+  resetCircuit(): void {
+    this.circuitState = 'closed';
+    this.circuitOpenUntilMs = 0;
+    this.consecutiveFailures = 0;
+  }
+
+  /**
+   * P19h — Open the circuit with exponential backoff cooldown.
+   * 1st failure → 60s, 2nd → 120s, 3rd → 240s, capped at 300s.
+   *
+   * Log policy : 1 warn par OPEN/REOPEN (typiquement 1 / cooldown cycle, pas
+   * du spam per-symbol). `circuitOpenCount` n'incrémente que sur transition
+   * closed→open (pas sur reopens consécutifs où le breaker probe a échoué).
+   */
+  private openCircuit(reason: string): void {
+    this.consecutiveFailures += 1;
+    const base = DEFAULT_BASE_COOLDOWN_MS;
+    const maxC = DEFAULT_MAX_COOLDOWN_MS;
+    const cooldownMs = Math.min(base * Math.pow(2, this.consecutiveFailures - 1), maxC);
+    const wasClosed = this.circuitState === 'closed';
+    this.circuitState = 'open';
+    this.circuitOpenUntilMs = Date.now() + cooldownMs;
+    if (wasClosed) this.circuitOpenCount += 1;
+    // Log à chaque open (rare car gated by cooldown, pas du spam per-call)
+    this.logger.warn(
+      `[yahoo:circuit] provider disabled for ${Math.round(cooldownMs / 1000)}s due to ${reason} (consecutive_failures=${this.consecutiveFailures})`,
+    );
+  }
+
+  /** P19h — Close circuit on success, reset failures counter. */
+  private closeCircuitOnSuccess(): void {
+    if (this.circuitState === 'open' || this.consecutiveFailures > 0) {
+      this.logger.log(
+        `[yahoo:circuit] provider re-enabled after probe success (was ${this.consecutiveFailures} consecutive failures)`,
+      );
+    }
+    this.circuitState = 'closed';
+    this.circuitOpenUntilMs = 0;
+    this.consecutiveFailures = 0;
+  }
 
   /**
    * Fetch ~13 candles 5m (1h05) for the given EODHD-style ticker. Internally
    * maps to Yahoo's symbol convention (e.g. `199820.KO` → `199820.KS`).
    * Returns null on any error (timeout, no data, mapping unknown).
+   *
+   * P19h — Circuit breaker : si le circuit est ouvert et qu'on n'a pas encore
+   * passé `circuitOpenUntilMs`, retourne null silently sans toucher à fetch().
+   * Quand le cooldown est passé, le call passe (mode "half-open" probe) ;
+   * succès → close circuit, échec → re-open avec backoff exponentiel.
    */
   async getCandles(eodhdTicker: string, interval: '5m' | '1m' = '5m'): Promise<YahooCandle[] | null> {
     const yahooSymbol = this.toYahooSymbol(eodhdTicker);
     if (!yahooSymbol) return null;
+
+    // P19h — Circuit open + cooldown actif → return null silently (no log spam)
+    if (this.circuitState === 'open' && Date.now() < this.circuitOpenUntilMs) {
+      return null;
+    }
 
     // Yahoo accepte interval = 1m / 2m / 5m / 15m / 30m / 60m / 90m / 1h / 1d / ...
     // range = 1d / 5d / 1mo / ... — pour 1h de data on prend 5d (Yahoo cap minimum,
@@ -101,9 +193,15 @@ export class YahooIntradayService {
       });
 
       if (!res.ok) {
-        this.logger.debug(
-          `[yahoo-intraday] ${eodhdTicker}→${yahooSymbol} HTTP ${res.status}`,
-        );
+        // P19h — Specific HTTP statuses that indicate provider-level failure
+        // (vs ticker-not-found which is just 404 and should NOT trip breaker)
+        if (res.status === 429 || res.status === 403 || res.status >= 500) {
+          this.openCircuit(`HTTP ${res.status}`);
+        } else {
+          this.logger.debug(
+            `[yahoo-intraday] ${eodhdTicker}→${yahooSymbol} HTTP ${res.status}`,
+          );
+        }
         return null;
       }
 
@@ -112,9 +210,8 @@ export class YahooIntradayService {
       // Path Yahoo : json.chart.result[0]
       const chartErr = json?.chart?.error;
       if (chartErr) {
-        this.logger.debug(
-          `[yahoo-intraday] ${eodhdTicker}→${yahooSymbol} api error: ${chartErr.code ?? 'unknown'}`,
-        );
+        // chart.error = symbol not found in Yahoo; ne pas tripper le breaker
+        // (provider OK, ticker unknown). Retour null silently.
         return null;
       }
       const result = json?.chart?.result?.[0];
@@ -148,11 +245,12 @@ export class YahooIntradayService {
           volume,
         });
       }
+      // P19h — Successful response → close breaker, reset failures counter
+      this.closeCircuitOnSuccess();
       return out.length > 0 ? out : null;
     } catch (e) {
-      this.logger.debug(
-        `[yahoo-intraday] ${eodhdTicker}→${yahooSymbol} error: ${String(e).slice(0, 100)}`,
-      );
+      // P19h — Network error / timeout / abort / parse → trip breaker
+      this.openCircuit(`fetch error: ${String(e).slice(0, 60)}`);
       return null;
     }
   }
