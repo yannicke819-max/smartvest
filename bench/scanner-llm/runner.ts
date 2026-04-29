@@ -85,7 +85,7 @@ export async function run(
   }
 
   const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const outPath = path.join(import.meta.dirname, 'results', `results-${providerId}-${ts}.jsonl`);
+  const outPath = path.resolve(process.cwd(), 'bench/scanner-llm', 'results', `results-${providerId}-${ts}.jsonl`);
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
   fs.writeFileSync(outPath, results.map((r) => JSON.stringify(r)).join('\n') + '\n');
   console.log(`[${providerId}] wrote ${results.length} results → ${outPath}`);

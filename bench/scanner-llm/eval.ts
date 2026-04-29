@@ -3,8 +3,9 @@ import path from 'path';
 import type { RunResult, BenchMetrics } from './types.ts';
 import type { BenchPrompt } from './types.ts';
 
-const DIR = path.join(import.meta.dirname, 'results');
-const DATASET_PATH = path.join(import.meta.dirname, 'dataset.json');
+const BENCH_DIR = path.resolve(process.cwd(), 'bench/scanner-llm');
+const DIR = path.join(BENCH_DIR, 'results');
+const DATASET_PATH = path.join(BENCH_DIR, 'dataset.json');
 
 function loadResults(): RunResult[] {
   if (!fs.existsSync(DIR)) return [];
@@ -131,7 +132,7 @@ function generateReport(all: BenchMetrics[]): string {
   addComposite(metrics);
 
   const report = generateReport(metrics);
-  const reportPath = path.join(import.meta.dirname, 'REPORT.md');
+  const reportPath = path.join(BENCH_DIR, 'REPORT.md');
   fs.writeFileSync(reportPath, report);
   console.log(`REPORT.md written → ${reportPath}`);
   console.table(metrics.map((m) => ({ provider: m.provider, composite: fmt(m.compositeScore), precision: pct(m.precision), cost: fmt(m.totalCostUsd, 4) })));

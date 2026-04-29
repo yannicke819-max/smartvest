@@ -19,10 +19,11 @@ import {
 } from './providers/index.ts';
 
 (async () => {
-  loadEnv(path.join(import.meta.dirname, '.env.bench'));
+  const BENCH_DIR = path.resolve(process.cwd(), 'bench/scanner-llm');
+  loadEnv(path.join(BENCH_DIR, '.env.bench'));
 
   const dataset = JSON.parse(
-    fs.readFileSync(path.join(import.meta.dirname, 'dataset.json'), 'utf8'),
+    fs.readFileSync(path.join(BENCH_DIR, 'dataset.json'), 'utf8'),
   ) as BenchPrompt[];
 
   const PROVIDERS = [
