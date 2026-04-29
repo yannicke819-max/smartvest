@@ -36,6 +36,7 @@ import {
   type TopGainerCandidate,
   type TopGainerAssetClass,
   type PersistenceResult,
+  isWithinSession,
 } from '@smartvest/ai-analyst';
 
 interface EodhdScreenerRow {
@@ -83,13 +84,28 @@ interface EodhdScreenerRow {
  * Bonus : NSE (India), BSE (India) — pas dans la spec minimale mais
  * faible coût marginal (1 fetch parallèle de plus).
  */
-const EODHD_EXCHANGES = [
-  'US',
-  'LSE', 'XETRA', 'PA', 'SW', 'MI', 'MC', 'BME', 'AS', 'AMS',
-  'TSE', 'HK', 'AU', 'KO', 'TO',
-  'NSE', 'BSE',
-];
+/**
+ * P18d — Exchanges groupés par région pour permettre un gating session-aware.
+ * Les listes US et EU recouvrent les bourses présentes dans `watchlist_universe`
+ * (migration 0081) — la région EU est skip si toutes ses sessions sont fermées
+ * pour économiser les calls EODHD et éviter les 422 hors heures.
+ *
+ * NB : `MC` et `BME` sont les 2 codes EODHD acceptés selon la version API
+ * pour la Bolsa de Madrid ; `AS` et `AMS` idem pour Euronext Amsterdam.
+ */
+const EU_EXCHANGES = ['LSE', 'XETRA', 'PA', 'SW', 'MI', 'MC', 'BME', 'AS', 'AMS'];
+const NON_EU_EXCHANGES = ['US', 'TSE', 'HK', 'AU', 'KO', 'TO', 'NSE', 'BSE'];
+/** Watchlists EU dont la session_open_utc / session_close_utc gate l'EODHD scan. */
+const EU_WATCHLIST_NAMES = ['cac40', 'dax40', 'ftse100'];
 const CRYPTO_PAIRS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT', 'DOTUSDT', 'LINKUSDT', 'MATICUSDT'];
+
+/**
+ * P18d — Fallback hardcodé si la query `watchlist_universe` échoue : enveloppe
+ * conservatrice [07:00, 17:00] UTC qui couvre CAC40 / DAX40 (07:00-15:30) +
+ * FTSE100 (08:00-16:30). Préférable au "always-on" qui re-causerait les 422.
+ */
+const EU_FALLBACK_OPEN_UTC = '07:00';
+const EU_FALLBACK_CLOSE_UTC = '17:00';
 
 /**
  * P5-PIVOT-TOP-GAINERS v1 — Cap conservatif : 1 position/cycle.
@@ -110,6 +126,16 @@ export class TopGainersScannerService implements OnModuleInit {
   /** P9-UX — Track lastScanAt per portfolio pour gating per-cycle. */
   private lastScanByPortfolio = new Map<string, number>();
   private readonly CYCLE_CACHE_TTL_MS = 30_000;
+
+  /**
+   * P18d — Cache des fenêtres EU (60s). Évite de re-query `watchlist_universe`
+   * à chaque tick alors que les sessions changent au plus 2× par jour.
+   */
+  private euSessionsCache: {
+    asOf: number;
+    windows: Array<{ name: string; openUtc: string; closeUtc: string }>;
+  } | null = null;
+  private readonly EU_SESSIONS_CACHE_TTL_MS = 60_000;
 
   constructor(
     private readonly supabase: SupabaseService,
@@ -351,20 +377,95 @@ export class TopGainersScannerService implements OnModuleInit {
   }
 
   /**
+   * P18d — Charge (avec cache 60s) les fenêtres de session EU depuis
+   * `watchlist_universe`. Si la query échoue, fallback sur l'enveloppe
+   * conservatrice [07:00, 17:00] UTC qui couvre CAC40 + DAX40 + FTSE100.
+   */
+  private async loadEuSessionWindows(): Promise<Array<{ name: string; openUtc: string; closeUtc: string }>> {
+    const cached = this.euSessionsCache;
+    if (cached && Date.now() - cached.asOf < this.EU_SESSIONS_CACHE_TTL_MS) {
+      return cached.windows;
+    }
+    const fallback = EU_WATCHLIST_NAMES.map((name) => ({
+      name,
+      openUtc: EU_FALLBACK_OPEN_UTC,
+      closeUtc: EU_FALLBACK_CLOSE_UTC,
+    }));
+    try {
+      const { data, error } = await this.supabase
+        .getClient()
+        .from('watchlist_universe')
+        .select('name, session_open_utc, session_close_utc')
+        .in('name', EU_WATCHLIST_NAMES);
+      if (error || !data || data.length === 0) {
+        this.logger.warn(
+          `[top-gainers] watchlist_universe EU fetch failed (${error?.message ?? 'empty'}) — fallback ${EU_FALLBACK_OPEN_UTC}-${EU_FALLBACK_CLOSE_UTC} UTC`,
+        );
+        this.euSessionsCache = { asOf: Date.now(), windows: fallback };
+        return fallback;
+      }
+      const windows = data
+        .filter((r) => r.session_open_utc && r.session_close_utc)
+        .map((r) => ({
+          name: r.name as string,
+          openUtc: String(r.session_open_utc),
+          closeUtc: String(r.session_close_utc),
+        }));
+      this.euSessionsCache = { asOf: Date.now(), windows: windows.length > 0 ? windows : fallback };
+      return this.euSessionsCache.windows;
+    } catch (e) {
+      this.logger.warn(`[top-gainers] EU sessions DB query error — fallback: ${String(e).slice(0, 120)}`);
+      this.euSessionsCache = { asOf: Date.now(), windows: fallback };
+      return fallback;
+    }
+  }
+
+  /**
+   * P18d — Renvoie la liste des watchlists EU actives (cac40/dax40/ftse100)
+   * dont la fenêtre session_open_utc/session_close_utc inclut `now`.
+   * Liste vide ⇒ EU fermé, scan EU à skip.
+   */
+  async getActiveEuWatchlists(now: Date = new Date()): Promise<string[]> {
+    const windows = await this.loadEuSessionWindows();
+    return windows
+      .filter((w) => isWithinSession(now, { openUtc: w.openUtc, closeUtc: w.closeUtc }))
+      .map((w) => w.name);
+  }
+
+  /**
    * Fetch candidates depuis toutes les sources : EODHD multi-exchange + Binance crypto.
    * Yahoo / Coinbase / Kraken / OANDA → deferred PR.
    *
    * P8 — Exposé en public pour l'endpoint /lisa/gainers-persistence-snapshot
    * (le caller filtre top-N + branche le multi-tf service).
+   *
+   * P18d — Les bourses EU (LSE/XETRA/PA/SW/MI/MC/BME/AS/AMS) ne sont scannées
+   * que si au moins 1 watchlist EU (cac40/dax40/ftse100) est en session.
+   * Hors heures EU le scan est skip pour économiser EODHD et éviter les 422.
    */
-  async fetchAllCandidates(): Promise<TopGainerCandidate[]> {
+  async fetchAllCandidates(now: Date = new Date()): Promise<TopGainerCandidate[]> {
     const apiKey = this.config.get<string>('EODHD_API_KEY');
     const tasks: Promise<TopGainerCandidate[]>[] = [];
 
     if (apiKey) {
-      // Iterate over exchanges in parallel
-      for (const ex of EODHD_EXCHANGES) {
+      // Non-EU exchanges always scanned (US 24/7 with after-hours, Asia, Other).
+      for (const ex of NON_EU_EXCHANGES) {
         tasks.push(this.fetchEodhdScreener(ex, apiKey).catch(() => []));
+      }
+
+      // EU exchanges gated on session windows.
+      const activeEu = await this.getActiveEuWatchlists(now);
+      if (activeEu.length > 0) {
+        this.logger.log(
+          `[top-gainers] EU session active (${activeEu.join('/')}), scanning ${EU_EXCHANGES.length} exchanges: ${EU_EXCHANGES.join(',')}`,
+        );
+        for (const ex of EU_EXCHANGES) {
+          tasks.push(this.fetchEodhdScreener(ex, apiKey).catch(() => []));
+        }
+      } else {
+        this.logger.log(
+          `[top-gainers] EU sessions closed — skipping ${EU_EXCHANGES.length} exchanges (${EU_EXCHANGES.join(',')})`,
+        );
       }
     } else {
       this.logger.warn('[top-gainers] EODHD_API_KEY missing — skip equity scan');
@@ -374,9 +475,20 @@ export class TopGainersScannerService implements OnModuleInit {
     tasks.push(this.fetchBinanceGainers().catch(() => []));
 
     const results = await Promise.allSettled(tasks);
-    return results
+    const merged = results
       .filter((r): r is PromiseFulfilledResult<TopGainerCandidate[]> => r.status === 'fulfilled')
       .flatMap((r) => r.value);
+
+    // P18d — Dédup par (symbol, exchange) au cas où EODHD répondrait avec le
+    // même ticker sur 2 codes d'exchange (AS/AMS, MC/BME) ou si plusieurs
+    // sources retourneraient le même symbole.
+    const seen = new Set<string>();
+    return merged.filter((c) => {
+      const key = `${c.symbol}@${c.exchange ?? 'unknown'}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }
 
   /**
