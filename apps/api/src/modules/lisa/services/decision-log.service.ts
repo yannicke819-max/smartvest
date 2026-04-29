@@ -60,6 +60,22 @@ export class DecisionLogService {
   /**
    * Append une entrée au decision log avec hash chaîné.
    * Sérialisé par portfolioId via mutex applicatif.
+   *
+   * P18g — 3 champs facultatifs structurés ajoutés au payload jsonb (pas de
+   * migration DB, le payload est libre). Permettent un audit SQL ciblé :
+   *   SELECT payload->>'regime', payload->>'watchlist_source', payload->>'market'
+   *   FROM lisa_decision_log WHERE timestamp > now() - interval '1d'
+   *
+   * - `regime`           : régime tactique au moment de la décision
+   *                        (BULL / BEAR / RANGE / VOL_SPIKE / NEWS_SHOCK)
+   * - `watchlistSource`  : provenance du candidat
+   *                        (top_gainers / rebound_tp_scanner / lisa_llm / mechanical / autopilot)
+   * - `market`           : asset class / scope marché
+   *                        (us_equity / eu_equity / asia_equity / crypto / fx / commodity / multi)
+   *
+   * Tous optionnels — si présents, mergés dans `payload` avant le hash. Pas
+   * de breakage du hash chain : les anciens entries restent valides, les
+   * nouveaux ont juste plus de données structurées dans le jsonb.
    */
   async append(entry: {
     portfolioId: string;
@@ -68,6 +84,12 @@ export class DecisionLogService {
     rationale: string;
     payload: Record<string, unknown>;
     triggeredBy: 'user_manual' | 'autopilot_cron' | 'risk_monitor' | 'corpus_trigger' | 'market_event' | 'mechanical_cron';
+    /** P18g — Régime tactique au moment de la décision. */
+    regime?: 'BULL' | 'BEAR' | 'RANGE' | 'VOL_SPIKE' | 'NEWS_SHOCK';
+    /** P18g — Source qui a produit le candidat / la décision. */
+    watchlistSource?: 'top_gainers' | 'rebound_tp_scanner' | 'lisa_llm' | 'mechanical' | 'autopilot' | 'manual';
+    /** P18g — Asset class ou scope marché concerné. */
+    market?: 'us_equity' | 'eu_equity' | 'asia_equity' | 'crypto' | 'fx' | 'commodity' | 'multi';
   }): Promise<{ id: string; hashChainCurrent: string; hashChainPrev: string | null }> {
     // Enchaîne sur la queue du portfolio (initialisée à Promise.resolve si vide)
     const queueHead = this.portfolioQueues.get(entry.portfolioId) ?? Promise.resolve();
@@ -93,7 +115,19 @@ export class DecisionLogService {
     rationale: string;
     payload: Record<string, unknown>;
     triggeredBy: 'user_manual' | 'autopilot_cron' | 'risk_monitor' | 'corpus_trigger' | 'market_event' | 'mechanical_cron';
+    regime?: 'BULL' | 'BEAR' | 'RANGE' | 'VOL_SPIKE' | 'NEWS_SHOCK';
+    watchlistSource?: 'top_gainers' | 'rebound_tp_scanner' | 'lisa_llm' | 'mechanical' | 'autopilot' | 'manual';
+    market?: 'us_equity' | 'eu_equity' | 'asia_equity' | 'crypto' | 'fx' | 'commodity' | 'multi';
   }): Promise<{ id: string; hashChainCurrent: string; hashChainPrev: string | null }> {
+    // P18g — Merge structured fields into payload (only if defined). Le hash
+    // chain n'est pas cassé : le payload jsonb canonical-sorted reste stable
+    // entre append et verify. Les anciens entries (sans ces fields) restent
+    // valides — append-only pas de re-hash rétroactif.
+    const enrichedPayload: Record<string, unknown> = { ...entry.payload };
+    if (entry.regime !== undefined) enrichedPayload.regime = entry.regime;
+    if (entry.watchlistSource !== undefined) enrichedPayload.watchlist_source = entry.watchlistSource;
+    if (entry.market !== undefined) enrichedPayload.market = entry.market;
+
     // 1. Fetch previous hash for this portfolio
     const { data: prev } = await this.supabase.getClient()
       .from('lisa_decision_log')
@@ -107,13 +141,14 @@ export class DecisionLogService {
     const timestamp = new Date().toISOString();
 
     // 2. Compute current hash — canonical stringification pour stabilité
-    //    (jsonb reordering + timestamptz formatting)
+    //    (jsonb reordering + timestamptz formatting). P18g — utilise le
+    //    payload enrichi (avec regime/watchlist_source/market merged).
     const input = [
       prevHash ?? 'GENESIS',
       entry.kind,
       entry.summary,
       entry.rationale,
-      canonicalJson(entry.payload),
+      canonicalJson(enrichedPayload),
       canonicalTimestamp(timestamp),
     ].join('|');
     const hashChainCurrent = createHash('sha256').update(input).digest('hex');
@@ -126,7 +161,7 @@ export class DecisionLogService {
         kind: entry.kind,
         summary: entry.summary,
         rationale: entry.rationale,
-        payload: entry.payload,
+        payload: enrichedPayload,
         hash_chain_prev: prevHash,
         hash_chain_current: hashChainCurrent,
         triggered_by: entry.triggeredBy,
