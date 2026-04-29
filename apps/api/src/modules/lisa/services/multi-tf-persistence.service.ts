@@ -32,6 +32,23 @@ interface Candidate {
 }
 
 /**
+ * P18e — Marchés EODHD couverts par le plan All-In-One pour intraday 5m.
+ * Tout ticker dont l'exchange n'est pas dans cette liste sera skip
+ * silencieusement (avec compteur dédié) avant l'appel EODHD — économise
+ * les calls et les 422 sur tickers Toronto/India/etc. non supportés en intraday.
+ *
+ * Source : `EU_EXCHANGES` + `NON_EU_EXCHANGES` de `top-gainers-scanner.service.ts`
+ * (P18d), filtré aux exchanges où EODHD fournit des candles 5m.
+ */
+const SUPPORTED_EQUITY_EXCHANGES = new Set([
+  'US',
+  'LSE', 'XETRA', 'PA', 'SW', 'MI', 'MC', 'BME', 'AS', 'AMS',
+  'TSE', 'HK', 'AU', 'KO',
+]);
+// TO (Toronto) / NSE / BSE intraday souvent indisponible sur le plan EODHD courant
+// → pas dans la whitelist, skip pré-filtré.
+
+/**
  * P9-UX ADDENDUM — Path quality par TF (5/10/15/30/60m), dérivé des candles
  * 1m ou 5m natifs déjà fetchés pour persistence.
  */
@@ -64,10 +81,28 @@ export class MultiTimeframePersistenceService {
   private readonly logger = new Logger(MultiTimeframePersistenceService.name);
   private cache = new Map<string, CacheEntry>();
 
+  /** P18e — Compteur cumulatif des tickers sans intraday EODHD (visibilité). */
+  private noIntradayCounter = 0;
+  /** P18e — Compteur cumulatif des tickers skip pour exchange non supporté. */
+  private skippedUnsupportedMarketCounter = 0;
+
   constructor(
     private readonly binance: BinanceMarketService,
     private readonly eodhd: EodhdIntradayService,
   ) {}
+
+  /** P18e — Métriques cumulatives pour observability. */
+  getNoIntradayCounter(): number {
+    return this.noIntradayCounter;
+  }
+  getSkippedUnsupportedMarketCounter(): number {
+    return this.skippedUnsupportedMarketCounter;
+  }
+  /** Reset utilitaire pour tests. */
+  resetCounters(): void {
+    this.noIntradayCounter = 0;
+    this.skippedUnsupportedMarketCounter = 0;
+  }
 
   /**
    * Analyse un seul candidat. Retourne null si les données ne permettent
@@ -92,31 +127,108 @@ export class MultiTimeframePersistenceService {
    * les rate-limits (Binance 1200 weight/min, EODHD plan-dependent).
    *
    * Retourne un Map symbol→result. Les symboles sans donnée sont absents.
+   *
+   * P18e — Pré-filtre les equities dont l'exchange n'est pas dans la
+   * whitelist EODHD (compteur `skippedUnsupportedMarketCounter`). Les
+   * `null` retournés par `analyze` (no intraday) sont accumulés dans une
+   * Set locale puis loggés EN UNE LIGNE en fin de batch — élimine le
+   * spam debug par-symbole observé dans les logs Fly 09:14:46–09:15:03 UTC.
    */
   async analyzeBatch(candidates: Candidate[]): Promise<Map<string, PersistenceWithPath>> {
     const out = new Map<string, PersistenceWithPath>();
     if (candidates.length === 0) return out;
 
-    // Split crypto vs equity pour respecter les caps par source
+    // Split crypto vs equity + pré-filtre exchanges non supportés (P18e)
     const crypto: Candidate[] = [];
     const equity: Candidate[] = [];
+    const skippedUnsupported: string[] = [];
     for (const c of candidates) {
-      if (this.isCrypto(c)) crypto.push(c);
-      else equity.push(c);
+      if (this.isCrypto(c)) {
+        crypto.push(c);
+        continue;
+      }
+      const ex = String(c.exchange ?? 'US').toUpperCase();
+      if (!SUPPORTED_EQUITY_EXCHANGES.has(ex)) {
+        this.skippedUnsupportedMarketCounter++;
+        skippedUnsupported.push(`${c.symbol}@${ex}`);
+        continue;
+      }
+      equity.push(c);
     }
+    if (skippedUnsupported.length > 0) {
+      this.logger.debug(
+        `[mtf-persist] skipped_unsupported_market: ${skippedUnsupported.length} (sample: ${skippedUnsupported.slice(0, 3).join(', ')})`,
+      );
+    }
+
+    // Accumule les "no data" symbols pour log agrégé en fin de batch
+    const noIntradaySymbols: string[] = [];
+    const trackNoData = (c: Candidate) => {
+      this.noIntradayCounter++;
+      noIntradaySymbols.push(c.symbol);
+    };
 
     await Promise.all([
       this.runWithCap(crypto, MAX_PARALLEL_PER_SOURCE, async (c) => {
-        const r = await this.analyze(c).catch(() => null);
+        const r = await this.analyzeQuiet(c).catch(() => null);
         if (r) out.set(c.symbol.toUpperCase(), r);
+        else trackNoData(c);
       }),
       this.runWithCap(equity, MAX_PARALLEL_PER_SOURCE, async (c) => {
-        const r = await this.analyze(c).catch(() => null);
+        const r = await this.analyzeQuiet(c).catch(() => null);
         if (r) out.set(c.symbol.toUpperCase(), r);
+        else trackNoData(c);
       }),
     ]);
 
+    if (noIntradaySymbols.length > 0) {
+      const sample = noIntradaySymbols.slice(0, 5).join(', ');
+      this.logger.log(
+        `[mtf-persist] no intraday for ${noIntradaySymbols.length} tickers (sample: ${sample})`,
+      );
+    }
+
     return out;
+  }
+
+  /**
+   * P18e — Variante "quiet" de `analyze` sans logs debug par-symbole.
+   * Utilisée par `analyzeBatch` qui aggrège les misses en une seule ligne.
+   * `analyze()` (single-symbol) reste verbose pour le path UI.
+   */
+  private async analyzeQuiet(c: Candidate): Promise<PersistenceWithPath | null> {
+    const key = c.symbol.toUpperCase();
+    const cached = this.cache.get(key);
+    if (cached && Date.now() - cached.asOf < CACHE_TTL_MS) {
+      return cached.result;
+    }
+    const result = this.isCrypto(c)
+      ? await this.fetchCryptoPersistenceQuiet(c)
+      : await this.fetchEquityPersistenceQuiet(c);
+    if (result) {
+      this.cache.set(key, { result, asOf: Date.now() });
+    }
+    return result;
+  }
+
+  private async fetchCryptoPersistenceQuiet(c: Candidate): Promise<PersistenceWithPath | null> {
+    const binSym = this.binance.toBinanceSymbol(c.symbol) ?? c.symbol.toUpperCase();
+    const candles = await this.binance.getKlines(binSym, '1m', 61);
+    if (!candles || candles.length === 0) return null;
+    const prices = extractPricesFromOneMinSeries(candles);
+    const persistence = evaluatePersistence(c.currentPrice, prices);
+    const pathQuality = computePathQualityForTfsFromOneMin(candles);
+    return { ...persistence, pathQuality };
+  }
+
+  private async fetchEquityPersistenceQuiet(c: Candidate): Promise<PersistenceWithPath | null> {
+    const eodhdTicker = this.toEodhdTicker(c);
+    const series = await this.eodhd.getCandles(eodhdTicker, '5m', 13);
+    if (!series || series.candles.length === 0) return null;
+    const prices = extractPricesFromFiveMinSeries(series.candles);
+    const persistence = evaluatePersistence(c.currentPrice, prices);
+    const pathQuality = computePathQualityForTfsFromFiveMin(series.candles);
+    return { ...persistence, pathQuality };
   }
 
   // ───────────────────────────────────────────────────────────────────
