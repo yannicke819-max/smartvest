@@ -75,7 +75,7 @@ export interface PathQualityByTf {
  * ticker mais qu'on a une série fraîche (<15 min) en cache Supabase.
  * UI badge orange "stale-cache" (vs `none` rouge si vraiment rien).
  */
-export type CoverageSource = 'eodhd' | 'yahoo' | 'binance' | 'cache_stale' | 'none';
+export type CoverageSource = 'eodhd' | 'eodhd_ticks' | 'yahoo' | 'binance' | 'cache_stale' | 'none';
 
 export interface PersistenceWithPath extends PersistenceResult {
   pathQuality?: PathQualityByTf;
@@ -317,7 +317,34 @@ export class MultiTimeframePersistenceService {
       return { ...persistence, pathQuality, coverage: 'eodhd' };
     }
 
-    this.logger.log(`[provider-router] eodhd null for ${eodhdTicker}, falling back to IntradayCache`);
+    this.logger.log(`[provider-router] eodhd intraday null for ${eodhdTicker}, trying tick-data fallback`);
+
+    // P19o.3 (29/04/2026) — 2bis. EODHD tick-data fallback (US-only mostly).
+    // Quand l'intraday OHLCV pré-aggregé est vide pour un ticker à trades
+    // sparses, on tente l'endpoint `/api/ticks/{SYMBOL}` puis on aggrège en
+    // OHLCV bars côté client. Ref :
+    //   `vendor/eodhd-claude-skills/.../endpoints/us-tick-data.md`
+    const tickSeries = await this.eodhd.getCandlesViaTicks(eodhdTicker, '5m', 13).catch(() => null);
+    if (tickSeries && tickSeries.candles.length > 0) {
+      const tickFiveMin = tickSeries.candles.map((c) => ({
+        datetime: new Date(c.timestamp * 1000).toISOString(),
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+      }));
+      const prices = extractPricesFromFiveMinSeries(tickFiveMin);
+      const persistence = evaluatePersistence(c.currentPrice, prices);
+      const pathQuality = computePathQualityForTfsFromFiveMin(tickFiveMin);
+      void this.intradayCache.write(cacheKey, 'eodhd_ticks', eodhdCandlesToCached(tickSeries.candles));
+      this.logger.log(
+        `[provider-router] eodhd ticks OK for ${eodhdTicker} (${tickSeries.candles.length} bars), coverage=eodhd_ticks`,
+      );
+      return { ...persistence, pathQuality, coverage: 'eodhd_ticks' };
+    }
+
+    this.logger.log(`[provider-router] eodhd ticks null for ${eodhdTicker}, falling back to IntradayCache`);
 
     // 3. Cache Supabase (last_known < 15 min)
     const cached = await this.intradayCache.read(cacheKey).catch(() => null);

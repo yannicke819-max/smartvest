@@ -15,13 +15,17 @@ jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
 jest.spyOn(Logger.prototype, 'debug').mockImplementation(() => undefined);
 
 const mockBinance = { getKlines: jest.fn(), toBinanceSymbol: jest.fn().mockImplementation((s: string) => s) } as any;
-const mockEodhd = { getCandles: jest.fn() } as any;
+const mockEodhd = { getCandles: jest.fn(), getCandlesViaTicks: jest.fn() } as any;
 const mockYahoo = { getCandles: jest.fn() } as any;
 const mockCache = { read: jest.fn(), write: jest.fn().mockResolvedValue(true) } as any;
 
 beforeEach(() => {
   mockBinance.getKlines.mockReset();
   mockEodhd.getCandles.mockReset();
+  // P19o.3 — getCandlesViaTicks default null so tests covering only intraday→cache
+  // path don't need to mock it explicitly. Tests covering the tick-data fallback
+  // override per-test.
+  mockEodhd.getCandlesViaTicks.mockReset().mockResolvedValue(null);
   mockYahoo.getCandles.mockReset();
   mockCache.read.mockReset();
   mockCache.write.mockReset().mockResolvedValue(true);
@@ -154,5 +158,57 @@ describe('MTF P19i — fallback chain Yahoo → EODHD → cache → null', () =>
     const svc = makeService();
     const result = await svc.analyzeBatch([{ symbol: 'AAPL', exchange: 'US', currentPrice: 100 }]);
     expect(result.get('AAPL')!.coverage).toBe('yahoo'); // service stays usable
+  });
+
+  // ── P19o.3 — Tick-data fallback (entre EODHD intraday et cache) ────────────
+
+  it('P19o.3 — Yahoo null + EODHD intraday null → tick-data OK → coverage="eodhd_ticks"', async () => {
+    mockYahoo.getCandles.mockResolvedValue(null);
+    mockEodhd.getCandles.mockResolvedValue(null);
+    mockEodhd.getCandlesViaTicks.mockResolvedValue(fakeEodhdSeries());
+    const svc = makeService();
+    const result = await svc.analyzeBatch([{ symbol: 'AAPL', exchange: 'US', currentPrice: 100 }]);
+    const persist = result.get('AAPL');
+    expect(persist).toBeDefined();
+    expect(persist!.coverage).toBe('eodhd_ticks');
+    expect(mockEodhd.getCandles).toHaveBeenCalledTimes(1);
+    expect(mockEodhd.getCandlesViaTicks).toHaveBeenCalledTimes(1);
+    // Cache NOT consulted since ticks succeeded
+    expect(mockCache.read).not.toHaveBeenCalled();
+    // Write-on-success cache as eodhd_ticks
+    expect(mockCache.write).toHaveBeenCalledTimes(1);
+    expect(mockCache.write.mock.calls[0][1]).toBe('eodhd_ticks');
+  });
+
+  it('P19o.3 — Yahoo null + EODHD intraday null + ticks null → falls through to cache', async () => {
+    mockYahoo.getCandles.mockResolvedValue(null);
+    mockEodhd.getCandles.mockResolvedValue(null);
+    mockEodhd.getCandlesViaTicks.mockResolvedValue(null);
+    mockCache.read.mockResolvedValue(fakeCachedSeries(7 * 60 * 1000));
+    const svc = makeService();
+    const result = await svc.analyzeBatch([{ symbol: 'AAPL', exchange: 'US', currentPrice: 100 }]);
+    const persist = result.get('AAPL');
+    expect(persist!.coverage).toBe('cache_stale');
+    expect(mockEodhd.getCandlesViaTicks).toHaveBeenCalledTimes(1);
+    expect(mockCache.read).toHaveBeenCalledTimes(1);
+  });
+
+  it('P19o.3 — EODHD intraday OK skips tick-data (intraday wins, no extra API call)', async () => {
+    mockYahoo.getCandles.mockResolvedValue(null);
+    mockEodhd.getCandles.mockResolvedValue(fakeEodhdSeries());
+    const svc = makeService();
+    const result = await svc.analyzeBatch([{ symbol: 'AAPL', exchange: 'US', currentPrice: 100 }]);
+    expect(result.get('AAPL')!.coverage).toBe('eodhd');
+    expect(mockEodhd.getCandlesViaTicks).not.toHaveBeenCalled();
+  });
+
+  it('P19o.3 — getCandlesViaTicks throw → caught, falls through to cache', async () => {
+    mockYahoo.getCandles.mockResolvedValue(null);
+    mockEodhd.getCandles.mockResolvedValue(null);
+    mockEodhd.getCandlesViaTicks.mockRejectedValue(new Error('ticks API timeout'));
+    mockCache.read.mockResolvedValue(fakeCachedSeries(3 * 60 * 1000));
+    const svc = makeService();
+    const result = await svc.analyzeBatch([{ symbol: 'AAPL', exchange: 'US', currentPrice: 100 }]);
+    expect(result.get('AAPL')!.coverage).toBe('cache_stale');
   });
 });
