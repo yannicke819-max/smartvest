@@ -109,6 +109,26 @@ const EU_WATCHLIST_NAMES = ['cac40', 'dax40', 'ftse100'];
 const CRYPTO_PAIRS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT', 'DOTUSDT', 'LINKUSDT', 'MATICUSDT'];
 
 /**
+ * P18f (29/04/2026, autonomous) — `crypto_tradable` concept : whitelist
+ * opt-in via env var `CRYPTO_TRADABLE_WHITELIST=BTCUSDT,ETHUSDT,...` qui
+ * RESTREINT les ouvertures de positions crypto à ces symboles.
+ *
+ * Comportement strict mode `option (b)` retenu par l'utilisateur :
+ *   - whitelist VIDE  → behavior unchanged, tous les CRYPTO_PAIRS sont
+ *                       éligibles à l'open (back-compat)
+ *   - whitelist SET   → SEULS les symboles présents sont opens. Les autres
+ *                       sont SKIPPED + LOGGED en INFO (visible mais pas
+ *                       d'effet de trade)
+ *
+ * Permet à l'utilisateur de :
+ *   - Restreindre BTC/ETH uniquement en prod (le plus safe)
+ *   - Élargir progressivement après backtest par ticker
+ *   - Garder le scan complet (UI affiche tous les CRYPTO_PAIRS dans le
+ *     Top 20) tout en ne tradant que les whitelistés
+ */
+const CRYPTO_TRADABLE_ENV_VAR = 'CRYPTO_TRADABLE_WHITELIST';
+
+/**
  * P18d — Fallback hardcodé si la query `watchlist_universe` échoue : enveloppe
  * conservatrice [07:00, 17:00] UTC qui couvre CAC40 / DAX40 (07:00-15:30) +
  * FTSE100 (08:00-16:30). Préférable au "always-on" qui re-causerait les 422.
@@ -233,6 +253,34 @@ export class TopGainersScannerService implements OnModuleInit {
   /** P18e — Métrique cumulative observability. */
   getSkippedNoPersistenceCounter(): number {
     return this.skippedNoPersistenceCounter;
+  }
+
+  /** P18f — Compteur cumulatif des crypto skip pour absence whitelist. */
+  private skippedNotCryptoTradableCounter = 0;
+  getSkippedNotCryptoTradableCounter(): number {
+    return this.skippedNotCryptoTradableCounter;
+  }
+
+  /**
+   * P18f — Vérifie si le symbole crypto est dans la whitelist opt-in
+   * définie par env `CRYPTO_TRADABLE_WHITELIST` (CSV, case-insensitive).
+   *
+   * Retourne `true` si :
+   *   - la whitelist est VIDE / non-définie (back-compat — pas de restriction)
+   *   - le symbole est présent dans la whitelist
+   *
+   * Retourne `false` SEULEMENT si la whitelist est définie ET le symbole
+   * absent. Le caller skip + log dans ce cas.
+   */
+  isCryptoTradable(symbol: string): boolean {
+    const raw = this.config.get<string>(CRYPTO_TRADABLE_ENV_VAR);
+    if (!raw || raw.trim().length === 0) return true;
+    const whitelist = raw
+      .split(',')
+      .map((s) => s.trim().toUpperCase())
+      .filter((s) => s.length > 0);
+    if (whitelist.length === 0) return true;
+    return whitelist.includes(symbol.toUpperCase());
   }
 
   /**
@@ -708,6 +756,17 @@ export class TopGainersScannerService implements OnModuleInit {
       if (!signal.pass) {
         this.logger.log(
           `[top-gainers:signal] ${cand.symbol} rejected (quality=${signal.signal_quality.toFixed(2)}): ${signal.reason}`,
+        );
+        continue;
+      }
+
+      // P18f — Crypto whitelist gate (option b "skip + log"). N'affecte que
+      // si CRYPTO_TRADABLE_WHITELIST env est définie. Sinon back-compat.
+      const isCryptoCand = cand.assetClass === 'crypto_major' || cand.assetClass === 'crypto_alt';
+      if (isCryptoCand && !this.isCryptoTradable(cand.symbol)) {
+        this.skippedNotCryptoTradableCounter++;
+        this.logger.log(
+          `[top-gainers:crypto_tradable] ${cand.symbol} not in CRYPTO_TRADABLE_WHITELIST → skip open (visible in scan, not traded)`,
         );
         continue;
       }
