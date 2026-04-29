@@ -98,7 +98,12 @@ interface EodhdScreenerRow {
  * pour la Bolsa de Madrid ; `AS` et `AMS` idem pour Euronext Amsterdam.
  */
 const EU_EXCHANGES = ['LSE', 'XETRA', 'PA', 'SW', 'MI', 'MC', 'BME', 'AS', 'AMS'];
-const NON_EU_EXCHANGES = ['US', 'TSE', 'HK', 'AU', 'KO', 'TO', 'NSE', 'BSE'];
+// P19d (29/04/2026 14:30 CEST) — Ajout SSE (Shanghai) + SZSE (Shenzhen) pour
+// couverture mondiale complète. China A-shares supportées par EODHD plan
+// "All World" (à valider au runtime — 422 silencieusement skip si pas dans
+// le plan, P18c warning log). Yahoo fallback (.SS / .SZ) couvre quoi qu'il
+// arrive (P19a Yahoo intraday router).
+const NON_EU_EXCHANGES = ['US', 'TSE', 'HK', 'AU', 'KO', 'TO', 'NSE', 'BSE', 'SS', 'SZ'];
 /** Watchlists EU dont la session_open_utc / session_close_utc gate l'EODHD scan. */
 const EU_WATCHLIST_NAMES = ['cac40', 'dax40', 'ftse100'];
 const CRYPTO_PAIRS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT', 'DOTUSDT', 'LINKUSDT', 'MATICUSDT'];

@@ -133,6 +133,8 @@ export class YahooIntradayService {
       case 'TO':    return `${base}.TO`;
       case 'NSE':   return `${base}.NS`;
       case 'BSE':   return `${base}.BO`;
+      case 'SS':    return `${base}.SS`;  // P19d : Shanghai Stock Exchange (China A-shares)
+      case 'SZ':    return `${base}.SZ`;  // P19d : Shenzhen Stock Exchange
       case 'CC':    return null;          // Crypto — handled by Binance
       case 'FOREX': return null;          // FX — not in scope
       case 'INDX':  return null;          // Indices — not in scope
