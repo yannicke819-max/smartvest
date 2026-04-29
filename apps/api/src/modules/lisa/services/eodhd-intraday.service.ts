@@ -38,7 +38,20 @@ export class EodhdIntradayService {
   constructor(
     private readonly config: ConfigService,
     private readonly supabase: SupabaseService,
-  ) {}
+  ) {
+    // P19j — Boot log to confirm key configuration in prod (essential debug
+    // signal when fallback chain doesn't seem to fire). Mask all but last 4
+    // chars to avoid leaking secrets in logs.
+    const k = this.config.get<string>('EODHD_API_KEY');
+    if (!k) {
+      this.logger.warn('[eodhd] EODHD_API_KEY env var NOT SET — intraday fetches will silently return null');
+    } else if (k === 'demo') {
+      this.logger.warn('[eodhd] EODHD_API_KEY="demo" detected — intraday fetches treated as no-op (cf. apiKey() guard)');
+    } else {
+      const tail = k.length >= 4 ? k.slice(-4) : '****';
+      this.logger.log(`[eodhd] provider initialized, key=***${tail} (length=${k.length})`);
+    }
+  }
 
   private apiKey(): string | null {
     const k = this.config.get<string>('EODHD_API_KEY');
@@ -87,7 +100,13 @@ export class EodhdIntradayService {
     }
 
     const key = this.apiKey();
-    if (!key) return null;
+    if (!key) {
+      // P19j — Promote silent skip to warn (rate-limited 1×/cycle would be
+      // ideal but ce service est appelé per-ticker, on accepte le verbatim
+      // pour le debug — peut être promu cycle-aggregated dans une PR follow-up).
+      this.logger.debug(`[eodhd] skipping fetch for ${eodhdTicker} — no API key (EODHD_API_KEY missing or 'demo')`);
+      return null;
+    }
 
     const intervalSeconds = interval === '1m' ? 60 : interval === '5m' ? 300 : 3600;
     const toUnix = Math.floor(Date.now() / 1000);
@@ -107,6 +126,10 @@ export class EodhdIntradayService {
       const latencyMs = Date.now() - tStart;
 
       if (!res.ok) {
+        // P19j — Promote silent failure to warn for visibility in Fly logs.
+        // 401 = bad key, 402 = quota, 404 = ticker not found, 429 = rate-limit
+        const body = await res.text().catch(() => '');
+        this.logger.warn(`[eodhd] ${eodhdTicker} HTTP ${res.status} (${latencyMs}ms) body=${body.slice(0, 100)}`);
         this.logCall({ ticker: eodhdTicker, success: false, statusCode: res.status, latencyMs, errorMessage: `HTTP_${res.status}` });
         return null;
       }
@@ -114,7 +137,10 @@ export class EodhdIntradayService {
       const data = await res.json() as Array<Record<string, unknown>>;
       this.logCall({ ticker: eodhdTicker, success: true, statusCode: res.status, latencyMs });
 
-      if (!Array.isArray(data)) return null;
+      if (!Array.isArray(data) || data.length === 0) {
+        this.logger.debug(`[eodhd] ${eodhdTicker} empty response (${latencyMs}ms)`);
+        return null;
+      }
 
       const candles: Candle[] = data
         .map((d) => ({

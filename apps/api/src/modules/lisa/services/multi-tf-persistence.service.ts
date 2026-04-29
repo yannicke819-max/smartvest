@@ -300,6 +300,12 @@ export class MultiTimeframePersistenceService {
       return { ...persistence, pathQuality, coverage: 'yahoo' };
     }
 
+    // P19j — Log explicit bascule yahoo→eodhd pour visibilité prod.
+    // Le logger debug n'apparaît pas par défaut côté Fly (level INFO+).
+    // On utilise log() qui est INFO. Aggrégation du spam = follow-up si nécessaire,
+    // pour l'instant on veut voir TOUS les bascules.
+    this.logger.log(`[provider-router] yahoo null for ${eodhdTicker}, falling back to EODHD`);
+
     // 2. EODHD intraday (fallback payant, plus stable IP-side)
     const series = await this.eodhd.getCandles(eodhdTicker, '5m', 13).catch(() => null);
     if (series && series.candles.length > 0) {
@@ -307,8 +313,11 @@ export class MultiTimeframePersistenceService {
       const persistence = evaluatePersistence(c.currentPrice, prices);
       const pathQuality = computePathQualityForTfsFromFiveMin(series.candles);
       void this.intradayCache.write(cacheKey, 'eodhd', eodhdCandlesToCached(series.candles));
+      this.logger.log(`[provider-router] eodhd OK for ${eodhdTicker} (${series.candles.length} candles), coverage=eodhd`);
       return { ...persistence, pathQuality, coverage: 'eodhd' };
     }
+
+    this.logger.log(`[provider-router] eodhd null for ${eodhdTicker}, falling back to IntradayCache`);
 
     // 3. Cache Supabase (last_known < 15 min)
     const cached = await this.intradayCache.read(cacheKey).catch(() => null);
@@ -325,6 +334,7 @@ export class MultiTimeframePersistenceService {
       const prices = extractPricesFromFiveMinSeries(cachedAsFiveMin);
       const persistence = evaluatePersistence(c.currentPrice, prices);
       const pathQuality = computePathQualityForTfsFromFiveMin(cachedAsFiveMin);
+      this.logger.log(`[provider-router] cache hit for ${eodhdTicker} age=${Math.round(cached.ageMs / 1000)}s, coverage=cache_stale`);
       return {
         ...persistence,
         pathQuality,
@@ -334,6 +344,7 @@ export class MultiTimeframePersistenceService {
     }
 
     // 4. Aucun vendor + aucun cache → null
+    this.logger.log(`[provider-router] all paths exhausted for ${eodhdTicker}, coverage=none`);
     return null;
   }
 
