@@ -335,6 +335,19 @@ P3-C — Le scanner rebound-tp scanne par défaut **`sp500`** (~200 mega-caps US
 
 ---
 
+## RÈGLE OPÉRATIONNELLE PERMANENTE — DEPLOY FLY (P18h.2)
+
+**Ne jamais utiliser `flyctl deploy` directement** — toujours :
+
+1. **Préféré** : push to `main` → workflow `.github/workflows/fly.yml` se déclenche et passe `--build-arg GIT_SHA=${{ github.sha }}` + `--build-arg BUILD_TIME=$(date -u +...)` automatiquement.
+2. **Manuel uniquement si CI cassée ou redeploy urgent** : `./scripts/deploy.sh` qui auto-extrait `git rev-parse HEAD` + `date -u +...` et appelle `flyctl deploy --build-arg ...`.
+
+`flyctl deploy` direct sans build args casse `/version` (P18h endpoint) → `git_sha:null` + `build_time:null` en prod → on perd la traçabilité du commit déployé. Cas vérifié 29/04/2026 11:04 UTC + 13:38 CEST. Ne pas répéter l'erreur.
+
+Re-trigger d'un workflow Actions Fly Deploy (workflow_dispatch sur `fly.yml`) est aussi acceptable et préserve les build args.
+
+---
+
 ## RÈGLE OPÉRATIONNELLE PERMANENTE — AUTO-MERGE SUR MAIN
 
 Pour TOUTE PR que tu ouvres sur ce repo :
