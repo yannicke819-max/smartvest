@@ -25,6 +25,7 @@ import {
 import { BinanceMarketService } from './binance-market.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
 import { YahooIntradayService } from './yahoo-intraday.service';
+import { IntradayCacheService, CachedCandle } from './intraday-cache.service';
 
 interface Candidate {
   symbol: string;
@@ -69,11 +70,18 @@ export interface PathQualityByTf {
  *   - 'none'   → aucun vendor n'a retourné d'intraday (ticker visible mais
  *               availableCount=0, badge orange en UI)
  */
-export type CoverageSource = 'eodhd' | 'yahoo' | 'binance' | 'none';
+/**
+ * P19i — `cache_stale` ajouté pour les cas où Yahoo + EODHD sont KO sur un
+ * ticker mais qu'on a une série fraîche (<15 min) en cache Supabase.
+ * UI badge orange "stale-cache" (vs `none` rouge si vraiment rien).
+ */
+export type CoverageSource = 'eodhd' | 'yahoo' | 'binance' | 'cache_stale' | 'none';
 
 export interface PersistenceWithPath extends PersistenceResult {
   pathQuality?: PathQualityByTf;
   coverage?: CoverageSource;
+  /** P19i — Si coverage='cache_stale', âge en ms de la série cachée. */
+  cacheAgeMs?: number;
 }
 
 interface CacheEntry {
@@ -98,6 +106,7 @@ export class MultiTimeframePersistenceService {
     private readonly binance: BinanceMarketService,
     private readonly eodhd: EodhdIntradayService,
     private readonly yahoo: YahooIntradayService,
+    private readonly intradayCache: IntradayCacheService,
   ) {}
 
   /** P18e — Métriques cumulatives pour observability. */
@@ -222,43 +231,109 @@ export class MultiTimeframePersistenceService {
   private async fetchCryptoPersistenceQuiet(c: Candidate): Promise<PersistenceWithPath | null> {
     const binSym = this.binance.toBinanceSymbol(c.symbol) ?? c.symbol.toUpperCase();
     const candles = await this.binance.getKlines(binSym, '1m', 61);
-    if (!candles || candles.length === 0) return null;
+    if (!candles || candles.length === 0) {
+      // P19i — Try cache fallback (Binance WS could be down too)
+      const cached = await this.intradayCache.read(c.symbol.toUpperCase()).catch(() => null);
+      if (cached && cached.candles.length > 0) {
+        const oneMinShape = cached.candles.map((c) => ({
+          openTime: c.timestamp * 1000,
+          open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume,
+          closeTime: c.timestamp * 1000 + 60_000,
+        }));
+        const prices = extractPricesFromOneMinSeries(oneMinShape as any);
+        const persistence = evaluatePersistence(c.currentPrice, prices);
+        const pathQuality = computePathQualityForTfsFromOneMin(oneMinShape as any);
+        return { ...persistence, pathQuality, coverage: 'cache_stale', cacheAgeMs: cached.ageMs };
+      }
+      return null;
+    }
     const prices = extractPricesFromOneMinSeries(candles);
     const persistence = evaluatePersistence(c.currentPrice, prices);
     const pathQuality = computePathQualityForTfsFromOneMin(candles);
+    // P19i — Write-on-success
+    void this.intradayCache.write(
+      c.symbol.toUpperCase(),
+      'binance',
+      candles.map((k: any) => ({
+        timestamp: Math.floor((k.openTime ?? k.timestamp ?? 0) / 1000),
+        open: Number(k.open),
+        high: Number(k.high),
+        low: Number(k.low),
+        close: Number(k.close),
+        volume: Number(k.volume),
+      })),
+    );
     return { ...persistence, pathQuality, coverage: 'binance' };
   }
 
   /**
-   * P19a — Equity intraday avec fallback chain :
-   *   1. EODHD intraday (primaire — US/EU/major Asia)
-   *   2. Yahoo Finance (fallback — Korea KOSPI, small-caps obscures, etc.)
-   *   3. null (coverage='none' annoté par le caller pour UI badge dégradé)
+   * P19i — Equity intraday avec fallback chain réorganisé :
    *
-   * Annote la `coverage` source utilisée pour observability + UI.
+   *   1. Yahoo Finance (primaire — gratuit, large couverture, KOSPI/small-caps)
+   *      protégé par circuit breaker P19h — open silently si rate-limit Fly IP
+   *   2. EODHD intraday (fallback principal — US/EU large-caps, plan payant)
+   *   3. IntradayCache Supabase (last_known < 15 min, coverage='cache_stale')
+   *   4. null (coverage='none' badge dégradé)
+   *
+   * Le user (29/04 15:30 prod) a observé que Yahoo retournait 429 sur 100%
+   * des tickers depuis l'IP Fly CDG. La chain actuelle bascule rapidement
+   * sur EODHD (qui fonctionne avec EODHD_API_KEY déjà en Fly secrets).
+   *
+   * Write-on-success : à chaque fetch réussi (yahoo / eodhd), on upsert
+   * le résultat dans le cache pour le prochain fallback éventuel.
+   *
+   * Annote `coverage` (yahoo | eodhd | cache_stale | none) + `cacheAgeMs`
+   * (uniquement quand coverage='cache_stale') pour UI badge.
    */
   private async fetchEquityPersistenceQuiet(c: Candidate): Promise<PersistenceWithPath | null> {
     const eodhdTicker = this.toEodhdTicker(c);
+    const cacheKey = c.symbol.toUpperCase();
 
-    // 1. EODHD intraday (primaire)
-    const series = await this.eodhd.getCandles(eodhdTicker, '5m', 13).catch(() => null);
-    if (series && series.candles.length > 0) {
-      const prices = extractPricesFromFiveMinSeries(series.candles);
-      const persistence = evaluatePersistence(c.currentPrice, prices);
-      const pathQuality = computePathQualityForTfsFromFiveMin(series.candles);
-      return { ...persistence, pathQuality, coverage: 'eodhd' };
-    }
-
-    // 2. Yahoo Finance (fallback gratuit, no auth)
+    // 1. Yahoo Finance (primaire gratuit, P19h circuit breaker protège)
     const yahooCandles = await this.yahoo.getCandles(eodhdTicker, '5m').catch(() => null);
     if (yahooCandles && yahooCandles.length > 0) {
       const prices = extractPricesFromFiveMinSeries(yahooCandles);
       const persistence = evaluatePersistence(c.currentPrice, prices);
       const pathQuality = computePathQualityForTfsFromFiveMin(yahooCandles);
+      // Write-on-success : cache pour fallback futur
+      void this.intradayCache.write(cacheKey, 'yahoo', candlesToCached(yahooCandles, '5m'));
       return { ...persistence, pathQuality, coverage: 'yahoo' };
     }
 
-    // 3. Aucun vendor disponible
+    // 2. EODHD intraday (fallback payant, plus stable IP-side)
+    const series = await this.eodhd.getCandles(eodhdTicker, '5m', 13).catch(() => null);
+    if (series && series.candles.length > 0) {
+      const prices = extractPricesFromFiveMinSeries(series.candles);
+      const persistence = evaluatePersistence(c.currentPrice, prices);
+      const pathQuality = computePathQualityForTfsFromFiveMin(series.candles);
+      void this.intradayCache.write(cacheKey, 'eodhd', eodhdCandlesToCached(series.candles));
+      return { ...persistence, pathQuality, coverage: 'eodhd' };
+    }
+
+    // 3. Cache Supabase (last_known < 15 min)
+    const cached = await this.intradayCache.read(cacheKey).catch(() => null);
+    if (cached && cached.candles.length > 0) {
+      // Convert CachedCandle[] back to the shape expected by extractors
+      const cachedAsFiveMin = cached.candles.map((c) => ({
+        datetime: new Date(c.timestamp * 1000).toISOString(),
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+      }));
+      const prices = extractPricesFromFiveMinSeries(cachedAsFiveMin);
+      const persistence = evaluatePersistence(c.currentPrice, prices);
+      const pathQuality = computePathQualityForTfsFromFiveMin(cachedAsFiveMin);
+      return {
+        ...persistence,
+        pathQuality,
+        coverage: 'cache_stale',
+        cacheAgeMs: cached.ageMs,
+      };
+    }
+
+    // 4. Aucun vendor + aucun cache → null
     return null;
   }
 
@@ -393,4 +468,50 @@ function summarizePathQuality(byTf: {
     else overallSmoothness = 'mixed';
   }
   return { ...byTf, overallEfficiency, overallSmoothness };
+}
+
+/**
+ * P19i — Convert YahooCandle[] (datetime ISO) → CachedCandle[] (timestamp unix s).
+ * Filtre les candles invalides au passage.
+ */
+function candlesToCached(
+  candles: Array<{ datetime: string; open: number; high: number; low: number; close: number; volume: number }>,
+  _interval: '1m' | '5m',
+): CachedCandle[] {
+  const out: CachedCandle[] = [];
+  for (const c of candles) {
+    const ts = Math.floor(new Date(c.datetime).getTime() / 1000);
+    if (!Number.isFinite(ts) || !Number.isFinite(c.close)) continue;
+    out.push({
+      timestamp: ts,
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+      volume: c.volume ?? 0,
+    });
+  }
+  return out;
+}
+
+/**
+ * P19i — Convert EODHD intraday Candle[] (timestamp unix) → CachedCandle[].
+ * Shape déjà compatible mais on normalise pour défense.
+ */
+function eodhdCandlesToCached(
+  candles: Array<{ timestamp: number; open: number; high: number; low: number; close: number; volume: number }>,
+): CachedCandle[] {
+  const out: CachedCandle[] = [];
+  for (const c of candles) {
+    if (!Number.isFinite(c.timestamp) || !Number.isFinite(c.close)) continue;
+    out.push({
+      timestamp: c.timestamp,
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+      volume: c.volume ?? 0,
+    });
+  }
+  return out;
 }
