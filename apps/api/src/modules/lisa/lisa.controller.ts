@@ -873,6 +873,28 @@ export class LisaController {
     const userId = extractUserId(headers);
     return this.lisa.getDailyPnl(userId, portfolioId);
   }
+
+  /**
+   * P19w (29/04/2026) — Alias `/lisa/portfolio-status/:portfolioId` →
+   * comportement identique à `/lisa/daily-pnl/:portfolioId`.
+   *
+   * Pourquoi : Fly logs prod (19:29:26 UTC) montraient des 404 récurrents :
+   *   ERROR [HTTP] GET /lisa/portfolio-status/ → 404
+   * Le route name `portfolio-status` n'existait dans aucun fichier — il a été
+   * référencé dans des scripts de validation externes (incl. mes propres
+   * exemples curl écrits comme template). Ajouter l'alias supprime le bruit
+   * 404 dans les logs sans casser quoi que ce soit. La méthode `daily-pnl`
+   * retourne déjà : netReturn7dPct, winRatePct, tpHitRatePct (P19u),
+   * recentStreak, costBreakdown, lastMechanicalCycle.
+   */
+  @Get('portfolio-status/:portfolioId')
+  async getPortfolioStatus(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    const userId = extractUserId(headers);
+    return this.lisa.getDailyPnl(userId, portfolioId);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────

@@ -10,10 +10,28 @@ RUN echo "cachebust=$CACHEBUST"
 
 # P18h — Build metadata exposée via GET /version. Passées par fly.yml :
 #   --build-arg GIT_SHA=${{ github.sha }} --build-arg BUILD_TIME=$(date -u +%FT%TZ)
+#
+# P19w (29/04/2026) — git_sha + build_time retournaient `null` en prod malgré
+# workflow run #204 SUCCESS pour ce62853. Cause probable : Docker layer cache
+# avec `--remote-only` builder ne respecte pas toujours --build-arg invalidation
+# → ENV layer reste cached avec valeur vide. Fix structurel défensif :
+#
+#   1. ARG CACHEBUST_GIT_SHA juste avant les ARG/ENV pour invalider la chaîne
+#      de layers à partir de ce point (workflow passe ce GIT_SHA, donc la
+#      valeur varie à chaque commit → cache miss garanti).
+#   2. RUN echo écrit GIT_SHA/BUILD_TIME dans /build_meta/*.txt — bake les
+#      valeurs dans le filesystem de l'image. Le /version controller lit ces
+#      fichiers en fallback si process.env est vide. Immune au layer caching.
+#   3. RUN echo au stdout → traçable dans Fly build logs.
+ARG CACHEBUST_GIT_SHA=
 ARG GIT_SHA=
 ARG BUILD_TIME=
 ENV GIT_SHA=$GIT_SHA
 ENV BUILD_TIME=$BUILD_TIME
+RUN mkdir -p /build_meta \
+    && echo "${GIT_SHA}" > /build_meta/git_sha.txt \
+    && echo "${BUILD_TIME}" > /build_meta/build_time.txt \
+    && echo "[build_meta] git_sha=${GIT_SHA} build_time=${BUILD_TIME} cachebust=${CACHEBUST_GIT_SHA}"
 
 WORKDIR /repo
 
@@ -52,10 +70,16 @@ ENV NODE_ENV=production
 
 # P18h — re-declare build args in runner stage (ARG doesn't cross stages)
 # and bake into runtime ENV. Runtime container reads via process.env.
+# P19w (29/04/2026) — Add CACHEBUST_GIT_SHA + COPY /build_meta from builder
+# stage so /version controller has a file fallback when ENV layer caches.
+ARG CACHEBUST_GIT_SHA=
 ARG GIT_SHA=
 ARG BUILD_TIME=
 ENV GIT_SHA=$GIT_SHA
 ENV BUILD_TIME=$BUILD_TIME
+
+# P19w — Copie les fichiers meta baked au build pour fallback read côté runtime
+COPY --from=builder /build_meta /build_meta
 
 COPY --from=builder /repo/package.json /repo/package-lock.json ./
 COPY --from=builder /repo/node_modules ./node_modules
