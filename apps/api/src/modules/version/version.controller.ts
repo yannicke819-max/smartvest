@@ -12,12 +12,20 @@
  *                     auto-injected by Fly Machines, contrary to my earlier
  *                     assumption — P18h shipped with that field always null).
  *
+ * P19w (29/04/2026 19:50 UTC) — Fallback file read pour resilience au layer
+ * caching Docker. Observation prod : workflow run #204 succeeded mais
+ * `/version` retournait `git_sha=null` car les ENV layers étaient cachés
+ * malgré --build-arg passé. Le Dockerfile écrit maintenant les valeurs dans
+ * `/build_meta/git_sha.txt` + `/build_meta/build_time.txt` baked au build.
+ * On lit ces fichiers en priorité, ENV en fallback. Boot log pour traçabilité.
+ *
  * Designed to resolve the visibility blind spot observed during the v258
  * failed-deploy / v259 success episode (29/04/2026 ~10:03–10:12 UTC) :
  * `/health` returned 200 from both the old and new binary indistinguishably.
  */
 
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Logger, OnModuleInit } from '@nestjs/common';
+import { readFileSync } from 'node:fs';
 
 interface VersionResponse {
   git_sha: string | null;
@@ -29,17 +37,52 @@ interface VersionResponse {
   fly_machine_id: string | null;
 }
 
+/**
+ * P19w — Lecture sûre de /build_meta/{key}.txt baked au build.
+ * Retourne null si fichier absent / vide / trim vide.
+ */
+function readBuildMetaFile(filename: string): string | null {
+  try {
+    const content = readFileSync(`/build_meta/${filename}`, 'utf-8').trim();
+    return content.length > 0 ? content : null;
+  } catch {
+    return null;
+  }
+}
+
 @Controller('version')
-export class VersionController {
+export class VersionController implements OnModuleInit {
+  private readonly logger = new Logger(VersionController.name);
+
+  /** P19w — Boot log pour traçabilité Fly logs. Permet de grep au démarrage
+   *  si le binary tournant en prod a bien capté GIT_SHA / BUILD_TIME. */
+  onModuleInit(): void {
+    const meta = this.resolveMeta();
+    this.logger.log(
+      `[version] git_sha=${meta.git_sha ?? 'null'} build_time=${meta.build_time ?? 'null'} ` +
+      `node_env=${meta.node_env} fly_image=${(meta.fly_image_ref ?? 'null').slice(-50)}`,
+    );
+  }
+
   @Get()
   getVersion(): VersionResponse {
+    return this.resolveMeta();
+  }
+
+  /** P19w — Résolution avec priorité : ENV → fichier baked. */
+  private resolveMeta(): VersionResponse {
+    const envOrFile = (envKey: string, fileBasename: string): string | null => {
+      const envVal = process.env[envKey];
+      if (envVal && envVal.length > 0) return envVal;
+      return readBuildMetaFile(fileBasename);
+    };
     const env = (key: string): string | null => {
       const v = process.env[key];
       return v && v.length > 0 ? v : null;
     };
     return {
-      git_sha: env('GIT_SHA'),
-      build_time: env('BUILD_TIME'),
+      git_sha: envOrFile('GIT_SHA', 'git_sha.txt'),
+      build_time: envOrFile('BUILD_TIME', 'build_time.txt'),
       node_env: process.env['NODE_ENV'] ?? 'development',
       fly_image_ref: env('FLY_IMAGE_REF'),
       fly_app_name: env('FLY_APP_NAME'),

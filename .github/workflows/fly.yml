@@ -33,9 +33,17 @@ jobs:
       - name: Deploy to Fly
         # P18h — Inject GIT_SHA + BUILD_TIME at build time so /version can
         # report which commit/binary is actually running in prod.
+        # P19w — Add CACHEBUST_GIT_SHA which varies per commit. Forces
+        # invalidation of the Docker layer cache from that point onward,
+        # so the GIT_SHA/BUILD_TIME ARG/ENV are guaranteed re-evaluated
+        # (the `--remote-only` builder was sometimes serving stale ENV
+        # layers despite --build-arg being passed correctly — observed
+        # 29/04/2026 19:50 UTC after PR #114 merge — /version returned
+        # git_sha=null even though workflow run #204 succeeded).
         run: |
           BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           flyctl deploy --remote-only \
+            --build-arg CACHEBUST_GIT_SHA=${{ github.sha }} \
             --build-arg GIT_SHA=${{ github.sha }} \
             --build-arg BUILD_TIME=$BUILD_TIME \
             --wait-timeout 300 --strategy immediate
