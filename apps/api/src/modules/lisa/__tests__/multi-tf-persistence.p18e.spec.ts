@@ -22,6 +22,9 @@ const mockBinance = {
 
 const mockEodhd = {
   getCandles: jest.fn(),
+  // P19o.3 — tick-data fallback méthode ajoutée. Default null pour tests P18e
+  // qui couvrent la fallback chain mais ne testent pas spécifiquement les ticks.
+  getCandlesViaTicks: jest.fn().mockResolvedValue(null),
 } as any;
 
 const logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
@@ -34,6 +37,7 @@ beforeEach(() => {
   warnSpy.mockClear();
   mockBinance.getKlines.mockReset();
   mockEodhd.getCandles.mockReset();
+  mockEodhd.getCandlesViaTicks.mockReset().mockResolvedValue(null);
   mockYahoo.getCandles.mockReset();
   mockYahoo.getCandles.mockResolvedValue(null);  // P19a default — Yahoo fails unless overriden
 });

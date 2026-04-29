@@ -30,6 +30,24 @@ export interface CandleSeries {
   asOf: number;
 }
 
+/**
+ * P19o.3 (29/04/2026) — Tick data row depuis `/api/ticks/{SYMBOL}`.
+ * Schema officiel : `vendor/eodhd-claude-skills/skills/eodhd-api/references/endpoints/us-tick-data.md`.
+ */
+export interface RawTick {
+  /** Timestamp en MILLISECONDES (cf. EODHD doc — différent de from/to en secondes) */
+  timestamp: number;
+  datetime?: string;
+  price: number;
+  volume: number;
+  /** Market center code : NASDAQ=X/T/B/Q/R, NYSE=N/C/P/A, CBOE=K/Y/J/W/Z, IEX=V, OTC=S/u/U, **D=dark pool** */
+  mkt?: string;
+  /** Sale condition code (exchange-specific trade condition flags) */
+  sl?: string;
+  /** Sequence number pour ordering ticks intra-timestamp */
+  seq?: number;
+}
+
 @Injectable()
 export class EodhdIntradayService {
   private readonly logger = new Logger(EodhdIntradayService.name);
@@ -251,6 +269,150 @@ export class EodhdIntradayService {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * P19o.3 (29/04/2026) — Tick-by-tick fallback via `/api/ticks/{SYMBOL}`.
+   *
+   * Use case : quand `getCandles()` retourne une série vide même après
+   * widening de la fenêtre (P19o), pour des tickers à trades sparses sans
+   * intraday OHLCV pré-aggregé. Tick data couvre principalement les actions
+   * US (NYSE/NASDAQ/CBOE/IEX/dark pools) et permet de reconstruire des
+   * bars OHLCV par aggrégation.
+   *
+   * ⚠️ EODHD doc :
+   *   - timestamps `from`/`to` en SECONDES (Unix)
+   *   - timestamps RETOUR en MILLISECONDES (à convertir avant aggregate)
+   *   - limit max 10000, default 100
+   *   - field `mkt='D'` = dark pool trade (à inclure ou pas selon use case)
+   *
+   * Ref : `vendor/eodhd-claude-skills/skills/eodhd-api/references/endpoints/us-tick-data.md`
+   */
+  async getTickData(
+    eodhdTicker: string,
+    fromUnix: number,
+    toUnix: number,
+    limit = 100,
+  ): Promise<RawTick[] | null> {
+    const key = this.apiKey();
+    if (!key) return null;
+    const normalized = this.normalizeForEodhdIntraday(eodhdTicker);
+    const tStart = Date.now();
+    try {
+      const qs = new URLSearchParams({
+        api_token: key,
+        fmt: 'json',
+        from: String(Math.floor(fromUnix)),
+        to: String(Math.floor(toUnix)),
+        limit: String(Math.min(Math.max(1, limit), 10_000)),
+      }).toString();
+      const url = `https://eodhd.com/api/ticks/${encodeURIComponent(normalized)}?${qs}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      const latencyMs = Date.now() - tStart;
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        this.logger.debug(
+          `[eodhd:ticks] ${normalized} HTTP ${res.status} (${latencyMs}ms) body=${body.slice(0, 100)}`,
+        );
+        this.logCall({
+          ticker: normalized,
+          success: false,
+          statusCode: res.status,
+          latencyMs,
+          errorMessage: `TICKS_HTTP_${res.status}`,
+        });
+        return null;
+      }
+      const data = (await res.json()) as Array<Record<string, unknown>>;
+      this.logCall({ ticker: normalized, success: true, statusCode: res.status, latencyMs });
+      if (!Array.isArray(data) || data.length === 0) return null;
+      return data
+        .map<RawTick>((d) => {
+          const tick: RawTick = {
+            timestamp: typeof d.timestamp === 'number' ? d.timestamp : Number(d.timestamp ?? 0),
+            price: Number(d.price ?? 0),
+            volume: Number(d.volume ?? 0),
+            seq: typeof d.seq === 'number' ? d.seq : 0,
+          };
+          if (typeof d.datetime === 'string') tick.datetime = d.datetime;
+          if (typeof d.mkt === 'string') tick.mkt = d.mkt;
+          if (typeof d.sl === 'string') tick.sl = d.sl;
+          return tick;
+        })
+        .filter((t) => t.price > 0 && t.timestamp > 0);
+    } catch (e) {
+      this.logger.debug(`[eodhd:ticks] ${normalized} fetch error: ${String(e).slice(0, 80)}`);
+      return null;
+    }
+  }
+
+  /**
+   * P19o.3 (29/04/2026) — Construit une CandleSeries OHLCV en aggrégant les
+   * ticks par bucket d'interval (5m / 1m / 1h).
+   *
+   * Algorithme bucket : `bucketKey = floor(tickTimestampMs / intervalMs)`
+   *   - open  = price du 1er tick du bucket
+   *   - high  = max price
+   *   - low   = min price
+   *   - close = price du dernier tick (latest seq)
+   *   - volume = somme volumes
+   *
+   * Note : on ne filtre pas les dark-pool ticks (`mkt='D'`) — ils représentent
+   * de vrais volumes et l'aggrégation OHLCV doit les compter pour refléter
+   * fidèlement le price action. Ré-évaluer si on observe des bars aberrants.
+   */
+  async getCandlesViaTicks(
+    eodhdTicker: string,
+    interval: '1m' | '5m' | '1h' = '5m',
+    count = 20,
+  ): Promise<CandleSeries | null> {
+    const toUnix = Math.floor(Date.now() / 1000);
+    const fromUnix = toUnix - this.windowForInterval(interval);
+    // Limit 5000 = compromis : sur ticker liquide ~100-500 ticks/5m → 5000 ticks
+    // couvre 50-250 minutes ; sur micro-cap sparse ~5-20 ticks/5m → couvre 1-2j.
+    const ticks = await this.getTickData(eodhdTicker, fromUnix, toUnix, 5000);
+    if (!ticks || ticks.length === 0) return null;
+
+    const intervalMs = (interval === '1m' ? 60 : interval === '5m' ? 300 : 3600) * 1000;
+    const buckets = new Map<number, Candle>();
+    for (const t of ticks) {
+      // EODHD retourne timestamp en ms (cf. doc us-tick-data.md). Heuristique
+      // défensive : si la valeur ressemble à des secondes (< 1e11), convertir.
+      const tsMs = t.timestamp > 1e11 ? t.timestamp : t.timestamp * 1000;
+      const bucketKey = Math.floor(tsMs / intervalMs);
+      const bucketStartSec = Math.floor((bucketKey * intervalMs) / 1000);
+      const existing = buckets.get(bucketKey);
+      if (!existing) {
+        buckets.set(bucketKey, {
+          timestamp: bucketStartSec,
+          open: t.price,
+          high: t.price,
+          low: t.price,
+          close: t.price,
+          volume: t.volume,
+        });
+      } else {
+        existing.high = Math.max(existing.high, t.price);
+        existing.low = Math.min(existing.low, t.price);
+        // Ticks arrivent triés par seq, donc le dernier rencontré pour ce
+        // bucket est le close.
+        existing.close = t.price;
+        existing.volume += t.volume;
+      }
+    }
+    const sorted = [...buckets.values()].sort((a, b) => a.timestamp - b.timestamp);
+    const candles = sorted.slice(-count);
+    if (candles.length === 0) return null;
+    const series: CandleSeries = {
+      ticker: eodhdTicker,
+      interval,
+      candles,
+      asOf: Date.now(),
+    };
+    this.logger.log(
+      `[eodhd:ticks] ${eodhdTicker} reconstructed ${candles.length} ${interval} bars from ${ticks.length} ticks`,
+    );
+    return series;
   }
 
   /**
