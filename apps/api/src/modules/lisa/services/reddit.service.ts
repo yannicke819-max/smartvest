@@ -98,9 +98,29 @@ export class RedditService {
 
   /** P5-REDDIT-RSS-FALLBACK — User-Agent custom OBLIGATOIRE en mode RSS
    *  (axios/node-fetch default = 429 immédiat). Lit REDDIT_USER_AGENT,
-   *  fallback safe 'smartvest-news/1.0'. */
+   *  fallback safe.
+   *
+   *  P19f (29/04/2026, observed in prod) — Default UA `smartvest-news/1.0`
+   *  receivait HTTP 403 Cloudflare sur 100% des subs. Reddit recommande
+   *  le format `<platform>:<app-id>:<version> (by /u/<reddit-username>)`.
+   *  Nouveau default conforme + plus discriminant.
+   */
   private getUserAgent(): string {
-    return this.config.get<string>('REDDIT_USER_AGENT') ?? 'smartvest-news/1.0';
+    return this.config.get<string>('REDDIT_USER_AGENT')
+      ?? 'web:smartvest-news:v1.1 (by /u/yannicke819-max)';
+  }
+
+  /**
+   * P19f — Compteur per-cycle des subreddits bloqués (HTTP 403/429/auth-wall).
+   * Reset au début de chaque `fetchHotPosts`. Si == subreddits.length à la fin
+   * → log warn agrégé (au lieu de 5 × debug par sub) + flag potentiel degraded.
+   */
+  private blockedSubsThisCycle: string[] = [];
+  /** P19f — Compteur cumulatif des cycles totalement bloqués (observability). */
+  private totalBlockedCycles = 0;
+  /** Exposé pour /lisa/debug-stats — pas de migration DB. */
+  getTotalBlockedCycles(): number {
+    return this.totalBlockedCycles;
   }
 
   /** Top hot posts sur les subreddits financiers, last 24h. */
@@ -114,11 +134,30 @@ export class RedditService {
     // P5-REDDIT-RSS-FALLBACK — élargi à 5 subreddits (ajout `options`)
     // pour capter les flux retail options (squeeze candidats).
     const subreddits = ['wallstreetbets', 'stocks', 'investing', 'CryptoCurrency', 'options'];
+
+    // P19f — Reset compteur per-cycle pour log agrégé en fin
+    this.blockedSubsThisCycle = [];
+
     const tasks = subreddits.map((s) => this.fetchSubreddit(s, Math.ceil(limit / subreddits.length)));
     const results = await Promise.allSettled(tasks);
     const all = results
       .filter((r): r is PromiseFulfilledResult<EodhdNewsItem[]> => r.status === 'fulfilled')
       .flatMap((r) => r.value);
+
+    // P19f — Log agrégé une fois en fin de cycle si subs bloqués (au lieu de
+    // 5 × debug par sub). Permet de visualiser la santé Reddit d'un coup d'œil.
+    if (this.blockedSubsThisCycle.length > 0) {
+      const mode = this.useRssMode() ? 'rss' : 'oauth';
+      const allBlocked = this.blockedSubsThisCycle.length === subreddits.length;
+      this.totalBlockedCycles += allBlocked ? 1 : 0;
+      const sample = this.blockedSubsThisCycle.slice(0, 3).join(', ');
+      const fixHint = mode === 'rss'
+        ? ' — set REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET to switch to OAuth (rate-limit 100/min vs ~60/min RSS, plus moins de 403)'
+        : '';
+      this.logger.warn(
+        `[reddit:${mode}] ${this.blockedSubsThisCycle.length}/${subreddits.length} sub(s) blocked this cycle (sample: ${sample})${fixHint}`,
+      );
+    }
 
     // Tri par score descendant (proxy importance) + cap
     all.sort((a, b) => {
@@ -230,6 +269,16 @@ export class RedditService {
    *  - Reddit renvoie parfois 200 + page HTML login si rate-limit
    *    soft → check Content-Type=application/json
    *  - 429 → backoff exponentiel (2 retries max, 1s puis 3s)
+   *
+   * P19f (29/04/2026) — Headers enrichis pour réduire les 403 Cloudflare :
+   *  - Accept-Language en plus de Accept
+   *  - Cache-Control / Pragma plus naturels
+   *  - User-Agent au format Reddit-recommended `<platform>:<app-id>:<v> (by /u/<n>)`
+   *  - Tracking blockedSubsThisCycle pour log agrégé fin de cycle
+   *  - Promotion debug → warn agrégé (visibilité sans spam)
+   *
+   * Note : si 403 persiste après ces fixes, il faut OAuth Reddit (env
+   * REDDIT_CLIENT_ID + REDDIT_CLIENT_SECRET → bascule auto en mode oauth).
    */
   private async fetchSubredditPublic(name: string, limit: number): Promise<EodhdNewsItem[]> {
     const url = `https://www.reddit.com/r/${name}/hot.json?limit=${limit}&raw_json=1`;
@@ -241,6 +290,9 @@ export class RedditService {
           headers: {
             'User-Agent': ua,
             'Accept': 'application/json',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache',
           },
           signal: AbortSignal.timeout(8000),
         });
@@ -253,19 +305,24 @@ export class RedditService {
             await new Promise((r) => setTimeout(r, wait));
             continue;
           }
-          this.logger.warn(`reddit rss ${name} 429 final — giving up`);
+          // P19f — track for end-of-cycle aggregated warn (no per-sub spam)
+          this.blockedSubsThisCycle.push(`${name}@429`);
           return [];
         }
 
         if (!res.ok) {
+          // P19f — track 403/4xx/5xx for aggregated warn. Log debug per-sub
+          // reste utile pour grep ciblé en debug session.
           this.logger.debug(`reddit rss ${name} HTTP ${res.status}`);
+          this.blockedSubsThisCycle.push(`${name}@${res.status}`);
           return [];
         }
 
         // Reddit peut 200 + page HTML login (auth wall) — check Content-Type
         const contentType = res.headers.get('content-type') ?? '';
         if (!contentType.toLowerCase().includes('application/json')) {
-          this.logger.warn(`reddit rss ${name} non-JSON response (Content-Type=${contentType.slice(0, 60)}) — auth wall ?`);
+          this.logger.debug(`reddit rss ${name} non-JSON (Content-Type=${contentType.slice(0, 60)}) — auth wall ?`);
+          this.blockedSubsThisCycle.push(`${name}@authwall`);
           return [];
         }
 
@@ -277,6 +334,8 @@ export class RedditService {
           await new Promise((r) => setTimeout(r, 1000));
           continue;
         }
+        // P19f — track final fetch error too
+        this.blockedSubsThisCycle.push(`${name}@fetchError`);
         return [];
       }
     }
