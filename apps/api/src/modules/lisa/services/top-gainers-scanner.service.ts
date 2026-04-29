@@ -99,11 +99,12 @@ interface EodhdScreenerRow {
  */
 const EU_EXCHANGES = ['LSE', 'XETRA', 'PA', 'SW', 'MI', 'MC', 'BME', 'AS', 'AMS'];
 // P19d (29/04/2026 14:30 CEST) — Ajout SSE (Shanghai) + SZSE (Shenzhen) pour
-// couverture mondiale complète. China A-shares supportées par EODHD plan
-// "All World" (à valider au runtime — 422 silencieusement skip si pas dans
-// le plan, P18c warning log). Yahoo fallback (.SS / .SZ) couvre quoi qu'il
-// arrive (P19a Yahoo intraday router).
-const NON_EU_EXCHANGES = ['US', 'TSE', 'HK', 'AU', 'KO', 'TO', 'NSE', 'BSE', 'SS', 'SZ'];
+// couverture mondiale complète.
+// P19r (29/04/2026 19:30 UTC) — Ajout KQ (KOSDAQ) — couverture Asie complète
+// (KOSPI .KO + KOSDAQ .KQ). Constat user dump SQL Supabase : 9/20 KO + 4/20
+// NSE + 1/20 AU = 70% des candidats Top 20 viennent d'Asie/Inde, mais KOSDAQ
+// (Kakao 035720.KQ, Naver, etc.) n'était pas scanné → trou de couverture.
+const NON_EU_EXCHANGES = ['US', 'TSE', 'HK', 'AU', 'KO', 'KQ', 'TO', 'NSE', 'BSE', 'SS', 'SZ'];
 /** Watchlists EU dont la session_open_utc / session_close_utc gate l'EODHD scan. */
 const EU_WATCHLIST_NAMES = ['cac40', 'dax40', 'ftse100'];
 const CRYPTO_PAIRS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT', 'DOTUSDT', 'LINKUSDT', 'MATICUSDT'];

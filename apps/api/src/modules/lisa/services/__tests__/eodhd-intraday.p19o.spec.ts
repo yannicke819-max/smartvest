@@ -29,10 +29,11 @@ function makeService(envMap: Record<string, string | undefined> = { EODHD_API_KE
 }
 
 describe('EodhdIntradayService — P19o window widening', () => {
-  it('windowForInterval returns 1d / 5d / 30d for 1m / 5m / 1h', () => {
+  it('windowForInterval returns 2d / 5d / 30d for 1m / 5m / 1h (1m bumped 24h→48h in P19r)', () => {
     const svc = makeService();
     const fn = (svc as any).windowForInterval.bind(svc);
-    expect(fn('1m')).toBe(24 * 3600);
+    // P19r — 1m window bumped 24h → 48h to capture last asia/NSE/AU session
+    expect(fn('1m')).toBe(48 * 3600);
     expect(fn('5m')).toBe(5 * 24 * 3600);
     expect(fn('1h')).toBe(30 * 24 * 3600);
   });
@@ -64,7 +65,7 @@ describe('EodhdIntradayService — P19o window widening', () => {
     expect(windowSec).toBeLessThanOrEqual(5 * 24 * 3600 + 60);
   });
 
-  it('1m getCandles uses a 1-day window', async () => {
+  it('1m getCandles uses a 2-day window (P19r)', async () => {
     const svc = makeService();
     let capturedUrl = '';
     (global as any).fetch = jest.fn().mockImplementation(async (url: string) => {
@@ -77,8 +78,9 @@ describe('EodhdIntradayService — P19o window widening', () => {
     const u = new URL(capturedUrl);
     const from = Number(u.searchParams.get('from'));
     const to = Number(u.searchParams.get('to'));
-    expect(to - from).toBeGreaterThanOrEqual(24 * 3600 - 1);
-    expect(to - from).toBeLessThanOrEqual(24 * 3600 + 60);
+    // P19r — 1m window bumped 24h → 48h
+    expect(to - from).toBeGreaterThanOrEqual(48 * 3600 - 1);
+    expect(to - from).toBeLessThanOrEqual(48 * 3600 + 60);
   });
 
   it('1h getCandles uses a 30-day window', async () => {

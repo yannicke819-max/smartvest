@@ -146,7 +146,30 @@ export class EodhdIntradayService {
    * garde uniquement les N candles les plus récentes côté client.
    */
   private windowForInterval(interval: '1m' | '5m' | '1h'): number {
-    if (interval === '1m') return 24 * 3600;          // 1 jour
+    // P19r (29/04/2026 19:30 UTC) — 1m window bumped 24h → 48h.
+    //
+    // Constat prod (UI Lisa Top 20 : 1m = 1/20, KFRC US seul à avoir tf1m≠null,
+    // 9/20 = Korea, 4/20 = India, 1/20 = AU) : 24h window ne couvre PAS la
+    // dernière session de la majorité des marchés non-US.
+    //
+    // Sessions UTC :
+    //   - KOSPI / KOSDAQ : 00:00–06:30 UTC Mon-Fri (Korea)
+    //   - NSE India       : 03:45–10:00 UTC Mon-Fri
+    //   - ASX Australia   : 23:00–05:00 UTC (overnight, prev day)
+    //   - LSE / XETRA / PA : 08:00–16:30 UTC
+    //   - NYSE / NASDAQ   : 14:30–21:00 UTC + after-hours 21:00–24:00
+    //
+    // À 19:30 UTC un mardi, 24h window remonte au lundi 19:30 UTC :
+    //   - Korea Mon session 00:00–06:30 = OUTSIDE window (terminée 13h avant le
+    //     début du window) → 0 candles 1m pour les KO/KQ
+    //   - Korea Tue session = aujourd'hui 00:00–06:30 = inside window mais
+    //     EODHD intraday peut avoir un délai T+1 sur certains plans
+    //   - NSE Mon session = OUTSIDE
+    //
+    // 48h window capture systématiquement les 2 dernières sessions de TOUS
+    // les marchés mondiaux. Coût négligeable car .slice(-count) limite la
+    // payload côté client.
+    if (interval === '1m') return 48 * 3600;          // 2 jours (fix asia/NSE/AU)
     if (interval === '5m') return 5 * 24 * 3600;      // 5 jours (couvre weekends)
     return 30 * 24 * 3600;                             // 30 jours pour 1h
   }
