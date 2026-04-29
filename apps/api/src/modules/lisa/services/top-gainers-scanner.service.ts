@@ -45,12 +45,17 @@ interface EodhdScreenerRow {
   exchange_short?: string;
   exchange?: string;
   last_price?: number | string;
+  adjusted_close?: number | string;
   high_price?: number | string;
   high?: number | string;
   low_price?: number | string;
   open?: number | string;
+  /** Filter form (new, validated against EODHD doc). */
+  refund_1d_p?: number | string;
+  /** Legacy / response form — sometimes present alongside `refund_1d_p`. */
   change_p?: number | string;
   volume?: number | string;
+  avgvol_1d?: number | string;
   avgvol_50d?: number | string;
   avgvol_200d?: number | string;
   market_capitalization?: number | string;
@@ -375,20 +380,35 @@ export class TopGainersScannerService implements OnModuleInit {
   }
 
   /**
-   * EODHD Screener API : top gainers > 5% par exchange.
+   * EODHD Screener API : top gainers par exchange.
+   *
+   * P18c — fix HTTP 422 sur tous les marchés. Causes :
+   *   1) `exchange` doit être DANS le tableau `filters` (lowercase), pas en
+   *      query param séparé.
+   *   2) `change_p` n'est pas un filter field valide → `refund_1d_p`.
+   *   3) `close` n'est pas un filter field valide → `adjusted_close`.
+   *   4) Le sort key doit aussi être `refund_1d_p.desc`.
+   *
    * Doc : https://eodhd.com/financial-apis/stock-market-screener-api
    */
   private async fetchEodhdScreener(exchange: string, apiKey: string): Promise<TopGainerCandidate[]> {
+    const exLower = exchange.toLowerCase();
     const filters = encodeURIComponent(JSON.stringify([
-      ['change_p', '>', 3],
-      ['close', '>', 1],
+      ['exchange', '=', exLower],
+      ['refund_1d_p', '>', 3],
+      ['adjusted_close', '>', 1],
       ['avgvol_200d', '>', 100_000],
     ]));
-    const url = `https://eodhd.com/api/screener?api_token=${encodeURIComponent(apiKey)}&filters=${filters}&exchange=${encodeURIComponent(exchange)}&sort=change_p.desc&limit=20&fmt=json`;
+    const url = `https://eodhd.com/api/screener?api_token=${encodeURIComponent(apiKey)}&filters=${filters}&sort=refund_1d_p.desc&limit=20&offset=0&fmt=json`;
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
       if (!res.ok) {
-        this.logger.debug(`[top-gainers] eodhd ${exchange} HTTP ${res.status}`);
+        // P18c — log le body pour diagnostic (422 = champ filter invalide,
+        // 401 = token expiré, 403 = plan insuffisant). Tronqué à 200 char.
+        const body = await res.text().catch(() => '');
+        this.logger.warn(
+          `[top-gainers] eodhd ${exchange} HTTP ${res.status} — body: ${body.slice(0, 200)}`,
+        );
         return [];
       }
       const json = await res.json() as { data?: EodhdScreenerRow[] } | EodhdScreenerRow[];
@@ -405,10 +425,12 @@ export class TopGainersScannerService implements OnModuleInit {
   private mapEodhdRow(r: EodhdScreenerRow, exchange: string): TopGainerCandidate | null {
     const symbol = r.code;
     if (!symbol) return null;
-    const close = num(r.last_price);
+    // P18c — accepter les 2 conventions (filter form vs response form), la doc
+    // EODHD ne documente pas explicitement le schéma de réponse du screener.
+    const close = num(r.adjusted_close ?? r.last_price);
     const high = num(r.high_price ?? r.high) || close;
-    const changePct = num(r.change_p);
-    const volume = num(r.volume);
+    const changePct = num(r.refund_1d_p ?? r.change_p);
+    const volume = num(r.volume ?? r.avgvol_1d);
     const avgVol50d = num(r.avgvol_50d ?? r.avgvol_200d);
     const marketCap = num(r.market_capitalization ?? r.market_cap);
     if (!Number.isFinite(close) || close <= 0) return null;
