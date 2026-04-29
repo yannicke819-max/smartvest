@@ -86,9 +86,13 @@ interface EodhdScreenerRow {
  */
 /**
  * P18d — Exchanges groupés par région pour permettre un gating session-aware.
- * Les listes US et EU recouvrent les bourses présentes dans `watchlist_universe`
- * (migration 0081) — la région EU est skip si toutes ses sessions sont fermées
- * pour économiser les calls EODHD et éviter les 422 hors heures.
+ *
+ * P19a (29/04/2026, principe directeur) : on **NE DROP PAS** d'exchanges du
+ * scan. Le critère SmartVest est de capter toutes les opportunités mondiales
+ * (US/EU/Asia/Korea/Australia) ; les marchés sans intraday EODHD sont
+ * annotés `coverage:'unavailable'` dans la persistance et affichés en UI
+ * avec un badge dégradé, jamais hidden. Le routing multi-vendor (Yahoo /
+ * Finnhub) pour les marchés sans intraday EODHD = follow-up P19b.
  *
  * NB : `MC` et `BME` sont les 2 codes EODHD acceptés selon la version API
  * pour la Bolsa de Madrid ; `AS` et `AMS` idem pour Euronext Amsterdam.
@@ -508,6 +512,10 @@ export class TopGainersScannerService implements OnModuleInit {
    *   2) `change_p` n'est pas un filter field valide → `refund_1d_p`.
    *   3) `close` n'est pas un filter field valide → `adjusted_close`.
    *   4) Le sort key doit aussi être `refund_1d_p.desc`.
+   *
+   * P19a — Filtres restaurés à leur valeur permissive d'origine. La qualité
+   * est traitée DOWNSTREAM via le fallback Yahoo Finance dans
+   * `MultiTimeframePersistenceService` (zéro opportunité mondiale ratée).
    *
    * Doc : https://eodhd.com/financial-apis/stock-market-screener-api
    */

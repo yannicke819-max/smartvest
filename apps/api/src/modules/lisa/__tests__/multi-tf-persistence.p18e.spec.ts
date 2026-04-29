@@ -34,10 +34,18 @@ beforeEach(() => {
   warnSpy.mockClear();
   mockBinance.getKlines.mockReset();
   mockEodhd.getCandles.mockReset();
+  mockYahoo.getCandles.mockReset();
+  mockYahoo.getCandles.mockResolvedValue(null);  // P19a default — Yahoo fails unless overriden
 });
 
+// P19a — Yahoo fallback added as 3rd ctor arg. Mock null-default is set in
+// the global beforeEach so individual tests can override BEFORE makeService.
+const mockYahoo = {
+  getCandles: jest.fn(),
+} as any;
+
 function makeService(): MultiTimeframePersistenceService {
-  return new MultiTimeframePersistenceService(mockBinance, mockEodhd);
+  return new MultiTimeframePersistenceService(mockBinance, mockEodhd, mockYahoo);
 }
 
 // ── 1. Aggregated log — single line for N misses ─────────────────────────────
@@ -59,11 +67,11 @@ describe('analyzeBatch — log throttling', () => {
     expect(result.size).toBe(0);
     // Find the aggregated log line
     const aggregateLogs = logSpy.mock.calls.filter((c) =>
-      String(c[0]).includes('[mtf-persist] no intraday for'),
+      String(c[0]).includes('[mtf-persist] no intraday coverage for'),
     );
     expect(aggregateLogs.length).toBe(1);
     const logMsg = String(aggregateLogs[0][0]);
-    expect(logMsg).toContain('50 tickers');
+    expect(logMsg).toContain('50 ticker(s)');
     expect(logMsg).toContain('sample:');
     // Counter should reflect all 50 misses
     expect(svc.getNoIntradayCounter()).toBe(50);
@@ -116,74 +124,108 @@ describe('analyzeBatch — log throttling', () => {
 
     // The aggregate log IS expected (single line for all 3)
     const aggregateLog = logSpy.mock.calls.filter((c) =>
-      String(c[0]).startsWith('[mtf-persist] no intraday for'),
+      /\[mtf-persist\] no intraday coverage for/.test(String(c[0])),
     );
     expect(aggregateLog.length).toBe(1);
   });
 });
 
-// ── 2. Market pre-filter ─────────────────────────────────────────────────────
+// ── 2. P19a — Yahoo fallback chain (EODHD primaire → Yahoo fallback) ────────
 
-describe('analyzeBatch — market pre-filter', () => {
-  it('does NOT call EODHD for tickers from unsupported exchanges (TO, NSE, BSE)', async () => {
-    const svc = makeService();
-    await svc.analyzeBatch([
-      { symbol: 'SHOP', exchange: 'TO', currentPrice: 100 }, // Toronto — unsupported
-      { symbol: 'RELIANCE', exchange: 'NSE', currentPrice: 200 },
-      { symbol: 'TCS', exchange: 'BSE', currentPrice: 3500 },
-    ]);
-
-    expect(mockEodhd.getCandles).not.toHaveBeenCalled();
-    expect(svc.getSkippedUnsupportedMarketCounter()).toBe(3);
-  });
-
-  it('DOES call EODHD for supported equity exchanges (US, LSE, XETRA, PA, TSE, HK)', async () => {
+describe('analyzeBatch — P19a Yahoo fallback chain', () => {
+  it('calls EODHD for ALL exchanges (no pre-filter) — Yahoo invoked when EODHD returns null', async () => {
     mockEodhd.getCandles.mockResolvedValue(null);
+    mockYahoo.getCandles.mockResolvedValue(null);
 
     const svc = makeService();
     await svc.analyzeBatch([
-      { symbol: 'AAPL', exchange: 'US', currentPrice: 100 },
-      { symbol: 'SHEL', exchange: 'LSE', currentPrice: 25 },
-      { symbol: 'SAP', exchange: 'XETRA', currentPrice: 200 },
-      { symbol: 'AIR', exchange: 'PA', currentPrice: 150 },
-      { symbol: '7203', exchange: 'TSE', currentPrice: 2500 },
-      { symbol: '0700', exchange: 'HK', currentPrice: 350 },
+      { symbol: 'SHOP', exchange: 'TO', currentPrice: 100 },        // Toronto
+      { symbol: 'RELIANCE', exchange: 'NSE', currentPrice: 200 },   // India
+      { symbol: '199820', exchange: 'KO', currentPrice: 50 },       // Korea KOSPI
     ]);
 
-    expect(mockEodhd.getCandles).toHaveBeenCalledTimes(6);
+    // EODHD tried first for all 3
+    expect(mockEodhd.getCandles).toHaveBeenCalledTimes(3);
+    // Yahoo fallback invoked for all 3 (since EODHD returned null)
+    expect(mockYahoo.getCandles).toHaveBeenCalledTimes(3);
+    // Counter stays at 0 (no pre-filter anymore — every ticker is tried)
     expect(svc.getSkippedUnsupportedMarketCounter()).toBe(0);
+    // 3 tickers ended up with no coverage
+    expect(svc.getNoIntradayCounter()).toBe(3);
   });
 
-  it('crypto tickers (BINANCE / *USDT) bypass the equity pre-filter', async () => {
-    mockBinance.getKlines.mockResolvedValue([]);  // no klines → no data
+  it('uses Yahoo result with coverage="yahoo" when EODHD returns null but Yahoo succeeds', async () => {
+    mockEodhd.getCandles.mockResolvedValue(null);
+    const baseTime = Date.parse('2026-04-29T09:00:00.000Z');
+    const fakeCandles = Array.from({ length: 13 }, (_, i) => ({
+      datetime: new Date(baseTime + i * 5 * 60_000).toISOString(),
+      open: 100 + i, high: 101 + i, low: 99 + i, close: 100 + i, volume: 1000,
+    }));
+    mockYahoo.getCandles.mockResolvedValue(fakeCandles);
+
+    const svc = makeService();
+    const result = await svc.analyzeBatch([
+      { symbol: '199820', exchange: 'KO', currentPrice: 105 },
+    ]);
+
+    expect(mockEodhd.getCandles).toHaveBeenCalledTimes(1);
+    expect(mockYahoo.getCandles).toHaveBeenCalledTimes(1);
+    const persist = result.get('199820');
+    expect(persist).toBeDefined();
+    expect(persist!.coverage).toBe('yahoo');
+  });
+
+  it('does NOT call Yahoo when EODHD already provides intraday (eodhd primaire wins)', async () => {
+    const baseTime = Date.parse('2026-04-29T09:00:00.000Z');
+    const fakeCandles = Array.from({ length: 13 }, (_, i) => ({
+      datetime: new Date(baseTime + i * 5 * 60_000).toISOString(),
+      open: 100 + i, high: 101 + i, low: 99 + i, close: 100 + i, volume: 1000,
+    }));
+    mockEodhd.getCandles.mockResolvedValue({ candles: fakeCandles });
+
+    const svc = makeService();
+    const result = await svc.analyzeBatch([
+      { symbol: 'AAPL', exchange: 'US', currentPrice: 180 },
+    ]);
+
+    expect(mockEodhd.getCandles).toHaveBeenCalledTimes(1);
+    expect(mockYahoo.getCandles).not.toHaveBeenCalled();
+    const persist = result.get('AAPL');
+    expect(persist!.coverage).toBe('eodhd');
+  });
+
+  it('crypto bypasses both EODHD and Yahoo (uses Binance with coverage="binance")', async () => {
+    mockBinance.getKlines.mockResolvedValue([]);
 
     const svc = makeService();
     await svc.analyzeBatch([
       { symbol: 'BTCUSDT', exchange: 'BINANCE', currentPrice: 65000 },
-      { symbol: 'ETHUSDT', exchange: 'BINANCE', currentPrice: 3500 },
     ]);
 
-    expect(mockBinance.getKlines).toHaveBeenCalledTimes(2);
-    // Crypto did NOT increment unsupported-market counter
-    expect(svc.getSkippedUnsupportedMarketCounter()).toBe(0);
+    expect(mockBinance.getKlines).toHaveBeenCalledTimes(1);
+    expect(mockEodhd.getCandles).not.toHaveBeenCalled();
+    expect(mockYahoo.getCandles).not.toHaveBeenCalled();
   });
 
-  it('mixes supported equity + unsupported equity + crypto in one batch correctly', async () => {
+  it('emits "yahoo fallback used" structured log when at least 1 ticker uses Yahoo', async () => {
     mockEodhd.getCandles.mockResolvedValue(null);
-    mockBinance.getKlines.mockResolvedValue(null);
+    const fakeCandles = Array.from({ length: 13 }, (_, i) => ({
+      datetime: `2026-04-29T1${i % 10}:0${(i * 5) % 60}:00.000Z`,
+      open: 100, high: 101, low: 99, close: 100, volume: 1000,
+    }));
+    mockYahoo.getCandles.mockResolvedValue(fakeCandles);
 
     const svc = makeService();
     await svc.analyzeBatch([
-      { symbol: 'AAPL', exchange: 'US', currentPrice: 180 },         // supported equity
-      { symbol: 'SHOP', exchange: 'TO', currentPrice: 100 },          // unsupported
-      { symbol: 'BTCUSDT', exchange: 'BINANCE', currentPrice: 65000 }, // crypto
-      { symbol: 'TCS', exchange: 'BSE', currentPrice: 3500 },          // unsupported
+      { symbol: '199820', exchange: 'KO', currentPrice: 105 },
+      { symbol: '006340', exchange: 'KO', currentPrice: 200 },
     ]);
 
-    expect(mockEodhd.getCandles).toHaveBeenCalledTimes(1);  // only AAPL
-    expect(mockBinance.getKlines).toHaveBeenCalledTimes(1); // only BTCUSDT
-    expect(svc.getSkippedUnsupportedMarketCounter()).toBe(2); // SHOP + TCS
-    expect(svc.getNoIntradayCounter()).toBe(2);  // AAPL + BTCUSDT (both null)
+    const yahooLog = logSpy.mock.calls.find((c) =>
+      String(c[0]).startsWith('[mtf-persist] yahoo fallback used for'),
+    );
+    expect(yahooLog).toBeDefined();
+    expect(String(yahooLog![0])).toContain('2 ticker(s)');
   });
 });
 
@@ -203,18 +245,21 @@ describe('counters', () => {
     expect(svc.getNoIntradayCounter()).toBe(3);
   });
 
-  it('skippedUnsupportedMarketCounter is cumulative across multiple batches', async () => {
+  it('skippedUnsupportedMarketCounter stays at 0 since P19a (no pre-filter)', async () => {
+    mockEodhd.getCandles.mockResolvedValue(null);
     const svc = makeService();
     await svc.analyzeBatch([{ symbol: 'X', exchange: 'TO', currentPrice: 100 }]);
-    expect(svc.getSkippedUnsupportedMarketCounter()).toBe(1);
+    expect(svc.getSkippedUnsupportedMarketCounter()).toBe(0);
     await svc.analyzeBatch([
       { symbol: 'Y', exchange: 'NSE', currentPrice: 100 },
       { symbol: 'Z', exchange: 'BSE', currentPrice: 100 },
     ]);
-    expect(svc.getSkippedUnsupportedMarketCounter()).toBe(3);
+    // P19a — counter preserved for back-compat metric API but never increments
+    // (every market is now tried via EODHD then Yahoo fallback chain).
+    expect(svc.getSkippedUnsupportedMarketCounter()).toBe(0);
   });
 
-  it('resetCounters() clears both', async () => {
+  it('resetCounters() clears noIntradayCounter', async () => {
     mockEodhd.getCandles.mockResolvedValue(null);
 
     const svc = makeService();
@@ -222,8 +267,7 @@ describe('counters', () => {
       { symbol: 'A', exchange: 'US', currentPrice: 100 },
       { symbol: 'B', exchange: 'TO', currentPrice: 100 },
     ]);
-    expect(svc.getNoIntradayCounter()).toBe(1);
-    expect(svc.getSkippedUnsupportedMarketCounter()).toBe(1);
+    expect(svc.getNoIntradayCounter()).toBe(2);
     svc.resetCounters();
     expect(svc.getNoIntradayCounter()).toBe(0);
     expect(svc.getSkippedUnsupportedMarketCounter()).toBe(0);
