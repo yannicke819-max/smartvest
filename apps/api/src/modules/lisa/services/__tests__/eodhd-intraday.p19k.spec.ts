@@ -28,30 +28,35 @@ function makeService(envMap: Record<string, string | undefined> = { EODHD_API_KE
   return new EodhdIntradayService(config, supabase);
 }
 
-describe('EodhdIntradayService — P19k symbol suffix mapping', () => {
-  it('maps KOSPI .KO → .KOSE (EODHD intraday endpoint convention)', () => {
+describe('EodhdIntradayService — P19k.1 symbol suffix mapping (corrected)', () => {
+  it('P19k.1 — Korea .KO is the CORRECT EODHD suffix, NOT remapped (revert from P19k bug)', () => {
     const svc = makeService();
     const fn = (svc as any).normalizeForEodhdIntraday.bind(svc);
-    expect(fn('199820.KO')).toBe('199820.KOSE');
-    expect(fn('006340.KO')).toBe('006340.KOSE');
-    expect(fn('005930.KO')).toBe('005930.KOSE'); // Samsung
+    // Doc officielle EODHD (eodhd-claude-skills/references/general/symbol-format.md) :
+    //   "| KO | Korea Stock Exchange | 6-digit number | 005930.KO (Samsung) |"
+    expect(fn('199820.KO')).toBe('199820.KO');
+    expect(fn('006340.KO')).toBe('006340.KO');
+    expect(fn('005930.KO')).toBe('005930.KO'); // Samsung — official example
   });
 
-  it('maps Shanghai .SS → .SHG', () => {
+  it('maps Shanghai .SS → .SHG (scanner code differs from EODHD code)', () => {
     const svc = makeService();
     const fn = (svc as any).normalizeForEodhdIntraday.bind(svc);
+    // Official: "| SHG | Shanghai | 6-digit number | 600519.SHG (Moutai) |"
     expect(fn('600000.SS')).toBe('600000.SHG');
     expect(fn('601398.SS')).toBe('601398.SHG'); // ICBC
+    expect(fn('600519.SS')).toBe('600519.SHG'); // Moutai (official example)
   });
 
   it('maps Shenzhen .SZ → .SHE', () => {
     const svc = makeService();
     const fn = (svc as any).normalizeForEodhdIntraday.bind(svc);
+    // Official: "| SHE | Shenzhen | 6-digit number | 000001.SHE |"
     expect(fn('000001.SZ')).toBe('000001.SHE');
     expect(fn('300750.SZ')).toBe('300750.SHE'); // CATL
   });
 
-  it('passes through US/LSE/XETRA/PA/HK/TO/NSE/BSE/KQ/AU unchanged', () => {
+  it('passes through US/LSE/XETRA/PA/HK/TO/NSE/BSE/KO/KQ/AU unchanged', () => {
     const svc = makeService();
     const fn = (svc as any).normalizeForEodhdIntraday.bind(svc);
     expect(fn('AAPL.US')).toBe('AAPL.US');
@@ -62,6 +67,8 @@ describe('EodhdIntradayService — P19k symbol suffix mapping', () => {
     expect(fn('SHOP.TO')).toBe('SHOP.TO');
     expect(fn('RELIANCE.NSE')).toBe('RELIANCE.NSE');
     expect(fn('TCS.BSE')).toBe('TCS.BSE');
+    // P19k.1 — Korea KOSPI .KO is the CORRECT EODHD suffix, no remapping
+    expect(fn('005930.KO')).toBe('005930.KO');
     expect(fn('035720.KQ')).toBe('035720.KQ'); // KOSDAQ already correct
     expect(fn('BHP.AU')).toBe('BHP.AU');
   });
@@ -73,11 +80,13 @@ describe('EodhdIntradayService — P19k symbol suffix mapping', () => {
     expect(fn('199820')).toBe('199820');
   });
 
-  it('case-insensitive suffix match (e.g. .ko / .ss)', () => {
+  it('case-insensitive suffix match (e.g. .ss / .sz)', () => {
     const svc = makeService();
     const fn = (svc as any).normalizeForEodhdIntraday.bind(svc);
-    expect(fn('199820.ko')).toBe('199820.KOSE');
     expect(fn('600000.ss')).toBe('600000.SHG');
+    expect(fn('000001.sz')).toBe('000001.SHE');
+    // Korea .KO doesn't need remapping ; passes through unchanged regardless of case
+    expect(fn('199820.ko')).toBe('199820.ko');
   });
 
   it('only the LAST dot is used as the suffix delimiter (multi-dot tickers)', () => {
@@ -85,15 +94,13 @@ describe('EodhdIntradayService — P19k symbol suffix mapping', () => {
     const fn = (svc as any).normalizeForEodhdIntraday.bind(svc);
     // Cas hypothétique d'un ticker avec point dans le base (rare mais défensif)
     expect(fn('BRK.B.US')).toBe('BRK.B.US');
-    expect(fn('FOO.BAR.KO')).toBe('FOO.BAR.KOSE');
+    expect(fn('FOO.BAR.SS')).toBe('FOO.BAR.SHG');
   });
 
-  it('cache key uses the normalized form (avoid duplicate cache for KO vs KOSE)', () => {
-    // We verify by checking that getCandles uses the same cache key for
-    // both inputs of the same ticker. Direct assertion impossible without
-    // exposing internals — covered indirectly by integration tests.
+  it('cache key uses the normalized form (Shanghai SS vs SHG produce same key)', () => {
     const svc = makeService();
     const fn = (svc as any).normalizeForEodhdIntraday.bind(svc);
-    expect(fn('199820.KO')).toBe(fn('199820.KOSE'));
+    // Si quelqu'un appelle avec .SS ou .SHG, on veut une seule entrée cache
+    expect(fn('600519.SS')).toBe(fn('600519.SHG'));
   });
 });
