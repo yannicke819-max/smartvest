@@ -1,48 +1,35 @@
 /**
- * P19a — Yahoo Finance intraday vendor (free, no API key, fallback for tickers
- * EODHD doesn't cover at intraday resolution — Korea KOSPI / KOSDAQ small-caps,
- * obscure US small-caps, etc.).
+ * P19a/P19e/P19g — Yahoo Finance intraday vendor (free, no API key, fallback
+ * for tickers EODHD doesn't cover at intraday resolution).
  *
  * Used as **fallback** by `MultiTimeframePersistenceService` when EODHD
  * `getCandles()` returns null or empty. Same shape as EODHD intraday output
  * so the caller can swap providers without re-shaping data.
  *
- * Library : `yahoo-finance2` npm. Rate limit ~2000/h roughly, no auth needed.
- * If Yahoo also returns nothing → caller marks the ticker `coverage:'none'`
- * (UI badge, no skip from worldwide universe scan).
+ * ## Historique des fixes
+ *
+ * - **P19a** (29/04 13h) : introduction du fallback via package
+ *   `yahoo-finance2`. Tests passaient mais mockaient le service.
+ *
+ * - **P19e** (29/04 14h35) : prod observait `ERR_PACKAGE_PATH_NOT_EXPORTED`.
+ *   Cause : TypeScript `module: CommonJS` transpile `await import(...)` en
+ *   `require()`, et le package est ESM-only. Fix : `Function`-bypass dynamic
+ *   import (préservait l'ESM `import()` au runtime). L'import passe.
+ *
+ * - **P19g** (29/04 15h09, ce fichier) : prod observait `yahooFinance.chart
+ *   is not a function`. Cause : `yahoo-finance2@2.14.0` est une version
+ *   gutted qui n'expose plus que `quote` et `autoc` modules dans son default
+ *   export — pas de `chart`, `historical`, etc. Fix : drop complet du package
+ *   et appel direct à l'API HTTP publique de Yahoo Finance Chart :
+ *
+ *     GET https://query1.finance.yahoo.com/v8/finance/chart/{symbol}
+ *         ?interval=5m&range=1h
+ *
+ *   Endpoint stable (utilisé par finance.yahoo.com lui-même), aucun auth,
+ *   nécessite juste un User-Agent réaliste pour ne pas être 403.
  */
 
 import { Injectable, Logger } from '@nestjs/common';
-
-/**
- * Yahoo-finance2 is published ESM-only (`exports.import` only, no `require`).
- *
- * P19e (29/04/2026, observed in prod) — TypeScript with `module: CommonJS`
- * transpiles `await import('yahoo-finance2')` to a bare `require('yahoo-finance2')`
- * call, which Node.js rejects with `ERR_PACKAGE_PATH_NOT_EXPORTED` because
- * the package's `package.json` `exports` field has only an `import` condition
- * (no `require`). Result : 100% of intraday Yahoo fallback calls failed in
- * prod, persistance multi-TF stayed at 0/20, no positions opened.
- *
- * Fix : use a `Function`-constructed dynamic import. The `Function` constructor
- * compiles its body as runtime ES code that tsc never touches → the `import()`
- * stays as an actual ESM dynamic import, not a `require()`.
- *
- * Cached after first successful resolve (next calls bypass the import overhead).
- */
-let _yahooFinanceModule: any = null;
-// eslint-disable-next-line @typescript-eslint/no-implied-eval
-const _importEsm: (m: string) => Promise<any> = new Function(
-  'specifier',
-  'return import(specifier);',
-) as (m: string) => Promise<any>;
-
-async function getYahooFinance(): Promise<any> {
-  if (_yahooFinanceModule) return _yahooFinanceModule;
-  const mod: any = await _importEsm('yahoo-finance2');
-  _yahooFinanceModule = mod.default ?? mod;
-  return _yahooFinanceModule;
-}
 
 export interface YahooCandle {
   datetime: string;
@@ -52,6 +39,38 @@ export interface YahooCandle {
   close: number;
   volume: number;
 }
+
+/**
+ * Shape of `https://query1.finance.yahoo.com/v8/finance/chart/{symbol}` response.
+ * Réduit aux champs qu'on utilise réellement.
+ */
+interface YahooChartResponse {
+  chart?: {
+    result?: Array<{
+      meta?: { symbol?: string; currency?: string };
+      timestamp?: number[];
+      indicators?: {
+        quote?: Array<{
+          open?: Array<number | null>;
+          high?: Array<number | null>;
+          low?: Array<number | null>;
+          close?: Array<number | null>;
+          volume?: Array<number | null>;
+        }>;
+      };
+    }>;
+    error?: { code?: string; description?: string } | null;
+  };
+}
+
+/**
+ * P19g — User-Agent réaliste obligatoire pour éviter Cloudflare 403 sur
+ * `query1.finance.yahoo.com`. Le UA Mozilla est utilisé par les SDK Yahoo
+ * officieux et n'est pas blacklisté.
+ */
+const YAHOO_USER_AGENT =
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) ' +
+  'Chrome/120.0.0.0 Safari/537.36';
 
 @Injectable()
 export class YahooIntradayService {
@@ -65,61 +84,103 @@ export class YahooIntradayService {
   async getCandles(eodhdTicker: string, interval: '5m' | '1m' = '5m'): Promise<YahooCandle[] | null> {
     const yahooSymbol = this.toYahooSymbol(eodhdTicker);
     if (!yahooSymbol) return null;
+
+    // Yahoo accepte interval = 1m / 2m / 5m / 15m / 30m / 60m / 90m / 1h / 1d / ...
+    // range = 1d / 5d / 1mo / ... — pour 1h de data on prend 5d (Yahoo cap minimum,
+    // sera tronqué au 60 dernières candles côté caller).
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=${interval}&range=1d`;
+
     try {
-      const yahooFinance = await getYahooFinance();
-      const period2 = new Date();
-      const period1 = new Date(period2.getTime() - 60 * 60 * 1000); // 1h ago
-      const result: any = await Promise.race([
-        yahooFinance.chart(yahooSymbol, { period1, period2, interval }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('yahoo_timeout')), 8000)),
-      ]);
-      const quotes = result?.quotes;
-      if (!Array.isArray(quotes) || quotes.length === 0) return null;
+      const res = await fetch(url, {
+        headers: {
+          'User-Agent': YAHOO_USER_AGENT,
+          'Accept': 'application/json',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+        signal: AbortSignal.timeout(8000),
+      });
+
+      if (!res.ok) {
+        this.logger.debug(
+          `[yahoo-intraday] ${eodhdTicker}→${yahooSymbol} HTTP ${res.status}`,
+        );
+        return null;
+      }
+
+      const json = (await res.json()) as YahooChartResponse;
+
+      // Path Yahoo : json.chart.result[0]
+      const chartErr = json?.chart?.error;
+      if (chartErr) {
+        this.logger.debug(
+          `[yahoo-intraday] ${eodhdTicker}→${yahooSymbol} api error: ${chartErr.code ?? 'unknown'}`,
+        );
+        return null;
+      }
+      const result = json?.chart?.result?.[0];
+      if (!result) return null;
+      const timestamps = result.timestamp ?? [];
+      const quote = result.indicators?.quote?.[0];
+      if (!quote || timestamps.length === 0) return null;
+
+      const opens = quote.open ?? [];
+      const highs = quote.high ?? [];
+      const lows = quote.low ?? [];
+      const closes = quote.close ?? [];
+      const volumes = quote.volume ?? [];
+
       const out: YahooCandle[] = [];
-      for (const q of quotes) {
-        if (!q || q.close == null) continue;
-        const date = q.date instanceof Date ? q.date : new Date(q.date);
-        if (Number.isNaN(date.getTime())) continue;
+      for (let i = 0; i < timestamps.length; i++) {
+        const close = closes[i];
+        if (close == null || !Number.isFinite(close)) continue;
+        const ts = timestamps[i];
+        if (!Number.isFinite(ts)) continue;
+        const open = typeof opens[i] === 'number' ? (opens[i] as number) : close;
+        const high = typeof highs[i] === 'number' ? (highs[i] as number) : close;
+        const low = typeof lows[i] === 'number' ? (lows[i] as number) : close;
+        const volume = typeof volumes[i] === 'number' ? (volumes[i] as number) : 0;
         out.push({
-          datetime: date.toISOString(),
-          open: typeof q.open === 'number' ? q.open : Number(q.close),
-          high: typeof q.high === 'number' ? q.high : Number(q.close),
-          low: typeof q.low === 'number' ? q.low : Number(q.close),
-          close: Number(q.close),
-          volume: typeof q.volume === 'number' ? q.volume : 0,
+          datetime: new Date(ts * 1000).toISOString(),
+          open,
+          high,
+          low,
+          close,
+          volume,
         });
       }
       return out.length > 0 ? out : null;
     } catch (e) {
-      this.logger.debug(`[yahoo-intraday] ${eodhdTicker}→${yahooSymbol} error: ${String(e).slice(0, 100)}`);
+      this.logger.debug(
+        `[yahoo-intraday] ${eodhdTicker}→${yahooSymbol} error: ${String(e).slice(0, 100)}`,
+      );
       return null;
     }
   }
 
   /**
    * Convert EODHD-style ticker to Yahoo Finance convention.
-   * Known mappings :
-   *   - AAPL.US     → AAPL          (US, no suffix on Yahoo)
-   *   - 7203.T      → 7203.T        (Tokyo, same)
-   *   - 0700.HK     → 0700.HK       (HK, same)
-   *   - SHEL.LSE    → SHEL.L        (LSE — EODHD uses .LSE, Yahoo uses .L)
-   *   - SHEL.L      → SHEL.L        (already Yahoo format)
-   *   - SAP.XETRA   → SAP.DE        (XETRA → .DE on Yahoo)
-   *   - AIR.PA      → AIR.PA        (Paris, same)
-   *   - ASML.AS     → ASML.AS       (AMS, same)
-   *   - 199820.KO   → 199820.KS     (KOSPI on Yahoo uses .KS)
-   *   - 006340.KO   → 006340.KS
-   *   - BHP.AU      → BHP.AX        (ASX on Yahoo uses .AX)
-   *   - SHOP.TO     → SHOP.TO       (Toronto, same)
-   *   - RELIANCE.NSE→ RELIANCE.NS   (NSE India)
-   *   - TCS.BSE     → TCS.BO        (BSE India)
+   * Known mappings (cf. p19g preserved from p19a) :
+   *   - AAPL.US     → AAPL
+   *   - 7203.T      → 7203.T
+   *   - 0700.HK     → 0700.HK
+   *   - SHEL.LSE    → SHEL.L
+   *   - SHEL.L      → SHEL.L
+   *   - SAP.XETRA   → SAP.DE
+   *   - AIR.PA      → AIR.PA
+   *   - ASML.AS     → ASML.AS
+   *   - 199820.KO   → 199820.KS  (KOSPI)
+   *   - BHP.AU      → BHP.AX     (ASX)
+   *   - SHOP.TO     → SHOP.TO
+   *   - RELIANCE.NSE→ RELIANCE.NS
+   *   - TCS.BSE     → TCS.BO
+   *   - 600000.SS   → 600000.SS  (Shanghai)
+   *   - 000001.SZ   → 000001.SZ  (Shenzhen)
    *
    * Cas non couverts (return null) : crypto (déjà sur Binance), FX, indices.
    */
   toYahooSymbol(eodhdTicker: string): string | null {
     if (!eodhdTicker || typeof eodhdTicker !== 'string') return null;
     const t = eodhdTicker.toUpperCase().trim();
-    // No dot = naked ticker, assume Yahoo accepts as-is (rare from our pipeline)
     if (!t.includes('.')) return t;
     const lastDot = t.lastIndexOf('.');
     const base = t.slice(0, lastDot);
@@ -139,20 +200,20 @@ export class YahooIntradayService {
       case 'SW':    return `${base}.SW`;
       case 'MC':    return `${base}.MC`;
       case 'BME':   return `${base}.MC`;
-      case 'KO':    return `${base}.KS`;  // KOSPI
-      case 'KQ':    return `${base}.KQ`;  // KOSDAQ already Yahoo format
-      case 'AU':    return `${base}.AX`;  // ASX
+      case 'KO':    return `${base}.KS`;
+      case 'KQ':    return `${base}.KQ`;
+      case 'AU':    return `${base}.AX`;
       case 'AX':    return `${base}.AX`;
       case 'TO':    return `${base}.TO`;
       case 'NSE':   return `${base}.NS`;
       case 'BSE':   return `${base}.BO`;
-      case 'SS':    return `${base}.SS`;  // P19d : Shanghai Stock Exchange (China A-shares)
-      case 'SZ':    return `${base}.SZ`;  // P19d : Shenzhen Stock Exchange
-      case 'CC':    return null;          // Crypto — handled by Binance
-      case 'FOREX': return null;          // FX — not in scope
-      case 'INDX':  return null;          // Indices — not in scope
-      case 'COMM':  return null;          // Commodities — not in scope
-      default:      return null;          // Unknown suffix
+      case 'SS':    return `${base}.SS`;
+      case 'SZ':    return `${base}.SZ`;
+      case 'CC':    return null;
+      case 'FOREX': return null;
+      case 'INDX':  return null;
+      case 'COMM':  return null;
+      default:      return null;
     }
   }
 }
