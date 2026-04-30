@@ -742,10 +742,61 @@ export class TopGainersScannerService implements OnModuleInit {
     // P18e — accumule les skips pour log agrégé en fin de cycle (au lieu de
     // N lignes "no persistence data → skip" qui polluent les logs Fly).
     const skippedNoPersistence: string[] = [];
+    // P19x.3 (29/04/2026) — Cooldown 30 min same symbol/side après close.
+    //
+    // User constat (29/04 02:00 UTC) : "Observé SLV 3× / LMT 3× / XLE 2× en
+    // boucle = churn fees pur." Le scanner ouvre un trade, le ferme, le
+    // re-ouvre 5 min plus tard sur le même symbol/side car le ticker reste
+    // top gainer et passe les gates → fees s'accumulent sans valeur ajoutée.
+    //
+    // Garde-fou : refuse toute open sur un (symbol, direction) si une
+    // position était fermée pour ce couple dans les 30 dernières minutes.
+    // Lookup unique par cycle : on charge tous les recent closes avant la
+    // boucle puis on check en mémoire (évite N queries DB).
+    const cooldownMs = 30 * 60_000;
+    const cooldownSinceIso = new Date(Date.now() - cooldownMs).toISOString();
+    // Failure-tolerant : si la query échoue (mock partiel en test, schema
+    // out-of-sync, etc.), on passe le cooldown sans bloquer le pipeline.
+    // Le worst case est de ré-ouvrir un trade fermé < 30 min — c'est ce qu'on
+    // observait avant P19x.3 et le P19x.1 MIN_NET_PROFIT guard limite déjà
+    // les fake TPs en cascade.
+    const recentCloseByKey = new Map<string, number>();
+    try {
+      const { data: recentClosesRaw } = await this.supabase
+        .getClient()
+        .from('lisa_positions')
+        .select('symbol, direction, exit_timestamp')
+        .eq('portfolio_id', portfolioId)
+        .neq('status', 'open')
+        .gte('exit_timestamp', cooldownSinceIso);
+      for (const row of recentClosesRaw ?? []) {
+        const key = `${String(row.symbol).toUpperCase()}::${String(row.direction)}`;
+        const exitMs = new Date(String(row.exit_timestamp)).getTime();
+        if (!Number.isFinite(exitMs)) continue;
+        const prev = recentCloseByKey.get(key) ?? 0;
+        if (exitMs > prev) recentCloseByKey.set(key, exitMs);
+      }
+    } catch (e) {
+      this.logger.debug(`[top-gainers] cooldown query skipped: ${String(e).slice(0, 100)}`);
+    }
+
     for (const cand of top) {
       if (opened >= maxThisCycle) break;
       const baseSym = cand.symbol.replace(/USDT$|USDC$/, '').toUpperCase();
       if (openSymbols.has(cand.symbol.toUpperCase()) || openSymbols.has(baseSym)) continue;
+
+      // P19x.3 — Cooldown re-entry : refuse open si même symbol+side fermé < 30 min
+      // Le scanner gainers ouvre toujours en 'long' (ligne ~870 expression).
+      // Si tu ajoutes des shorts plus tard, garde la même logique par direction.
+      const cooldownKey = `${cand.symbol.toUpperCase()}::long`;
+      const lastExitMs = recentCloseByKey.get(cooldownKey);
+      if (lastExitMs && Date.now() - lastExitMs < cooldownMs) {
+        const elapsedMin = Math.floor((Date.now() - lastExitMs) / 60_000);
+        this.logger.log(
+          `[top-gainers] ${cand.symbol} cooldown actif (fermé il y a ${elapsedMin} min < 30 min) → skip re-entry`,
+        );
+        continue;
+      }
 
       // P8 gate — persistance multi-TF
       const persistence = persistenceMap.get(cand.symbol.toUpperCase());
