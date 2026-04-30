@@ -17,7 +17,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import Decimal from 'decimal.js';
 import { randomUUID } from 'node:crypto';
-import { computeAtrStopByKind, type ThesisKind, computeRealisticFee } from '@smartvest/ai-analyst';
+import {
+  computeAtrStopByKind,
+  computeRealisticFee,
+  computeVenueFeeDetail,
+  resolveFeesAwareBuffer,
+  type ThesisKind,
+} from '@smartvest/ai-analyst';
 import { mapPositionRows } from '../helpers/position.mapper';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { PerformanceService } from '../../performance/performance.service';
@@ -1083,6 +1089,69 @@ export class MechanicalTradingService {
       const estimatedCost = feeIbkr.plus(slippageCost);
       const notionalNet = notional.minus(estimatedCost);
       const quantity = notionalNet.div(price);
+
+      // P20.1 (30/04/2026) — FEES-AWARE TARGET guard miroir paper-broker.
+      //
+      // Ce code path (mechanical-trading INSERT direct) bypass paperBroker.openPosition
+      // et donc le P20 guard. On duplique ici le check sur les mêmes critères :
+      // expected_gain_at_TP ≥ FEES_AWARE_BUFFER × round_trip_fees.
+      // Cf. paper-broker.service.ts pour la justification chiffrée (9 losses J-7).
+      {
+        const tpPriceDec = new Decimal(takeProfitPrice);
+        const isLong = target.direction === 'long';
+        const exitSide: 'buy' | 'sell' = isLong ? 'sell' : 'buy';
+        const exitFeeBreakdown = computeVenueFeeDetail(
+          tentativeQty,
+          tpPriceDec,
+          target.assetClass as string | undefined,
+          target.venue as string | undefined,
+          exitSide,
+        );
+        // Round-trip = entry fee + exit fee (slippage entry compté séparément
+        // dans estimatedCost ; on reste cohérent avec le check paper-broker
+        // qui ne compte pas le slippage non plus).
+        const entryFeeOnly = feeIbkr; // sans slippage
+        const roundTripFees = entryFeeOnly.plus(new Decimal(exitFeeBreakdown.total));
+        const expectedGain = isLong
+          ? tpPriceDec.minus(price).mul(tentativeQty)
+          : price.minus(tpPriceDec).mul(tentativeQty);
+        const buffer = resolveFeesAwareBuffer();
+        const requiredGain = roundTripFees.mul(buffer);
+        if (expectedGain.lt(requiredGain)) {
+          this.logger.log(
+            `[MÉCANIQUE:P20.1] ${target.symbol} skip open: ` +
+            `expected_gain_at_TP=$${expectedGain.toFixed(2)} < ${buffer.toFixed(2)}× round_trip_fees=$${requiredGain.toFixed(2)} ` +
+            `(entry=$${price.toFixed(4)} TP=$${tpPriceDec.toFixed(4)} qty=${tentativeQty.toFixed(4)} notional=$${notional.toFixed(2)})`,
+          );
+          await this.decisionLog.append({
+            portfolioId,
+            kind: 'mechanical_open_skipped_fees_aware',
+            summary: `[P20.1] ${target.symbol}: open mechanical refusée — gain TP < ${buffer.toFixed(2)}× fees round-trip`,
+            rationale:
+              `Gain attendu au TP $${expectedGain.toFixed(2)} insuffisant vs fees round-trip $${roundTripFees.toFixed(2)} ` +
+              `(buffer=${buffer.toFixed(2)}). Augmenter TP ou notional pour ouvrir cette position.`,
+            payload: {
+              symbol: target.symbol,
+              asset_class: target.assetClass,
+              venue: target.venue ?? null,
+              direction: target.direction,
+              entry_price: price.toFixed(4),
+              tp_price: tpPriceDec.toFixed(4),
+              tp_pct: tpPct.toFixed(3),
+              qty: tentativeQty.toFixed(4),
+              notional_usd: notional.toFixed(2),
+              entry_fee_usd: entryFeeOnly.toFixed(4),
+              exit_fee_usd: exitFeeBreakdown.total.toFixed(4),
+              round_trip_fees_usd: roundTripFees.toFixed(4),
+              expected_gain_at_tp_usd: expectedGain.toFixed(4),
+              required_gain_usd: requiredGain.toFixed(4),
+              buffer: buffer.toFixed(2),
+            },
+            triggeredBy: 'mechanical_cron',
+          }).catch(() => null);
+          continue; // skip cette ouverture, passe au prochain target
+        }
+      }
 
       const positionId = randomUUID();
       const syntheticThesisId = target.thesisId ?? randomUUID();
