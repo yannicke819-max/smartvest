@@ -699,11 +699,12 @@ export class TopGainersScannerService implements OnModuleInit {
       return;
     }
 
-    // P8 — Charge le seuil min de persistance pour ce portfolio (DB > env > 0.67)
+    // P8 + P19x.2 — Charge config gainers pour ce portfolio :
+    // min persistance + path efficiency + TP/SL defaults.
     const { data: cfgRow } = await this.supabase
       .getClient()
       .from('lisa_session_configs')
-      .select('gainers_min_persistence_score, gainers_min_path_efficiency')
+      .select('gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct')
       .eq('portfolio_id', portfolioId)
       .maybeSingle();
     const minScore = this.resolveMinPersistenceScore(
@@ -715,6 +716,15 @@ export class TopGainersScannerService implements OnModuleInit {
     const minPathEff = cfgRow?.gainers_min_path_efficiency != null
       ? Math.max(0, Math.min(1, Number(cfgRow.gainers_min_path_efficiency)))
       : null;
+    // P19x.2 — TP/SL configurables par portfolio. Defaults DB = 1.5% / 1.0%
+    // (migration 0093). Si row absent (portfolio sans config), fallback hardcoded
+    // aux mêmes defaults.
+    const tpPct = cfgRow?.gainers_default_tp_pct != null
+      ? Math.max(0.1, Math.min(50, Number(cfgRow.gainers_default_tp_pct)))
+      : 1.5;
+    const slPct = cfgRow?.gainers_default_sl_pct != null
+      ? Math.max(0.1, Math.min(20, Number(cfgRow.gainers_default_sl_pct)))
+      : 1.0;
 
     // P8 — Calcule la persistance multi-TF pour les top candidats (parallèle)
     const persistenceMap = await this.mtfPersistence.analyzeBatch(
@@ -801,6 +811,7 @@ export class TopGainersScannerService implements OnModuleInit {
         portfolioId,
         cand,
         persistence,
+        { tpPct, slPct },
       ).catch((e) => {
         this.logger.warn(
           `[top-gainers] open ${cand.symbol} failed: ${String(e).slice(0, 120)}`,
@@ -834,9 +845,14 @@ export class TopGainersScannerService implements OnModuleInit {
     portfolioId: string,
     cand: TopGainerCandidate & { score: number; assetClass: TopGainerAssetClass },
     persistence?: PersistenceResult,
+    // P19x.2 — TP/SL config par portfolio (DB lisa_session_configs.gainers_default_*).
+    // Fallback aux nouveaux defaults P19x.2 spec : TP=1.5% / SL=1.0%.
+    overrides?: { tpPct: number; slPct: number },
   ): Promise<string | null> {
     const proposalId = randomUUID();
     const thesisId = randomUUID();
+    const effectiveTp = overrides?.tpPct ?? 1.5;
+    const effectiveSl = overrides?.slPct ?? 1.0;
 
     // P18 — LLM thesis generation (inert when SCANNER_LLM_ROUTER_ENABLED=false)
     const llmThesis = await this.generateThesis(cand);
@@ -855,8 +871,10 @@ export class TopGainersScannerService implements OnModuleInit {
           assetClass: cand.assetClass,
           direction: 'long',
           venue: cand.exchange ?? 'unknown',
-          stopLossPct: 1.5,
-          takeProfitPct: 3.0,
+          // P19x.2 — Lit DB : default 1.5% TP / 1.0% SL (vs 3.0/1.5 pré-P19x.2).
+          // User spec (29/04 02:00 UTC) : lock profits earlier + tighter stops.
+          stopLossPct: effectiveSl,
+          takeProfitPct: effectiveTp,
           horizonDays: 1,
         },
       ],
