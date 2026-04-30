@@ -87,7 +87,23 @@ const files = readdirSync(new URL(MIG_DIR))
   .filter((f) => f.endsWith('.sql'))
   .sort();
 
-console.log(`${files.length} migrations trouvées · ${applied.size} déjà appliquées · projet ${PROJECT_REF}\n`);
+// P19x.10 (29/04/2026) — Diff explicit repo vs DB pour éviter trous silencieux
+// (audit user via Comet : 0036 et 0090 manquaient en prod malgré être dans le
+// repo). Le script appliquait déjà tout le delta, mais sans visibilité sur
+// les gaps : failures au milieu du run laissaient des trous non visibles.
+const repoFilenames = new Set(files);
+const inDbButNotRepo = [...applied.keys()].filter((f) => !repoFilenames.has(f));
+const inRepoButNotDb = files.filter((f) => !applied.has(f));
+console.log(`${files.length} migrations dans le repo · ${applied.size} appliquées en DB · projet ${PROJECT_REF}`);
+if (inRepoButNotDb.length > 0) {
+  console.log(`  ⚠️  ${inRepoButNotDb.length} migrations MANQUANTES (gap repo→DB):`);
+  for (const f of inRepoButNotDb) console.log(`     - ${f}`);
+}
+if (inDbButNotRepo.length > 0) {
+  console.log(`  ℹ️  ${inDbButNotRepo.length} migrations en DB mais absentes du repo (legacy):`);
+  for (const f of inDbButNotRepo) console.log(`     - ${f}`);
+}
+console.log('');
 
 let successes = 0;
 let skipped = 0;
