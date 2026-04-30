@@ -1,0 +1,79 @@
+name: FRED smoke test (one-shot)
+
+# ADR-001 follow-up (30/04/2026) — Smoke test FRED_API_KEY pour valider la
+# clé après set Fly secret. Workflow déclenché manuellement uniquement
+# (workflow_dispatch). Aucun trigger sur push — pas de coût CI continu.
+#
+# Secrets requis dans GitHub repository secrets :
+#   - FRED_API_KEY : St. Louis Fed Economic Data API key (32 chars hex)
+#
+# Le job exécute le script `scripts/test-secrets.ts` (livré PR #151) qui
+# ping `/fred/series?series_id=GDP` avec la clé et reporte OK/FAIL.
+#
+# Cf. docs/fred-api-key-usage.md
+# Cf. docs/secrets-audit-2026-04-30.md
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: fred-smoke
+  cancel-in-progress: false
+
+jobs:
+  fred-smoke:
+    name: FRED smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build ai-analyst (deps tsx)
+        run: npm run build --workspace=@smartvest/ai-analyst
+
+      - name: Smoke test FRED_API_KEY
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        run: |
+          set +e
+          # Le script teste tous les secrets ; en CI seul FRED_API_KEY
+          # est injecté. Les autres ressortent MISSING — on extrait
+          # uniquement la ligne FRED via grep et on ignore le exit code.
+          OUTPUT=$(npx tsx scripts/test-secrets.ts 2>&1)
+          set -e
+
+          echo "=== FRED line ==="
+          echo "$OUTPUT" | grep -A1 FRED_API_KEY || {
+            echo "::error::FRED_API_KEY line not found in script output"
+            echo "Full output for debug :"
+            echo "$OUTPUT"
+            exit 2
+          }
+
+          # Verdict explicite : FAIL/MISSING → exit non-zero, OK → green
+          FRED_STATUS=$(echo "$OUTPUT" | grep -E "▶ FRED_API_KEY" | head -1)
+          echo ""
+          echo "=== Verdict ==="
+          echo "$FRED_STATUS"
+
+          if echo "$FRED_STATUS" | grep -qE "FAIL|MISSING"; then
+            echo "::error::FRED_API_KEY smoke test failed"
+            exit 1
+          fi
+
+          if echo "$FRED_STATUS" | grep -q "OK"; then
+            echo "::notice::FRED_API_KEY OK — clé valide, FRED API joignable"
+            exit 0
+          fi
+
+          echo "::warning::Unrecognized status, treating as failure"
+          exit 1
