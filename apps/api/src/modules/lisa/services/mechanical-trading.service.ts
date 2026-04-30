@@ -17,7 +17,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import Decimal from 'decimal.js';
 import { randomUUID } from 'node:crypto';
-import { computeAtrStopByKind, type ThesisKind } from '@smartvest/ai-analyst';
+import { computeAtrStopByKind, type ThesisKind, computeRealisticFee } from '@smartvest/ai-analyst';
 import { mapPositionRows } from '../helpers/position.mapper';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { PerformanceService } from '../../performance/performance.service';
@@ -1056,13 +1056,31 @@ export class MechanicalTradingService {
       const horizonDays = target.horizonDays ?? 3;
       const horizonTargetDate = new Date(Date.now() + horizonDays * 86_400_000).toISOString();
 
-      // Coûts simulés : fees broker (10 bps) + slippage estimé (10 bps).
-      // Le slippage rend la sim plus réaliste vs un trade réel — sans lui
-      // on surestime la perf de 10-30% selon la liquidité (cf RETEX
-      // "Release It!" Nygard, et patterns Composer/QuantConnect).
-      const feeBps = 10;
-      const slippageBps = 10;
-      const estimatedCost = notional.mul(feeBps + slippageBps).div(10000);
+      // P19x (29/04/2026) — Fix double bug observé en prod ce soir :
+      // 8/10 trades fermés "TP hit" avec P&L négatif. Cause #1 : ce code
+      // path utilisait feeBps=10 + slippageBps=10 = 20bps round-trip per
+      // side = 0.40% total (~$10 sur $2500 notional) — 50× IBKR Pro réel.
+      // P19u a fixé `paper-broker.service.ts` mais PAS ce code path
+      // mechanical-trading qui est le vrai chemin du scanner Gainers.
+      //
+      // Fix : utilise computeRealisticFee partagé (P19u). IBKR Pro Tiered :
+      //   - US equities + ETFs : max($0.35, $0.005/share), capped 1%
+      //   - EU/Asia equities   : 5bps proxy
+      //   - Crypto (Paxos)     : 0.085%
+      //   - FX / commodity     : 1bp / 5bps
+      //
+      // Slippage modélé séparément (5bps additionnel, hypothèse paper sim
+      // pour ne pas surestimer la perf vs réel). C'est conservateur mais
+      // pas absurde.
+      const tentativeQty = notional.div(price);
+      const feeIbkr = computeRealisticFee(
+        tentativeQty,
+        price,
+        target.assetClass as string | undefined,
+      );
+      const slippageBps = 5;
+      const slippageCost = notional.mul(slippageBps).div(10000);
+      const estimatedCost = feeIbkr.plus(slippageCost);
       const notionalNet = notional.minus(estimatedCost);
       const quantity = notionalNet.div(price);
 
@@ -1816,7 +1834,14 @@ export class MechanicalTradingService {
     }
 
     // MACD cross contre-direction + P&L positif → exit momentum
-    if (!reactiveCloseReason && pnlPct > 0 && ind.macdHist != null) {
+    // P19x (29/04/2026) — Bump floor `pnlPct > 0` → `pnlPct >= MIN_REACTIVE_PNL_PCT`.
+    // Bug observé : `pnlPct > 0` faisait fermer des trades à +0.005% gross.
+    // Combiné aux fees ~0.20% par side (P19u-bis), le net était systématiquement
+    // négatif → 8/10 "TP hits" en fait des pertes. Floor 0.5% garantit que le
+    // reactive exit n'opère que quand on couvre les frictions round-trip + un
+    // peu de marge. Aligné avec `minPnlForReactive` du RSI exit (0.5/1).
+    const MIN_REACTIVE_PNL_PCT = isHyperActive ? 0.5 : 1.0;
+    if (!reactiveCloseReason && pnlPct >= MIN_REACTIVE_PNL_PCT && ind.macdHist != null) {
       if (isLong && ind.macdHist < 0 && Math.abs(ind.macdHist) > 0.01) {
         reactiveCloseReason = `MACD_hist=${ind.macdHist.toFixed(3)} bearish sur LONG + P&L=+${pnlPct.toFixed(2)}% → exit momentum`;
       } else if (!isLong && ind.macdHist > 0 && Math.abs(ind.macdHist) > 0.01) {
@@ -2034,17 +2059,37 @@ export class MechanicalTradingService {
     const notional = new Decimal(pos.entry_notional_usd as string);
     const isLong = (pos.direction as string) === 'long';
     const qty = new Decimal(pos.quantity as string);
+    const assetClass = (pos.asset_class as string | undefined) ?? undefined;
 
-    // Coûts symétriques à l'open : fees broker + slippage estimé.
-    // Cohérence avec les hypothèses du backtest harness — rend la sim
-    // plus pessimiste donc plus alignée avec le réel.
-    const feeBps = 10;
-    const slippageBps = 10;
-    const exitCost = notional.mul(feeBps + slippageBps).div(10000);
     const rawPnl = isLong
       ? exitPrice.minus(entryPrice).mul(qty)
       : entryPrice.minus(exitPrice).mul(qty);
-    const realizedPnl = rawPnl.minus(exitCost);
+
+    // P19x (29/04/2026) — Realistic IBKR Pro fee model + closed_invalidated refund.
+    //
+    // Avant P19x : `feeBps + slippageBps = 20bps` × notional côté exit, soit
+    // ~$5 sur $2500 — 50× IBKR Pro réel. Sur tiny moves (TP @ +0.005% via MACD
+    // reactive close), ce fee mangeait tout le gross PnL et faisait apparaître
+    // -$4.81 sur un "TP hit". P19u avait fixé paper-broker.service.ts mais
+    // PAS ce code path mechanical-trading.
+    //
+    // Fix :
+    //   - exitCost = computeRealisticFee + 5bps slippage (paper sim conservatif)
+    //   - closed_invalidated → refund both sides, treat as "no trade happened"
+    let exitCost: Decimal;
+    let entryFeeRefund: Decimal;
+    if (reason === 'closed_invalidated') {
+      exitCost = new Decimal(0);
+      const entryCostStored = pos.estimated_entry_cost_usd as string | null;
+      entryFeeRefund = entryCostStored ? new Decimal(entryCostStored) : new Decimal(0);
+    } else {
+      const feeIbkr = computeRealisticFee(qty, exitPrice, assetClass);
+      const slippageBps = 5;
+      const slippageCost = notional.mul(slippageBps).div(10000);
+      exitCost = feeIbkr.plus(slippageCost);
+      entryFeeRefund = new Decimal(0);
+    }
+    const realizedPnl = rawPnl.minus(exitCost).plus(entryFeeRefund);
     const pnlPct = realizedPnl.div(notional).mul(100).toNumber();
 
     const now = new Date().toISOString();
