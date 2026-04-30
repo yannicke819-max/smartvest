@@ -457,10 +457,10 @@ export default function LisaPage() {
           <div>
             <h1 className="flex items-center gap-2 text-xl font-semibold">
               <Sparkles className="h-5 w-5 text-primary" />
-              Lisa — AI Analyst
+              Mon assistant Lisa
             </h1>
             <p className="text-sm text-muted-foreground">
-              Multi-asset agnostic, anti-consensus, simulation-only
+              Multi-actifs · approche anti-consensus · 100 % simulation
             </p>
           </div>
         </div>
@@ -492,10 +492,10 @@ export default function LisaPage() {
           <div>
             <h1 className="flex items-center gap-2 text-xl font-semibold">
               <Sparkles className="h-5 w-5 text-primary" />
-              Lisa — AI Analyst Multi-Asset
+              Mon assistant Lisa
             </h1>
             <p className="text-sm text-muted-foreground">
-              Agnostique aux classes d'actifs · Anti-consensus · Corpus 25+ événements ·
+              Multi-actifs · approche anti-consensus · corpus de 25+ événements historiques ·
               100 % simulation
             </p>
           </div>

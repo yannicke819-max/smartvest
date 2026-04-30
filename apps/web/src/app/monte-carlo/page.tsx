@@ -84,7 +84,7 @@ export default function MonteCarloPage() {
   return (
     <div className="container mx-auto py-6 space-y-6 max-w-6xl">
       <div>
-        <h1 className="text-2xl font-semibold">Monte Carlo Simulation</h1>
+        <h1 className="text-2xl font-semibold">Projections futures</h1>
         <p className="text-sm text-muted-foreground">
           Projette N trajectoires possibles à partir des rendements historiques bootstrappés.
           Estime la distribution des résultats, la VaR, et la probabilité d'atteindre une cible.

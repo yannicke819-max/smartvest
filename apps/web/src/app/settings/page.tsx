@@ -47,7 +47,7 @@ export default function SettingsPage() {
   return (
     <div className="mx-auto max-w-2xl space-y-6 p-6">
       <div>
-        <h1 className="text-xl font-semibold">Paramètres</h1>
+        <h1 className="text-xl font-semibold">Mon compte</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Configurez votre espace SmartVest.
         </p>

@@ -25,7 +25,7 @@ export default function HelpIndexPage() {
       <BackButton />
 
       <div>
-        <h1 className="text-xl font-semibold">Aide & Documentation</h1>
+        <h1 className="text-xl font-semibold">Aide</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Guides utilisateur, concepts produit, audits internes. Tous les documents
           sont versionnés dans le repo Git et synchronisés ici à chaque déploiement.
