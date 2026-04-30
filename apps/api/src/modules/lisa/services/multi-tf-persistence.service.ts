@@ -22,6 +22,7 @@ import {
   type PersistenceResult,
   type PathQualityMetrics,
 } from '@smartvest/ai-analyst';
+import { ConfigService } from '@nestjs/config';
 import { BinanceMarketService } from './binance-market.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
 import { YahooIntradayService } from './yahoo-intraday.service';
@@ -113,6 +114,7 @@ export class MultiTimeframePersistenceService {
     private readonly eodhd: EodhdIntradayService,
     private readonly yahoo: YahooIntradayService,
     private readonly intradayCache: IntradayCacheService,
+    private readonly config: ConfigService,
   ) {}
 
   /** P18e — Métriques cumulatives pour observability. */
@@ -161,6 +163,15 @@ export class MultiTimeframePersistenceService {
   async analyzeBatch(candidates: Candidate[]): Promise<Map<string, PersistenceWithPath>> {
     const out = new Map<string, PersistenceWithPath>();
     if (candidates.length === 0) return out;
+
+    // P19v (30/04/2026 09:00 UTC) — MULTITF_PAUSE émergency flag.
+    // Pause les calls intraday EODHD (5 API calls/req multiplier) sans deploy.
+    // `flyctl secrets set MULTITF_PAUSE=true` quand quota saturé.
+    const multitfPaused = (this.config.get<string>('MULTITF_PAUSE') ?? 'false').toLowerCase() === 'true';
+    if (multitfPaused) {
+      this.logger.debug('[multi-tf-persistence] MULTITF_PAUSE=true — return empty Map');
+      return out;
+    }
 
     // P19a — pas de pré-filtre exchange. Le routing multi-vendor décide
     // (EODHD primaire, Yahoo fallback, sinon coverage='none' annoté).
