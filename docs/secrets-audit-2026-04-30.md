@@ -5,16 +5,16 @@ Inventaire exhaustif des secrets référencés dans le code (`process.env.*` +
 génération si manquant.
 
 **Source de l'inventaire** : `grep -rE "process\.env\.[A-Z_]+|configService\.get\(['\"]"`
-sur tout le repo le 30/04/2026 par claude/review-repo-docs-f7qBN.
+sur tout le repo le 30/04/2026.
 
-**Statut "Présent ?"** : à compléter par l'opérateur via :
-- Fly : `flyctl secrets list -a smartvest`
-- Vercel : `vercel env ls --scope yannicke819-maxs-projects --project smartvest`
-- GitHub Actions : `gh secret list -R yannicke819-max/smartvest`
+**Statut "Présent ?"** : reflète l'état Fly post-merge ADR-001 Phase 1+2+4
+(commits `8bc094d` + `d8f820a` + `0ed99e9`). User a confirmé via UI Fly les
+actions secrets (set `SCANNER_LLM_ROUTER_ENABLED=true`, unset des 4 interdits
+ADR-001 §1.3 : `OPENAI_API_KEY`, `MISTRAL_API_KEY`, `CLAUDE_MODEL_SONNET`,
+`CLAUDE_MODEL_HAIKU`).
 
-Le sandbox claude n'a accès à aucun de ces CLIs ni à un `FLY_API_TOKEN /
-VERCEL_TOKEN / GH_TOKEN` permettant d'introspecter les plateformes. Coller la
-sortie brute dans la section "Snapshot Fly/Vercel/GitHub" en bas de ce doc.
+Pour re-vérifier l'état actuel : `flyctl secrets list -a smartvest` + run
+`pnpm tsx scripts/test-secrets.ts` avec env Fly chargée (cf. §6.3).
 
 ---
 
@@ -22,25 +22,25 @@ sortie brute dans la section "Snapshot Fly/Vercel/GitHub" en bas de ce doc.
 
 | Secret | Plateforme | Présent | Usage 1 ligne | URL génération si manquant |
 |---|---|---|---|---|
-| `ANTHROPIC_API_KEY` | Fly | ? | Lisa thesis_generation Opus 4.7 + scanner fallback ultime ADR-001 | https://console.anthropic.com/settings/keys |
-| `GEMINI_API_KEY` | Fly | ? | Scanner LLM router primaire (Gemini 2.5 Flash Lite) ADR-001 Phase 1 | https://aistudio.google.com/apikey |
-| `EODHD_API_KEY` | Fly | ? | Cotations US/EU/Asia, fundamentals, news (toutes données marché) | https://eodhd.com/cp/dashboard |
-| `SUPABASE_URL` | Fly | ? | Backend Postgres + storage | https://supabase.com/dashboard/project/_/settings/api |
-| `SUPABASE_SERVICE_ROLE_KEY` | Fly | ? | Backend RLS-bypass writes/cron/admin | idem |
-| `SCANNER_LLM_ROUTER_ENABLED` | Fly | ? | Toggle Phase 1 ADR-001 (doit être `true` post-merge PR #148) | n/a (booléen) |
-| `NEXT_PUBLIC_SUPABASE_URL` | Vercel | ? | Front Next.js client Supabase auth | dashboard URL |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Vercel | ? | Front Supabase auth anon (RLS-protected) | dashboard URL |
-| `NEXT_PUBLIC_API_URL` | Vercel | ? | Front → backend Fly URL | n/a (`https://smartvest.fly.dev`) |
+| `ANTHROPIC_API_KEY` | Fly | ✅ | Lisa thesis_generation Opus 4.7 + scanner fallback ultime ADR-001 | https://console.anthropic.com/settings/keys |
+| `GEMINI_API_KEY` | Fly | ✅ | Scanner LLM router primaire (Gemini 2.5 Flash Lite) ADR-001 Phase 1 | https://aistudio.google.com/apikey |
+| `EODHD_API_KEY` | Fly | ✅ | Cotations US/EU/Asia, fundamentals, news (toutes données marché) | https://eodhd.com/cp/dashboard |
+| `SUPABASE_URL` | Fly | ✅ | Backend Postgres + storage | https://supabase.com/dashboard/project/_/settings/api |
+| `SUPABASE_SERVICE_ROLE_KEY` | Fly | ✅ | Backend RLS-bypass writes/cron/admin | idem |
+| `SCANNER_LLM_ROUTER_ENABLED` | Fly | ✅ `true` | Toggle Phase 1 ADR-001 (PR #148 merged `8bc094d`) | n/a (booléen) |
+| `NEXT_PUBLIC_SUPABASE_URL` | Vercel | ✅ | Front Next.js client Supabase auth | dashboard URL |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Vercel | ✅ | Front Supabase auth anon (RLS-protected) | dashboard URL |
+| `NEXT_PUBLIC_API_URL` | Vercel | ✅ | Front → backend Fly URL | n/a (`https://smartvest.fly.dev`) |
 
 ## 2. P1 — Secrets importants (feature majeure dégradée si absent)
 
 | Secret | Plateforme | Présent | Usage 1 ligne | URL génération si manquant |
 |---|---|---|---|---|
-| `SUPABASE_ACCESS_TOKEN` | GitHub Actions | ? | Workflow `apply-migrations` Supabase Mgmt API | https://supabase.com/dashboard/account/tokens |
-| `SUPABASE_PROJECT_REF` | GitHub Actions | ? | Target project ref pour le workflow | dashboard URL `…/project/<ref>` |
-| `FLY_API_TOKEN` | GitHub Actions | ? | Deploy auto sur push main | `flyctl auth token` |
-| `ADMIN_TOKEN` | Fly | ? | Header `x-admin-token` sur `/admin/*` (eodhd-status, logs) | rotation manuelle (UUID v4) |
-| `FRED_API_KEY` | Fly | ? | Macro indicators St. Louis Fed (régime US) | https://fred.stlouisfed.org/docs/api/api_key.html |
+| `SUPABASE_ACCESS_TOKEN` | GitHub Actions | ✅ (PAT `smartvest-fly-migrations`, exp. 30/05/2026) | Workflow `apply-migrations` Supabase Mgmt API | https://supabase.com/dashboard/account/tokens |
+| `SUPABASE_PROJECT_REF` | GitHub Actions | ✅ `mfuutigfhrawccotinpo` | Target project ref pour le workflow | dashboard URL `…/project/<ref>` |
+| `FLY_API_TOKEN` | GitHub Actions | ✅ | Deploy auto sur push main | `flyctl auth token` |
+| `ADMIN_TOKEN` | Fly | ✅ | Header `x-admin-token` sur `/admin/*` (eodhd-status, logs) | rotation manuelle (UUID v4) |
+| `FRED_API_KEY` | Fly | ✅ (32 chars hex, validé runtime 200 OK via endpoint temporaire `/admin/fred-test` commit `8af27b1`, retiré `f5bf397`) | Macro indicators St. Louis Fed (régime US) | https://fred.stlouisfed.org/docs/api/api_key.html |
 
 ## 3. P2 — Secrets optionnels (feature mineure ou feature flag-gated off)
 
@@ -54,14 +54,17 @@ sortie brute dans la section "Snapshot Fly/Vercel/GitHub" en bas de ce doc.
 | `TWITTER_BEARER_TOKEN` | Fly | ? | Sentiment X/Twitter v2 (optionnel) | https://developer.x.com/en/portal/dashboard |
 | `SENTRY_DSN` | Fly + Vercel | ? | Observability error tracking | https://sentry.io/settings/projects/_/keys/ |
 
-## 4. P3 — Secrets INTERDITS (ADR-001 — à unset Phase 4)
+## 4. P3 — Secrets INTERDITS (ADR-001 §1.3 — unset done)
 
-| Secret | Plateforme | Présent | Action |
+| Secret | Plateforme | Présent | Statut |
 |---|---|---|---|
-| `OPENAI_API_KEY` | Fly | ? | `flyctl secrets unset OPENAI_API_KEY -a smartvest` |
-| `MISTRAL_API_KEY` | Fly | ? | `flyctl secrets unset MISTRAL_API_KEY -a smartvest` |
-| `CLAUDE_MODEL_SONNET` | Fly | ? | `flyctl secrets unset CLAUDE_MODEL_SONNET -a smartvest` |
-| `CLAUDE_MODEL_HAIKU` | Fly | ? | `flyctl secrets unset CLAUDE_MODEL_HAIKU -a smartvest` |
+| `OPENAI_API_KEY` | Fly | ❌ absent | ✅ unset par user (Phase 1) — code provider supprimé Phase 4 PR #150 (`0ed99e9`) |
+| `MISTRAL_API_KEY` | Fly | ❌ absent | ✅ unset par user (Phase 1) — code provider supprimé Phase 4 PR #150 |
+| `CLAUDE_MODEL_SONNET` | Fly | ❌ absent | ✅ unset par user (Phase 1) — Sonnet hors `MODEL_BY_TASK` Phase 2 PR #149 (`d8f820a`) |
+| `CLAUDE_MODEL_HAIKU` | Fly | ❌ absent | ✅ unset par user (Phase 1) — Haiku hors `MODEL_BY_TASK` Phase 2 PR #149 |
+
+Le script `scripts/test-secrets.ts` traite l'absence de ces 4 secrets comme
+**OK** (conforme ADR-001) et leur présence comme **FAIL** (regression check).
 
 ## 5. Variables non-secret (tunables, à laisser default sauf besoin spécifique)
 

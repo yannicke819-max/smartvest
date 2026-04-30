@@ -5,6 +5,81 @@ Guide de travail pour Claude Code sur ce repo.
 
 ---
 
+## ADR-002 — Nomenclature UI grand public (Sprint 1, 30/04/2026)
+
+Toute mention texte côté front (sidebar, h1, breadcrumb, document.title) doit
+utiliser le vocabulaire grand public. Routes inchangées (deeplinks préservés).
+
+| Route | Label sidebar / h1 |
+|---|---|
+| `/` | Mon tableau de bord |
+| `/portfolio` | Mon portefeuille |
+| `/performance` | Mes résultats |
+| `/lisa` | Mon assistant Lisa |
+| `/backtest` | Tester sur le passé |
+| `/monte-carlo` | Projections futures |
+| `/optimizer` | Améliorer mon portefeuille |
+| `/bot-lab` | Mes stratégies auto (mode démo) |
+| `/alerts` | Mes notifications |
+| `/history` | Mes opérations |
+| `/settings` | Mon compte |
+| `/help` | Aide |
+| `/admin/monitoring` | Monitoring (masqué non-admin via `useIsAdmin()` hook) |
+
+Nouveaux libellés interdits dans le code/UI :
+- "Backtest harness", "Monte Carlo Simulation", "Strategy Optimizer",
+  "Bot Profitability Lab", "AI Analyst", "Aide & Documentation"
+- Tout anglicisme non glosé (cf. CLAUDE.md §1 wording)
+
+Cf. `docs/adr/ADR-002-grand-public-ready.md` pour le plan 8 sprints complet.
+
+---
+
+## EODHD API Reference (OFFICIAL SKILL — vendor/eodhd-claude-skills)
+
+P19k.2 — Le skill officiel EODHD `eodhd-claude-skills` est vendoré dans
+`vendor/eodhd-claude-skills/` (copie depuis github.com/EodHistoricalData/eodhd-claude-skills,
+sans submodule pour compat Fly/Vercel CI).
+
+**Pour TOUTE implémentation touchant l'API EODHD** (intraday, eod, real-time,
+fundamentals, screener, websockets, fx, crypto, news, technical indicators,
+splits/dividends, exchange-symbol-list, delisted) :
+
+1. **TOUJOURS** consulter `vendor/eodhd-claude-skills/skills/eodhd-api/references/endpoints/<endpoint>.md`
+   AVANT d'écrire du code (72 endpoints documentés avec params, shape réponse,
+   exemples curl). Index : `endpoints/` (un fichier par endpoint).
+
+2. **TOUJOURS** consulter `vendor/eodhd-claude-skills/skills/eodhd-api/references/general/symbol-format.md`
+   pour le **suffix mapping** (autorité officielle, pas de devinette) :
+     - Korea Stock Exchange = `.KO` (PAS `.KOSE` — ex: `005930.KO` Samsung)
+     - KOSDAQ = `.KQ`
+     - Shanghai = `.SHG` (Moutai = `600519.SHG`)
+     - Shenzhen = `.SHE`
+     - HK = `.HK` avec leading zeros (`0700.HK` Tencent, PAS `700.HK`)
+     - LSE = `.LSE`, XETRA = `.XETRA`, Paris = `.PA`, Amsterdam = `.AS`, Swiss = `.SW`
+     - Frankfurt sur F : `.F` ≠ `.XETRA` (different exchanges, BMW.F vs BMW.XETRA)
+     - Forex = `EURUSD.FOREX` (pas de séparateur)
+     - Crypto = `BTC-USD.CC`
+     - US class shares : `BRK-B.US` (hyphen replaces dot)
+
+3. Respecter `references/general/` pour : auth (`api_token` query param),
+   `fmt=json` obligatoire (sinon CSV → parse error), pagination, rate limits
+   (notre plan ALL-IN-ONE = 100k calls/jour, pas de limite pratique).
+
+4. `vendor/eodhd-claude-skills/skills/eodhd-api/scripts/eodhd_client.py` est
+   le client de référence Python ; reproduire la même logique en TS.
+
+5. **Plan SmartVest** = ALL-IN-ONE $99.99/mo (cf. `references/general/pricing-and-plans.md`).
+   100 000 calls/jour. Aucune contrainte budgétaire en pratique.
+
+6. Quick reference SmartVest-spécifique (10 endpoints qu'on utilise) :
+   `docs/EODHD_QUICK_REFERENCE.md` — avec URL canonique, params, response
+   shape, suffix mapping appliqué, snippet code TS.
+
+7. Définition complète du skill : `vendor/eodhd-claude-skills/skills/eodhd-api/SKILL.md`.
+
+---
+
 ## RÈGLE OPÉRATIONNELLE — GAINERS UX + PATH QUALITY — P9-UX
 
 P9-UX livre 2 features UX critiques + 1 dimension qualité (addendum) sur le scanner Gainers :
@@ -332,6 +407,19 @@ P3-C — Le scanner rebound-tp scanne par défaut **`sp500`** (~200 mega-caps US
 **OHLCV cache** : table `ohlcv_cache_daily` populée par `OhlcvCacheService` cron 21:30 UTC lun-ven. Le scanner phase 1 lit ce cache (RSI pré-filter, ~30-50 candidats sur 500), phase 2 fetch live uniquement les candidats. Coût EODHD : ~30 fetches/tick au lieu de 500 = **×16 économie**.
 
 **Sector cap** : `REBOUND_SECTOR_CAP_PCT` (default 20%). Avec `MAX_CONCURRENT=5`, max 1 position par secteur. Lookup via `assets.sector` (champ existant ; `assets.industry` n'existe pas dans le schéma actuel — ne pas le référencer).
+
+---
+
+## RÈGLE OPÉRATIONNELLE PERMANENTE — DEPLOY FLY (P18h.2)
+
+**Ne jamais utiliser `flyctl deploy` directement** — toujours :
+
+1. **Préféré** : push to `main` → workflow `.github/workflows/fly.yml` se déclenche et passe `--build-arg GIT_SHA=${{ github.sha }}` + `--build-arg BUILD_TIME=$(date -u +...)` automatiquement.
+2. **Manuel uniquement si CI cassée ou redeploy urgent** : `./scripts/deploy.sh` qui auto-extrait `git rev-parse HEAD` + `date -u +...` et appelle `flyctl deploy --build-arg ...`.
+
+`flyctl deploy` direct sans build args casse `/version` (P18h endpoint) → `git_sha:null` + `build_time:null` en prod → on perd la traçabilité du commit déployé. Cas vérifié 29/04/2026 11:04 UTC + 13:38 CEST. Ne pas répéter l'erreur.
+
+Re-trigger d'un workflow Actions Fly Deploy (workflow_dispatch sur `fly.yml`) est aussi acceptable et préserve les build args.
 
 ---
 

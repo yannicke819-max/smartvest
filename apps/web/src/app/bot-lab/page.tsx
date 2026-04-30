@@ -41,12 +41,12 @@ export default function BotLabPage() {
           </Link>
           <h1 className="text-2xl font-bold flex items-center gap-2">
             <FlaskConical className="h-6 w-6 text-blue-600" />
-            Bot Profitability Lab
+            Mes stratégies auto <span className="text-sm font-normal text-muted-foreground">(mode démo)</span>
           </h1>
           <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
-            Importe des bots externes (CSV ou stratégies), mesure leurs perfs avec
-            métriques standardisées (Sharpe, Sortino, MaxDD, Profit Factor) et
-            extrais les patterns robustes pour les transférer à Lisa.
+            Importe des bots externes (CSV ou stratégies), mesure leurs performances avec
+            des indicateurs standardisés (Sharpe, Sortino, drawdown maximum, profit factor)
+            et identifie les patterns robustes à transférer à Lisa. 100 % simulation, aucun argent réel engagé.
           </p>
         </div>
         <Link

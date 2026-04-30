@@ -929,8 +929,9 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     // router lisait l'env var statique au lieu de la config DB).
     // - daily_cost_budget_usd : budget cumulé en USD (null = pas d'override,
     //   le router applique sa config constructor / env LLM_ROUTER_DAILY_BUDGET_USD)
-    // - cost_force_continue : à 100% du budget, soft warn + Haiku (true,
-    //   default DB via migration 0074) ou hard throw (false, mode strict)
+    // - cost_force_continue : à 100% du budget, soft warn + continue Opus
+    //   (true, default DB via migration 0074, ADR-001 Phase 2 — plus de
+    //   fallback Haiku) ou hard throw (false, mode strict)
     const budgetOverride = config.daily_cost_budget_usd != null
       ? Number(config.daily_cost_budget_usd)
       : undefined;
@@ -974,27 +975,31 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         || /\b400\b.*invalid_request_error.*credit/i.test(msg);
 
       if (isCreditExhausted) {
-        // Auto-pause TOUT l'autopilot (pas juste auto_approve) pour arrêter
-        // d'essayer en boucle et empirer la facture.
+        // P19c — pause REVERSIBLE (pattern P8-BR), pas désactivation. L'autopilot
+        // reste `enabled=true` mais `autopilot_paused_reason='ANTHROPIC_CREDIT_EXHAUSTED'`
+        // → maybeResumeOrSkip skip ce cycle silencieusement. Quand le crédit est
+        // rechargé sur console.anthropic.com, l'utilisateur peut reset le paused_reason
+        // (UI badge "Anthropic indispo, reprendre") OU le prochain cycle Lisa qui
+        // réussit clear automatiquement le flag.
+        // Avant P19c (29/04/2026 12:03 UTC, observé en prod) : autopilot_enabled
+        // flipait à false → autopilot OFFLINE silencieusement, intervention manuelle
+        // requise. Cassait la promesse de continuité de service Lisa.
         await this.supabase.getClient()
           .from('lisa_session_configs')
           .update({
-            autopilot_enabled: false,
-            autopilot_auto_approve: false,
-            autopilot_aggressive: false,
-            autopilot_expires_at: null,
+            autopilot_paused_reason: 'ANTHROPIC_CREDIT_EXHAUSTED',
           })
           .eq('portfolio_id', portfolioId);
 
         await this.logDecision(portfolioId, 'anthropic_credit_exhausted', {
-          summary: '⚠️ Crédit Anthropic épuisé — autopilot désactivé automatiquement',
-          rationale: `Erreur API reçue : ${msg.slice(0, 500)}. L'autopilot a été coupé pour éviter d'autres appels qui échoueraient. Recharger le crédit sur console.anthropic.com, puis réactiver manuellement l'autopilot.`,
-          payload: { source: 'thesis_generator', errorType: 'credit_exhausted' },
-          triggeredBy: 'user_manual',
+          summary: '⚠️ Crédit Anthropic épuisé — autopilot mis en pause (réversible)',
+          rationale: `Erreur API reçue : ${msg.slice(0, 500)}. autopilot_paused_reason=ANTHROPIC_CREDIT_EXHAUSTED (autopilot_enabled reste true). Recharger le crédit sur console.anthropic.com — la pause sera levée au prochain cycle Lisa qui réussit. P19c risk-resilience.`,
+          payload: { source: 'thesis_generator', errorType: 'credit_exhausted', paused_reason: 'ANTHROPIC_CREDIT_EXHAUSTED' },
+          triggeredBy: 'risk_monitor',
         });
 
         throw new BadRequestException(
-          `⚠️ CRÉDIT ANTHROPIC ÉPUISÉ — L'autopilot a été désactivé automatiquement pour éviter d'autres tentatives coûteuses. Recharge le crédit sur console.anthropic.com, puis réactive l'autopilot depuis la page Lisa.`,
+          `⚠️ CRÉDIT ANTHROPIC ÉPUISÉ — L'autopilot a été mis en pause (réversible). Recharge le crédit sur console.anthropic.com — la pause se lèvera automatiquement au prochain cycle qui réussit.`,
         );
       }
 
@@ -1008,6 +1013,23 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         `Lisa n'a pas pu produire une proposition exploitable (${msg.slice(0, 150)}). Réessaie dans un instant — les parse failures Claude sont rares et transitoires.`,
       );
     }
+
+    // P19c — Path success : si une pause `ANTHROPIC_CREDIT_EXHAUSTED` était
+    // active, c'est que le crédit vient d'être rechargé (la nouvelle tentative
+    // a réussi). Clear silently. Pas une dépendance circulaire car on update
+    // directement la table sans passer par lisa-autopilot.service.
+    await this.supabase.getClient()
+      .from('lisa_session_configs')
+      .update({ autopilot_paused_reason: null })
+      .eq('portfolio_id', portfolioId)
+      .eq('autopilot_paused_reason', 'ANTHROPIC_CREDIT_EXHAUSTED')
+      .then(({ error, data }) => {
+        if (!error && data) {
+          this.logger.log(
+            `[autopilot:resumed] portfolio=${portfolioId.slice(0, 8)} reason=anthropic_credit_restored`,
+          );
+        }
+      });
 
     // Enforce risk constraints (structural safety net)
     // Calcule l'exposition AGRÉGÉE par classe des positions DÉJÀ TENUES
@@ -3162,21 +3184,30 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     // 2. Positions fermées — win rate + streak + frictions 7 j
     const { data: closedPositions } = await client
       .from('lisa_positions')
-      .select('realized_pnl_usd, exit_timestamp, estimated_entry_cost_usd')
+      .select('realized_pnl_usd, exit_timestamp, estimated_entry_cost_usd, status')
       .eq('portfolio_id', portfolioId)
       .neq('status', 'open')
       .order('exit_timestamp', { ascending: false })
       .limit(200);
 
     let winRatePct: number | null = null;
+    let tpHitRatePct: number | null = null;
     let closedPositionsCount = 0;
     let recentStreak: RecentStreak = null;
     let tradingFrictionsUsd = 0;
 
     if (closedPositions && closedPositions.length > 0) {
       closedPositionsCount = closedPositions.length;
+      // P19u — Dual win-rate metric :
+      //   - winRatePct  = trades nets gagnants / total (économique, après fees)
+      //   - tpHitRatePct = trades dont status='closed_target' / total (intent-based)
+      // Avant P19u : seul winRatePct exposé. Avec fees IBKR forfaitaires irréalistes
+      // (10bps × 2), 5/7 TP_HIT comptaient comme LOSS car fees > gross PnL → Lisa
+      // apprenait "TP n'est pas un win" alors que la stratégie A FONCTIONNÉ.
       const wins = closedPositions.filter((p) => Number(p.realized_pnl_usd ?? 0) > 0).length;
+      const tpHits = closedPositions.filter((p) => p.status === 'closed_target').length;
       winRatePct = (wins / closedPositionsCount) * 100;
+      tpHitRatePct = (tpHits / closedPositionsCount) * 100;
 
       const firstPnl = Number(closedPositions[0].realized_pnl_usd ?? 0);
       if (firstPnl !== 0) {
@@ -3265,6 +3296,10 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       drawdownFromPeakPct,
       realizedVolatility7dPct,
       winRatePct,
+      // P19u — Dual win-rate : tpHitRatePct expose le taux de TP touchés
+      // indépendant du PnL net (anti-bias UI quand fees mangent les profits
+      // sur micro-moves). UI affiche les deux : "TP hit rate" + "Net win rate".
+      tpHitRatePct,
       closedPositionsCount,
       recentStreak,
       avgDailyCostUsd7d,

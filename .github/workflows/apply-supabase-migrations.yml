@@ -1,0 +1,104 @@
+name: Apply Supabase migrations (manual)
+
+# Runs scripts/apply-migrations.mjs against prod Supabase Management API.
+# Idempotent — safe to re-run. Tracks applied migrations in
+# public._smartvest_migrations.
+#
+# Triggers :
+#   - workflow_dispatch (UI button "Run workflow")
+#   - tag push matching apply-migrations-* (programmatic trigger from CLI)
+#   - branch push matching migrations-trigger-* (programmatic when tag push blocked)
+#
+# Output : posted as comment on Issue #131 (P20.2 tracking) so any agent or
+# user can read the result without needing GitHub Actions UI access.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'apply-migrations-*'
+    branches:
+      - 'migrations-trigger-*'
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: apply-migrations
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    name: Apply missing migrations via Management API
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run apply-migrations.mjs
+        id: apply
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: mfuutigfhrawccotinpo
+        run: |
+          set -o pipefail
+          mkdir -p /tmp/migrations-out
+          node scripts/apply-migrations.mjs 2>&1 | tee /tmp/migrations-out/log.txt
+          echo "exit_code=$?" >> /tmp/migrations-out/meta.txt
+
+      - name: Post output to Issue #131 (P20.2 tracking)
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          STATUS: ${{ job.status }}
+          RUN_ID: ${{ github.run_id }}
+          GH_REF: ${{ github.ref }}
+          GH_SHA: ${{ github.sha }}
+        with:
+          script: |
+            const fs = require('fs');
+            let log = '';
+            try {
+              log = fs.readFileSync('/tmp/migrations-out/log.txt', 'utf8');
+            } catch (e) {
+              log = `(no log captured: ${e.message})`;
+            }
+            // Truncate if too long (GitHub comment max ~65k chars).
+            const MAX = 50000;
+            if (log.length > MAX) {
+              log = log.slice(0, MAX) + `\n\n... [truncated ${log.length - MAX} chars]`;
+            }
+            const status = process.env.STATUS;
+            const runId = process.env.RUN_ID;
+            const ref = process.env.GH_REF;
+            const sha = process.env.GH_SHA.slice(0, 7);
+            const ts = new Date().toISOString();
+            const body = [
+              `## 🤖 apply-migrations.mjs — ${status}`,
+              ``,
+              `- **Triggered** : ${ref} (sha \`${sha}\`)`,
+              `- **Timestamp** : ${ts}`,
+              `- **Run ID** : [${runId}](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${runId})`,
+              ``,
+              `<details><summary>Script output</summary>`,
+              ``,
+              '```',
+              log,
+              '```',
+              ``,
+              `</details>`,
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 131,
+              body,
+            });

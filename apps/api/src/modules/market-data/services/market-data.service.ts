@@ -77,6 +77,14 @@ export class MarketDataService {
    * ProviderAsset par ligne via `symbolToProviderAsset`. Filtre les rows
    * dont la combinaison symbol/asset_class n'est pas reconnue (helper
    * retourne null).
+   *
+   * P19 — Le helper `symbolToProviderAsset` retournait initialement
+   * `lisa_positions.id` comme `assetId`, ce qui causait des FK violations
+   * `quotes_asset_id_fkey` (29/04/2026 10:15:01 UTC, issue #84) car cet
+   * UUID n'existait pas dans `assets`. On résout en :
+   *   - garantissant un row `assets` correspondant via `ensureAssetRow`
+   *   - utilisant l'`assets.id` retourné comme assetId du ProviderAsset
+   * Si l'upsert assets échoue, le row est skippé (compteur log).
    */
   private async getOpenPositionAssets(): Promise<ProviderAsset[]> {
     if (!this.supabase.isReady()) return [];
@@ -90,15 +98,99 @@ export class MarketDataService {
       return [];
     }
     const out: ProviderAsset[] = [];
+    let skippedUpsert = 0;
     for (const row of data ?? []) {
-      const a = symbolToProviderAsset(
-        String(row.id),
-        String(row.symbol ?? ''),
-        (row.asset_class as string | null | undefined) ?? null,
+      const symbol = String(row.symbol ?? '');
+      const assetClassRaw = (row.asset_class as string | null | undefined) ?? null;
+      // Step 1 : derive provider mapping (no DB call yet)
+      const partial = symbolToProviderAsset(
+        'placeholder', // overridden below
+        symbol,
+        assetClassRaw,
       );
-      if (a) out.push(a);
+      if (!partial) continue;
+      // Step 2 : ensure an `assets` row exists for this ticker, get its real id
+      const realAssetId = await this.ensureAssetRow(
+        partial.ticker,
+        partial.providerTicker,
+        partial.currency,
+        normalizeAssetClass(assetClassRaw),
+      );
+      if (!realAssetId) {
+        skippedUpsert++;
+        continue;
+      }
+      out.push({ ...partial, assetId: realAssetId });
+    }
+    if (skippedUpsert > 0) {
+      this.logger.warn(
+        `[market-data] P19 — ${skippedUpsert} position(s) skipped (assets upsert failed)`,
+      );
     }
     return out;
+  }
+
+  /**
+   * P19 — Garantit qu'un row `assets` existe pour ce ticker, et retourne
+   * son `id` (UUID stable pour FK quotes). Crée le row si absent
+   * (idempotent par `ticker`). Patch `provider_tickers.eodhd` si manquant.
+   *
+   * Retourne `null` en cas d'erreur DB (l'appelant skip ce ticker).
+   */
+  private async ensureAssetRow(
+    ticker: string,
+    providerTicker: string,
+    currency: string,
+    assetClass: string,
+  ): Promise<string | null> {
+    if (!this.supabase.isReady()) return null;
+    const client = this.supabase.getClient();
+
+    // Try find existing
+    const { data: existing, error: selErr } = await client
+      .from('assets')
+      .select('id, provider_tickers')
+      .eq('ticker', ticker)
+      .limit(1)
+      .maybeSingle();
+    if (selErr) {
+      this.logger.warn(`ensureAssetRow select(${ticker}) error: ${selErr.message}`);
+      return null;
+    }
+    if (existing?.id) {
+      // Patch provider_tickers.eodhd if missing
+      const pt = (existing.provider_tickers as Record<string, string> | null) ?? {};
+      if (!pt['eodhd']) {
+        await client
+          .from('assets')
+          .update({
+            provider_tickers: { ...pt, eodhd: providerTicker },
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', existing.id);
+      }
+      return String(existing.id);
+    }
+
+    // Insert new minimal row
+    const { data: inserted, error: insErr } = await client
+      .from('assets')
+      .insert({
+        ticker,
+        name: ticker,
+        asset_class: assetClass,
+        currency,
+        provider_tickers: { eodhd: providerTicker },
+      })
+      .select('id')
+      .single();
+    if (insErr || !inserted?.id) {
+      this.logger.warn(
+        `ensureAssetRow insert(${ticker}, ${assetClass}) failed: ${insErr?.message ?? 'no id'}`,
+      );
+      return null;
+    }
+    return String(inserted.id);
   }
 
   async refreshQuotes(): Promise<{ succeeded: number; failed: number }> {
@@ -170,6 +262,15 @@ export class MarketDataService {
       .upsert(rows, { onConflict: 'asset_id,as_of' });
 
     if (error) {
+      // P19 — Diagnostic visibility on FK violation. Postgres code 23503 =
+      // foreign_key_violation. Logging the offending asset_ids gives us the
+      // data we need to repair (or audit) without an external query.
+      if (String(error.code ?? '').trim() === '23503') {
+        const assetIds = Array.from(new Set(rows.map((r) => r.asset_id)));
+        this.logger.error(
+          `[market-data] P19 FK violation quotes_asset_id_fkey — ${assetIds.length} unique asset_id(s): ${assetIds.slice(0, 10).join(', ')}${assetIds.length > 10 ? ' …' : ''}`,
+        );
+      }
       this.logger.error('saveQuotes error', error.message);
       return { succeeded: 0, failed: assetsRequested };
     }
@@ -211,4 +312,28 @@ export class MarketDataService {
     const succeededAssets = new Set(bars.map((b) => b.assetId)).size;
     return { succeeded: succeededAssets, failed: assetsRequested - succeededAssets };
   }
+}
+
+/**
+ * P19 — Mappe l'asset_class granulaire de `lisa_positions` (snake_case
+ * taxonomy : crypto_major, us_equity_large, fx_major, etc.) vers la liste
+ * fermée acceptée par la CHECK constraint `assets.asset_class` :
+ * `equity | etf | bond | fund | cash | crypto | commodity | derivative | other`.
+ *
+ * Doit rester pure pour les tests unit et tolérante aux valeurs inconnues
+ * (fallback `other` plutôt que throw — un asset row mal classé reste
+ * insérable et peut être réétiqueté manuellement plus tard).
+ */
+export function normalizeAssetClass(raw: string | null | undefined): string {
+  const cls = (raw ?? '').toLowerCase().trim();
+  if (!cls) return 'other';
+  if (cls.startsWith('crypto')) return 'crypto';
+  if (cls.includes('equity')) return 'equity';
+  if (cls.startsWith('etf')) return 'etf';
+  if (cls.startsWith('bond')) return 'bond';
+  if (cls.startsWith('fund')) return 'fund';
+  if (cls.startsWith('fx_') || cls === 'forex') return 'derivative';
+  if (cls === 'commodity' || cls.startsWith('comm_')) return 'commodity';
+  if (cls === 'cash') return 'cash';
+  return 'other';
 }

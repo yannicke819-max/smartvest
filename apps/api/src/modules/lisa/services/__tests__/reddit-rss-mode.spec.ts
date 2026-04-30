@@ -130,12 +130,14 @@ describe('RedditService — RSS public mode (P5-REDDIT-RSS-FALLBACK)', () => {
       expect(headers.headers['User-Agent']).toBe('my-bot/2.0');
     });
 
-    it("uses default 'smartvest-news/1.0' User-Agent if REDDIT_USER_AGENT absent", async () => {
+    it("uses Reddit-recommended default User-Agent if REDDIT_USER_AGENT absent (P19f format)", async () => {
       installFetchMock([{ status: 200, body: buildListing([buildPost()]) }]);
       const svc = await makeService({ REDDIT_USE_RSS: 'true' });
       await svc.fetchHotPosts(10);
       const headers = fetchMock.mock.calls[0][1] as { headers: Record<string, string> };
-      expect(headers.headers['User-Agent']).toBe('smartvest-news/1.0');
+      // P19f — format `<platform>:<app-id>:<version> (by /u/<user>)` recommandé
+      // par Reddit API guidelines (réduit les 403 Cloudflare vs UA générique).
+      expect(headers.headers['User-Agent']).toMatch(/^web:smartvest-news:v\d+\.\d+ \(by \/u\/[\w-]+\)$/);
     });
 
     it('parses JSON listing → EodhdNewsItem[] with score tag', async () => {

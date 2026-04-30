@@ -19,6 +19,29 @@ import type {
   PaperPosition,
   PortfolioSnapshot,
 } from './types';
+import { computeVenueFeeDetail, type VenueFeeBreakdown } from './venue-fees';
+
+/**
+ * P20 (30/04/2026) — Buffer multiplicatif fees → gain min requis pour ouvrir.
+ *
+ * Default 2.0 (= gain attendu au TP doit être ≥ 2× les fees round-trip).
+ * Configurable via env `FEES_AWARE_BUFFER`, clamp [1.0, 5.0].
+ *
+ * Justification valeur : les 9 losses J-7 incluent un closed_target SLV
+ * +0.171 % avec net -$0.92 — ratio gain/fees observé ~0.6×. Le seuil 2.0
+ * laisse une marge confortable pour slippage 5bps non comptabilisé +
+ * inflation des fees IBKR sur les petits volumes.
+ */
+export function resolveFeesAwareBuffer(): Decimal {
+  const raw = process.env.FEES_AWARE_BUFFER;
+  const DEFAULT_BUFFER = 2.0;
+  if (!raw) return new Decimal(DEFAULT_BUFFER);
+  const parsed = parseFloat(raw);
+  if (!Number.isFinite(parsed)) return new Decimal(DEFAULT_BUFFER);
+  // Clamp [1.0, 5.0] : 1.0 = pas de buffer (juste break-even), 5.0 = très conservateur.
+  const clamped = Math.max(1.0, Math.min(5.0, parsed));
+  return new Decimal(clamped);
+}
 
 export interface PriceQuote {
   symbol: string;
@@ -31,6 +54,66 @@ export interface PaperBrokerDeps {
   supabase: SupabaseClient;
   /** Callback pour fetch live prices — typiquement EODHD adapter */
   fetchLivePrice: (symbol: string) => Promise<PriceQuote>;
+}
+
+/**
+ * P19u (29/04/2026) — Modèle de frais réaliste basé sur IBKR Pro Tiered.
+ *
+ * Le modèle précédent (`estimatedCostBps = 10`) facturait 10bps de la
+ * notional sur chaque côté, soit **$5 round-trip sur $2500 = 0.20%**. C'est
+ * **~100x trop cher** vs IBKR Pro réel ($0.005/share, min $0.35, capped 1%).
+ *
+ * Symptôme prod (29/04 ce soir) : 7 trades fermés all TP_HIT avec exit > entry,
+ * gross calculé +$4.74, net affiché -$27.84 → écart de -$32.58 de fees
+ * fictifs invisibles. Win rate = 0% car fees > gross PnL sur trades à
+ * petit move (+0.03% à +0.21% TP).
+ *
+ * Modèle implémenté :
+ *  - US equities + ETFs : `max($0.35, $0.005/share)` clamped à `1% × notional`
+ *  - EU + Asia equities : 5bps × notional (proxy moyenne plans IBKR EU)
+ *  - Crypto via Paxos    : 0.085% × notional (avg maker/taker)
+ *  - FX                  : 1bp × notional
+ *  - Default fallback    : 5bps × notional
+ *
+ * Hypothèse simplifiée : l'asset class drive tout, pas de tier IBKR exact
+ * (le tier dépend du volume mensuel — non modelé en paper sim).
+ */
+export function computeRealisticFee(
+  qty: Decimal,
+  price: Decimal,
+  assetClass: string | undefined,
+): Decimal {
+  const ac = (assetClass ?? '').toLowerCase();
+  if (qty.lte(0) || price.lte(0)) return new Decimal(0);
+
+  // Crypto via IBKR/Paxos — average 0.085% (maker-taker mix)
+  if (ac.startsWith('crypto')) {
+    return qty.mul(price).mul(0.00085);
+  }
+  // EU equities — 5bps proxy (réel IBKR EU varie par exchange + tier)
+  if (ac === 'eu_equity') {
+    return qty.mul(price).mul(0.0005);
+  }
+  // Asia equities — 5bps proxy
+  if (ac === 'asia_equity') {
+    return qty.mul(price).mul(0.0005);
+  }
+  // FX major / cross — typiquement 0.5-1bp ; on prend 1bp
+  if (ac.startsWith('fx_')) {
+    return qty.mul(price).mul(0.0001);
+  }
+  // Commodity / Rates — 5bps proxy
+  if (ac === 'commodity' || ac === 'rates') {
+    return qty.mul(price).mul(0.0005);
+  }
+  // Default — US equities + ETFs IBKR Pro Tiered :
+  //   $0.005/share, min $0.35, max 1% of trade value
+  const perShare = qty.mul(0.005);
+  const minFee = new Decimal(0.35);
+  const maxFee = qty.mul(price).mul(0.01);
+  let fee = Decimal.max(perShare, minFee);
+  if (fee.gt(maxFee)) fee = maxFee;
+  return fee;
 }
 
 export class PaperBrokerService {
@@ -87,11 +170,95 @@ export class PaperBrokerService {
       );
     }
 
-    // Coût entrée estimé (bps → USD)
-    const costBps = (expression.estimatedCostBps as number) ?? 10;
-    const estimatedCost = notional.mul(costBps).dividedBy(10000);
+    // P19u — Calcul fee réaliste (IBKR Pro Tiered) au lieu du modèle bps fixe
+    // de l'ancien code. Two-pass : qty tentative (no fee) → fee → qty finale.
+    // P19x.8 (29/04/2026) — Capture aussi le breakdown JSON via computeVenueFeeDetail
+    // pour persist en venue_fee_detail (UI tooltip).
+    const tentativeQty = notional.dividedBy(livePrice);
+    const entryFeeBreakdown = computeVenueFeeDetail(
+      tentativeQty,
+      livePrice,
+      expression.assetClass as string | undefined,
+      expression.preferredVenue as string | undefined,
+      'buy',
+    );
+    const estimatedCost = new Decimal(entryFeeBreakdown.total);
 
-    // Notional net après coût
+    // Garde-fou : si le fee dépasse la notional (cas pathologique), reject.
+    if (estimatedCost.gte(notional)) {
+      throw new Error(
+        `openPosition rejected: entry fee ${estimatedCost.toFixed(2)} >= notional ${notional.toFixed(2)} (symbol=${expression.symbol})`,
+      );
+    }
+
+    // P20 (30/04/2026) — FEES-AWARE TARGET guard.
+    // P20.2 (30/04/2026) — include slippage 5bps in roundTripFees calc.
+    //
+    // Bug observed J-7 (2026-04-23 → 2026-04-29) : 9 trades closed_target
+    // avec pct_move POSITIF (+0.003 % à +0.171 %) mais P&L NÉGATIF (-$0.92
+    // à -$5.67). Ex LMT @ $508, +0.019 % = +$0.10/share gross, fees
+    // round-trip ~$5.77 → net -$5.67.
+    //
+    // Cause : le TP configuré (en %) est inférieur au coût round-trip en %
+    // sur petits notionals. Le min commission IBKR ($0.35/side) + SEC fee
+    // sell + TAF rendent le break-even à 0.15-0.40 % selon notional.
+    //
+    // P20.2 ajoute slippage 5bps (entry + exit) dans le calcul :
+    //   roundTripFees = entry_venue_fees + entry_slippage_5bps
+    //                 + exit_venue_fees  + exit_slippage_5bps
+    // Cohérent avec mechanical-trading.closePosition qui charge slippageBps=5
+    // au close. Évite que SLV +0.171 % qty=39 (gain $4.30 vs venue fees
+    // $0.93 → ratio 4.6×) passe le guard alors que le slippage réel
+    // ($1.26 entry + $1.26 exit = $2.52 add) le rend net négatif.
+    //
+    // Fix : reject l'open si gain attendu au TP < BUFFER × round-trip fees+slip.
+    // Default BUFFER=2.0 (configurable via env FEES_AWARE_BUFFER, range
+    // 1.0..5.0). Skip si pas de takeProfitPrice (Lisa narrative sans TP) —
+    // le MIN_NET_PROFIT guard de mechanical-trading prend le relais au close.
+    if (cmd.takeProfitPrice) {
+      const tpPrice = new Decimal(cmd.takeProfitPrice);
+      const tentativeQty = notional.dividedBy(livePrice);
+      const direction = expression.direction as string;
+      const isLong = direction === 'long' || direction.startsWith('long_');
+      const exitSide: 'buy' | 'sell' = isLong ? 'sell' : 'buy';
+      const exitFeeBreakdown = computeVenueFeeDetail(
+        tentativeQty,
+        tpPrice,
+        expression.assetClass as string | undefined,
+        expression.preferredVenue as string | undefined,
+        exitSide,
+      );
+      // P20.2 — slippage 5bps × notional sur chaque side. Cohérent avec
+      // mechanical-trading.service.ts:1082 (entry) et :2087 (exit).
+      const SLIPPAGE_BPS = 5;
+      const entryNotional = tentativeQty.mul(livePrice);
+      const exitNotional = tentativeQty.mul(tpPrice);
+      const entrySlippage = entryNotional.mul(SLIPPAGE_BPS).div(10000);
+      const exitSlippage = exitNotional.mul(SLIPPAGE_BPS).div(10000);
+      const roundTripFees = estimatedCost
+        .plus(new Decimal(exitFeeBreakdown.total))
+        .plus(entrySlippage)
+        .plus(exitSlippage);
+      const expectedGain = isLong
+        ? tpPrice.minus(livePrice).mul(tentativeQty)
+        : livePrice.minus(tpPrice).mul(tentativeQty);
+
+      const buffer = resolveFeesAwareBuffer();
+      const requiredGain = roundTripFees.mul(buffer);
+
+      if (expectedGain.lt(requiredGain)) {
+        throw new Error(
+          `openPosition rejected by P20 fees-aware guard: expected_gain_at_TP=$${expectedGain.toFixed(2)} ` +
+          `< ${buffer.toFixed(2)} × round_trip_fees_with_slippage=$${requiredGain.toFixed(2)} ` +
+          `(entry=$${livePrice.toFixed(4)} TP=$${tpPrice.toFixed(4)} qty=${tentativeQty.toFixed(4)} ` +
+          `notional=$${notional.toFixed(2)} venue_fees=$${estimatedCost.plus(new Decimal(exitFeeBreakdown.total)).toFixed(2)} ` +
+          `slippage_5bps_RT=$${entrySlippage.plus(exitSlippage).toFixed(2)} symbol=${expression.symbol}). ` +
+          `Augmenter le TP ou le notional pour ouvrir cette position.`,
+        );
+      }
+    }
+
+    // Notional net après coût → quantité finale
     const notionalNet = notional.minus(estimatedCost);
     const quantity = notionalNet.dividedBy(livePrice);
     if (quantity.lte(0) || !quantity.isFinite()) {
@@ -148,6 +315,9 @@ export class PaperBrokerService {
       take_profit_price: position.takeProfitPrice,
       horizon_target_date: position.horizonTargetDate,
       estimated_entry_cost_usd: position.estimatedEntryCostUsd,
+      // P19x.8 — Real fees per venue persistence
+      fees_in_usd: position.estimatedEntryCostUsd,
+      venue_fee_detail: { entry: entryFeeBreakdown },
       created_at: position.createdAt,
       updated_at: position.updatedAt,
     });
@@ -187,9 +357,68 @@ export class PaperBrokerService {
     }
     const grossPnl = priceDelta.mul(qty);
 
-    // Deduct exit cost (estimate same bps as entry)
-    const exitCost = exitPx.mul(qty).mul(10).dividedBy(10000); // ~10bps default
-    const netPnl = grossPnl.minus(exitCost);
+    // P19u — Realistic exit fee (IBKR Pro tiered) + closed_invalidated refund.
+    //
+    // Modèle précédent : 10bps × notional côté exit = ~$2.50 sur trade $2500.
+    // ~50× IBKR Pro réel ($0.05 round-trip pour 5 shares × $500). Cf. doc fonction.
+    //
+    // closed_invalidated = trade tué par news shock / material change avant
+    // que le TP/SL hit. Le PaperBroker considère ça comme "no real trade
+    // happened" — refund both sides of fees, garde uniquement le price delta.
+    // P19x.8 — Capture exit fee breakdown (commission + exchange + regulatory + fx)
+    // pour persistence venue_fee_detail.exit + tooltip UI.
+    const isLong = position.direction === 'long' || position.direction === 'long_call' || position.direction === 'long_put';
+    const exitSide: 'buy' | 'sell' = isLong ? 'sell' : 'buy';
+    const exitFeeBreakdown: VenueFeeBreakdown = computeVenueFeeDetail(
+      qty,
+      exitPx,
+      position.assetClass,
+      position.venue,
+      exitSide,
+    );
+
+    let exitCost: Decimal;
+    let entryFeeRefund: Decimal;
+    if (cmd.reason === 'closed_invalidated') {
+      exitCost = new Decimal(0);
+      // Refund the entry fee (was already absorbed by the reduced quantity at
+      // open time). We add it back to net PnL so the close is fee-neutral.
+      const entryCostStored = position.estimatedEntryCostUsd;
+      entryFeeRefund = entryCostStored ? new Decimal(entryCostStored) : new Decimal(0);
+    } else {
+      exitCost = new Decimal(exitFeeBreakdown.total);
+      entryFeeRefund = new Decimal(0);
+    }
+    const netPnl = grossPnl.minus(exitCost).plus(entryFeeRefund);
+
+    // P19x.11 (29/04/2026) — MIN_NET_PROFIT_USD guard avant `closed_target`.
+    //
+    // Mirror du guard P19x.1 ajouté dans mechanical-trading.service.ts.
+    // Le scanner Gainers passe par mechanical-trading donc P19x.1 couvre ces
+    // closes. MAIS Lisa LLM proposals + manual closes via paper-broker bypassed
+    // ce guard. Constat user (29/04 02:00 UTC) : "TOUTES les positions
+    // fermées affichent TP hit + closed_target avec P&L négatif" — preuve que
+    // le code path paper-broker a aussi besoin du guard.
+    //
+    // Garde-fou : un closed_target ne doit JAMAIS résulter en net PnL négatif.
+    // Min = max($2, 0.5% × notional). Si net < min → throw RetryableCloseError
+    // pour signaler au caller que la close est rejetée. Position reste ouverte.
+    if (cmd.reason === 'closed_target') {
+      const minNetProfit = Decimal.max(
+        new Decimal(2),
+        entryNotional.mul(0.005),
+      );
+      if (netPnl.lt(minNetProfit)) {
+        const err = new Error(
+          `[PAPER_BROKER] Skip closed_target ${position.symbol}: net=$${netPnl.toFixed(2)} < min=$${minNetProfit.toFixed(2)} ` +
+          `(notional=$${entryNotional.toFixed(0)}, gross=$${grossPnl.toFixed(2)}, fees=$${exitCost.toFixed(2)}). Position kept open.`,
+        );
+        (err as Error & { code?: string }).code = 'CLOSE_TARGET_BELOW_MIN_PROFIT';
+        // eslint-disable-next-line no-console
+        console.warn(err.message);
+        throw err;
+      }
+    }
 
     const pnlPct = entryNotional.isZero()
       ? 0
@@ -204,6 +433,17 @@ export class PaperBrokerService {
     // touche 0 rows → on retourne la position fermée précédente sans
     // ré-écrire les champs (pas de double comptage P&L, pas de double
     // appel au TradeOutcomeRecorder).
+    // P19x.8 — Merge entry breakdown (déjà persisté à open) + exit breakdown
+    // pour conserver le full audit trail dans venue_fee_detail JSONB.
+    const existingDetail = (posRow as Record<string, unknown>)['venue_fee_detail'] as
+      | { entry?: VenueFeeBreakdown; exit?: VenueFeeBreakdown }
+      | null
+      | undefined;
+    const mergedFeeDetail = {
+      entry: existingDetail?.entry ?? null,
+      exit: exitFeeBreakdown,
+    };
+
     const { data: updated, error: updErr } = await this.supabase
       .from('lisa_positions')
       .update({
@@ -213,6 +453,9 @@ export class PaperBrokerService {
         exit_reason: cmd.rationale,
         realized_pnl_usd: netPnl.toFixed(2),
         realized_pnl_pct: pnlPct,
+        // P19x.8 — Persist exit fees breakdown
+        fees_out_usd: exitCost.toFixed(4),
+        venue_fee_detail: mergedFeeDetail,
         updated_at: now,
       })
       .eq('id', cmd.positionId)

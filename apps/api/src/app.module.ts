@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { HealthModule } from './modules/health/health.module';
+import { VersionModule } from './modules/version/version.module';
 import { SupabaseModule } from './modules/supabase/supabase.module';
 import { FeatureFlagsModule } from './modules/feature-flags/feature-flags.module';
 import { PortfolioModule } from './modules/portfolio/portfolio.module';
@@ -27,6 +28,7 @@ import { BotLabModule } from './modules/bot-lab/bot-lab.module';
 import { BacktestModule } from './modules/backtest/backtest.module';
 import { StrategyOptimizerModule } from './modules/strategy-optimizer/optimizer.module';
 import { MonteCarloModule } from './modules/monte-carlo/monte-carlo.module';
+import { AdminModule } from './modules/admin/admin.module';
 
 @Module({
   imports: [
@@ -41,6 +43,7 @@ import { MonteCarloModule } from './modules/monte-carlo/monte-carlo.module';
     SupabaseModule,
     FeatureFlagsModule,
     HealthModule,
+    VersionModule,
     PortfolioModule,
     DashboardModule,
     MarketDataModule,
@@ -64,6 +67,7 @@ import { MonteCarloModule } from './modules/monte-carlo/monte-carlo.module';
     BacktestModule,
     StrategyOptimizerModule,
     MonteCarloModule,
+    AdminModule,
   ],
 })
 export class AppModule {}

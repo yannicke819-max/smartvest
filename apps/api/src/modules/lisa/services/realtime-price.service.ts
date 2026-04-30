@@ -55,6 +55,18 @@ export class RealtimePriceService implements OnModuleDestroy {
   private eodhd24hCountAsOf = 0;
   private eodhdDailyLimit = EODHD_DAILY_FALLBACK_CAP;
   private eodhdExtraLimit = 0;
+  /**
+   * P19s++ HOTFIX (30/04/2026) — Track if the last refresh succeeded via
+   * EODHD /api/user (authoritative). When DB fallback is used, this is
+   * `false` and we treat the count as APPROXIMATIVE (may overcount due
+   * to retries/failures inflating eodhd_request_log).
+   *
+   * Bug observed prod 30/04 08:04 UTC : EODHD dashboard showed 13k actual
+   * usage but local DB counter said 100k → blocked all calls. Caused by
+   * eodhd_request_log inserting rows even on failed/retry calls, while
+   * EODHD only counts billable calls.
+   */
+  private eodhd24hCountAuthoritative = false;
 
   /** Sliding window des timestamps des appels EODHD sortants dans les
    *  dernières 60 s — pour bloquer avant de hit le rate limit 1000/min. */
@@ -266,12 +278,25 @@ export class RealtimePriceService implements OnModuleDestroy {
       return 'blocked';
     }
 
-    // 2. Quota journalier — source prioritaire : /api/user (EODHD officiel)
-    //    Fallback : count depuis eodhd_request_log si le call user échoue.
+    // 2. Quota journalier — REFRESH OBSERVABILITÉ UNIQUEMENT depuis /api/user
+    //    (pas un blocage hard). Permet au /quota-status endpoint de logger
+    //    l'usage main subscription avec exactitude.
+    //
+    // P19u (30/04/2026 08:30 UTC HOTFIX RATE-LIMIT) — Removed daily 100k
+    // blocker entirely. User clarification : EODHD limite RÉELLEMENT au
+    // RATE per-minute (1000 req/min), pas au daily count. HTTP 402
+    // observé prod = burst > 1000 req/min, pas daily exhaustion.
+    //
+    // Le compteur daily reste en place pour observabilité (/lisa/eodhd-stats)
+    // mais ne déclenche plus de blocage. Le rate-limiter sliding window
+    // ci-dessus (étape 1) est la VRAIE protection contre les 402.
     if (now - this.eodhd24hCountAsOf > 60_000) {
       const refreshed = await this.refreshQuotaFromUserApi();
-      if (!refreshed) {
-        // Fallback DB count (calendaire 00:00 UTC)
+      if (refreshed) {
+        this.eodhd24hCountAuthoritative = true;
+      } else if (this.eodhd24hCountAsOf === 0) {
+        // Boot path : pas encore de valeur connue. DB count comme proxy
+        // OBSERVABILITÉ (over-counting accepté, jamais bloque).
         try {
           const nowDate = new Date(now);
           const startOfTodayUtc = new Date(Date.UTC(
@@ -285,22 +310,27 @@ export class RealtimePriceService implements OnModuleDestroy {
             .gte('timestamp', startOfTodayUtc);
           this.eodhd24hCount = count ?? 0;
           this.eodhd24hCountAsOf = now;
+          this.eodhd24hCountAuthoritative = false;
         } catch (e) {
-          this.logger.warn(`Quota DB fallback failed: ${String(e).slice(0, 80)}`);
-          return 'ok';
+          this.logger.debug(`Quota DB fallback failed: ${String(e).slice(0, 80)}`);
         }
       }
     }
 
+    // P19v (30/04/2026 09:00 UTC) — RE-ENABLE 95% authoritative daily blocker.
+    // User clarification finale : 100k DAILY est la vraie limite EODHD plan
+    // ALL-IN-ONE. PR #143 fix authoritative était correct, PR #144 l'avait
+    // retiré à tort. On le remet, MAIS gated sur authoritative source ONLY :
+    //   - Si /api/user retourne apiRequests >= 95% (95k) → BLOCK
+    //   - Si DB fallback (non-authoritative) → JAMAIS BLOCK (proxy faillible)
     const effectiveCap = this.eodhdDailyLimit + this.eodhdExtraLimit;
-    const hardCapSafe = Math.floor(effectiveCap * 0.95); // 5% marge vs cap réel
-    const warnThreshold = Math.floor(effectiveCap * 0.80);
-
-    if (this.eodhd24hCount >= hardCapSafe) {
-      this.logger.warn(`EODHD daily quota proche (${this.eodhd24hCount}/${effectiveCap}) — blocage`);
+    const hardCapSafe = Math.floor(effectiveCap * 0.95);
+    if (this.eodhd24hCountAuthoritative && this.eodhd24hCount >= hardCapSafe) {
+      this.logger.warn(
+        `EODHD daily quota >${Math.floor((this.eodhd24hCount/effectiveCap)*100)}% (${this.eodhd24hCount}/${effectiveCap}) — blocage authoritative`,
+      );
       return 'blocked';
     }
-    if (this.eodhd24hCount >= warnThreshold) return 'warn';
     return 'ok';
   }
 

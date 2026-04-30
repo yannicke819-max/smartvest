@@ -9,7 +9,7 @@ export function DashboardPlaceholder() {
       <DisclaimerBanner />
 
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Tableau de bord</h1>
+        <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Mon tableau de bord</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Vue d&apos;ensemble du portefeuille. Les chiffres ci-dessous sont des placeholders
           tant que la connexion aux comptes n&apos;est pas configurée.

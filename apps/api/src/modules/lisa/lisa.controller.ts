@@ -286,6 +286,18 @@ export class LisaController {
               tf1h: r.pathQuality.tf1h,
             }
           : null,
+        // P19y (29/04/2026) — Coverage source pour badge UI :
+        //   - 'eodhd_1m' : intraday 1m natif EODHD (best, populates tf1m)
+        //   - 'eodhd'    : intraday 5m EODHD (5 TFs ok, tf1m=null par design)
+        //   - 'eodhd_ticks' : aggregated from /api/ticks (US-only)
+        //   - 'yahoo'    : Yahoo Finance fallback (5m series)
+        //   - 'binance'  : Binance crypto klines
+        //   - 'cache_stale' : last-known < 15min stale
+        //   - 'none'     : aucune source dispo (UI badge "—" + tooltip)
+        // Permet UI d'afficher market_closed / illiquid / unsupported au lieu
+        // de juste "—" qui est ambigu.
+        coverage: r && 'coverage' in r ? r.coverage ?? 'none' : 'none',
+        cacheAgeMs: r && 'cacheAgeMs' in r ? r.cacheAgeMs ?? null : null,
       };
     });
 
@@ -867,6 +879,28 @@ export class LisaController {
    */
   @Get('daily-pnl/:portfolioId')
   async getDailyPnl(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    const userId = extractUserId(headers);
+    return this.lisa.getDailyPnl(userId, portfolioId);
+  }
+
+  /**
+   * P19w (29/04/2026) — Alias `/lisa/portfolio-status/:portfolioId` →
+   * comportement identique à `/lisa/daily-pnl/:portfolioId`.
+   *
+   * Pourquoi : Fly logs prod (19:29:26 UTC) montraient des 404 récurrents :
+   *   ERROR [HTTP] GET /lisa/portfolio-status/ → 404
+   * Le route name `portfolio-status` n'existait dans aucun fichier — il a été
+   * référencé dans des scripts de validation externes (incl. mes propres
+   * exemples curl écrits comme template). Ajouter l'alias supprime le bruit
+   * 404 dans les logs sans casser quoi que ce soit. La méthode `daily-pnl`
+   * retourne déjà : netReturn7dPct, winRatePct, tpHitRatePct (P19u),
+   * recentStreak, costBreakdown, lastMechanicalCycle.
+   */
+  @Get('portfolio-status/:portfolioId')
+  async getPortfolioStatus(
     @Headers() headers: Record<string, string>,
     @Param('portfolioId') portfolioId: string,
   ) {

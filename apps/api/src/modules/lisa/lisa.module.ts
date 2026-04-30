@@ -45,7 +45,11 @@ import { OhlcvCacheService } from './services/ohlcv-cache.service';
 import { TopGainersScannerService } from './services/top-gainers-scanner.service';
 import { OperatingModeService } from './services/operating-mode.service';
 import { MultiTimeframePersistenceService } from './services/multi-tf-persistence.service';
+import { EodhdQuotaService } from './services/eodhd-quota.service';
+import { YahooIntradayService } from './services/yahoo-intraday.service';
+import { IntradayCacheService } from './services/intraday-cache.service';
 import { PersistenceProbabilityService } from './services/persistence-probability.service';
+import { ScannerLlmRouterService } from './services/scanner-llm-router.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule, BotLabModule],
@@ -102,8 +106,16 @@ import { PersistenceProbabilityService } from './services/persistence-probabilit
     OperatingModeService,
     // P8-MULTI-TIMEFRAME-PERSISTENCE — fetch + score multi-TF (1m/5m/10m/15m/30m/1h)
     MultiTimeframePersistenceService,
+    // P19a — Yahoo Finance intraday fallback (Korea KOSPI, small-caps, etc.)
+    YahooIntradayService,
+    // P19i — Intraday OHLCV cache Supabase (last_known < 15 min, fallback chain)
+    IntradayCacheService,
     // P9 — logistic regression P(win) sur features persistence + empirical law
     PersistenceProbabilityService,
+    // P17 — LLM router multi-vendor pour scanner Gainers (Gemini/GPT-nano/Codestral/Claude)
+    ScannerLlmRouterService,
+    // P19v (30/04/2026) — Quota service centralisé EODHD (cost map + auto-throttle)
+    EodhdQuotaService,
   ],
   exports: [
     LisaService,
@@ -134,6 +146,7 @@ import { PersistenceProbabilityService } from './services/persistence-probabilit
     ProfitSweepService,
     DailyProfitGovernor,
     MacroModeService,
+    EodhdQuotaService,
   ],
 })
 export class LisaModule {}

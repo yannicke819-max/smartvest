@@ -17,7 +17,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import Decimal from 'decimal.js';
 import { randomUUID } from 'node:crypto';
-import { computeAtrStopByKind, type ThesisKind } from '@smartvest/ai-analyst';
+import {
+  computeAtrStopByKind,
+  computeRealisticFee,
+  computeVenueFeeDetail,
+  resolveFeesAwareBuffer,
+  type ThesisKind,
+} from '@smartvest/ai-analyst';
 import { mapPositionRows } from '../helpers/position.mapper';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { PerformanceService } from '../../performance/performance.service';
@@ -1056,15 +1062,104 @@ export class MechanicalTradingService {
       const horizonDays = target.horizonDays ?? 3;
       const horizonTargetDate = new Date(Date.now() + horizonDays * 86_400_000).toISOString();
 
-      // Coûts simulés : fees broker (10 bps) + slippage estimé (10 bps).
-      // Le slippage rend la sim plus réaliste vs un trade réel — sans lui
-      // on surestime la perf de 10-30% selon la liquidité (cf RETEX
-      // "Release It!" Nygard, et patterns Composer/QuantConnect).
-      const feeBps = 10;
-      const slippageBps = 10;
-      const estimatedCost = notional.mul(feeBps + slippageBps).div(10000);
+      // P19x (29/04/2026) — Fix double bug observé en prod ce soir :
+      // 8/10 trades fermés "TP hit" avec P&L négatif. Cause #1 : ce code
+      // path utilisait feeBps=10 + slippageBps=10 = 20bps round-trip per
+      // side = 0.40% total (~$10 sur $2500 notional) — 50× IBKR Pro réel.
+      // P19u a fixé `paper-broker.service.ts` mais PAS ce code path
+      // mechanical-trading qui est le vrai chemin du scanner Gainers.
+      //
+      // Fix : utilise computeRealisticFee partagé (P19u). IBKR Pro Tiered :
+      //   - US equities + ETFs : max($0.35, $0.005/share), capped 1%
+      //   - EU/Asia equities   : 5bps proxy
+      //   - Crypto (Paxos)     : 0.085%
+      //   - FX / commodity     : 1bp / 5bps
+      //
+      // Slippage modélé séparément (5bps additionnel, hypothèse paper sim
+      // pour ne pas surestimer la perf vs réel). C'est conservateur mais
+      // pas absurde.
+      const tentativeQty = notional.div(price);
+      const feeIbkr = computeRealisticFee(
+        tentativeQty,
+        price,
+        target.assetClass as string | undefined,
+      );
+      const slippageBps = 5;
+      const slippageCost = notional.mul(slippageBps).div(10000);
+      const estimatedCost = feeIbkr.plus(slippageCost);
       const notionalNet = notional.minus(estimatedCost);
       const quantity = notionalNet.div(price);
+
+      // P20.1 (30/04/2026) — FEES-AWARE TARGET guard miroir paper-broker.
+      // P20.2 (30/04/2026) — include slippage 5bps (entry + exit) in roundTripFees.
+      //
+      // Ce code path (mechanical-trading INSERT direct) bypass paperBroker.openPosition
+      // et donc le P20 guard. On duplique ici le check sur les mêmes critères :
+      // expected_gain_at_TP ≥ FEES_AWARE_BUFFER × round_trip_fees_with_slippage.
+      // Cf. paper-broker.service.ts pour la justification chiffrée (9 losses J-7).
+      {
+        const tpPriceDec = new Decimal(takeProfitPrice);
+        const isLong = target.direction === 'long';
+        const exitSide: 'buy' | 'sell' = isLong ? 'sell' : 'buy';
+        const exitFeeBreakdown = computeVenueFeeDetail(
+          tentativeQty,
+          tpPriceDec,
+          target.assetClass as string | undefined,
+          target.venue as string | undefined,
+          exitSide,
+        );
+        // P20.2 — slippage 5bps × notional sur chaque side (cohérent avec
+        // entry slippageBps=5 ligne 1082 + exit slippageBps=5 ligne 2087).
+        const SLIPPAGE_BPS = 5;
+        const exitNotional = tentativeQty.mul(tpPriceDec);
+        const entrySlippage = notional.mul(SLIPPAGE_BPS).div(10000);
+        const exitSlippage = exitNotional.mul(SLIPPAGE_BPS).div(10000);
+        const venueFeesRT = feeIbkr.plus(new Decimal(exitFeeBreakdown.total));
+        const roundTripFees = venueFeesRT.plus(entrySlippage).plus(exitSlippage);
+        const expectedGain = isLong
+          ? tpPriceDec.minus(price).mul(tentativeQty)
+          : price.minus(tpPriceDec).mul(tentativeQty);
+        const buffer = resolveFeesAwareBuffer();
+        const requiredGain = roundTripFees.mul(buffer);
+        if (expectedGain.lt(requiredGain)) {
+          this.logger.log(
+            `[MÉCANIQUE:P20.1] ${target.symbol} skip open: ` +
+            `expected_gain_at_TP=$${expectedGain.toFixed(2)} < ${buffer.toFixed(2)}× round_trip_fees_with_slip=$${requiredGain.toFixed(2)} ` +
+            `(entry=$${price.toFixed(4)} TP=$${tpPriceDec.toFixed(4)} qty=${tentativeQty.toFixed(4)} notional=$${notional.toFixed(2)} ` +
+            `venue=$${venueFeesRT.toFixed(2)} slip=$${entrySlippage.plus(exitSlippage).toFixed(2)})`,
+          );
+          await this.decisionLog.append({
+            portfolioId,
+            kind: 'mechanical_open_skipped_fees_aware',
+            summary: `[P20.1] ${target.symbol}: open mechanical refusée — gain TP < ${buffer.toFixed(2)}× (fees + slippage round-trip)`,
+            rationale:
+              `Gain attendu au TP $${expectedGain.toFixed(2)} insuffisant vs round-trip cost $${roundTripFees.toFixed(2)} ` +
+              `(venue $${venueFeesRT.toFixed(2)} + slippage 5bps × 2 = $${entrySlippage.plus(exitSlippage).toFixed(2)}, ` +
+              `buffer=${buffer.toFixed(2)}). Augmenter TP ou notional pour ouvrir.`,
+            payload: {
+              symbol: target.symbol,
+              asset_class: target.assetClass,
+              venue: target.venue ?? null,
+              direction: target.direction,
+              entry_price: price.toFixed(4),
+              tp_price: tpPriceDec.toFixed(4),
+              tp_pct: tpPct.toFixed(3),
+              qty: tentativeQty.toFixed(4),
+              notional_usd: notional.toFixed(2),
+              entry_fee_usd: feeIbkr.toFixed(4),
+              exit_fee_usd: exitFeeBreakdown.total.toFixed(4),
+              entry_slippage_usd: entrySlippage.toFixed(4),
+              exit_slippage_usd: exitSlippage.toFixed(4),
+              round_trip_total_usd: roundTripFees.toFixed(4),
+              expected_gain_at_tp_usd: expectedGain.toFixed(4),
+              required_gain_usd: requiredGain.toFixed(4),
+              buffer: buffer.toFixed(2),
+            },
+            triggeredBy: 'mechanical_cron',
+          }).catch(() => null);
+          continue; // skip cette ouverture, passe au prochain target
+        }
+      }
 
       const positionId = randomUUID();
       const syntheticThesisId = target.thesisId ?? randomUUID();
@@ -1816,7 +1911,14 @@ export class MechanicalTradingService {
     }
 
     // MACD cross contre-direction + P&L positif → exit momentum
-    if (!reactiveCloseReason && pnlPct > 0 && ind.macdHist != null) {
+    // P19x (29/04/2026) — Bump floor `pnlPct > 0` → `pnlPct >= MIN_REACTIVE_PNL_PCT`.
+    // Bug observé : `pnlPct > 0` faisait fermer des trades à +0.005% gross.
+    // Combiné aux fees ~0.20% par side (P19u-bis), le net était systématiquement
+    // négatif → 8/10 "TP hits" en fait des pertes. Floor 0.5% garantit que le
+    // reactive exit n'opère que quand on couvre les frictions round-trip + un
+    // peu de marge. Aligné avec `minPnlForReactive` du RSI exit (0.5/1).
+    const MIN_REACTIVE_PNL_PCT = isHyperActive ? 0.5 : 1.0;
+    if (!reactiveCloseReason && pnlPct >= MIN_REACTIVE_PNL_PCT && ind.macdHist != null) {
       if (isLong && ind.macdHist < 0 && Math.abs(ind.macdHist) > 0.01) {
         reactiveCloseReason = `MACD_hist=${ind.macdHist.toFixed(3)} bearish sur LONG + P&L=+${pnlPct.toFixed(2)}% → exit momentum`;
       } else if (!isLong && ind.macdHist > 0 && Math.abs(ind.macdHist) > 0.01) {
@@ -2034,17 +2136,95 @@ export class MechanicalTradingService {
     const notional = new Decimal(pos.entry_notional_usd as string);
     const isLong = (pos.direction as string) === 'long';
     const qty = new Decimal(pos.quantity as string);
+    const assetClass = (pos.asset_class as string | undefined) ?? undefined;
 
-    // Coûts symétriques à l'open : fees broker + slippage estimé.
-    // Cohérence avec les hypothèses du backtest harness — rend la sim
-    // plus pessimiste donc plus alignée avec le réel.
-    const feeBps = 10;
-    const slippageBps = 10;
-    const exitCost = notional.mul(feeBps + slippageBps).div(10000);
     const rawPnl = isLong
       ? exitPrice.minus(entryPrice).mul(qty)
       : entryPrice.minus(exitPrice).mul(qty);
-    const realizedPnl = rawPnl.minus(exitCost);
+
+    // P19x (29/04/2026) — Realistic IBKR Pro fee model + closed_invalidated refund.
+    //
+    // Avant P19x : `feeBps + slippageBps = 20bps` × notional côté exit, soit
+    // ~$5 sur $2500 — 50× IBKR Pro réel. Sur tiny moves (TP @ +0.005% via MACD
+    // reactive close), ce fee mangeait tout le gross PnL et faisait apparaître
+    // -$4.81 sur un "TP hit". P19u avait fixé paper-broker.service.ts mais
+    // PAS ce code path mechanical-trading.
+    //
+    // Fix :
+    //   - exitCost = computeRealisticFee + 5bps slippage (paper sim conservatif)
+    //   - closed_invalidated → refund both sides, treat as "no trade happened"
+    let exitCost: Decimal;
+    let entryFeeRefund: Decimal;
+    if (reason === 'closed_invalidated') {
+      exitCost = new Decimal(0);
+      const entryCostStored = pos.estimated_entry_cost_usd as string | null;
+      entryFeeRefund = entryCostStored ? new Decimal(entryCostStored) : new Decimal(0);
+    } else {
+      const feeIbkr = computeRealisticFee(qty, exitPrice, assetClass);
+      const slippageBps = 5;
+      const slippageCost = notional.mul(slippageBps).div(10000);
+      exitCost = feeIbkr.plus(slippageCost);
+      entryFeeRefund = new Decimal(0);
+    }
+    const realizedPnl = rawPnl.minus(exitCost).plus(entryFeeRefund);
+
+    // P19x.1 (29/04/2026) — MIN_NET_PROFIT_USD guard avant `closed_target`.
+    //
+    // Bug observé en prod ce soir : 10 trades fermés "TP hit", win rate 0%,
+    // P&L cumulé -$36.53. Cause : les exits réactifs (MACD bearish à pnl
+    // ≥ 0.5%, P19x déjà mergé) + take-profit absolu (P&L ≥ 2.5-4%) peuvent
+    // matérialiser un gain BRUT minimal sur trades à petit notional, qui
+    // devient NÉGATIF après fees IBKR ($0.35 min × 2 sides = $0.70).
+    //
+    // Garde-fou : un closed_target ne doit JAMAIS résulter en net PnL négatif.
+    // Si net < MIN = max(2$, 0.5% × notional), on REFUSE le close et la
+    // position reste ouverte. Le prochain cycle re-évaluera (price peut
+    // bouger plus, ou le trailing/stop la fermera proprement).
+    //
+    // Pourquoi seulement closed_target : closed_stop matérialise une perte
+    // par design (protection drawdown) ; closed_invalidated refund les fees.
+    if (reason === 'closed_target') {
+      const minNetProfit = Decimal.max(
+        new Decimal(2),
+        notional.mul(0.005),  // 0.5% du notional
+      );
+      if (realizedPnl.lt(minNetProfit)) {
+        this.logger.warn(
+          `[MÉCANIQUE] Skip closed_target ${pos.symbol}: net=$${realizedPnl.toFixed(2)} < min=$${minNetProfit.toFixed(2)} ` +
+          `(notional=$${notional.toFixed(0)}, gross=$${rawPnl.toFixed(2)}, fees=$${exitCost.toFixed(2)}). Position kept open.`,
+        );
+        // Audit decision_log pour tracer ce que sinon serait silencieux côté UI
+        await this.decisionLog.append({
+          portfolioId: pos.portfolio_id as string,
+          kind: 'mechanical_close_skipped_min_profit',
+          summary: `[MÉCANIQUE] Refus closed_target ${pos.symbol}: net=$${realizedPnl.toFixed(2)} < min=$${minNetProfit.toFixed(2)} → garde ouvert`,
+          rationale: `Net PnL ${realizedPnl.toFixed(2)} USD inférieur au seuil min ${minNetProfit.toFixed(2)} USD (gross ${rawPnl.toFixed(2)} - fees ${exitCost.toFixed(2)}). Position kept open pour éviter de matérialiser une perte sur fake-TP.`,
+          payload: {
+            symbol: pos.symbol,
+            entry_price: pos.entry_price,
+            attempted_exit_price: exitPrice.toFixed(4),
+            attempted_reason: rationale,
+            gross_pnl_usd: rawPnl.toFixed(2),
+            exit_cost_usd: exitCost.toFixed(2),
+            net_pnl_usd: realizedPnl.toFixed(2),
+            min_net_profit_usd: minNetProfit.toFixed(2),
+            notional_usd: notional.toFixed(2),
+          },
+          triggeredBy: 'mechanical_cron',
+        }).catch(() => { /* non-bloquant */ });
+        return; // ⚠️ Position reste ouverte, pas d'UPDATE DB
+      }
+    }
+
+    // P19x.1 — Log structuré obligatoire à chaque close effectif (req user).
+    // Permet grep Fly logs pour audit : entry, exit, qty, fees, gross, net.
+    this.logger.log(
+      `[MÉCANIQUE_CLOSE] ${pos.symbol} status=${reason} ` +
+      `entry=${entryPrice.toFixed(4)} exit=${exitPrice.toFixed(4)} qty=${qty.toFixed(4)} ` +
+      `gross=$${rawPnl.toFixed(2)} fees_out=$${exitCost.toFixed(2)} ` +
+      `net=$${realizedPnl.toFixed(2)} notional=$${notional.toFixed(2)} ` +
+      `entry_cost=$${pos.estimated_entry_cost_usd ?? '?'}`,
+    );
     const pnlPct = realizedPnl.div(notional).mul(100).toNumber();
 
     const now = new Date().toISOString();

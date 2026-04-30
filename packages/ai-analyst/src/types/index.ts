@@ -701,7 +701,15 @@ export interface HistoryMetrics {
   netReturn30dPct: number | null;
   drawdownFromPeakPct: number | null;
   realizedVolatility7dPct: number | null;
+  /** P19u — Net win rate : trades avec realized PnL > 0 (économique, après fees). */
   winRatePct: number | null;
+  /**
+   * P19u — TP hit rate : trades dont status='closed_target', indépendant du PnL net.
+   * Anti-bias UI : avec fees forfaitaires irréalistes, micro-move TPs comptaient
+   * comme LOSS car fees > gross PnL → Lisa apprenait "TP n'est pas un win".
+   * UI affiche les deux : "TP hit rate" + "Net win rate".
+   */
+  tpHitRatePct: number | null;
   closedPositionsCount: number;
   recentStreak: RecentStreak;
   avgDailyCostUsd7d: number | null;
