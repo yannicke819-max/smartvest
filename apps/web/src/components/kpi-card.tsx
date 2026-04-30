@@ -28,7 +28,7 @@ export function KpiCard({ label, value, hint, helpTip, helpGlossarySlug, delta, 
         {icon ? <span className="text-muted-foreground">{icon}</span> : null}
       </CardHeader>
       <CardContent>
-        <div className="text-2xl font-semibold tracking-tight">{value}</div>
+        <div className="text-xl font-semibold tracking-tight sm:text-2xl break-words">{value}</div>
         {delta ? (
           <p
             className={cn(

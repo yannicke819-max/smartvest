@@ -6,7 +6,7 @@ import { useUIStore } from '@/stores/ui';
 import { KillSwitchBanner } from '@/components/kill-switch-banner';
 import { createSupabaseBrowserClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { User as SupabaseUser } from '@supabase/supabase-js';
 
 export function Header() {
@@ -27,6 +27,21 @@ export function Header() {
   }
 
   const initials = user?.email?.slice(0, 2).toUpperCase() ?? '?';
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown on outside click/touch
+  useEffect(() => {
+    if (!menuOpen) return;
+    function close(e: MouseEvent | TouchEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    }
+    document.addEventListener('mousedown', close);
+    document.addEventListener('touchstart', close);
+    return () => {
+      document.removeEventListener('mousedown', close);
+      document.removeEventListener('touchstart', close);
+    };
+  }, [menuOpen]);
 
   return (
     <header className="sticky top-0 z-30 border-b bg-background/80 backdrop-blur">
@@ -52,27 +67,34 @@ export function Header() {
             Phase 5 · Délégation
           </span>
           {user && (
-            <div className="relative">
+            <div className="relative" ref={menuRef}>
+              {/* min 36×36 touch target */}
               <button
                 onClick={() => setMenuOpen((o) => !o)}
-                className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary hover:bg-primary/20 transition-colors"
+                aria-expanded={menuOpen}
+                aria-haspopup="menu"
                 aria-label="Mon compte"
+                className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary hover:bg-primary/20 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 {initials}
               </button>
               {menuOpen && (
-                <div className="absolute right-0 top-10 z-50 w-48 rounded-md border bg-background shadow-lg">
+                <div
+                  role="menu"
+                  className="absolute right-0 top-10 z-50 w-48 rounded-md border bg-background shadow-lg"
+                >
                   <div className="border-b px-3 py-2">
                     <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                      <User className="h-3 w-3" />
+                      <User className="h-3 w-3" aria-hidden />
                       {user.email}
                     </p>
                   </div>
                   <button
+                    role="menuitem"
                     onClick={() => void handleSignOut()}
-                    className="flex w-full items-center gap-2 px-3 py-2 text-sm text-destructive hover:bg-muted transition-colors"
+                    className="flex w-full items-center gap-2 px-3 py-2.5 text-sm text-destructive hover:bg-muted transition-colors focus:outline-none focus-visible:bg-muted"
                   >
-                    <LogOut className="h-3.5 w-3.5" />
+                    <LogOut className="h-3.5 w-3.5" aria-hidden />
                     Se déconnecter
                   </button>
                 </div>
