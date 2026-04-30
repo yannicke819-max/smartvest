@@ -902,6 +902,95 @@ export class TopGainersScannerService implements OnModuleInit {
           );
           continue;
         }
+
+        // P19β (30/04/2026) — Shadow-logging mode strict 6/6.
+        //
+        // Activation : UNIQUEMENT quand `gainers_min_persistence_score >= 1.0`
+        // sur le portfolio (mode test "Gainers 6/6 only" — Issue #128). Pour
+        // les portfolios standard (minScore=0.67 par défaut), le check
+        // standard ci-dessous reste actif.
+        //
+        // Objectif : sur le portfolio test strict 6/6, logger les "near-miss"
+        // (5/6 et 4/6) qui auraient été ouverts en mode standard. Permet de
+        // mesurer expectancy comparée 6/6 vs 5/6 vs 4/6 sur la MÊME fenêtre
+        // de marché (KPI pour décision GO/PIVOT/KILL J+14).
+        //
+        // Ratios (avec tolérance float pour 5/6=0.8333 et 4/6=0.6667) :
+        //   1.00 (6/6)         → ouverture normale (pass aux gates suivants)
+        //   [0.83, 1.0)  5/6   → shadow_566 log + skip (no open)
+        //   [0.66, 0.83) 4/6   → shadow_466 log + skip (no open)
+        //   < 0.66             → skip silencieux (comportement standard)
+        //
+        // NB : 4/6 = 0.66666… donc le cutoff est 0.66, PAS 0.67. Le seuil
+        // historique `gainers_min_persistence_score` default = 0.67 est en
+        // pratique strict ≥ 5/6 (0.8333 ≥ 0.67 ✓ ; 0.6667 < 0.67 ✗).
+        const STRICT_MODE_THRESHOLD = 0.999; // tolérance float pour 1.0
+        if (minScore >= STRICT_MODE_THRESHOLD) {
+          const score = persistence.persistenceScore;
+          if (score >= 0.83 && score < 1.0) {
+            await this.decisionLog.append({
+              portfolioId,
+              kind: 'gainer_shadow_566',
+              summary: `[GAINER_SHADOW_566] ${cand.symbol} persistence=${persistence.persistenceCount} score=${score.toFixed(2)} — would have opened in 5/6 mode but skipped under strict 6/6`,
+              rationale: 'P19β shadow-logging : mesure de l\'edge comparée du setup 5/6 vs 6/6 strict sur la même fenêtre de marché.',
+              payload: {
+                symbol: cand.symbol,
+                exchange: cand.exchange,
+                assetClass: cand.assetClass,
+                persistenceScore: score,
+                persistenceCount: persistence.persistenceCount,
+                pathEfficiency: persistence.pathQuality?.overallEfficiency ?? null,
+                pathSmoothness: persistence.pathQuality?.overallSmoothness ?? null,
+                tf1m: persistence.tf1m,
+                tf5m: persistence.tf5m,
+                tf10m: persistence.tf10m,
+                tf15m: persistence.tf15m,
+                tf30m: persistence.tf30m,
+                tf1h: persistence.tf1h,
+                changePct: cand.changePct,
+                price: cand.close,
+                timestamp: new Date().toISOString(),
+              },
+              triggeredBy: 'autopilot_cron',
+            }).catch(() => { /* non-bloquant */ });
+            continue;
+          }
+          if (score >= 0.66 && score < 0.83) {
+            await this.decisionLog.append({
+              portfolioId,
+              kind: 'gainer_shadow_466',
+              summary: `[GAINER_SHADOW_466] ${cand.symbol} persistence=${persistence.persistenceCount} score=${score.toFixed(2)} — would have opened in 4/6 mode but skipped under strict 6/6`,
+              rationale: 'P19β shadow-logging : mesure de l\'edge comparée du setup 4/6 vs 6/6 strict.',
+              payload: {
+                symbol: cand.symbol,
+                exchange: cand.exchange,
+                assetClass: cand.assetClass,
+                persistenceScore: score,
+                persistenceCount: persistence.persistenceCount,
+                pathEfficiency: persistence.pathQuality?.overallEfficiency ?? null,
+                pathSmoothness: persistence.pathQuality?.overallSmoothness ?? null,
+                tf1m: persistence.tf1m,
+                tf5m: persistence.tf5m,
+                tf10m: persistence.tf10m,
+                tf15m: persistence.tf15m,
+                tf30m: persistence.tf30m,
+                tf1h: persistence.tf1h,
+                changePct: cand.changePct,
+                price: cand.close,
+                timestamp: new Date().toISOString(),
+              },
+              triggeredBy: 'autopilot_cron',
+            }).catch(() => { /* non-bloquant */ });
+            continue;
+          }
+          if (score < 0.66) {
+            // Skip silencieux (comportement standard, pas de pollution log)
+            continue;
+          }
+          // score === 1.0 (6/6) → tombe dans le check standard ci-dessous
+          // qui pass-through (1.0 not < 1.0)
+        }
+
         if (persistence.persistenceScore < minScore) {
           this.logger.log(
             `[top-gainers] ${cand.symbol} persistenceScore=${persistence.persistenceScore.toFixed(2)} (${persistence.persistenceCount}) < min=${minScore.toFixed(2)} → skip`,
