@@ -7,6 +7,7 @@ name: Apply Supabase migrations (manual)
 # Triggers :
 #   - workflow_dispatch (UI button "Run workflow")
 #   - tag push matching apply-migrations-* (programmatic trigger from CLI)
+#   - branch push matching migrations-trigger-* (programmatic when tag push blocked)
 #
 # Output : posted as comment on Issue #131 (P20.2 tracking) so any agent or
 # user can read the result without needing GitHub Actions UI access.
@@ -16,6 +17,8 @@ on:
   push:
     tags:
       - 'apply-migrations-*'
+    branches:
+      - 'migrations-trigger-*'
 
 permissions:
   contents: read
