@@ -929,8 +929,9 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     // router lisait l'env var statique au lieu de la config DB).
     // - daily_cost_budget_usd : budget cumulé en USD (null = pas d'override,
     //   le router applique sa config constructor / env LLM_ROUTER_DAILY_BUDGET_USD)
-    // - cost_force_continue : à 100% du budget, soft warn + Haiku (true,
-    //   default DB via migration 0074) ou hard throw (false, mode strict)
+    // - cost_force_continue : à 100% du budget, soft warn + continue Opus
+    //   (true, default DB via migration 0074, ADR-001 Phase 2 — plus de
+    //   fallback Haiku) ou hard throw (false, mode strict)
     const budgetOverride = config.daily_cost_budget_usd != null
       ? Number(config.daily_cost_budget_usd)
       : undefined;
