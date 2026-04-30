@@ -5,16 +5,26 @@ import { Bell } from 'lucide-react';
 import { usePortfolios } from '@/hooks/use-portfolio';
 import { SkeletonCard } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/states/empty-state';
+import { BackButton } from '@/components/ui/back-button';
+import { HelpTip } from '@/components/ui/help-tip';
 
 export default function AlertsPage() {
   const { data: portfolios, isLoading } = usePortfolios();
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 p-6">
+      <BackButton />
       <div>
-        <h1 className="text-xl font-semibold">Mes notifications</h1>
+        <h1 className="flex items-center gap-2 text-xl font-semibold">
+          Mes notifications
+          <HelpTip
+            text="Alertes déclenchées automatiquement sur vos positions (seuil de perte, objectif atteint, anomalie). Vous choisissez les règles."
+            glossarySlug="alerte"
+            side="right"
+          />
+        </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Alertes et règles de surveillance par portefeuille.
+          Règles de surveillance par portefeuille.
         </p>
       </div>
 

@@ -4,7 +4,6 @@ import type { Route } from 'next';
 import Link from 'next/link';
 import { useState, useEffect } from 'react';
 import { X, BookOpen, FlaskConical, Sparkles, ChevronRight } from 'lucide-react';
-import { Button } from '@/components/ui/button';
 
 const STORAGE_KEY = 'smartvest_welcome_dismissed_v1';
 
@@ -59,15 +58,15 @@ export function WelcomeBanner() {
             Voici 3 étapes pour bien démarrer.
           </p>
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
+        {/* min 32×32 touch target (WCAG 2.5.8) */}
+        <button
+          type="button"
           onClick={dismiss}
-          className="h-6 w-6 shrink-0 p-0 text-muted-foreground hover:text-foreground"
+          className="shrink-0 rounded-md p-2 text-muted-foreground hover:text-foreground transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           aria-label="Fermer ce message de bienvenue"
         >
-          <X className="h-3.5 w-3.5" />
-        </Button>
+          <X className="h-4 w-4" />
+        </button>
       </div>
 
       <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
@@ -99,7 +98,7 @@ export function WelcomeBanner() {
         <button
           type="button"
           onClick={dismiss}
-          className="text-[11px] text-muted-foreground hover:text-foreground"
+          className="rounded py-1.5 px-2 text-[11px] text-muted-foreground hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           Ne plus afficher
         </button>

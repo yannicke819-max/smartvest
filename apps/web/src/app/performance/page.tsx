@@ -5,16 +5,26 @@ import { BarChart3 } from 'lucide-react';
 import { usePortfolios } from '@/hooks/use-portfolio';
 import { SkeletonCard } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/states/empty-state';
+import { BackButton } from '@/components/ui/back-button';
+import { HelpTip } from '@/components/ui/help-tip';
 
 export default function PerformancePage() {
   const { data: portfolios, isLoading } = usePortfolios();
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 p-6">
+      <BackButton />
       <div>
-        <h1 className="text-xl font-semibold">Mes résultats</h1>
+        <h1 className="flex items-center gap-2 text-xl font-semibold">
+          Mes résultats
+          <HelpTip
+            text="Évolution de la valeur de vos portefeuilles dans le temps. Les performances passées ne préjugent pas des performances futures."
+            glossarySlug="performance"
+            side="right"
+          />
+        </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Analyse de la performance de vos portefeuilles. Les performances passées ne préjugent pas des performances futures.
+          Analyse de la performance de vos portefeuilles.
         </p>
       </div>
 
