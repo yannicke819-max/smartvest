@@ -515,8 +515,16 @@ export class TopGainersScannerService implements OnModuleInit {
 
     if (apiKey) {
       // Non-EU exchanges always scanned (US 24/7 with after-hours, Asia, Other).
+      // P19s+ — log warn on screener failure (was silent .catch(() => [])
+      // qui masquait les 0-result silencieux sur LSE/PA/TSE/HK/AU avant le
+      // fix UPPERCASE + change_p).
       for (const ex of NON_EU_EXCHANGES) {
-        tasks.push(this.fetchEodhdScreener(ex, apiKey).catch(() => []));
+        tasks.push(
+          this.fetchEodhdScreener(ex, apiKey).catch((e) => {
+            this.logger.warn(`[top-gainers] ${ex} failed: ${e?.message ?? String(e)}`);
+            return [];
+          }),
+        );
       }
 
       // EU exchanges gated on session windows.
@@ -526,7 +534,12 @@ export class TopGainersScannerService implements OnModuleInit {
           `[top-gainers] EU session active (${activeEu.join('/')}), scanning ${EU_EXCHANGES.length} exchanges: ${EU_EXCHANGES.join(',')}`,
         );
         for (const ex of EU_EXCHANGES) {
-          tasks.push(this.fetchEodhdScreener(ex, apiKey).catch(() => []));
+          tasks.push(
+            this.fetchEodhdScreener(ex, apiKey).catch((e) => {
+              this.logger.warn(`[top-gainers] ${ex} failed: ${e?.message ?? String(e)}`);
+              return [];
+            }),
+          );
         }
       } else {
         this.logger.log(
@@ -571,10 +584,27 @@ export class TopGainersScannerService implements OnModuleInit {
    * est traitée DOWNSTREAM via le fallback Yahoo Finance dans
    * `MultiTimeframePersistenceService` (zéro opportunité mondiale ratée).
    *
+   * P19s+ (30/04/2026) — Fix critique multi-exchange. Audit prod sur
+   * gainers_persistence_log (24h) : 21 299 candidats, 105 tickers uniques,
+   * 100 % US (0 ticker non-US, aucun suffixe `.PA`/`.L`/`.DE`/`.HK`/`.T`/...).
+   *
+   * Root cause :
+   *   1) `exchange` était passé en lowercase. EODHD screener exige UPPERCASE
+   *      pour tous codes autres que 'us'. Les requêtes LSE/PA/TSE/HK/AU
+   *      renvoyaient 0 silencieusement (masqué par `.catch(() => [])`).
+   *   2) Le filtre `refund_1d_p` n'existe que côté US. Les exchanges EU/Asie
+   *      utilisent `change_p`. Donc même avec UPPERCASE fixé, le filtre
+   *      EODHD éliminerait 100 % des résultats non-US.
+   *
    * Doc : https://eodhd.com/financial-apis/stock-market-screener-api
    */
   private async fetchEodhdScreener(exchange: string, apiKey: string): Promise<TopGainerCandidate[]> {
-    const exLower = exchange.toLowerCase();
+    const exUpper = exchange.toUpperCase();
+    // P19s+ — Le filter field "change %1d" diffère entre marchés :
+    //   - US      : refund_1d_p (sans alias)
+    //   - non-US  : change_p (le seul disponible côté EODHD screener EU/Asie)
+    const isUs = exUpper === 'US';
+    const changeField = isUs ? 'refund_1d_p' : 'change_p';
     // P19s (29/04/2026 18:53 UTC) — Fix 422 sur exchanges non-US.
     //
     // Diagnostic via curl LIVE contre demo + observation Fly logs prod :
@@ -597,11 +627,12 @@ export class TopGainersScannerService implements OnModuleInit {
     //      autorisé par la doc) pour garantir qu'on attrape les vrais top
     //      gainers même si EODHD retourne dans un ordre arbitraire.
     const filters = encodeURIComponent(JSON.stringify([
-      ['exchange', '=', exLower],
-      ['refund_1d_p', '>', 3],
+      ['exchange', '=', exUpper],
+      [changeField, '>', 3],
       ['market_capitalization', '>', 50_000_000],
     ]));
     const url = `https://eodhd.com/api/screener?api_token=${encodeURIComponent(apiKey)}&filters=${filters}&limit=100&offset=0&fmt=json`;
+    this.logger.debug(`[top-gainers] EODHD screener exchange=${exUpper} field=${changeField}`);
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
       if (!res.ok) {
@@ -609,17 +640,17 @@ export class TopGainersScannerService implements OnModuleInit {
         // 401 = token expiré, 403 = plan insuffisant). Tronqué à 200 char.
         const body = await res.text().catch(() => '');
         this.logger.warn(
-          `[top-gainers] eodhd ${exchange} HTTP ${res.status} — body: ${body.slice(0, 200)}`,
+          `[top-gainers] eodhd ${exUpper} HTTP ${res.status} — body: ${body.slice(0, 200)}`,
         );
         return [];
       }
       const json = await res.json() as { data?: EodhdScreenerRow[] } | EodhdScreenerRow[];
       const rows: EodhdScreenerRow[] = Array.isArray(json) ? json : (json.data ?? []);
       return rows
-        .map((r) => this.mapEodhdRow(r, exchange))
+        .map((r) => this.mapEodhdRow(r, exUpper))
         .filter((c): c is TopGainerCandidate => c !== null);
     } catch (e) {
-      this.logger.debug(`[top-gainers] eodhd ${exchange} fetch error: ${String(e).slice(0, 120)}`);
+      this.logger.debug(`[top-gainers] eodhd ${exUpper} fetch error: ${String(e).slice(0, 120)}`);
       return [];
     }
   }

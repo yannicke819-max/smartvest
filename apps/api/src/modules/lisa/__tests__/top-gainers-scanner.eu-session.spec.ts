@@ -98,7 +98,8 @@ describe('fetchAllCandidates — EU session gating', () => {
   function exchangesQueried(urls: string[]): Set<string> {
     const exchanges = new Set<string>();
     for (const url of urls) {
-      const m = decodeURIComponent(url).match(/\["exchange","=","([a-z]+)"\]/);
+      // P19s+ : exchanges sont maintenant UPPERCASE dans le filtre EODHD
+      const m = decodeURIComponent(url).match(/\["exchange","=","([A-Za-z]+)"\]/);
       if (m) exchanges.add(m[1].toUpperCase());
     }
     return exchanges;
@@ -248,7 +249,7 @@ describe('fetchAllCandidates — merge dedup', () => {
     let callCount = 0;
     global.fetch = jest.fn().mockImplementation(async (url: string) => {
       callCount++;
-      const isUs = decodeURIComponent(url).includes('"exchange","=","us"');
+      const isUs = decodeURIComponent(url).includes('"exchange","=","US"');
       const data = isUs ? [
         { code: 'AAPL', last_price: 180, refund_1d_p: 5.2, volume: 2_000_000, avgvol_50d: 1_500_000, market_capitalization: 3e12 },
       ] : [];
@@ -272,9 +273,9 @@ describe('fetchAllCandidates — merge dedup', () => {
     global.fetch = jest.fn().mockImplementation(async (url: string) => {
       const decoded = decodeURIComponent(url);
       let data: any[] = [];
-      if (decoded.includes('"exchange","=","us"')) {
+      if (decoded.includes('"exchange","=","US"')) {
         data = [{ code: 'SAP', last_price: 200, refund_1d_p: 4.0, volume: 500_000, avgvol_50d: 400_000, market_capitalization: 2e11 }];
-      } else if (decoded.includes('"exchange","=","xetra"')) {
+      } else if (decoded.includes('"exchange","=","XETRA"')) {
         data = [{ code: 'SAP.DE', last_price: 195, refund_1d_p: 3.8, volume: 800_000, avgvol_50d: 600_000, market_capitalization: 2e11 }];
       }
       return { ok: true, status: 200, json: async () => ({ data }), text: async () => '' } as unknown as Response;
@@ -296,11 +297,11 @@ describe('fetchAllCandidates — merge dedup', () => {
     global.fetch = jest.fn().mockImplementation(async (url: string) => {
       const decoded = decodeURIComponent(url);
       let data: any[] = [];
-      if (decoded.includes('"exchange","=","us"')) {
+      if (decoded.includes('"exchange","=","US"')) {
         data = [{ code: 'NVDA', last_price: 800, refund_1d_p: 6.0, volume: 50_000_000, avgvol_50d: 40_000_000, market_capitalization: 2e12 }];
-      } else if (decoded.includes('"exchange","=","pa"')) {
+      } else if (decoded.includes('"exchange","=","PA"')) {
         data = [{ code: 'AIR.PA', last_price: 150, refund_1d_p: 4.2, volume: 1_000_000, avgvol_50d: 800_000, market_capitalization: 1e11 }];
-      } else if (decoded.includes('"exchange","=","tse"')) {
+      } else if (decoded.includes('"exchange","=","TSE"')) {
         data = [{ code: '7203.T', last_price: 2500, refund_1d_p: 5.5, volume: 5_000_000, avgvol_50d: 4_000_000, market_capitalization: 3e11 }];
       }
       return { ok: true, status: 200, json: async () => ({ data }), text: async () => '' } as unknown as Response;
