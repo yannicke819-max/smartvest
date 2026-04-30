@@ -18,7 +18,6 @@ import { AdminMigrationsController } from './admin-migrations.controller';
 import { AdminSupabaseQueryController } from './admin-supabase-query.controller';
 import { AdminLogsController } from './admin-logs.controller';
 import { AdminEodhdStatusController } from './admin-eodhd-status.controller';
-import { AdminFredTestController } from './admin-fred-test.controller';
 
 @Module({
   imports: [SupabaseModule, forwardRef(() => LisaModule)],
@@ -27,7 +26,6 @@ import { AdminFredTestController } from './admin-fred-test.controller';
     AdminSupabaseQueryController,
     AdminLogsController,
     AdminEodhdStatusController,
-    AdminFredTestController,
   ],
 })
 export class AdminModule {}
