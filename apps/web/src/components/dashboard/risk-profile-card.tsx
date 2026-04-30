@@ -1,6 +1,7 @@
 import { ShieldCheck } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { HelpTip } from '@/components/ui/help-tip';
 
 interface Props {
   profile: string | null | undefined;
@@ -21,7 +22,14 @@ export function RiskProfileCard({ profile, loading }: Props) {
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-sm font-medium text-muted-foreground">Profil de simulation</CardTitle>
+        <CardTitle className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
+          Profil de simulation
+          <HelpTip
+            text="Votre niveau de tolérance au risque déclaré. Module les paramètres des simulations Lisa (stops, taille des positions, fréquence d'analyse)."
+            glossarySlug="profil-de-risque"
+            side="right"
+          />
+        </CardTitle>
         <ShieldCheck className="h-4 w-4 text-muted-foreground" />
       </CardHeader>
       <CardContent>
