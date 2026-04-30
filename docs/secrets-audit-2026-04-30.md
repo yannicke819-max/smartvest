@@ -40,7 +40,7 @@ Pour re-vérifier l'état actuel : `flyctl secrets list -a smartvest` + run
 | `SUPABASE_PROJECT_REF` | GitHub Actions | ✅ `mfuutigfhrawccotinpo` | Target project ref pour le workflow | dashboard URL `…/project/<ref>` |
 | `FLY_API_TOKEN` | GitHub Actions | ✅ | Deploy auto sur push main | `flyctl auth token` |
 | `ADMIN_TOKEN` | Fly | ✅ | Header `x-admin-token` sur `/admin/*` (eodhd-status, logs) | rotation manuelle (UUID v4) |
-| `FRED_API_KEY` | Fly | ⚠️ **MANQUANT** (P1 dégradé — feature macro indicators OFF, en cours de provisioning user) | Macro indicators St. Louis Fed (régime US) | https://fred.stlouisfed.org/docs/api/api_key.html |
+| `FRED_API_KEY` | Fly | ✅ (32 chars hex, validé runtime 200 OK via endpoint temporaire `/admin/fred-test` commit `8af27b1`, retiré `f5bf397`) | Macro indicators St. Louis Fed (régime US) | https://fred.stlouisfed.org/docs/api/api_key.html |
 
 ## 3. P2 — Secrets optionnels (feature mineure ou feature flag-gated off)
 

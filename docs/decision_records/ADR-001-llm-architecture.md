@@ -81,9 +81,18 @@ Code mort à supprimer dans phase 4.
 |---|---|---|---|
 | **Phase 0** | ADR-001 (ce document) | commit `a55de24` direct main | ✅ |
 | **Phase 1** | Scanner gainers Gemini-primaire + flag activé en prod | PR #148 squash `8bc094d` | ✅ |
-| **Phase 2** | Cleanup `LlmRouter` multi-task : `LlmTask` réduit à `'thesis_generation'`, `MODEL_BY_TASK` à 1 entrée Opus, `COST_PER_1M_TOKENS_*` à Opus only, fallback Haiku 80%/100% supprimé (remplacé par soft-warn + continue Opus), `ClaudeProvider` basé sur Opus (était Sonnet) per ADR §1.4. **Note** : aucun call site `news_classification`/`summary` câblé runtime — pas de migration, juste suppression de code mort + correction du fallback Haiku cassé après Phase 1 unset. | PR `feat/llm-arch-phase2-cleanup-dead-code` | ⏳ |
+| **Phase 2** | Cleanup `LlmRouter` multi-task : `LlmTask` réduit à `'thesis_generation'`, `MODEL_BY_TASK` à 1 entrée Opus, `COST_PER_1M_TOKENS_*` à Opus only, fallback Haiku 80%/100% supprimé (remplacé par soft-warn + continue Opus), `ClaudeProvider` basé sur Opus (était Sonnet) per ADR §1.4. **Note** : aucun call site `news_classification`/`summary` câblé runtime — pas de migration, juste suppression de code mort + correction du fallback Haiku cassé après Phase 1 unset. | PR #149 squash `d8f820a` | ✅ |
 | **Phase 3** | regime_classification + binary_decision + audit_explanation → Gemini si call sites apparaissent ; sinon **NO-OP** (déjà supprimés en Phase 2) | n/a | ☑️ inclus dans Phase 2 |
-| **Phase 4** | Cleanup `OpenAiProvider` + `MistralProvider` classes (code mort dans `@smartvest/ai-analyst/src/llm/providers/`) | PR dédiée | ⏳ |
+| **Phase 4** | Cleanup `OpenAiProvider` + `MistralProvider` classes (code mort dans `@smartvest/ai-analyst/src/llm/providers/`) | PR #150 squash `b5b0ccb` | ✅ |
+
+---
+
+**ADR-001 CLOSED — 30/04/2026 ~16:00 UTC.**
+
+Toutes les phases mergeées sur main. Smoke tests prod validés (PR #148+#149+#150 deployés sur Fly via auto-deploy). Suite mécanique :
+- Lockfile sync auto (suppression deps `openai` + `@mistralai/mistralai`) : PR #152 merged `e44b39f`.
+- Audit secrets exhaustif + smoke-test script + FRED usage doc : PR #151 merged `3bedb0a`.
+- FRED_API_KEY P1 : set Fly + validé runtime via endpoint temporaire `/admin/fred-test` (commit `8af27b1`, retiré dans `f5bf397`). Verdict : `{ status: 200, ok: true, keyLen: 32 }`. FRED prêt en cascade pour les indicateurs macro `VIXCLS` / `DGS10` / `DGS2` quand le scanner est unpaused.
 
 ## 4. Migration sans downtime
 
