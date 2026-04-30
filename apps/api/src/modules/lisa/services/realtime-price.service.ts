@@ -317,8 +317,20 @@ export class RealtimePriceService implements OnModuleDestroy {
       }
     }
 
-    // P19u — DAILY THRESHOLD REMOVED. Le rate-limiter per-minute (étape 1)
-    // est la seule barrière. Le compteur daily reste pour /quota-status.
+    // P19v (30/04/2026 09:00 UTC) — RE-ENABLE 95% authoritative daily blocker.
+    // User clarification finale : 100k DAILY est la vraie limite EODHD plan
+    // ALL-IN-ONE. PR #143 fix authoritative était correct, PR #144 l'avait
+    // retiré à tort. On le remet, MAIS gated sur authoritative source ONLY :
+    //   - Si /api/user retourne apiRequests >= 95% (95k) → BLOCK
+    //   - Si DB fallback (non-authoritative) → JAMAIS BLOCK (proxy faillible)
+    const effectiveCap = this.eodhdDailyLimit + this.eodhdExtraLimit;
+    const hardCapSafe = Math.floor(effectiveCap * 0.95);
+    if (this.eodhd24hCountAuthoritative && this.eodhd24hCount >= hardCapSafe) {
+      this.logger.warn(
+        `EODHD daily quota >${Math.floor((this.eodhd24hCount/effectiveCap)*100)}% (${this.eodhd24hCount}/${effectiveCap}) — blocage authoritative`,
+      );
+      return 'blocked';
+    }
     return 'ok';
   }
 

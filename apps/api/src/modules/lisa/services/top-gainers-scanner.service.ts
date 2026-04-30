@@ -372,6 +372,17 @@ export class TopGainersScannerService implements OnModuleInit {
   }
 
   private async runScannerInner(): Promise<void> {
+    // P19v (30/04/2026 09:00 UTC) — SCANNER_PAUSE feature flag.
+    // Émergency kill-switch sans deploy : `flyctl secrets set SCANNER_PAUSE=true`.
+    // Pause le scanner cron + les calls EODHD screener associés. Permet d'éponger
+    // une saturation quota sans toucher au code. Reset après 00:00 UTC = unset
+    // ou false.
+    const scannerPaused = (this.config.get<string>('SCANNER_PAUSE') ?? 'false').toLowerCase() === 'true';
+    if (scannerPaused) {
+      this.logger.log('[top-gainers] SCANNER_PAUSE=true — cycle skipped');
+      return;
+    }
+
     // P7 — Priorité DB : portfolios en strategy_mode='gainers' (toggle UI).
     const { data: dbConfigs, error: dbErr } = await this.supabase
       .getClient()
@@ -520,6 +531,15 @@ export class TopGainersScannerService implements OnModuleInit {
    * Hors heures EU le scan est skip pour économiser EODHD et éviter les 422.
    */
   async fetchAllCandidates(now: Date = new Date()): Promise<TopGainerCandidate[]> {
+    // P19v — SCANNER_PAUSE émergency flag bloque aussi la fetch des candidats
+    // (utilisée par UI poll /lisa/gainers-persistence-snapshot). Retourne le
+    // cache existant ou [] si jamais peuplé.
+    const scannerPaused = (this.config.get<string>('SCANNER_PAUSE') ?? 'false').toLowerCase() === 'true';
+    if (scannerPaused) {
+      this.logger.debug('[top-gainers] SCANNER_PAUSE=true — fetchAllCandidates returns cache');
+      return this.allCandidatesCache?.candidates ?? [];
+    }
+
     // P19s++ — Cache hit (TTL 15min). Évite N×11 calls EODHD quand l'UI
     // poll /lisa/gainers-persistence-snapshot toutes les 60s.
     if (

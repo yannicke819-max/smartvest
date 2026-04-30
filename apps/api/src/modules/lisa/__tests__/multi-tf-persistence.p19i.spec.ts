@@ -31,8 +31,10 @@ beforeEach(() => {
   mockCache.write.mockReset().mockResolvedValue(true);
 });
 
+const mockConfig = { get: jest.fn().mockReturnValue(undefined) } as any;
+
 function makeService() {
-  return new MultiTimeframePersistenceService(mockBinance, mockEodhd, mockYahoo, mockCache);
+  return new MultiTimeframePersistenceService(mockBinance, mockEodhd, mockYahoo, mockCache, mockConfig);
 }
 
 function fakeYahooCandles(n = 13) {
