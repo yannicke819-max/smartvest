@@ -88,6 +88,20 @@ export default function HelpIndexPage() {
           pour la roadmap détaillée.
         </p>
       </div>
+
+      {/* Légal */}
+      <div className="flex flex-wrap items-center gap-4 border-t pt-4 text-xs text-muted-foreground">
+        <Link href={'/legal/mentions' as Route} className="hover:text-foreground hover:underline underline-offset-4">
+          Mentions légales
+        </Link>
+        <Link href={'/legal/confidentialite' as Route} className="hover:text-foreground hover:underline underline-offset-4">
+          Confidentialité
+        </Link>
+        <Link href={'/legal/cgu' as Route} className="hover:text-foreground hover:underline underline-offset-4">
+          CGU
+        </Link>
+        <span>Les performances passées ne préjugent pas des performances futures.</span>
+      </div>
     </div>
   );
 }

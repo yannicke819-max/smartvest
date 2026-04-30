@@ -39,15 +39,17 @@ const GOALS: Array<{ value: InvestmentGoal; emoji: string; label: string; hint: 
 ];
 
 export function StepGoal() {
-  const { goal, setGoal, next } = useOnboardingStore();
+  const { firstName, goal, setGoal, next } = useOnboardingStore();
 
   return (
-    <WizardShell stepLabel="Objectif principal" canNext={goal !== null} onNext={next}>
+    <WizardShell stepLabel="Votre objectif" canNext={goal !== null} onNext={next}>
       <div className="space-y-4">
         <div>
-          <h2 className="text-lg font-semibold">Quel est votre objectif principal ?</h2>
+          <h2 className="text-lg font-semibold">
+            {firstName ? `${firstName}, quel est votre objectif principal ?` : 'Quel est votre objectif principal ?'}
+          </h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Cet objectif oriente les templates de simulation — pas une stratégie imposée.
+            Cet objectif oriente les simulations proposées — pas une stratégie imposée.
           </p>
         </div>
         <div className="space-y-2">

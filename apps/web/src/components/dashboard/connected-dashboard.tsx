@@ -11,6 +11,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useRecentTransactions } from '@/hooks/use-dashboard';
 import { useValuation, useAllocation, useAlerts } from '@/hooks/use-valuation';
 import { DisclaimerBanner } from '@/components/disclaimer-banner';
+import { WelcomeBanner } from '@/components/dashboard/welcome-banner';
 import { KpiCard } from '@/components/kpi-card';
 import { RiskProfileCard } from './risk-profile-card';
 import { AllocationDonut } from './allocation-donut';
@@ -143,6 +144,7 @@ export function ConnectedDashboard() {
   return (
     <div className="space-y-6">
       <DisclaimerBanner />
+      {positionCount === 0 && !valuationQuery.isLoading && <WelcomeBanner />}
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
