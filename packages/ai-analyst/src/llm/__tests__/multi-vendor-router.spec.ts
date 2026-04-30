@@ -39,7 +39,7 @@ const PARAMS: LlmCallParams = { system: 'sys', user: 'usr', temperature: 0.2, ma
 describe('MultiVendorLlmRouter', () => {
   it('uses primary when it succeeds (no fallback)', async () => {
     const primary = mockProvider({ id: 'gemini' });
-    const fallback = mockProvider({ id: 'openai' });
+    const fallback = mockProvider({ id: 'claude' });
     const router = new MultiVendorLlmRouter([primary, fallback]);
 
     const res = await router.call(PARAMS);
@@ -53,27 +53,27 @@ describe('MultiVendorLlmRouter', () => {
       id: 'gemini',
       call: async () => { throw new Error('boom'); },
     });
-    const fallback = mockProvider({ id: 'openai' });
+    const fallback = mockProvider({ id: 'claude' });
     const router = new MultiVendorLlmRouter([primary, fallback], { retriesPerProvider: 0 });
 
     const res = await router.call(PARAMS);
-    expect(res.providerId).toBe('openai');
+    expect(res.providerId).toBe('claude');
     expect(res.fallbackUsed).toBe(true);
     expect(res.attemptCount).toBe(2);
   });
 
-  it('cascades through full chain — primary, fb1, fb2 down → reaches Claude', async () => {
+  it('cascades through prod chain — Gemini down → reaches Claude (ADR-001 §1.4)', async () => {
     const fail = (id: string) => mockProvider({
       id, call: async () => { throw new Error(`${id} down`); },
     });
     const router = new MultiVendorLlmRouter(
-      [fail('gemini'), fail('openai'), fail('mistral'), mockProvider({ id: 'claude' })],
+      [fail('gemini'), mockProvider({ id: 'claude' })],
       { retriesPerProvider: 0 },
     );
 
     const res = await router.call(PARAMS);
     expect(res.providerId).toBe('claude');
-    expect(res.attemptCount).toBe(4);
+    expect(res.attemptCount).toBe(2);
     expect(res.fallbackUsed).toBe(true);
   });
 

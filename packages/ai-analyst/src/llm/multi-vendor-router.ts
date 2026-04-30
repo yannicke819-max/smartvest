@@ -1,13 +1,15 @@
 /**
- * P17 — MultiVendorLlmRouter — chaîne fallback EU-friendly pour le scanner.
+ * P17 + ADR-001 Phase 4 (30/04/2026) — MultiVendorLlmRouter, chaîne fallback
+ * pour les call sites non-thèses.
  *
- * Différent du `LlmRouter` (router.ts) qui gère le BUDGET Claude entre Opus/
- * Sonnet/Haiku. Ce router gère le CHOIX DE VENDOR :
+ * Différent du `LlmRouter` (router.ts) qui n'opère que sur Opus pour
+ * `thesis_generation`. Ce router gère le CHOIX DE VENDOR :
  *
  *   primary  → Gemini Flash-Lite  (bench P16 winner — composite 0.66, $0.00011/prompt)
- *   fallback → GPT-4.1-nano       (proche de Gemini en qualité, légèrement plus cher)
- *   fallback → Codestral (Mistral) (FR souverain RGPD)
- *   fallback → Claude Sonnet      (legacy ultime — reste disponible si tout EU down)
+ *   fallback → Claude Opus 4.7    (fallback ultime per ADR-001 §1.4)
+ *
+ * Phase 4 cleanup : `OpenAiProvider` + `MistralProvider` supprimés (chain
+ * réduite à 2 providers — Google + Anthropic — per ADR-001 §1.3).
  *
  * Pour chaque appel :
  *   1. Tente le primary avec timeout (default 5s) + retry 1× backoff 1s
@@ -16,6 +18,7 @@
  *
  * Métriques structurées via callback `onCall` (provider, latency, cost, fallbackUsed).
  *
+ * Cf. `docs/decision_records/ADR-001-llm-architecture.md`
  * Cf. bench P16 : `bench/scanner-llm/REPORT.md` sur la branche
  * `bench/p16-llm-eu-providers`.
  */
