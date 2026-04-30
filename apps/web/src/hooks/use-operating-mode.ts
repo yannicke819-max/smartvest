@@ -82,6 +82,27 @@ export interface PathQualityByTf {
   tf1h: PathQualityMetric | null;
 }
 
+/**
+ * P19y (29/04/2026) — Coverage source : permet l'UI d'afficher des badges
+ * différenciés selon la cause de l'indisponibilité 1m/5m :
+ *   - eodhd_1m   : 1m natif (best — green)
+ *   - eodhd      : 5m only (tf1m=null par design — yellow tooltip "5m only")
+ *   - eodhd_ticks: aggregated from ticks (orange — degraded)
+ *   - yahoo      : Yahoo fallback (yellow — IP rate-limited)
+ *   - binance    : crypto klines natifs
+ *   - cache_stale: last-known < 15min (orange + age)
+ *   - none       : aucune source — badge cause inferred (market_closed,
+ *                  illiquid, unsupported) en frontend selon le ticker
+ */
+export type CoverageSource =
+  | 'eodhd_1m'
+  | 'eodhd'
+  | 'eodhd_ticks'
+  | 'yahoo'
+  | 'binance'
+  | 'cache_stale'
+  | 'none';
+
 export interface PersistenceCandidate {
   symbol: string;
   market: string;
@@ -95,6 +116,10 @@ export interface PersistenceCandidate {
   persistenceCount: string | null;
   /** P9-UX ADDENDUM — null si pas dispo. */
   pathQuality?: PathQualityByTf | null;
+  /** P19y — Coverage source pour badge UI. Default 'none' si backend pré-P19y. */
+  coverage?: CoverageSource;
+  /** P19y — âge cache (ms) si coverage='cache_stale'. */
+  cacheAgeMs?: number | null;
 }
 
 export interface PersistenceSnapshot {

@@ -7,9 +7,109 @@ import {
   useOperatingMode,
   usePersistenceSnapshot,
   useUpdateGainersCycle,
+  type CoverageSource,
   type PathQualityByTf,
   type PersistenceCandidate,
 } from '@/hooks/use-operating-mode';
+
+/**
+ * P19y (29/04/2026) — Inférence cause cellule "—" pour badge UI.
+ *
+ * Quand `coverage='none'` ou tf1m=null, on infère la cause :
+ *   - market_closed : ticker asia/EU dont session est fermée (heure UTC actuelle)
+ *   - illiquid_1m   : ticker US sans 1m fetched (microcaps sparse)
+ *   - unsupported   : ticker dont aucun provider ne couvre
+ *
+ * Sessions UTC :
+ *   KOSPI / KOSDAQ : 00:00–06:30 UTC Mon-Fri (.KO/.KQ/.KS/.KE)
+ *   NSE / BSE      : 03:45–10:00 UTC Mon-Fri
+ *   ASX            : 23:00–05:00 UTC (overnight)
+ *   Tokyo          : 00:00–06:00 UTC Mon-Fri (.T)
+ *   HK             : 01:30–08:00 UTC Mon-Fri (.HK)
+ *   LSE/XETRA/PA   : 08:00–16:30 UTC Mon-Fri
+ *   NYSE/NASDAQ    : 14:30–21:00 UTC Mon-Fri (+ premarket 09:00)
+ */
+function inferCoverageCause(
+  symbol: string,
+  market: string,
+  coverage: CoverageSource | undefined,
+  tf1mValue: number | null,
+): { kind: 'ok' | 'closed' | 'illiquid' | 'unsupported' | 'cache_stale' | 'degraded'; tooltip: string } {
+  // Si on a une vraie data (eodhd_1m/yahoo/binance), pas de badge cause
+  if (tf1mValue != null && coverage && coverage !== 'none') {
+    return { kind: 'ok', tooltip: `coverage=${coverage}` };
+  }
+  if (coverage === 'cache_stale') {
+    return { kind: 'cache_stale', tooltip: 'Cache stale (provider down) — donnée < 15 min' };
+  }
+  if (coverage === 'eodhd' || coverage === 'eodhd_ticks') {
+    return {
+      kind: 'degraded',
+      tooltip: coverage === 'eodhd_ticks'
+        ? '5m bars reconstruits depuis ticks — tf1m non dispo'
+        : '5m only (résolution insuffisante pour tf1m)',
+    };
+  }
+
+  // coverage='none' ou tf1m null → infère cause
+  const upper = (market || '').toUpperCase();
+  const sym = (symbol || '').toUpperCase();
+  const ASIA_MARKETS = ['KO', 'KQ', 'KS', 'KE', 'NSE', 'BSE', 'AU', 'AX', 'T', 'TSE', 'HK', 'SS', 'SZ'];
+  const EU_MARKETS = ['LSE', 'XETRA', 'L', 'DE', 'PA', 'AS', 'AMS', 'MI', 'SW', 'MC', 'BME'];
+  const isAsia = ASIA_MARKETS.includes(upper) || /\.(KO|KQ|KS|KE|NSE|BSE|AU|AX|T|HK|SS|SZ)$/.test(sym);
+  const isEu = EU_MARKETS.includes(upper) || /\.(LSE|L|XETRA|DE|PA|AS|AMS|MI|SW|MC|BME)$/.test(sym);
+  const isUs = upper === 'US' || /\.US$/.test(sym);
+
+  const utcHour = new Date().getUTCHours();
+  const utcDay = new Date().getUTCDay(); // 0=Sun, 6=Sat
+  const isWeekend = utcDay === 0 || utcDay === 6;
+
+  if (isAsia) {
+    // KOSPI/KOSDAQ/Tokyo session 00:00–06:30 UTC ; NSE 03:45–10:00 ; HK 01:30–08:00
+    const inAsiaSession = !isWeekend && utcHour < 10;
+    if (!inAsiaSession) {
+      return { kind: 'closed', tooltip: 'Marché asiatique fermé — réouvre 00:00–10:00 UTC Mon-Fri' };
+    }
+  }
+  if (isEu) {
+    const inEuSession = !isWeekend && utcHour >= 7 && utcHour < 17;
+    if (!inEuSession) {
+      return { kind: 'closed', tooltip: 'Marché européen fermé — ouvre 08:00–16:30 UTC Mon-Fri' };
+    }
+  }
+  if (isUs) {
+    // US 14:30–21:00 UTC + premarket 09:00 + after-hours jusqu'à 24:00
+    const inUsExt = !isWeekend && utcHour >= 9 && utcHour < 24;
+    if (inUsExt) {
+      // Marché ouvert mais 1m manquant → likely illiquid microcap
+      return { kind: 'illiquid', tooltip: 'Marché US ouvert mais 1m absent — microcap illiquide (trades sparses)' };
+    }
+    return { kind: 'closed', tooltip: 'Marché US fermé — ouvre 14:30–21:00 UTC Mon-Fri' };
+  }
+
+  return { kind: 'unsupported', tooltip: 'Aucun provider ne couvre ce ticker' };
+}
+
+function CoverageBadge({ cause }: { cause: ReturnType<typeof inferCoverageCause> }) {
+  if (cause.kind === 'ok') return null;
+  const cfg: Record<string, { emoji: string; bg: string }> = {
+    closed: { emoji: '🌙', bg: 'bg-slate-200 dark:bg-slate-700' },
+    illiquid: { emoji: '💧', bg: 'bg-amber-100 dark:bg-amber-900/40' },
+    unsupported: { emoji: '⚠️', bg: 'bg-red-100 dark:bg-red-900/40' },
+    cache_stale: { emoji: '🟠', bg: 'bg-orange-100 dark:bg-orange-900/40' },
+    degraded: { emoji: '🟡', bg: 'bg-yellow-100 dark:bg-yellow-900/40' },
+  };
+  const c = cfg[cause.kind] ?? cfg.unsupported;
+  return (
+    <span
+      className={`inline-flex items-center justify-center text-[9px] px-1 rounded ${c.bg} ml-1`}
+      title={cause.tooltip}
+      aria-label={cause.tooltip}
+    >
+      {c.emoji}
+    </span>
+  );
+}
 
 const CYCLE_OPTIONS = [1, 5, 10, 15, 20, 30, 45, 60];
 
@@ -340,9 +440,14 @@ function PersistencePanel({ portfolioId }: { portfolioId: string }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {sliced.map((c) => (
+                    {sliced.map((c) => {
+                      const cause = inferCoverageCause(c.symbol, c.market, c.coverage, c.tf1m);
+                      return (
                       <tr key={c.symbol} className="border-t">
-                        <td className="text-left pr-2 font-medium py-0.5">{c.symbol}</td>
+                        <td className="text-left pr-2 font-medium py-0.5">
+                          <span>{c.symbol}</span>
+                          <CoverageBadge cause={cause} />
+                        </td>
                         <Cell value={c.tf1m} />
                         <Cell value={c.tf5m} />
                         <Cell value={c.tf10m} />
@@ -356,7 +461,8 @@ function PersistencePanel({ portfolioId }: { portfolioId: string }) {
                           <PathBadge pq={c.pathQuality ?? null} />
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

@@ -286,6 +286,18 @@ export class LisaController {
               tf1h: r.pathQuality.tf1h,
             }
           : null,
+        // P19y (29/04/2026) — Coverage source pour badge UI :
+        //   - 'eodhd_1m' : intraday 1m natif EODHD (best, populates tf1m)
+        //   - 'eodhd'    : intraday 5m EODHD (5 TFs ok, tf1m=null par design)
+        //   - 'eodhd_ticks' : aggregated from /api/ticks (US-only)
+        //   - 'yahoo'    : Yahoo Finance fallback (5m series)
+        //   - 'binance'  : Binance crypto klines
+        //   - 'cache_stale' : last-known < 15min stale
+        //   - 'none'     : aucune source dispo (UI badge "—" + tooltip)
+        // Permet UI d'afficher market_closed / illiquid / unsupported au lieu
+        // de juste "—" qui est ambigu.
+        coverage: r && 'coverage' in r ? r.coverage ?? 'none' : 'none',
+        cacheAgeMs: r && 'cacheAgeMs' in r ? r.cacheAgeMs ?? null : null,
       };
     });
 
