@@ -13,7 +13,7 @@ insert into public.historical_events_corpus (
 ) values (
   'svb_regional_banking_crisis_2023',
   'SVB Collapse + US Regional Banking + Credit Suisse UBS Crisis',
-  'banking_crisis',
+  'systemic_crisis',
   '2023-03-08',
   '2023-05-01',
   '~2 mois de SVB wholesale run à First Republic takeover JPM',
