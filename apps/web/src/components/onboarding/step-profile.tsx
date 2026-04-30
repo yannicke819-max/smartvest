@@ -4,15 +4,8 @@ import { useEffect } from 'react';
 import { WizardShell } from './wizard-shell';
 import { useOnboardingStore } from '@/stores/onboarding';
 import { scoreRiskProfile } from '@smartvest/portfolio-engine';
+import { RiskBadge } from '@/components/ui/risk-badge';
 import type { OnboardingAnswers } from '@smartvest/shared-types';
-
-const PROFILE_BADGE_COLOR: Record<string, string> = {
-  prudent: 'bg-accent/20 text-accent border-accent/30',
-  equilibre: 'bg-primary/20 text-primary border-primary/30',
-  dynamique: 'bg-warning/20 text-warning border-warning/30',
-  offensif: 'bg-destructive/20 text-destructive border-destructive/30',
-  sur_mesure: 'bg-muted text-muted-foreground border-border',
-};
 
 export function StepProfile() {
   const {
@@ -59,11 +52,9 @@ export function StepProfile() {
           </p>
         </div>
 
-        <div
-          className={`rounded-xl border px-4 py-3 text-center ${PROFILE_BADGE_COLOR[scoreResult.profile]}`}
-        >
-          <div className="text-xl font-bold">{scoreResult.label}</div>
-          <div className="mt-0.5 text-xs">
+        <div className="flex flex-col items-center gap-2 rounded-xl border bg-muted/30 px-4 py-4 text-center">
+          <RiskBadge profile={scoreResult.profile} size="lg" showPhrase showTip />
+          <div className="text-xs text-muted-foreground">
             Score : {scoreResult.totalScore} / {scoreResult.maxScore}
           </div>
         </div>
