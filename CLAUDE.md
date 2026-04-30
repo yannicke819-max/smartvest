@@ -5,6 +5,36 @@ Guide de travail pour Claude Code sur ce repo.
 
 ---
 
+## ADR-002 — Nomenclature UI grand public (Sprint 1, 30/04/2026)
+
+Toute mention texte côté front (sidebar, h1, breadcrumb, document.title) doit
+utiliser le vocabulaire grand public. Routes inchangées (deeplinks préservés).
+
+| Route | Label sidebar / h1 |
+|---|---|
+| `/` | Mon tableau de bord |
+| `/portfolio` | Mon portefeuille |
+| `/performance` | Mes résultats |
+| `/lisa` | Mon assistant Lisa |
+| `/backtest` | Tester sur le passé |
+| `/monte-carlo` | Projections futures |
+| `/optimizer` | Améliorer mon portefeuille |
+| `/bot-lab` | Mes stratégies auto (mode démo) |
+| `/alerts` | Mes notifications |
+| `/history` | Mes opérations |
+| `/settings` | Mon compte |
+| `/help` | Aide |
+| `/admin/monitoring` | Monitoring (masqué non-admin via `useIsAdmin()` hook) |
+
+Nouveaux libellés interdits dans le code/UI :
+- "Backtest harness", "Monte Carlo Simulation", "Strategy Optimizer",
+  "Bot Profitability Lab", "AI Analyst", "Aide & Documentation"
+- Tout anglicisme non glosé (cf. CLAUDE.md §1 wording)
+
+Cf. `docs/adr/ADR-002-grand-public-ready.md` pour le plan 8 sprints complet.
+
+---
+
 ## EODHD API Reference (OFFICIAL SKILL — vendor/eodhd-claude-skills)
 
 P19k.2 — Le skill officiel EODHD `eodhd-claude-skills` est vendoré dans

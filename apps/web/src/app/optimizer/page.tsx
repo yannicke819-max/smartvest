@@ -171,7 +171,7 @@ export default function OptimizerPage() {
   return (
     <div className="container mx-auto py-6 space-y-6 max-w-6xl">
       <div>
-        <h1 className="text-2xl font-semibold">Strategy Optimizer</h1>
+        <h1 className="text-2xl font-semibold">Améliorer mon portefeuille</h1>
         <p className="text-sm text-muted-foreground">
           Test de configurations multiples sur données historiques. 3 modes sélectionnables.
         </p>

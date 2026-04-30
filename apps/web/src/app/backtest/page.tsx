@@ -115,7 +115,7 @@ export default function BacktestPage() {
   return (
     <div className="container mx-auto py-6 space-y-6 max-w-6xl">
       <div>
-        <h1 className="text-2xl font-semibold">Backtest harness</h1>
+        <h1 className="text-2xl font-semibold">Tester sur le passé</h1>
         <p className="text-sm text-muted-foreground">
           Rejoue la stratégie sur des données EODHD historiques pour estimer Sharpe, drawdown, win rate.
           Mock Lisa déterministe (rule-based) — teste le framework, pas l'intuition Claude.

@@ -12,7 +12,7 @@ export default function PerformancePage() {
   return (
     <div className="mx-auto max-w-3xl space-y-6 p-6">
       <div>
-        <h1 className="text-xl font-semibold">Performance</h1>
+        <h1 className="text-xl font-semibold">Mes résultats</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Analyse de la performance de vos portefeuilles. Les performances passées ne préjugent pas des performances futures.
         </p>

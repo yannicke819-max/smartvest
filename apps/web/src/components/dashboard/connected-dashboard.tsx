@@ -148,7 +148,7 @@ export function ConnectedDashboard() {
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
-              {activePortfolio?.name ?? 'Tableau de bord'}
+              {activePortfolio?.name ?? 'Mon tableau de bord'}
             </h1>
             {(activePortfolio as { is_simulation?: boolean } | null)?.is_simulation && (
               <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">

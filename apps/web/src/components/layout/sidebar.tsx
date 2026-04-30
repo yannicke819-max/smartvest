@@ -19,28 +19,36 @@ import {
   BookOpen,
 } from 'lucide-react';
 import { useUIStore } from '@/stores/ui';
+import { useIsAdmin } from '@/hooks/use-is-admin';
 import { cn } from '@/lib/utils';
 
+// ADR-002 Sprint 1 — Vocabulaire grand public.
+// Routes inchangées (préserve deeplinks/bookmarks). Seuls les `label` changent.
+// `adminOnly` masque l'item pour les non-admins (RBAC côté UI ; gating réel
+// côté backend via `x-admin-token`).
 const items = [
-  { href: '/', label: 'Tableau de bord', icon: LayoutDashboard },
-  { href: '/portfolio', label: 'Portefeuille', icon: Wallet },
-  { href: '/performance', label: 'Performance', icon: BarChart3 },
-  { href: '/lisa', label: 'Lisa', icon: Brain },
-  { href: '/backtest', label: 'Backtest', icon: FlaskConical },
-  { href: '/monte-carlo', label: 'Monte Carlo', icon: Dices },
-  { href: '/optimizer', label: 'Optimizer', icon: Sliders },
-  { href: '/bot-lab', label: 'Bot Lab', icon: Bot },
-  { href: '/alerts', label: 'Alertes', icon: Bell },
-  { href: '/history', label: 'Historique', icon: History },
-  { href: '/settings', label: 'Paramètres', icon: Settings },
-  { href: '/help', label: 'Aide & Docs', icon: BookOpen },
-  { href: '/admin/monitoring', label: 'Monitoring', icon: Activity },
+  { href: '/', label: 'Mon tableau de bord', icon: LayoutDashboard },
+  { href: '/portfolio', label: 'Mon portefeuille', icon: Wallet },
+  { href: '/performance', label: 'Mes résultats', icon: BarChart3 },
+  { href: '/lisa', label: 'Mon assistant Lisa', icon: Brain },
+  { href: '/backtest', label: 'Tester sur le passé', icon: FlaskConical },
+  { href: '/monte-carlo', label: 'Projections futures', icon: Dices },
+  { href: '/optimizer', label: 'Améliorer mon portefeuille', icon: Sliders },
+  { href: '/bot-lab', label: 'Mes stratégies auto (mode démo)', icon: Bot },
+  { href: '/alerts', label: 'Mes notifications', icon: Bell },
+  { href: '/history', label: 'Mes opérations', icon: History },
+  { href: '/settings', label: 'Mon compte', icon: Settings },
+  { href: '/help', label: 'Aide', icon: BookOpen },
+  { href: '/admin/monitoring', label: 'Monitoring', icon: Activity, adminOnly: true },
 ] as const;
 
 export function Sidebar() {
   const pathname = usePathname();
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
   const setSidebar = useUIStore((s) => s.setSidebar);
+  const isAdmin = useIsAdmin();
+
+  const visibleItems = items.filter((item) => !('adminOnly' in item && item.adminOnly) || isAdmin);
 
   return (
     <aside
@@ -52,7 +60,7 @@ export function Sidebar() {
       aria-label="Navigation principale"
     >
       <nav className="flex flex-col gap-1 p-3">
-        {items.map((item) => {
+        {visibleItems.map((item) => {
           const Icon = item.icon;
           const active = pathname === item.href;
           return (
