@@ -5,7 +5,12 @@ FROM node:20-alpine AS builder
 
 # ARG CACHEBUST invalide le cache Docker dès qu'on change sa valeur
 # (doit être passé via --build-arg CACHEBUST=X ou buildArgs dans railway.toml).
-ARG CACHEBUST=11
+# P19x.11 (29/04/2026) — bumped 11 → 12 pour forcer un rebuild complet avec
+# build args propagés. Constat : git_sha=null observé sur image
+# 539628cb..., probablement build sans --build-arg GIT_SHA (manual flyctl
+# deploy ou cache layer hit). Bump CACHEBUST = invalidation totale → nouvelle
+# build via workflow fly.yml passe tous les build args correctement.
+ARG CACHEBUST=12
 RUN echo "cachebust=$CACHEBUST"
 
 # P18h — Build metadata exposée via GET /version. Passées par fly.yml :

@@ -281,6 +281,35 @@ export class PaperBrokerService {
     }
     const netPnl = grossPnl.minus(exitCost).plus(entryFeeRefund);
 
+    // P19x.11 (29/04/2026) — MIN_NET_PROFIT_USD guard avant `closed_target`.
+    //
+    // Mirror du guard P19x.1 ajouté dans mechanical-trading.service.ts.
+    // Le scanner Gainers passe par mechanical-trading donc P19x.1 couvre ces
+    // closes. MAIS Lisa LLM proposals + manual closes via paper-broker bypassed
+    // ce guard. Constat user (29/04 02:00 UTC) : "TOUTES les positions
+    // fermées affichent TP hit + closed_target avec P&L négatif" — preuve que
+    // le code path paper-broker a aussi besoin du guard.
+    //
+    // Garde-fou : un closed_target ne doit JAMAIS résulter en net PnL négatif.
+    // Min = max($2, 0.5% × notional). Si net < min → throw RetryableCloseError
+    // pour signaler au caller que la close est rejetée. Position reste ouverte.
+    if (cmd.reason === 'closed_target') {
+      const minNetProfit = Decimal.max(
+        new Decimal(2),
+        entryNotional.mul(0.005),
+      );
+      if (netPnl.lt(minNetProfit)) {
+        const err = new Error(
+          `[PAPER_BROKER] Skip closed_target ${position.symbol}: net=$${netPnl.toFixed(2)} < min=$${minNetProfit.toFixed(2)} ` +
+          `(notional=$${entryNotional.toFixed(0)}, gross=$${grossPnl.toFixed(2)}, fees=$${exitCost.toFixed(2)}). Position kept open.`,
+        );
+        (err as Error & { code?: string }).code = 'CLOSE_TARGET_BELOW_MIN_PROFIT';
+        // eslint-disable-next-line no-console
+        console.warn(err.message);
+        throw err;
+      }
+    }
+
     const pnlPct = entryNotional.isZero()
       ? 0
       : netPnl.dividedBy(entryNotional).mul(100).toNumber();
