@@ -3,6 +3,7 @@
 import type { ToleranceOption } from '@smartvest/shared-types';
 import { WizardShell } from './wizard-shell';
 import { useOnboardingStore } from '@/stores/onboarding';
+import { HelpTip } from '@/components/ui/help-tip';
 import { cn } from '@/lib/utils';
 
 const OPTIONS: Array<{
@@ -57,9 +58,14 @@ export function StepTolerance() {
           <h2 className="text-lg font-semibold">
             Quelle baisse maximale pourriez-vous tolérer ?
           </h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Imaginons que votre portefeuille perd de la valeur à court terme. Quel niveau
-            de drawdown resteriez-vous serein à conserver vos positions ?
+          <p className="mt-1 flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground">
+            Imaginons que votre portefeuille perd de la valeur à court terme. Quel niveau de baisse
+            <HelpTip
+              text="Le drawdown est la baisse maximale depuis un pic de valeur. Un drawdown de −20 % signifie que 10 000 € sont passés à 8 000 €."
+              glossarySlug="drawdown"
+              side="right"
+            />
+            resteriez-vous serein à conserver vos positions ?
           </p>
         </div>
         <div className="space-y-2">

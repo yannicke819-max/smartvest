@@ -1,8 +1,9 @@
 import type { Route } from 'next';
 import Link from 'next/link';
-import { BookOpen, FileSearch, Wrench, Settings } from 'lucide-react';
+import { BookOpen, FileSearch, Wrench, Settings, BookMarked } from 'lucide-react';
 import { BackButton } from '@/components/ui/back-button';
 import { HELP_DOCS, type HelpDocEntry } from '@/lib/help-docs';
+import { GLOSSARY_TERMS } from '@/lib/glossary-terms';
 
 const CATEGORY_META: Record<HelpDocEntry['category'], { label: string; Icon: typeof BookOpen }> = {
   audit: { label: 'Audit produit', Icon: FileSearch },
@@ -55,6 +56,26 @@ export default function HelpIndexPage() {
           </section>
         );
       })}
+
+      {/* Glossaire */}
+      <section className="space-y-2">
+        <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <BookMarked className="h-3.5 w-3.5" />
+          Glossaire
+        </div>
+        <Link
+          href={'/help/glossaire' as Route}
+          className="flex items-center justify-between rounded-lg border px-4 py-3 transition-colors hover:bg-muted/30"
+        >
+          <div>
+            <p className="text-sm font-medium">Glossaire des termes</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {GLOSSARY_TERMS.length} termes financiers et concepts SmartVest expliqués en clair.
+            </p>
+          </div>
+          <span className="ml-4 shrink-0 text-xs text-muted-foreground">→</span>
+        </Link>
+      </section>
 
       <div className="rounded-lg border border-dashed p-4">
         <p className="text-xs text-muted-foreground">

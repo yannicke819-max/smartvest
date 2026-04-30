@@ -274,6 +274,8 @@ export function ConnectedDashboard() {
             label="Valeur de marché"
             value={`${parseFloat(totalMarketValue).toFixed(2)} ${currency}`}
             hint={valuation ? `Valorisé le ${new Date(valuation.valuedAt).toLocaleTimeString('fr-FR')}` : 'API non connectée'}
+            helpTip="Valeur actuelle de toutes vos positions au cours du marché. Inclut les gains et pertes latents non réalisés."
+            helpGlossarySlug="cours"
           />
           <KpiCard
             label="P&L latent"
@@ -283,11 +285,15 @@ export function ConnectedDashboard() {
               </span>
             }
             hint={`${pnlSign}${parseFloat(pnlPercent).toFixed(2)}% vs coût d'achat`}
+            helpTip="Gain ou perte non encore encaissé sur vos positions ouvertes. Se matérialise seulement à la vente."
+            helpGlossarySlug="pnl-latent"
           />
           <KpiCard
             label="Positions ouvertes"
             value={String(positionCount)}
             hint="Toutes classes d'actifs confondues"
+            helpTip="Nombre d'actifs actuellement détenus dans votre portefeuille, toutes classes d'actifs confondues."
+            helpGlossarySlug="position"
           />
           <KpiCard
             label="Alertes actives"
@@ -299,6 +305,7 @@ export function ConnectedDashboard() {
                 ? `${warningAlerts} avertissement(s)`
                 : 'Aucune alerte critique'
             }
+            helpTip="Notifications déclenchées sur vos positions (seuil de perte, objectif atteint, anomalie détectée)."
           />
         </div>
       )}
