@@ -63,7 +63,12 @@ describe('resolveFeesAwareBuffer — P20 env var parsing', () => {
 /**
  * Helper : reproduit la formule du guard en mode pure pour test isolé.
  * Match l'implémentation paper-broker.service.ts et mechanical-trading.service.ts.
+ *
+ * P20.2 : inclut le slippage 5bps × notional sur chaque side (cohérent avec
+ * mechanical-trading entry slippageBps=5 + exit slippageBps=5).
  */
+const SLIPPAGE_BPS = 5;
+
 function checkFeesAwareGuard(params: {
   entryPrice: number;
   tpPrice: number;
@@ -72,7 +77,7 @@ function checkFeesAwareGuard(params: {
   venue: string;
   direction: 'long' | 'short';
   buffer: number;
-}): { passes: boolean; expectedGain: number; roundTripFees: number; required: number } {
+}): { passes: boolean; expectedGain: number; venueFees: number; slippage: number; roundTripFees: number; required: number } {
   const { entryPrice, tpPrice, qty, assetClass, venue, direction, buffer } = params;
   const isLong = direction === 'long';
   const exitSide: 'buy' | 'sell' = isLong ? 'sell' : 'buy';
@@ -82,12 +87,16 @@ function checkFeesAwareGuard(params: {
   const exitFee = computeVenueFeeDetail(
     new Decimal(qty), new Decimal(tpPrice), assetClass, venue, exitSide,
   );
-  const roundTripFees = entryFee.total + exitFee.total;
+  const venueFees = entryFee.total + exitFee.total;
+  const entryNotional = qty * entryPrice;
+  const exitNotional = qty * tpPrice;
+  const slippage = (entryNotional + exitNotional) * (SLIPPAGE_BPS / 10000);
+  const roundTripFees = venueFees + slippage;
   const expectedGain = isLong
     ? (tpPrice - entryPrice) * qty
     : (entryPrice - tpPrice) * qty;
   const required = roundTripFees * buffer;
-  return { passes: expectedGain >= required, expectedGain, roundTripFees, required };
+  return { passes: expectedGain >= required, expectedGain, venueFees, slippage, roundTripFees, required };
 }
 
 describe('FEES-AWARE TARGET guard — P20 formula', () => {
@@ -107,11 +116,13 @@ describe('FEES-AWARE TARGET guard — P20 formula', () => {
       });
       expect(r.passes).toBe(false);
       expect(r.expectedGain).toBeCloseTo(0.483, 1); // ~$0.48
-      // entry fee : min $0.35 + exchange $0.01 = $0.36
-      // exit fee  : min $0.35 + exchange $0.01 + SEC ~$0.07 + TAF ~$0.001 = ~$0.43
-      // RT = ~$0.79, required = 2 × 0.79 = $1.58
-      expect(r.roundTripFees).toBeCloseTo(0.79, 1);
-      expect(r.required).toBeCloseTo(1.58, 1);
+      // venue : entry $0.36 + exit $0.43 = $0.79
+      // slippage : 5bps × ($2540 + $2540.48) = ~$2.54
+      // RT total = $0.79 + $2.54 = ~$3.33, required = 2 × 3.33 = ~$6.66
+      expect(r.venueFees).toBeCloseTo(0.79, 1);
+      expect(r.slippage).toBeCloseTo(2.54, 1);
+      expect(r.roundTripFees).toBeCloseTo(3.33, 1);
+      expect(r.required).toBeCloseTo(6.66, 1);
     });
 
     it('LMT @ $508 entry, qty=5, TP +0.5 % ($510.54) → PASSES at buffer 2.0', () => {
@@ -149,11 +160,13 @@ describe('FEES-AWARE TARGET guard — P20 formula', () => {
       expect(r.expectedGain).toBeCloseTo(0.32, 1);
     });
 
-    it('SLV qty=39 TP +0.171 % → PASSES P20 (gain $4.3 vs RT $0.93 × 2 = $1.86)', () => {
-      // Note explicite : ce cas observé en prod (-$0.92 net) PASSE le guard P20
-      // sur fees pures car gain > 2× venue fees. Le -$0.92 net réel venait de
-      // slippage 5bps non modélé par le guard. P20 est un filet de sécurité,
-      // pas un oracle parfait — il catch les cas évidents fees > gain.
+    it('SLV qty=39 TP +0.171 % → REJECTED with P20.2 slippage included (gain $4.3 < 2× ($0.93 venue + $2.51 slip))', () => {
+      // Bug observé prod : SLV +0.171 % qty=39 a livré -$0.92 net.
+      // Avec P20 (venue only) gain $4.30 > 2× $0.93 = $1.86 → PASSES (faux négatif).
+      // Avec P20.2 (slippage 5bps × notional × 2) :
+      //   venue ~$0.93, slippage ~$2.51, RT total ~$3.44
+      //   required = 2 × 3.44 = $6.88 > $4.30 → REJECT ✓
+      // Le cas réel est maintenant caught par le guard.
       const r = checkFeesAwareGuard({
         entryPrice: 64.43,
         tpPrice: 64.43 * 1.00171,
@@ -163,53 +176,56 @@ describe('FEES-AWARE TARGET guard — P20 formula', () => {
         direction: 'long',
         buffer: 2.0,
       });
-      expect(r.passes).toBe(true);
+      expect(r.passes).toBe(false);
       expect(r.expectedGain).toBeCloseTo(4.30, 1);
+      expect(r.venueFees).toBeCloseTo(0.93, 1);
+      expect(r.slippage).toBeCloseTo(2.51, 1);
+      expect(r.roundTripFees).toBeCloseTo(3.44, 1);
     });
   });
 
   describe('Buffer sensitivity (1.5 vs 2.0 vs 3.0)', () => {
-    // Setup : LMT $508, qty=5, TP +0.15 % → gain ≈ $3.81, RT fees ~$0.73
+    // Setup : LMT $508, qty=5, TP +1.0 % → gain $25.40, RT (venue + slippage 5bps) ~$3.33.
     const setup = {
       entryPrice: 508,
-      tpPrice: 508 * 1.0015,
+      tpPrice: 508 * 1.01,
       qty: 5,
       assetClass: 'us_equity_large',
       venue: 'NASDAQ',
       direction: 'long' as const,
     };
 
-    it('buffer 1.5 : 3.81 vs 1.5 × 0.73 = 1.10 → PASSES', () => {
+    it('buffer 1.5 : 25.40 vs 1.5 × 3.34 = 5.01 → PASSES', () => {
       const r = checkFeesAwareGuard({ ...setup, buffer: 1.5 });
       expect(r.passes).toBe(true);
     });
 
-    it('buffer 2.0 : 3.81 vs 2.0 × 0.73 = 1.46 → PASSES', () => {
+    it('buffer 2.0 : 25.40 vs 2.0 × 3.34 = 6.68 → PASSES', () => {
       const r = checkFeesAwareGuard({ ...setup, buffer: 2.0 });
       expect(r.passes).toBe(true);
     });
 
-    it('buffer 3.0 : 3.81 vs 3.0 × 0.73 = 2.19 → PASSES', () => {
+    it('buffer 3.0 : 25.40 vs 3.0 × 3.34 = 10.02 → PASSES', () => {
       const r = checkFeesAwareGuard({ ...setup, buffer: 3.0 });
       expect(r.passes).toBe(true);
     });
 
-    it('marginal case : LMT TP +0.05 % (gain $1.27), buffer 2.0 → REJECTED, buffer 1.5 → PASSES', () => {
+    it('marginal demarcation buffer 1.5 vs 2.0 : LMT TP +0.25 % (gain $6.35)', () => {
+      // gain $6.35, RT ~$3.34
+      // buffer 1.5 → required ~$5.01 → PASSES
+      // buffer 2.0 → required ~$6.69 → REJECTED (juste au-dessus)
       const m = {
         entryPrice: 508,
-        tpPrice: 508 * 1.0005,
+        tpPrice: 508 * 1.0025,
         qty: 5,
         assetClass: 'us_equity_large',
         venue: 'NASDAQ',
         direction: 'long' as const,
       };
-      const r2 = checkFeesAwareGuard({ ...m, buffer: 2.0 });
       const r15 = checkFeesAwareGuard({ ...m, buffer: 1.5 });
-      // gain ~ $1.27, RT fees ~$0.73
-      // buffer 2.0 → required 1.46 > 1.27 → REJECTED
-      expect(r2.passes).toBe(false);
-      // buffer 1.5 → required 1.10 < 1.27 → PASSES
+      const r2 = checkFeesAwareGuard({ ...m, buffer: 2.0 });
       expect(r15.passes).toBe(true);
+      expect(r2.passes).toBe(false);
     });
   });
 
@@ -245,13 +261,17 @@ describe('FEES-AWARE TARGET guard — P20 formula', () => {
   });
 
   describe('Edge cases', () => {
-    it('crypto venue (Binance 0.1 % taker, no SEC/TAF)', () => {
-      // 0.1 BTC × $60k = $6k notional, TP +0.5 % = $30 gain
-      // Fees : 0.1 % × $6000 buy + 0.1 % × $6030 sell = $6 + $6.03 = $12.03 RT
-      // Required at 2.0 = $24.06 → gain $30 PASSES
+    it('crypto venue Binance 0.1 % taker, TP +1.0 % → PASSES', () => {
+      // 0.1 BTC × $60k = $6k notional, TP +1.0 % = $60 gain
+      // Venue : 0.1 % × $6000 + 0.1 % × $60600 = $6 + $6.06 = $12.06
+      // Slippage 5bps × ($6000 + $60600) ≈ $33.30 — wait this is way too high
+      // Recalc : qty=0.1, exitNotional = 0.1 × 60600 = $6060
+      // Slip = (6000 + 6060) × 5bps = $6.03
+      // RT = $12.06 + $6.03 = $18.09
+      // Required 2.0 = $36.18 → gain $60 PASSES
       const r = checkFeesAwareGuard({
         entryPrice: 60000,
-        tpPrice: 60300,
+        tpPrice: 60600,
         qty: 0.1,
         assetClass: 'crypto_major',
         venue: 'BINANCE',
@@ -259,15 +279,17 @@ describe('FEES-AWARE TARGET guard — P20 formula', () => {
         buffer: 2.0,
       });
       expect(r.passes).toBe(true);
-      expect(r.expectedGain).toBeCloseTo(30, 1);
-      expect(r.roundTripFees).toBeCloseTo(12.03, 1);
+      expect(r.expectedGain).toBeCloseTo(60, 1);
+      expect(r.venueFees).toBeCloseTo(12.06, 1);
+      expect(r.slippage).toBeCloseTo(6.03, 1);
     });
 
-    it('crypto with TP too tight (+0.15 %) → REJECTED', () => {
-      // TP +0.15 % = $9 gain, RT fees ~$12 → required $24 → REJECTED
+    it('crypto with TP too tight (+0.5 %) → REJECTED with slippage', () => {
+      // TP +0.5 % = $30 gain, venue ~$12.03 + slippage ~$6.015 = RT ~$18.05
+      // Required 2.0 = $36.09 > $30 → REJECTED
       const r = checkFeesAwareGuard({
         entryPrice: 60000,
-        tpPrice: 60090,
+        tpPrice: 60300,
         qty: 0.1,
         assetClass: 'crypto_major',
         venue: 'BINANCE',

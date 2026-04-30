@@ -192,6 +192,7 @@ export class PaperBrokerService {
     }
 
     // P20 (30/04/2026) — FEES-AWARE TARGET guard.
+    // P20.2 (30/04/2026) — include slippage 5bps in roundTripFees calc.
     //
     // Bug observed J-7 (2026-04-23 → 2026-04-29) : 9 trades closed_target
     // avec pct_move POSITIF (+0.003 % à +0.171 %) mais P&L NÉGATIF (-$0.92
@@ -202,7 +203,15 @@ export class PaperBrokerService {
     // sur petits notionals. Le min commission IBKR ($0.35/side) + SEC fee
     // sell + TAF rendent le break-even à 0.15-0.40 % selon notional.
     //
-    // Fix : reject l'open si gain attendu au TP < BUFFER × round-trip fees.
+    // P20.2 ajoute slippage 5bps (entry + exit) dans le calcul :
+    //   roundTripFees = entry_venue_fees + entry_slippage_5bps
+    //                 + exit_venue_fees  + exit_slippage_5bps
+    // Cohérent avec mechanical-trading.closePosition qui charge slippageBps=5
+    // au close. Évite que SLV +0.171 % qty=39 (gain $4.30 vs venue fees
+    // $0.93 → ratio 4.6×) passe le guard alors que le slippage réel
+    // ($1.26 entry + $1.26 exit = $2.52 add) le rend net négatif.
+    //
+    // Fix : reject l'open si gain attendu au TP < BUFFER × round-trip fees+slip.
     // Default BUFFER=2.0 (configurable via env FEES_AWARE_BUFFER, range
     // 1.0..5.0). Skip si pas de takeProfitPrice (Lisa narrative sans TP) —
     // le MIN_NET_PROFIT guard de mechanical-trading prend le relais au close.
@@ -219,7 +228,17 @@ export class PaperBrokerService {
         expression.preferredVenue as string | undefined,
         exitSide,
       );
-      const roundTripFees = estimatedCost.plus(new Decimal(exitFeeBreakdown.total));
+      // P20.2 — slippage 5bps × notional sur chaque side. Cohérent avec
+      // mechanical-trading.service.ts:1082 (entry) et :2087 (exit).
+      const SLIPPAGE_BPS = 5;
+      const entryNotional = tentativeQty.mul(livePrice);
+      const exitNotional = tentativeQty.mul(tpPrice);
+      const entrySlippage = entryNotional.mul(SLIPPAGE_BPS).div(10000);
+      const exitSlippage = exitNotional.mul(SLIPPAGE_BPS).div(10000);
+      const roundTripFees = estimatedCost
+        .plus(new Decimal(exitFeeBreakdown.total))
+        .plus(entrySlippage)
+        .plus(exitSlippage);
       const expectedGain = isLong
         ? tpPrice.minus(livePrice).mul(tentativeQty)
         : livePrice.minus(tpPrice).mul(tentativeQty);
@@ -230,9 +249,10 @@ export class PaperBrokerService {
       if (expectedGain.lt(requiredGain)) {
         throw new Error(
           `openPosition rejected by P20 fees-aware guard: expected_gain_at_TP=$${expectedGain.toFixed(2)} ` +
-          `< ${buffer.toFixed(2)} × round_trip_fees=$${requiredGain.toFixed(2)} ` +
+          `< ${buffer.toFixed(2)} × round_trip_fees_with_slippage=$${requiredGain.toFixed(2)} ` +
           `(entry=$${livePrice.toFixed(4)} TP=$${tpPrice.toFixed(4)} qty=${tentativeQty.toFixed(4)} ` +
-          `notional=$${notional.toFixed(2)} symbol=${expression.symbol}). ` +
+          `notional=$${notional.toFixed(2)} venue_fees=$${estimatedCost.plus(new Decimal(exitFeeBreakdown.total)).toFixed(2)} ` +
+          `slippage_5bps_RT=$${entrySlippage.plus(exitSlippage).toFixed(2)} symbol=${expression.symbol}). ` +
           `Augmenter le TP ou le notional pour ouvrir cette position.`,
         );
       }

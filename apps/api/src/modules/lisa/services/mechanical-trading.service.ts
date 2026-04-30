@@ -1091,10 +1091,11 @@ export class MechanicalTradingService {
       const quantity = notionalNet.div(price);
 
       // P20.1 (30/04/2026) — FEES-AWARE TARGET guard miroir paper-broker.
+      // P20.2 (30/04/2026) — include slippage 5bps (entry + exit) in roundTripFees.
       //
       // Ce code path (mechanical-trading INSERT direct) bypass paperBroker.openPosition
       // et donc le P20 guard. On duplique ici le check sur les mêmes critères :
-      // expected_gain_at_TP ≥ FEES_AWARE_BUFFER × round_trip_fees.
+      // expected_gain_at_TP ≥ FEES_AWARE_BUFFER × round_trip_fees_with_slippage.
       // Cf. paper-broker.service.ts pour la justification chiffrée (9 losses J-7).
       {
         const tpPriceDec = new Decimal(takeProfitPrice);
@@ -1107,11 +1108,14 @@ export class MechanicalTradingService {
           target.venue as string | undefined,
           exitSide,
         );
-        // Round-trip = entry fee + exit fee (slippage entry compté séparément
-        // dans estimatedCost ; on reste cohérent avec le check paper-broker
-        // qui ne compte pas le slippage non plus).
-        const entryFeeOnly = feeIbkr; // sans slippage
-        const roundTripFees = entryFeeOnly.plus(new Decimal(exitFeeBreakdown.total));
+        // P20.2 — slippage 5bps × notional sur chaque side (cohérent avec
+        // entry slippageBps=5 ligne 1082 + exit slippageBps=5 ligne 2087).
+        const SLIPPAGE_BPS = 5;
+        const exitNotional = tentativeQty.mul(tpPriceDec);
+        const entrySlippage = notional.mul(SLIPPAGE_BPS).div(10000);
+        const exitSlippage = exitNotional.mul(SLIPPAGE_BPS).div(10000);
+        const venueFeesRT = feeIbkr.plus(new Decimal(exitFeeBreakdown.total));
+        const roundTripFees = venueFeesRT.plus(entrySlippage).plus(exitSlippage);
         const expectedGain = isLong
           ? tpPriceDec.minus(price).mul(tentativeQty)
           : price.minus(tpPriceDec).mul(tentativeQty);
@@ -1120,16 +1124,18 @@ export class MechanicalTradingService {
         if (expectedGain.lt(requiredGain)) {
           this.logger.log(
             `[MÉCANIQUE:P20.1] ${target.symbol} skip open: ` +
-            `expected_gain_at_TP=$${expectedGain.toFixed(2)} < ${buffer.toFixed(2)}× round_trip_fees=$${requiredGain.toFixed(2)} ` +
-            `(entry=$${price.toFixed(4)} TP=$${tpPriceDec.toFixed(4)} qty=${tentativeQty.toFixed(4)} notional=$${notional.toFixed(2)})`,
+            `expected_gain_at_TP=$${expectedGain.toFixed(2)} < ${buffer.toFixed(2)}× round_trip_fees_with_slip=$${requiredGain.toFixed(2)} ` +
+            `(entry=$${price.toFixed(4)} TP=$${tpPriceDec.toFixed(4)} qty=${tentativeQty.toFixed(4)} notional=$${notional.toFixed(2)} ` +
+            `venue=$${venueFeesRT.toFixed(2)} slip=$${entrySlippage.plus(exitSlippage).toFixed(2)})`,
           );
           await this.decisionLog.append({
             portfolioId,
             kind: 'mechanical_open_skipped_fees_aware',
-            summary: `[P20.1] ${target.symbol}: open mechanical refusée — gain TP < ${buffer.toFixed(2)}× fees round-trip`,
+            summary: `[P20.1] ${target.symbol}: open mechanical refusée — gain TP < ${buffer.toFixed(2)}× (fees + slippage round-trip)`,
             rationale:
-              `Gain attendu au TP $${expectedGain.toFixed(2)} insuffisant vs fees round-trip $${roundTripFees.toFixed(2)} ` +
-              `(buffer=${buffer.toFixed(2)}). Augmenter TP ou notional pour ouvrir cette position.`,
+              `Gain attendu au TP $${expectedGain.toFixed(2)} insuffisant vs round-trip cost $${roundTripFees.toFixed(2)} ` +
+              `(venue $${venueFeesRT.toFixed(2)} + slippage 5bps × 2 = $${entrySlippage.plus(exitSlippage).toFixed(2)}, ` +
+              `buffer=${buffer.toFixed(2)}). Augmenter TP ou notional pour ouvrir.`,
             payload: {
               symbol: target.symbol,
               asset_class: target.assetClass,
@@ -1140,9 +1146,11 @@ export class MechanicalTradingService {
               tp_pct: tpPct.toFixed(3),
               qty: tentativeQty.toFixed(4),
               notional_usd: notional.toFixed(2),
-              entry_fee_usd: entryFeeOnly.toFixed(4),
+              entry_fee_usd: feeIbkr.toFixed(4),
               exit_fee_usd: exitFeeBreakdown.total.toFixed(4),
-              round_trip_fees_usd: roundTripFees.toFixed(4),
+              entry_slippage_usd: entrySlippage.toFixed(4),
+              exit_slippage_usd: exitSlippage.toFixed(4),
+              round_trip_total_usd: roundTripFees.toFixed(4),
               expected_gain_at_tp_usd: expectedGain.toFixed(4),
               required_gain_usd: requiredGain.toFixed(4),
               buffer: buffer.toFixed(2),
