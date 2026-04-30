@@ -19,6 +19,7 @@ import type {
   PaperPosition,
   PortfolioSnapshot,
 } from './types';
+import { computeVenueFeeDetail, type VenueFeeBreakdown } from './venue-fees';
 
 export interface PriceQuote {
   symbol: string;
@@ -149,12 +150,17 @@ export class PaperBrokerService {
 
     // P19u — Calcul fee réaliste (IBKR Pro Tiered) au lieu du modèle bps fixe
     // de l'ancien code. Two-pass : qty tentative (no fee) → fee → qty finale.
+    // P19x.8 (29/04/2026) — Capture aussi le breakdown JSON via computeVenueFeeDetail
+    // pour persist en venue_fee_detail (UI tooltip).
     const tentativeQty = notional.dividedBy(livePrice);
-    const estimatedCost = computeRealisticFee(
+    const entryFeeBreakdown = computeVenueFeeDetail(
       tentativeQty,
       livePrice,
       expression.assetClass as string | undefined,
+      expression.preferredVenue as string | undefined,
+      'buy',
     );
+    const estimatedCost = new Decimal(entryFeeBreakdown.total);
 
     // Garde-fou : si le fee dépasse la notional (cas pathologique), reject.
     if (estimatedCost.gte(notional)) {
@@ -220,6 +226,9 @@ export class PaperBrokerService {
       take_profit_price: position.takeProfitPrice,
       horizon_target_date: position.horizonTargetDate,
       estimated_entry_cost_usd: position.estimatedEntryCostUsd,
+      // P19x.8 — Real fees per venue persistence
+      fees_in_usd: position.estimatedEntryCostUsd,
+      venue_fee_detail: { entry: entryFeeBreakdown },
       created_at: position.createdAt,
       updated_at: position.updatedAt,
     });
@@ -267,6 +276,18 @@ export class PaperBrokerService {
     // closed_invalidated = trade tué par news shock / material change avant
     // que le TP/SL hit. Le PaperBroker considère ça comme "no real trade
     // happened" — refund both sides of fees, garde uniquement le price delta.
+    // P19x.8 — Capture exit fee breakdown (commission + exchange + regulatory + fx)
+    // pour persistence venue_fee_detail.exit + tooltip UI.
+    const isLong = position.direction === 'long' || position.direction === 'long_call' || position.direction === 'long_put';
+    const exitSide: 'buy' | 'sell' = isLong ? 'sell' : 'buy';
+    const exitFeeBreakdown: VenueFeeBreakdown = computeVenueFeeDetail(
+      qty,
+      exitPx,
+      position.assetClass,
+      position.venue,
+      exitSide,
+    );
+
     let exitCost: Decimal;
     let entryFeeRefund: Decimal;
     if (cmd.reason === 'closed_invalidated') {
@@ -276,7 +297,7 @@ export class PaperBrokerService {
       const entryCostStored = position.estimatedEntryCostUsd;
       entryFeeRefund = entryCostStored ? new Decimal(entryCostStored) : new Decimal(0);
     } else {
-      exitCost = computeRealisticFee(qty, exitPx, position.assetClass);
+      exitCost = new Decimal(exitFeeBreakdown.total);
       entryFeeRefund = new Decimal(0);
     }
     const netPnl = grossPnl.minus(exitCost).plus(entryFeeRefund);
@@ -323,6 +344,17 @@ export class PaperBrokerService {
     // touche 0 rows → on retourne la position fermée précédente sans
     // ré-écrire les champs (pas de double comptage P&L, pas de double
     // appel au TradeOutcomeRecorder).
+    // P19x.8 — Merge entry breakdown (déjà persisté à open) + exit breakdown
+    // pour conserver le full audit trail dans venue_fee_detail JSONB.
+    const existingDetail = (posRow as Record<string, unknown>)['venue_fee_detail'] as
+      | { entry?: VenueFeeBreakdown; exit?: VenueFeeBreakdown }
+      | null
+      | undefined;
+    const mergedFeeDetail = {
+      entry: existingDetail?.entry ?? null,
+      exit: exitFeeBreakdown,
+    };
+
     const { data: updated, error: updErr } = await this.supabase
       .from('lisa_positions')
       .update({
@@ -332,6 +364,9 @@ export class PaperBrokerService {
         exit_reason: cmd.rationale,
         realized_pnl_usd: netPnl.toFixed(2),
         realized_pnl_pct: pnlPct,
+        // P19x.8 — Persist exit fees breakdown
+        fees_out_usd: exitCost.toFixed(4),
+        venue_fee_detail: mergedFeeDetail,
         updated_at: now,
       })
       .eq('id', cmd.positionId)
