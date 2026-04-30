@@ -61,32 +61,35 @@ describe('fetchEodhdScreener — URL construction (P18c regression guard)', () =
     global.fetch = realFetch;
   });
 
-  it('passes exchange INSIDE the filters array (lowercase), not as a separate query param', async () => {
+  it('passes exchange INSIDE the filters array (UPPERCASE post P19s+), not as a separate query param', async () => {
     const svc = makeService();
-    await (svc as any).fetchEodhdScreener('US', 'test-key');
+    await (svc as any).fetchEodhdScreener('us', 'test-key');
     expect(capturedUrl).toBeDefined();
     const decoded = decodeURIComponent(capturedUrl!);
 
     // Must NOT have `&exchange=` query param
     expect(decoded).not.toMatch(/[?&]exchange=/);
-    // MUST have ["exchange","=","us"] inside the filters array (lowercase)
-    expect(decoded).toContain('["exchange","=","us"]');
+    // P19s+ : MUST have ["exchange","=","US"] inside the filters array (UPPERCASE)
+    expect(decoded).toContain('["exchange","=","US"]');
   });
 
-  it('lowercases exchange code (e.g. XETRA → xetra)', async () => {
+  it('P19s+ — UPPERCASES exchange code (e.g. xetra → XETRA), required by EODHD non-US', async () => {
+    // P19s+ (30/04/2026) reverse l'ancienne attente lowercase. Audit prod 24h :
+    // 100% des candidats étaient US car les exchanges non-US étaient passés
+    // en lowercase et EODHD retournait 0 row silencieusement.
     const svc = makeService();
-    await (svc as any).fetchEodhdScreener('XETRA', 'test-key');
+    await (svc as any).fetchEodhdScreener('xetra', 'test-key');
     const decoded = decodeURIComponent(capturedUrl!);
-    expect(decoded).toContain('["exchange","=","xetra"]');
-    expect(decoded).not.toContain('XETRA');
+    expect(decoded).toContain('["exchange","=","XETRA"]');
+    expect(decoded).not.toContain('"xetra"');
   });
 
-  it('uses refund_1d_p (NOT change_p) as the daily-change filter field', async () => {
+  it('uses refund_1d_p for US (NOT change_p) as the daily-change filter field', async () => {
     const svc = makeService();
     await (svc as any).fetchEodhdScreener('US', 'test-key');
     const decoded = decodeURIComponent(capturedUrl!);
     expect(decoded).toContain('["refund_1d_p",">",3]');
-    // change_p must NOT appear as a filter field key
+    // change_p must NOT appear as a filter field key for US
     expect(decoded).not.toMatch(/\["change_p","[<>=]"/);
   });
 
@@ -139,7 +142,7 @@ describe('fetchEodhdScreener — URL construction (P18c regression guard)', () =
     expect(decoded).not.toContain('limit=20');
   });
 
-  it('P19s — non-US exchanges (TSE, HK, KO, SS, SZ) build same URL pattern (no exchange-specific bug)', async () => {
+  it('P19s+ — non-US exchanges (TSE, HK, KO, SS, SZ, …) build URL with UPPERCASE + change_p', async () => {
     const svc = makeService();
     const exchanges = ['TSE', 'HK', 'KO', 'SS', 'SZ', 'TO', 'AS', 'NSE', 'BSE', 'AU'];
     for (const ex of exchanges) {
@@ -147,9 +150,10 @@ describe('fetchEodhdScreener — URL construction (P18c regression guard)', () =
       await (svc as any).fetchEodhdScreener(ex, 'test-key');
       expect(capturedUrl).toBeDefined();
       const decoded = decodeURIComponent(capturedUrl!);
-      // Same canonical filter set on every exchange
-      expect(decoded).toContain(`["exchange","=","${ex.toLowerCase()}"]`);
-      expect(decoded).toContain('["refund_1d_p",">",3]');
+      // P19s+ : exchange UPPERCASE, change_p (pas refund_1d_p) pour non-US
+      expect(decoded).toContain(`["exchange","=","${ex}"]`);
+      expect(decoded).toContain('["change_p",">",3]');
+      expect(decoded).not.toMatch(/\["refund_1d_p","[<>=]"/);
       expect(decoded).toContain('["market_capitalization",">",50000000]');
       expect(decoded).not.toMatch(/[?&]sort=/);
       expect(decoded).not.toContain('avgvol_50d');
