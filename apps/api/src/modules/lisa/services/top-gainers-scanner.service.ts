@@ -679,11 +679,106 @@ export class TopGainersScannerService implements OnModuleInit {
     return out;
   }
 
+  /**
+   * P19x.4 (29/04/2026) — Watchdog expectancy strategy Gainers.
+   *
+   * Spec user (29/04 02:00 UTC) :
+   *   E = (hit_rate × avg_win) − ((1−hit_rate) × avg_loss)
+   *   Si E<0 après ≥ 10 trades fermés → skip opens + alerte UI
+   *
+   * Calcul sur les 10 derniers trades fermés du portfolio (toutes sources
+   * confondues : gainers scanner + Lisa proposals). Le watchdog soft-disable
+   * le SCANNER GAINERS uniquement (skip opens), ne touche pas au kill_switch
+   * global qui désactive aussi Lisa LLM et mechanical-trading.
+   *
+   * Pourquoi soft-disable :
+   *   - User spec demande "kill-switch auto Gainers + alerte UI"
+   *   - Setting kill_switch_active=true sur lisa_session_configs filtre out
+   *     le portfolio de runScannerInner (line 376) → scanner skip
+   *   - Mais ça désactive AUSSI Lisa LLM cycle. Trop large.
+   *   - Approach : on log un decision_log d'alerte + on skip cette open phase
+   *     uniquement (return early). Le scanner réévalue au prochain cycle.
+   *   - Si user veut hard-disable : flip kill_switch via UI + voit l'alerte
+   *     UI.
+   *
+   * Returns true if expectancy is too negative AND we should skip opens.
+   */
+  private async checkExpectancyWatchdog(portfolioId: string): Promise<boolean> {
+    try {
+      const { data: closedRecent } = await this.supabase
+        .getClient()
+        .from('lisa_positions')
+        .select('realized_pnl_usd, status, exit_timestamp')
+        .eq('portfolio_id', portfolioId)
+        .neq('status', 'open')
+        .order('exit_timestamp', { ascending: false })
+        .limit(10);
+
+      const trades = (closedRecent ?? []).filter(
+        (p) => p.realized_pnl_usd != null && Number.isFinite(Number(p.realized_pnl_usd)),
+      );
+      if (trades.length < 10) return false; // pas assez de data — skip watchdog
+
+      const wins = trades.filter((p) => Number(p.realized_pnl_usd) > 0);
+      const losses = trades.filter((p) => Number(p.realized_pnl_usd) < 0);
+      const hitRate = wins.length / trades.length;
+      const avgWin = wins.length > 0
+        ? wins.reduce((s, p) => s + Number(p.realized_pnl_usd), 0) / wins.length
+        : 0;
+      const avgLoss = losses.length > 0
+        ? Math.abs(losses.reduce((s, p) => s + Number(p.realized_pnl_usd), 0) / losses.length)
+        : 0;
+      const expectancy = hitRate * avgWin - (1 - hitRate) * avgLoss;
+
+      if (expectancy < 0) {
+        this.logger.warn(
+          `[top-gainers:watchdog] portfolio ${portfolioId.slice(0, 8)} expectancy=$${expectancy.toFixed(2)} ` +
+          `< 0 (hit_rate=${(hitRate * 100).toFixed(0)}%, avg_win=$${avgWin.toFixed(2)}, ` +
+          `avg_loss=$${avgLoss.toFixed(2)}, n=${trades.length}) → skip opens this cycle`,
+        );
+        await this.decisionLog.append({
+          portfolioId,
+          kind: 'gainers_expectancy_negative_watchdog',
+          summary: `[GAINERS WATCHDOG] Expectancy=$${expectancy.toFixed(2)} < 0 sur 10 derniers trades. Skip opens.`,
+          rationale:
+            `Hit rate ${(hitRate * 100).toFixed(0)}% × avg_win $${avgWin.toFixed(2)} − ` +
+            `(1−${hitRate.toFixed(2)}) × avg_loss $${avgLoss.toFixed(2)} = $${expectancy.toFixed(2)}. ` +
+            `Stratégie en perte attendue. UI alerte. User : check P19x.1 MIN_NET_PROFIT, ` +
+            `P19x.2 TP/SL config, P19x.3 cooldown ; ou flip kill_switch_active=true ` +
+            `manuellement pour hard-stop scanner.`,
+          payload: {
+            expectancy_usd: expectancy.toFixed(4),
+            hit_rate: hitRate.toFixed(4),
+            avg_win_usd: avgWin.toFixed(4),
+            avg_loss_usd: avgLoss.toFixed(4),
+            trades_count: trades.length,
+            wins_count: wins.length,
+            losses_count: losses.length,
+          },
+          triggeredBy: 'autopilot_cron',
+        }).catch(() => { /* non-bloquant */ });
+        return true;
+      }
+      return false;
+    } catch (e) {
+      // Failure-tolerant : si query fail (mock partiel test, schema), on
+      // skip le watchdog (cycle continue normalement).
+      this.logger.debug(`[top-gainers:watchdog] check failed: ${String(e).slice(0, 100)}`);
+      return false;
+    }
+  }
+
   private async scanPortfolio(
     userId: string,
     portfolioId: string,
     top: Array<TopGainerCandidate & { score: number; assetClass: TopGainerAssetClass }>,
   ): Promise<void> {
+    // P19x.4 — Watchdog expectancy : skip opens si E<0 sur 10 derniers trades.
+    const expectancyNegative = await this.checkExpectancyWatchdog(portfolioId);
+    if (expectancyNegative) {
+      return; // skip cycle pour ce portfolio
+    }
+
     // Garde-fou : count current open positions
     const { data: openPositions } = await this.supabase
       .getClient()
