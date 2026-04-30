@@ -9,6 +9,7 @@ import type { OnboardingAnswers } from '@smartvest/shared-types';
 
 export function StepProfile() {
   const {
+    firstName,
     baseCurrency,
     horizon,
     tolerance,
@@ -46,9 +47,11 @@ export function StepProfile() {
     <WizardShell stepLabel="Votre profil" onNext={next} nextLabel="Créer mon portefeuille">
       <div className="space-y-5">
         <div>
-          <h2 className="text-lg font-semibold">Votre profil de simulation</h2>
+          <h2 className="text-lg font-semibold">
+            {firstName ? `${firstName}, voici votre profil` : 'Votre profil de simulation'}
+          </h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Calculé à partir de vos réponses — révisable à tout moment.
+            Calculé à partir de vos réponses — révisable à tout moment dans les paramètres.
           </p>
         </div>
 

@@ -11,15 +11,17 @@ import type {
 } from '@smartvest/shared-types';
 import type { ProfileScoreResult } from '@smartvest/portfolio-engine';
 
-export const TOTAL_STEPS = 8;
+export const TOTAL_STEPS = 10;
 
 export type OnboardingStep =
   | 'welcome'
   | 'disclaimer'
   | 'currency'
+  | 'firstName'
+  | 'experience'
+  | 'goal'
   | 'horizon'
   | 'tolerance'
-  | 'goal'
   | 'profile'
   | 'portfolio';
 
@@ -27,9 +29,11 @@ const STEPS: OnboardingStep[] = [
   'welcome',
   'disclaimer',
   'currency',
+  'firstName',
+  'experience',
+  'goal',
   'horizon',
   'tolerance',
-  'goal',
   'profile',
   'portfolio',
 ];
@@ -38,6 +42,7 @@ interface OnboardingState {
   stepIndex: number;
   step: OnboardingStep;
   // Answers
+  firstName: string;
   baseCurrency: string;
   horizon: HorizonOption | null;
   tolerance: ToleranceOption | null;
@@ -52,6 +57,7 @@ interface OnboardingState {
   // Actions
   next: () => void;
   back: () => void;
+  setFirstName: (v: string) => void;
   setBaseCurrency: (v: string) => void;
   setHorizon: (v: HorizonOption) => void;
   setTolerance: (v: ToleranceOption) => void;
@@ -67,6 +73,7 @@ interface OnboardingState {
 const initial = {
   stepIndex: 0,
   step: 'welcome' as OnboardingStep,
+  firstName: '',
   baseCurrency: 'EUR',
   horizon: null,
   tolerance: null,
@@ -90,6 +97,7 @@ export const useOnboardingStore = create<OnboardingState>((set) => ({
       const prev = Math.max(s.stepIndex - 1, 0);
       return { stepIndex: prev, step: STEPS[prev] };
     }),
+  setFirstName: (v) => set({ firstName: v }),
   setBaseCurrency: (v) => set({ baseCurrency: v }),
   setHorizon: (v) => set({ horizon: v }),
   setTolerance: (v) => set({ tolerance: v }),
