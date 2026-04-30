@@ -24,14 +24,40 @@ export interface HelpDocEntry {
 }
 
 export const HELP_DOCS: HelpDocEntry[] = [
+  // ── Guides utilisateur ───────────────────────────────────────────
   {
-    slug: 'audit-2026-04',
-    path: 'docs/audit-2026-04.md',
-    title: 'Audit produit — Avril 2026',
-    description: 'Audit exhaustif des 40 pages : statut, gaps, roadmap Go Live (P1 à P5).',
-    category: 'audit',
+    slug: 'premiers-pas',
+    path: 'docs/guides/premiers-pas.md',
+    title: 'Premiers pas sur SmartVest',
+    description: 'De la création de votre profil à votre premier tableau de bord — guide débutant.',
+    category: 'guide',
     listed: true,
   },
+  {
+    slug: 'simuler-sans-risque',
+    path: 'docs/guides/simuler-sans-risque.md',
+    title: 'Simuler sans risque',
+    description: 'Comprendre le mode simulation : portefeuille virtuel, paper trading, réinitialisation.',
+    category: 'guide',
+    listed: true,
+  },
+  {
+    slug: 'lire-votre-tableau-de-bord',
+    path: 'docs/guides/lire-votre-tableau-de-bord.md',
+    title: 'Lire votre tableau de bord',
+    description: 'Comprendre chaque indicateur : valeur de marché, P&L latent, alertes, widgets.',
+    category: 'guide',
+    listed: true,
+  },
+  {
+    slug: 'configurer-lisa',
+    path: 'docs/guides/configurer-lisa.md',
+    title: 'Configurer Lisa',
+    description: 'Les 3 modes stratégiques (Investment / Harvest / Gainers), autopilot, garde-fous.',
+    category: 'guide',
+    listed: true,
+  },
+  // ── Docs techniques ──────────────────────────────────────────────
   {
     slug: 'broker-connections',
     path: 'docs/BROKER_CONNECTIONS.md',
@@ -40,6 +66,16 @@ export const HELP_DOCS: HelpDocEntry[] = [
     category: 'guide',
     listed: true,
   },
+  // ── Audit ────────────────────────────────────────────────────────
+  {
+    slug: 'audit-2026-04',
+    path: 'docs/audit-2026-04.md',
+    title: 'Audit produit — Avril 2026',
+    description: 'Audit exhaustif des 40 pages : statut, gaps, roadmap Go Live (P1 à P5).',
+    category: 'audit',
+    listed: true,
+  },
+  // ── Admin ────────────────────────────────────────────────────────
   {
     slug: 'deploy',
     path: 'docs/DEPLOY.md',
