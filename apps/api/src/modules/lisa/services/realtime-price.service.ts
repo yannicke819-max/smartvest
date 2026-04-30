@@ -278,27 +278,25 @@ export class RealtimePriceService implements OnModuleDestroy {
       return 'blocked';
     }
 
-    // 2. Quota journalier — source prioritaire : /api/user (EODHD officiel)
-    //    Fallback : count depuis eodhd_request_log si le call user échoue.
+    // 2. Quota journalier — REFRESH OBSERVABILITÉ UNIQUEMENT depuis /api/user
+    //    (pas un blocage hard). Permet au /quota-status endpoint de logger
+    //    l'usage main subscription avec exactitude.
     //
-    // P19s++ HOTFIX (30/04/2026 08:10 UTC) — DB fallback over-comptait
-    // (chaque retry/failure ajoute une row, mais EODHD ne compte que les
-    // billable calls). Résultat : compteur local 100k alors qu'EODHD voit
-    // 13k → blocage faux positif.
+    // P19u (30/04/2026 08:30 UTC HOTFIX RATE-LIMIT) — Removed daily 100k
+    // blocker entirely. User clarification : EODHD limite RÉELLEMENT au
+    // RATE per-minute (1000 req/min), pas au daily count. HTTP 402
+    // observé prod = burst > 1000 req/min, pas daily exhaustion.
     //
-    // Stratégie corrigée :
-    //   - Refresh API toutes les 60s (inchangé)
-    //   - Si API succeed → eodhd24hCountAuthoritative = true (truth source)
-    //   - Si API fail → KEEP LAST KNOWN GOOD VALUE (don't fall to DB count)
-    //   - DB count utilisé UNIQUEMENT au boot (premier call) si API down
-    //     → marqué non-authoritative et ne bloque jamais (garde-fou anti-faux-positif)
+    // Le compteur daily reste en place pour observabilité (/lisa/eodhd-stats)
+    // mais ne déclenche plus de blocage. Le rate-limiter sliding window
+    // ci-dessus (étape 1) est la VRAIE protection contre les 402.
     if (now - this.eodhd24hCountAsOf > 60_000) {
       const refreshed = await this.refreshQuotaFromUserApi();
       if (refreshed) {
         this.eodhd24hCountAuthoritative = true;
       } else if (this.eodhd24hCountAsOf === 0) {
         // Boot path : pas encore de valeur connue. DB count comme proxy
-        // initial (over-counting accepté ; sera corrigé au prochain refresh API).
+        // OBSERVABILITÉ (over-counting accepté, jamais bloque).
         try {
           const nowDate = new Date(now);
           const startOfTodayUtc = new Date(Date.UTC(
@@ -313,35 +311,14 @@ export class RealtimePriceService implements OnModuleDestroy {
           this.eodhd24hCount = count ?? 0;
           this.eodhd24hCountAsOf = now;
           this.eodhd24hCountAuthoritative = false;
-          this.logger.warn(
-            `[quota] /api/user unreachable at boot, DB fallback count=${count ?? 0} `
-            + `(NON-AUTHORITATIVE, may overcount — won't block)`,
-          );
         } catch (e) {
-          this.logger.warn(`Quota DB fallback failed: ${String(e).slice(0, 80)}`);
-          return 'ok';
+          this.logger.debug(`Quota DB fallback failed: ${String(e).slice(0, 80)}`);
         }
-      } else {
-        // API failed but we have a previous value — keep it, log discrepancy.
-        // No update to eodhd24hCountAsOf so next call will retry the API.
-        this.logger.debug(
-          `[quota] /api/user refresh failed; keeping last known count=${this.eodhd24hCount}`,
-        );
       }
     }
 
-    const effectiveCap = this.eodhdDailyLimit + this.eodhdExtraLimit;
-    const hardCapSafe = Math.floor(effectiveCap * 0.95); // 5% marge vs cap réel
-    const warnThreshold = Math.floor(effectiveCap * 0.80);
-
-    // P19s++ HOTFIX — Bloque UNIQUEMENT si la valeur est authoritative
-    // (vient de /api/user EODHD officiel). Le DB count peut overcompter à
-    // cause des retries/failures, donc on ne bloque pas sur cette base.
-    if (this.eodhd24hCountAuthoritative && this.eodhd24hCount >= hardCapSafe) {
-      this.logger.warn(`EODHD daily quota proche (${this.eodhd24hCount}/${effectiveCap}) — blocage`);
-      return 'blocked';
-    }
-    if (this.eodhd24hCountAuthoritative && this.eodhd24hCount >= warnThreshold) return 'warn';
+    // P19u — DAILY THRESHOLD REMOVED. Le rate-limiter per-minute (étape 1)
+    // est la seule barrière. Le compteur daily reste pour /quota-status.
     return 'ok';
   }
 

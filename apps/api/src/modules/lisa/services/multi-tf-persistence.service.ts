@@ -89,7 +89,13 @@ interface CacheEntry {
   asOf: number;
 }
 
-const CACHE_TTL_MS = 30_000;
+// P19u (30/04/2026 08:30 UTC HOTFIX RATE-LIMIT) — Bump cache TTL 30s → 5min.
+// L'intraday endpoint EODHD coûte 5 API calls per request. Avec UI poll
+// /lisa/gainers-persistence-snapshot toutes les 60s × 20 tickers × 5 calls
+// = 100 API calls / 60s = spike per-minute > 1000/min → HTTP 402.
+// Bump cache TTL 30s → 5min réduit le burn de 90 % (1 fetch toutes les 5 min
+// au lieu de toutes les 30 s). Les candles 5m intraday changent peu sur 5 min.
+const CACHE_TTL_MS = 5 * 60_000;
 const MAX_PARALLEL_PER_SOURCE = 5;
 
 @Injectable()
