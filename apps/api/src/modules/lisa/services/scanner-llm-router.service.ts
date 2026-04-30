@@ -1,15 +1,19 @@
 /**
- * P17 — ScannerLlmRouterService — wrapping NestJS du MultiVendorLlmRouter.
+ * P17 + ADR-001 (30/04/2026) — ScannerLlmRouterService.
  *
  * Service injectable qui :
  *   - Lit les API keys depuis ConfigService (.env)
- *   - Construit la chaîne fallback : Gemini Flash-Lite → GPT-4.1-nano → Codestral → Claude
+ *   - Construit la chain SIMPLIFIÉE per ADR-001 :
+ *       Gemini 2.5 Flash Lite (primary) → Claude Opus 4.7 (fallback ultime)
+ *   - Suppression OpenAI + Mistral (réduction surface providers)
  *   - Gate le routing derrière le feature flag SCANNER_LLM_ROUTER_ENABLED
  *   - Loggue chaque appel (provider, model, latencyMs, costUsd, fallbackUsed)
  *   - Auto-désactive si le flag est off OU si aucun provider n'est configuré
  *
  * Cf. bench P16 — Gemini Flash-Lite gagne avec composite 0.66, $0.00011/prompt
  * (-99.3% vs Claude Sonnet 4.5 sur la tâche de sélection scanner).
+ *
+ * Cf. docs/decision_records/ADR-001-llm-architecture.md
  */
 
 import { Injectable, Logger } from '@nestjs/common';
@@ -18,8 +22,6 @@ import Anthropic from '@anthropic-ai/sdk';
 import {
   MultiVendorLlmRouter,
   GeminiProvider,
-  OpenAiProvider,
-  MistralProvider,
   ClaudeProvider,
   type LlmCallParams,
   type MultiVendorCallMetrics,
@@ -40,16 +42,17 @@ export class ScannerLlmRouterService {
       return;
     }
 
+    // ADR-001 — Chain simplifiée : Gemini primary + Claude Opus fallback ultime.
+    // Suppression OpenAI + Mistral (était P17 fallback chain) : ne sont plus
+    // dans le contrat d'archi LLM. Réduit la surface providers à 2 (Google + Anthropic).
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
-    const claudeChain = anthropicKey
+    const claudeFallback = anthropicKey
       ? [new ClaudeProvider({ anthropic: new Anthropic({ apiKey: anthropicKey }) })]
       : [];
 
     const chain = [
       new GeminiProvider({ apiKey: this.config.get<string>('GEMINI_API_KEY') }),
-      new OpenAiProvider({ apiKey: this.config.get<string>('OPENAI_API_KEY') }),
-      new MistralProvider({ apiKey: this.config.get<string>('MISTRAL_API_KEY') }),
-      ...claudeChain,
+      ...claudeFallback,
     ];
 
     try {
@@ -79,7 +82,7 @@ export class ScannerLlmRouterService {
    */
   async call(params: LlmCallParams): Promise<{ content: string; providerId: string; costUsd: number; latencyMs: number; fallbackUsed: boolean }> {
     if (!this.router) {
-      throw new Error('ScannerLlmRouterService.call() — router disabled (check SCANNER_LLM_ROUTER_ENABLED + API keys)');
+      throw new Error('ScannerLlmRouterService.call() — router disabled (check SCANNER_LLM_ROUTER_ENABLED + GEMINI_API_KEY)');
     }
     const res = await this.router.call(params);
     return {
