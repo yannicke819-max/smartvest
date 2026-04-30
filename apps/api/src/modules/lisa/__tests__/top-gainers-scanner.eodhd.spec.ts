@@ -142,7 +142,12 @@ describe('fetchEodhdScreener — URL construction (P18c regression guard)', () =
     expect(decoded).not.toContain('limit=20');
   });
 
-  it('P19s+ — non-US exchanges (TSE, HK, KO, SS, SZ, …) build URL with UPPERCASE + change_p', async () => {
+  it('P19s++ HOTFIX — non-US exchanges build URL with UPPERCASE + NO 1d return filter', async () => {
+    // P19s++ (30/04/2026 08:10 UTC) — `change_p` n'est PAS un valid filter
+    // field per EODHD doc (c'est le nom dans la RÉPONSE seulement). Ça
+    // causait HTTP 422 sur LSE/MC/KO/HK :
+    //     {"errors":{"filters.1.field":["The selected filters.1.field is invalid."]}}
+    // Fix : DROP le filter 1d return pour non-US, post-filter client-side.
     const svc = makeService();
     const exchanges = ['TSE', 'HK', 'KO', 'SS', 'SZ', 'TO', 'AS', 'NSE', 'BSE', 'AU'];
     for (const ex of exchanges) {
@@ -150,10 +155,12 @@ describe('fetchEodhdScreener — URL construction (P18c regression guard)', () =
       await (svc as any).fetchEodhdScreener(ex, 'test-key');
       expect(capturedUrl).toBeDefined();
       const decoded = decodeURIComponent(capturedUrl!);
-      // P19s+ : exchange UPPERCASE, change_p (pas refund_1d_p) pour non-US
+      // Exchange UPPERCASE
       expect(decoded).toContain(`["exchange","=","${ex}"]`);
-      expect(decoded).toContain('["change_p",">",3]');
+      // P19s++ : pas de filter 1d return (ni change_p, ni refund_1d_p)
+      expect(decoded).not.toMatch(/\["change_p","[<>=]"/);
       expect(decoded).not.toMatch(/\["refund_1d_p","[<>=]"/);
+      // market_cap conservé (valid filter)
       expect(decoded).toContain('["market_capitalization",">",50000000]');
       expect(decoded).not.toMatch(/[?&]sort=/);
       expect(decoded).not.toContain('avgvol_50d');
