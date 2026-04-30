@@ -170,6 +170,16 @@ export class TopGainersScannerService implements OnModuleInit {
   /** P18e — Compteur cumulatif des candidats skip pour absence de persistence. */
   private skippedNoPersistenceCounter = 0;
 
+  /**
+   * P19s++ (30/04/2026 08:10 UTC HOTFIX) — Cache de fetchAllCandidates pour
+   * éviter le burn quota EODHD. Avant : UI poll /lisa/gainers-persistence-snapshot
+   * toutes les 60s × 11 exchanges = 660 calls/h juste pour 1 user. Avec
+   * cycle scanner 15min, le cache permet aux UI polls de partager la même
+   * fetch sans re-frapper EODHD.
+   */
+  private allCandidatesCache: { candidates: TopGainerCandidate[]; asOf: number } | null = null;
+  private readonly ALL_CANDIDATES_CACHE_TTL_MS = 15 * 60_000; // 15 min
+
   constructor(
     private readonly supabase: SupabaseService,
     private readonly lisa: LisaService,
@@ -510,6 +520,14 @@ export class TopGainersScannerService implements OnModuleInit {
    * Hors heures EU le scan est skip pour économiser EODHD et éviter les 422.
    */
   async fetchAllCandidates(now: Date = new Date()): Promise<TopGainerCandidate[]> {
+    // P19s++ — Cache hit (TTL 15min). Évite N×11 calls EODHD quand l'UI
+    // poll /lisa/gainers-persistence-snapshot toutes les 60s.
+    if (
+      this.allCandidatesCache
+      && now.getTime() - this.allCandidatesCache.asOf < this.ALL_CANDIDATES_CACHE_TTL_MS
+    ) {
+      return this.allCandidatesCache.candidates;
+    }
     const apiKey = this.config.get<string>('EODHD_API_KEY');
     const tasks: Promise<TopGainerCandidate[]>[] = [];
 
@@ -562,12 +580,17 @@ export class TopGainersScannerService implements OnModuleInit {
     // même ticker sur 2 codes d'exchange (AS/AMS, MC/BME) ou si plusieurs
     // sources retourneraient le même symbole.
     const seen = new Set<string>();
-    return merged.filter((c) => {
+    const deduped = merged.filter((c) => {
       const key = `${c.symbol}@${c.exchange ?? 'unknown'}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     });
+
+    // P19s++ — Cache fill (TTL 15min). Permet aux UI polls et au cron scanner
+    // de partager la même fetch sans re-frapper EODHD.
+    this.allCandidatesCache = { candidates: deduped, asOf: now.getTime() };
+    return deduped;
   }
 
   /**
@@ -600,39 +623,33 @@ export class TopGainersScannerService implements OnModuleInit {
    */
   private async fetchEodhdScreener(exchange: string, apiKey: string): Promise<TopGainerCandidate[]> {
     const exUpper = exchange.toUpperCase();
-    // P19s+ — Le filter field "change %1d" diffère entre marchés :
-    //   - US      : refund_1d_p (sans alias)
-    //   - non-US  : change_p (le seul disponible côté EODHD screener EU/Asie)
     const isUs = exUpper === 'US';
-    const changeField = isUs ? 'refund_1d_p' : 'change_p';
-    // P19s (29/04/2026 18:53 UTC) — Fix 422 sur exchanges non-US.
+    // P19s++ (30/04/2026 08:10 UTC HOTFIX) — Revert `change_p` filter qui
+    // causait HTTP 422 sur LSE/MC/KO/HK :
+    //     {"errors":{"filters.1.field":["The selected filters.1.field is invalid."]}}
+    // EODHD doc officielle confirme : `change_p` n'est PAS un valid filter
+    // field — c'est le nom dans la RÉPONSE seulement. Les seuls valid filter
+    // fields pour 1d return sont `refund_1d_p`, `refund_5d_p`, `refund_ytd_p`.
+    // Mais `refund_1d_p` ne semble pas avoir de données pour la plupart des
+    // marchés non-US.
     //
-    // Diagnostic via curl LIVE contre demo + observation Fly logs prod :
-    //   1. `avgvol_50d` n'est PAS un valid filter field — la doc
-    //      `stock-screener-data.md:52` est out-of-date. EODHD répond :
-    //        {"errors":{"filters.X.field":["The selected ... is invalid."]}}
-    //      → DROP du filter (post-filter volume géré côté `mapEodhdRow`).
-    //
-    //   2. Le format `&sort=field&order=d` (doc + P19o.4) déclenche le
-    //      Laravel validator EODHD :
-    //        {"errors":{"sort.0.direction":["The sort.0.direction field is required."]}}
-    //      Sur US (en prod ALL-IN-ONE) ça passe parfois silencieusement, sur
-    //      tous les autres exchanges (TSE/HK/KO/SS/SZ/TO/AS/NSE/BSE/AU) c'est
-    //      rejeté avec 422 → 0 candidats Asie/EU non-EU/Toronto.
-    //      → DROP de `sort` + `order` ; on trie client-side dans le snapshot
-    //        endpoint par changePct desc anyway.
-    //
-    //   3. Pour compenser la perte du tri EODHD-side (au cas où l'ordre
-    //      naturel ne soit pas changePct desc), on bump limit 20 → 100 (max
-    //      autorisé par la doc) pour garantir qu'on attrape les vrais top
-    //      gainers même si EODHD retourne dans un ordre arbitraire.
-    const filters = encodeURIComponent(JSON.stringify([
+    // Stratégie multi-exchange :
+    //   - US      : keep `refund_1d_p > 3` filter (validé prod)
+    //   - non-US  : DROP le filter 1d return entirely. Filtre seulement par
+    //               exchange + market_capitalization. Post-filter changePct
+    //               appliqué client-side via mapEodhdRow + filter ci-dessous
+    //               (la valeur change_p existe dans la RÉPONSE, juste pas
+    //               comme filter input).
+    const filtersList: Array<[string, string, string | number]> = [
       ['exchange', '=', exUpper],
-      [changeField, '>', 3],
-      ['market_capitalization', '>', 50_000_000],
-    ]));
+    ];
+    if (isUs) {
+      filtersList.push(['refund_1d_p', '>', 3]);
+    }
+    filtersList.push(['market_capitalization', '>', 50_000_000]);
+    const filters = encodeURIComponent(JSON.stringify(filtersList));
     const url = `https://eodhd.com/api/screener?api_token=${encodeURIComponent(apiKey)}&filters=${filters}&limit=100&offset=0&fmt=json`;
-    this.logger.debug(`[top-gainers] EODHD screener exchange=${exUpper} field=${changeField}`);
+    this.logger.debug(`[top-gainers] EODHD screener exchange=${exUpper} filters=${filtersList.length}`);
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
       if (!res.ok) {
@@ -646,9 +663,15 @@ export class TopGainersScannerService implements OnModuleInit {
       }
       const json = await res.json() as { data?: EodhdScreenerRow[] } | EodhdScreenerRow[];
       const rows: EodhdScreenerRow[] = Array.isArray(json) ? json : (json.data ?? []);
-      return rows
+      let mapped = rows
         .map((r) => this.mapEodhdRow(r, exUpper))
         .filter((c): c is TopGainerCandidate => c !== null);
+      // P19s++ — Post-filter client-side pour non-US (filter serveur dropped).
+      // Garde rows changePct > 3 cohérent avec filtre serveur côté US.
+      if (!isUs) {
+        mapped = mapped.filter((c) => (c.changePct ?? 0) > 3);
+      }
+      return mapped;
     } catch (e) {
       this.logger.debug(`[top-gainers] eodhd ${exUpper} fetch error: ${String(e).slice(0, 120)}`);
       return [];

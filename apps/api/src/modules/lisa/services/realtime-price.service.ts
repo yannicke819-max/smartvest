@@ -55,6 +55,18 @@ export class RealtimePriceService implements OnModuleDestroy {
   private eodhd24hCountAsOf = 0;
   private eodhdDailyLimit = EODHD_DAILY_FALLBACK_CAP;
   private eodhdExtraLimit = 0;
+  /**
+   * P19s++ HOTFIX (30/04/2026) — Track if the last refresh succeeded via
+   * EODHD /api/user (authoritative). When DB fallback is used, this is
+   * `false` and we treat the count as APPROXIMATIVE (may overcount due
+   * to retries/failures inflating eodhd_request_log).
+   *
+   * Bug observed prod 30/04 08:04 UTC : EODHD dashboard showed 13k actual
+   * usage but local DB counter said 100k → blocked all calls. Caused by
+   * eodhd_request_log inserting rows even on failed/retry calls, while
+   * EODHD only counts billable calls.
+   */
+  private eodhd24hCountAuthoritative = false;
 
   /** Sliding window des timestamps des appels EODHD sortants dans les
    *  dernières 60 s — pour bloquer avant de hit le rate limit 1000/min. */
@@ -268,10 +280,25 @@ export class RealtimePriceService implements OnModuleDestroy {
 
     // 2. Quota journalier — source prioritaire : /api/user (EODHD officiel)
     //    Fallback : count depuis eodhd_request_log si le call user échoue.
+    //
+    // P19s++ HOTFIX (30/04/2026 08:10 UTC) — DB fallback over-comptait
+    // (chaque retry/failure ajoute une row, mais EODHD ne compte que les
+    // billable calls). Résultat : compteur local 100k alors qu'EODHD voit
+    // 13k → blocage faux positif.
+    //
+    // Stratégie corrigée :
+    //   - Refresh API toutes les 60s (inchangé)
+    //   - Si API succeed → eodhd24hCountAuthoritative = true (truth source)
+    //   - Si API fail → KEEP LAST KNOWN GOOD VALUE (don't fall to DB count)
+    //   - DB count utilisé UNIQUEMENT au boot (premier call) si API down
+    //     → marqué non-authoritative et ne bloque jamais (garde-fou anti-faux-positif)
     if (now - this.eodhd24hCountAsOf > 60_000) {
       const refreshed = await this.refreshQuotaFromUserApi();
-      if (!refreshed) {
-        // Fallback DB count (calendaire 00:00 UTC)
+      if (refreshed) {
+        this.eodhd24hCountAuthoritative = true;
+      } else if (this.eodhd24hCountAsOf === 0) {
+        // Boot path : pas encore de valeur connue. DB count comme proxy
+        // initial (over-counting accepté ; sera corrigé au prochain refresh API).
         try {
           const nowDate = new Date(now);
           const startOfTodayUtc = new Date(Date.UTC(
@@ -285,10 +312,21 @@ export class RealtimePriceService implements OnModuleDestroy {
             .gte('timestamp', startOfTodayUtc);
           this.eodhd24hCount = count ?? 0;
           this.eodhd24hCountAsOf = now;
+          this.eodhd24hCountAuthoritative = false;
+          this.logger.warn(
+            `[quota] /api/user unreachable at boot, DB fallback count=${count ?? 0} `
+            + `(NON-AUTHORITATIVE, may overcount — won't block)`,
+          );
         } catch (e) {
           this.logger.warn(`Quota DB fallback failed: ${String(e).slice(0, 80)}`);
           return 'ok';
         }
+      } else {
+        // API failed but we have a previous value — keep it, log discrepancy.
+        // No update to eodhd24hCountAsOf so next call will retry the API.
+        this.logger.debug(
+          `[quota] /api/user refresh failed; keeping last known count=${this.eodhd24hCount}`,
+        );
       }
     }
 
@@ -296,11 +334,14 @@ export class RealtimePriceService implements OnModuleDestroy {
     const hardCapSafe = Math.floor(effectiveCap * 0.95); // 5% marge vs cap réel
     const warnThreshold = Math.floor(effectiveCap * 0.80);
 
-    if (this.eodhd24hCount >= hardCapSafe) {
+    // P19s++ HOTFIX — Bloque UNIQUEMENT si la valeur est authoritative
+    // (vient de /api/user EODHD officiel). Le DB count peut overcompter à
+    // cause des retries/failures, donc on ne bloque pas sur cette base.
+    if (this.eodhd24hCountAuthoritative && this.eodhd24hCount >= hardCapSafe) {
       this.logger.warn(`EODHD daily quota proche (${this.eodhd24hCount}/${effectiveCap}) — blocage`);
       return 'blocked';
     }
-    if (this.eodhd24hCount >= warnThreshold) return 'warn';
+    if (this.eodhd24hCountAuthoritative && this.eodhd24hCount >= warnThreshold) return 'warn';
     return 'ok';
   }
 

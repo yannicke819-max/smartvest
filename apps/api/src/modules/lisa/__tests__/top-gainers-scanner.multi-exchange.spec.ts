@@ -75,9 +75,10 @@ describe('fetchEodhdScreener — multi-exchange UPPERCASE + changeField (P19s+ r
     // Exchange filter doit contenir "LSE" (UPPERCASE), pas "lse"
     expect(decoded).toContain('"LSE"');
     expect(decoded).not.toContain('"lse"');
-    // changeField doit être 'change_p' pour non-US
-    expect(decoded).toContain('change_p');
+    // P19s++ HOTFIX : pas de filter 1d return pour non-US (rejected as
+    // invalid filter field by EODHD validator). Post-filter client-side.
     expect(decoded).not.toContain('refund_1d_p');
+    expect(decoded).not.toContain('change_p');
   });
 
   it('passes UPPERCASE exchange + refund_1d_p for US to EODHD screener', async () => {
@@ -88,7 +89,7 @@ describe('fetchEodhdScreener — multi-exchange UPPERCASE + changeField (P19s+ r
     // Exchange filter doit contenir "US"
     expect(decoded).toContain('"US"');
     expect(decoded).not.toContain('"us"');
-    // changeField doit rester 'refund_1d_p' pour US (back-compat)
+    // refund_1d_p est un valid filter field UNIQUEMENT pour US (validé prod)
     expect(decoded).toContain('refund_1d_p');
     expect(decoded).not.toContain('change_p');
   });
@@ -98,7 +99,9 @@ describe('fetchEodhdScreener — multi-exchange UPPERCASE + changeField (P19s+ r
     await (svc as any).fetchEodhdScreener('XETRA', 'test_key');
     const decoded = decodeURIComponent(capturedUrl!);
     expect(decoded).toContain('"XETRA"');
-    expect(decoded).toContain('change_p');
+    // P19s++ : pas de filter 1d return pour non-US
+    expect(decoded).not.toContain('refund_1d_p');
+    expect(decoded).not.toContain('change_p');
   });
 
   it.each([
@@ -110,12 +113,15 @@ describe('fetchEodhdScreener — multi-exchange UPPERCASE + changeField (P19s+ r
     ['to', 'TO'],   // Toronto
     ['as', 'AS'],   // Amsterdam
     ['nse', 'NSE'], // India NSE
-  ])('non-US exchange "%s" sent as "%s" with change_p filter', async (input, expected) => {
+  ])('non-US exchange "%s" sent as "%s" without 1d return filter (post-filter client-side)', async (input, expected) => {
     const svc = makeService();
     await (svc as any).fetchEodhdScreener(input, 'test_key');
     const decoded = decodeURIComponent(capturedUrl!);
     expect(decoded).toContain(`"${expected}"`);
-    expect(decoded).toContain('change_p');
+    // P19s++ : pas de filter 1d return (rejected by EODHD validator pour non-US)
     expect(decoded).not.toContain('refund_1d_p');
+    expect(decoded).not.toContain('change_p');
+    // market_capitalization filter conservé
+    expect(decoded).toContain('market_capitalization');
   });
 });
