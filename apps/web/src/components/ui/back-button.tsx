@@ -14,9 +14,10 @@ export function BackButton({ label = 'Retour', className = '' }: BackButtonProps
     <button
       type="button"
       onClick={() => router.back()}
-      className={`inline-flex items-center text-sm text-muted-foreground hover:text-foreground transition-colors ${className}`}
+      aria-label={label}
+      className={`inline-flex items-center min-h-[44px] py-2 pr-2 text-sm text-muted-foreground hover:text-foreground transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded ${className}`}
     >
-      <ArrowLeft className="mr-1.5 h-4 w-4" />
+      <ArrowLeft className="mr-1.5 h-4 w-4" aria-hidden />
       {label}
     </button>
   );
