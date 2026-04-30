@@ -3,10 +3,16 @@ import { NestFactory } from '@nestjs/core';
 import { Logger } from '@nestjs/common';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/all-exceptions.filter';
+import { BufferLogger } from './modules/admin/log-buffer.service';
 
 async function bootstrap() {
+  // P19x.6 (29/04/2026) — BufferLogger capture les Nest logs dans un ring
+  // buffer in-memory (5000 lignes, rolls over). Exposé via /admin/logs/recent
+  // pour grep des logs Fly sans flyctl auth (tooling user-side).
+  const bufferLogger = new BufferLogger();
   // CORS : autorise les headers custom (x-user-id envoyé par apiFetch).
   const app = await NestFactory.create(AppModule, {
+    logger: bufferLogger,
     cors: {
       origin: true,
       credentials: true,
