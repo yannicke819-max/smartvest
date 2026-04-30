@@ -2090,6 +2090,64 @@ export class MechanicalTradingService {
       entryFeeRefund = new Decimal(0);
     }
     const realizedPnl = rawPnl.minus(exitCost).plus(entryFeeRefund);
+
+    // P19x.1 (29/04/2026) — MIN_NET_PROFIT_USD guard avant `closed_target`.
+    //
+    // Bug observé en prod ce soir : 10 trades fermés "TP hit", win rate 0%,
+    // P&L cumulé -$36.53. Cause : les exits réactifs (MACD bearish à pnl
+    // ≥ 0.5%, P19x déjà mergé) + take-profit absolu (P&L ≥ 2.5-4%) peuvent
+    // matérialiser un gain BRUT minimal sur trades à petit notional, qui
+    // devient NÉGATIF après fees IBKR ($0.35 min × 2 sides = $0.70).
+    //
+    // Garde-fou : un closed_target ne doit JAMAIS résulter en net PnL négatif.
+    // Si net < MIN = max(2$, 0.5% × notional), on REFUSE le close et la
+    // position reste ouverte. Le prochain cycle re-évaluera (price peut
+    // bouger plus, ou le trailing/stop la fermera proprement).
+    //
+    // Pourquoi seulement closed_target : closed_stop matérialise une perte
+    // par design (protection drawdown) ; closed_invalidated refund les fees.
+    if (reason === 'closed_target') {
+      const minNetProfit = Decimal.max(
+        new Decimal(2),
+        notional.mul(0.005),  // 0.5% du notional
+      );
+      if (realizedPnl.lt(minNetProfit)) {
+        this.logger.warn(
+          `[MÉCANIQUE] Skip closed_target ${pos.symbol}: net=$${realizedPnl.toFixed(2)} < min=$${minNetProfit.toFixed(2)} ` +
+          `(notional=$${notional.toFixed(0)}, gross=$${rawPnl.toFixed(2)}, fees=$${exitCost.toFixed(2)}). Position kept open.`,
+        );
+        // Audit decision_log pour tracer ce que sinon serait silencieux côté UI
+        await this.decisionLog.append({
+          portfolioId: pos.portfolio_id as string,
+          kind: 'mechanical_close_skipped_min_profit',
+          summary: `[MÉCANIQUE] Refus closed_target ${pos.symbol}: net=$${realizedPnl.toFixed(2)} < min=$${minNetProfit.toFixed(2)} → garde ouvert`,
+          rationale: `Net PnL ${realizedPnl.toFixed(2)} USD inférieur au seuil min ${minNetProfit.toFixed(2)} USD (gross ${rawPnl.toFixed(2)} - fees ${exitCost.toFixed(2)}). Position kept open pour éviter de matérialiser une perte sur fake-TP.`,
+          payload: {
+            symbol: pos.symbol,
+            entry_price: pos.entry_price,
+            attempted_exit_price: exitPrice.toFixed(4),
+            attempted_reason: rationale,
+            gross_pnl_usd: rawPnl.toFixed(2),
+            exit_cost_usd: exitCost.toFixed(2),
+            net_pnl_usd: realizedPnl.toFixed(2),
+            min_net_profit_usd: minNetProfit.toFixed(2),
+            notional_usd: notional.toFixed(2),
+          },
+          triggeredBy: 'mechanical_cron',
+        }).catch(() => { /* non-bloquant */ });
+        return; // ⚠️ Position reste ouverte, pas d'UPDATE DB
+      }
+    }
+
+    // P19x.1 — Log structuré obligatoire à chaque close effectif (req user).
+    // Permet grep Fly logs pour audit : entry, exit, qty, fees, gross, net.
+    this.logger.log(
+      `[MÉCANIQUE_CLOSE] ${pos.symbol} status=${reason} ` +
+      `entry=${entryPrice.toFixed(4)} exit=${exitPrice.toFixed(4)} qty=${qty.toFixed(4)} ` +
+      `gross=$${rawPnl.toFixed(2)} fees_out=$${exitCost.toFixed(2)} ` +
+      `net=$${realizedPnl.toFixed(2)} notional=$${notional.toFixed(2)} ` +
+      `entry_cost=$${pos.estimated_entry_cost_usd ?? '?'}`,
+    );
     const pnlPct = realizedPnl.div(notional).mul(100).toNumber();
 
     const now = new Date().toISOString();
