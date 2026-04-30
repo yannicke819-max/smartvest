@@ -435,8 +435,18 @@ function PersistencePanel({ portfolioId }: { portfolioId: string }) {
                       <th className="text-right px-1 font-medium">15m</th>
                       <th className="text-right px-1 font-medium">30m</th>
                       <th className="text-right px-1 font-medium">1h</th>
-                      <th className="text-right pl-1 font-medium">Score</th>
-                      <th className="text-right pl-1 font-medium">Path</th>
+                      <th
+                        className="text-right pl-1 font-medium cursor-help"
+                        title="Persistence count : nombre de TFs avec change>0 / TFs disponibles. Ex: 6/6 = positif sur tous les 6 TFs (1m,5m,10m,15m,30m,1h)."
+                      >
+                        Score
+                      </th>
+                      <th
+                        className="text-right pl-1 font-medium cursor-help"
+                        title="Path quality : 🟢 smooth / 🟡 mixed / 🔴 choppy. Cf légende sous le tableau."
+                      >
+                        Path
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -466,6 +476,7 @@ function PersistencePanel({ portfolioId }: { portfolioId: string }) {
                   </tbody>
                 </table>
               </div>
+              <PathLegend />
             </div>
           )}
 
@@ -527,22 +538,42 @@ function Cell({ value }: { value: number | null }) {
 }
 
 /**
- * P9-UX ADDENDUM — Path quality badge avec tooltip (hover).
- * 🟢 smooth (efficiency≥0.7 + pullback≤1%)
- * 🟡 mixed
- * 🔴 choppy (efficiency<0.4 OU pullback>2%)
+ * P9-UX ADDENDUM + P19x.9 (29/04/2026) — Path quality badge avec tooltip enrichi.
+ * 🟢 smooth (efficiency≥0.7 + pullback≤1%)  : path valide → candidat éligible
+ * 🟡 mixed (entre les deux)                 : path partiel → certains TFs OK
+ * 🔴 choppy (efficiency<0.4 OU pullback>2%) : path bloqué → pump-and-dump rejeté
  */
 function PathBadge({ pq }: { pq: PathQualityByTf | null }) {
   if (!pq || !pq.overallSmoothness) {
-    return <span className="text-muted-foreground/50">—</span>;
+    return (
+      <span title="Aucune donnée de path quality (pas assez de candles)" className="text-muted-foreground/50 cursor-help">
+        —
+      </span>
+    );
   }
   const emoji =
     pq.overallSmoothness === 'smooth' ? '🟢'
     : pq.overallSmoothness === 'mixed' ? '🟡'
     : '🔴';
-  const tooltip = pq.overallEfficiency != null
-    ? `eff ${(pq.overallEfficiency * 100).toFixed(0)}% · ${pq.overallSmoothness}`
-    : pq.overallSmoothness;
+  // P19x.9 — Tooltip explicit selon kind
+  const labelByKind = {
+    smooth: 'Path valide — candidat éligible (eff≥70%, pullback≤1%)',
+    mixed:  'Path partiel — certains TFs alignés, autres bruyants',
+    choppy: 'Path bloqué — choppy (eff<40% OU pullback>2%) → pump-and-dump probable, rejeté par gate',
+  } as const;
+  const baseLabel = labelByKind[pq.overallSmoothness] ?? pq.overallSmoothness;
+  const effPart = pq.overallEfficiency != null
+    ? `\nEfficiency: ${(pq.overallEfficiency * 100).toFixed(0)}%`
+    : '';
+  const tfBreakdown = [
+    pq.tf5m && `5m:${pq.tf5m.smoothnessLabel}`,
+    pq.tf10m && `10m:${pq.tf10m.smoothnessLabel}`,
+    pq.tf15m && `15m:${pq.tf15m.smoothnessLabel}`,
+    pq.tf30m && `30m:${pq.tf30m.smoothnessLabel}`,
+    pq.tf1h && `1h:${pq.tf1h.smoothnessLabel}`,
+  ].filter(Boolean).join(' · ');
+  const tfPart = tfBreakdown ? `\nPer TF: ${tfBreakdown}` : '';
+  const tooltip = `${baseLabel}${effPart}${tfPart}`;
   return (
     <span title={tooltip} className="cursor-help">
       {emoji}
@@ -580,4 +611,61 @@ function formatPnl(usd: number): string {
   const sign = usd > 0 ? '+' : usd < 0 ? '−' : '';
   const abs = Math.abs(usd);
   return `${sign}$${abs.toFixed(2)}`;
+}
+
+/**
+ * P19x.9 (29/04/2026) — Légende inline pour la colonne "Path" du Top 20.
+ *
+ * User spec : "Légende inline sous le tableau Top 20 (3 badges avec texte).
+ * Tooltip au hover sur chaque rond expliquant la raison précise."
+ *
+ * Sémantique des badges :
+ *   🟢 VERT   = path valide       — candidat éligible, gates passés
+ *   🟡 JAUNE  = path partiel      — certains critères OK, autres bruyants
+ *   🔴 ROUGE  = path bloqué       — gate critique échoué, pump-and-dump probable
+ *
+ * Les seuils numériques :
+ *   smooth : pathEfficiency ≥ 0.7 ET pullbackDepth ≤ 1%
+ *   choppy : pathEfficiency < 0.4 OU pullbackDepth > 2%
+ *   mixed  : entre les deux
+ */
+function PathLegend() {
+  const items: Array<{ emoji: string; label: string; tooltip: string }> = [
+    {
+      emoji: '🟢',
+      label: 'Smooth',
+      tooltip: 'Path valide — efficiency≥70% + pullback≤1%. Candidat éligible : tendance propre, peu de retracements.',
+    },
+    {
+      emoji: '🟡',
+      label: 'Mixed',
+      tooltip: 'Path partiel — au moins 1 TF smooth ET au moins 1 TF noisy. Acceptable si gates persistence/efficacité passent.',
+    },
+    {
+      emoji: '🔴',
+      label: 'Choppy',
+      tooltip: 'Path bloqué — efficiency<40% OU pullback>2%. Pump-and-dump probable. Rejeté par le gate path quality.',
+    },
+  ];
+  return (
+    <div className="flex flex-wrap items-center gap-3 text-[10px] text-muted-foreground border-t pt-1.5">
+      <span className="font-medium">Path :</span>
+      {items.map((item) => (
+        <span
+          key={item.emoji}
+          className="inline-flex items-center gap-1 cursor-help"
+          title={item.tooltip}
+        >
+          <span>{item.emoji}</span>
+          <span>{item.label}</span>
+        </span>
+      ))}
+      <span
+        className="text-muted-foreground/70 italic cursor-help"
+        title="Score = persistenceCount/availableTFs. Ex: 6/6 = positif sur les 6 TFs (1m,5m,10m,15m,30m,1h). 3/5 = positif sur 3 des 5 TFs disponibles (1m souvent absent sur equities post-P19v)."
+      >
+        · Score = persist/total
+      </span>
+    </div>
+  );
 }
