@@ -319,8 +319,9 @@ export interface GenerateThesesRequest {
   /** P0-A — Budget journalier USD à appliquer au LlmRouter pour CET appel.
    *  Lu depuis lisa_session_configs.daily_cost_budget_usd côté caller. */
   budgetUsd?: number;
-  /** P0-A — Si true (default DB) : à 100% du budget, soft-warn + fallback
-   *  Haiku au lieu de throw. Lu depuis lisa_session_configs.cost_force_continue. */
+  /** P0-A + ADR-001 Phase 2 — Si true (default DB) : à 100% du budget, soft-warn
+   *  + continue Opus (audit-flagged over-budget). Si false : throw `BudgetExceededError`.
+   *  Lu depuis lisa_session_configs.cost_force_continue. */
   forceContinue?: boolean;
 }
 

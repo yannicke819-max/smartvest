@@ -79,18 +79,18 @@ Code mort à supprimer dans phase 4.
 
 | Phase | Scope | PR | Status |
 |---|---|---|---|
-| **Phase 0** | ADR-001 (ce document) | commit direct main | ⏳ |
-| **Phase 1** | Scanner gainers Gemini-primaire + flag activé en prod | PR dédiée, feature flag rollback | ⏳ |
-| **Phase 2** | News classification + summary tasks → Gemini | PR dédiée | ⏳ |
-| **Phase 3** | regime_classification + binary_decision + audit_explanation → Gemini ; suppression Sonnet/Haiku des MODEL_BY_TASK | PR dédiée | ⏳ |
-| **Phase 4** | Cleanup code mort (claude-sonnet-4-6, claude-haiku-4-5*, OpenAI provider, Mistral provider) | PR dédiée | ⏳ |
+| **Phase 0** | ADR-001 (ce document) | commit `a55de24` direct main | ✅ |
+| **Phase 1** | Scanner gainers Gemini-primaire + flag activé en prod | PR #148 squash `8bc094d` | ✅ |
+| **Phase 2** | Cleanup `LlmRouter` multi-task : `LlmTask` réduit à `'thesis_generation'`, `MODEL_BY_TASK` à 1 entrée Opus, `COST_PER_1M_TOKENS_*` à Opus only, fallback Haiku 80%/100% supprimé (remplacé par soft-warn + continue Opus), `ClaudeProvider` basé sur Opus (était Sonnet) per ADR §1.4. **Note** : aucun call site `news_classification`/`summary` câblé runtime — pas de migration, juste suppression de code mort + correction du fallback Haiku cassé après Phase 1 unset. | PR `feat/llm-arch-phase2-cleanup-dead-code` | ⏳ |
+| **Phase 3** | regime_classification + binary_decision + audit_explanation → Gemini si call sites apparaissent ; sinon **NO-OP** (déjà supprimés en Phase 2) | n/a | ☑️ inclus dans Phase 2 |
+| **Phase 4** | Cleanup `OpenAiProvider` + `MistralProvider` classes (code mort dans `@smartvest/ai-analyst/src/llm/providers/`) | PR dédiée | ⏳ |
 
 ## 4. Migration sans downtime
 
 Chaque phase est un **toggle réversible** :
 - Phase 1 : `SCANNER_LLM_ROUTER_ENABLED=true` (rollback : `=false`)
-- Phase 2 : `NEWS_LLM_PROVIDER=gemini` (rollback : `=claude` ; default avant migration)
-- Phase 3 : nouveaux flags `REGIME_LLM_PROVIDER`, `BINARY_LLM_PROVIDER`, `AUDIT_LLM_PROVIDER`
+- Phase 2 : pas de flag (cleanup code mort, pas de feature toggle). Rollback = `git revert`
+- Phase 3 : NO-OP (subsumé par Phase 2). Si futur call site Gemini ajouté, il passera par `MultiVendorLlmRouter`, pas par `LlmRouter`
 - Phase 4 : suppression code, plus de toggle. À ce stade, validation 7+ jours prod nécessaire
 
 ## 5. Annexes
@@ -116,10 +116,10 @@ Chaque phase est un **toggle réversible** :
 | `ANTHROPIC_API_KEY` | (set) | requis Opus + fallback ultime |
 | `GEMINI_API_KEY` | **à set Phase 1** | requis pour tout sauf thesis |
 | `SCANNER_LLM_ROUTER_ENABLED` | `false` → `true` Phase 1 | active routing scanner |
-| `NEWS_LLM_PROVIDER` | (à créer Phase 2) | `gemini` ou `claude` |
-| `REGIME_LLM_PROVIDER` | (à créer Phase 3) | idem |
-| `BINARY_LLM_PROVIDER` | (à créer Phase 3) | idem |
-| `AUDIT_LLM_PROVIDER` | (à créer Phase 3) | idem |
+| ~~`NEWS_LLM_PROVIDER`~~ | (Phase 2 a supprimé l'enum multi-task — flag inutile, pas de call site à toggler) | n/a |
+| ~~`REGIME_LLM_PROVIDER`~~ | (idem) | n/a |
+| ~~`BINARY_LLM_PROVIDER`~~ | (idem) | n/a |
+| ~~`AUDIT_LLM_PROVIDER`~~ | (idem) | n/a |
 | ~~`OPENAI_API_KEY`~~ | (à unset Phase 4) | code mort |
 | ~~`MISTRAL_API_KEY`~~ | (à unset Phase 4) | code mort |
 | ~~`CLAUDE_MODEL_SONNET`~~ | (à unset Phase 4) | code mort |

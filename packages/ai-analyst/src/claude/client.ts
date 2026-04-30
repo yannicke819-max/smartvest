@@ -34,12 +34,12 @@ export interface ClaudeCallOptions {
    *  relire `lisa_session_configs.daily_cost_budget_usd` à chaque cycle.
    *  Si undefined, fallback sur le budget constructor du LlmRouter. */
   budgetUsd?: number;
-  /** P0-A — Override per-call du flag soft-budget. À 100% du budget :
-   *  - `true` (default DB) : fallback Haiku + warn loggué
+  /** P0-A + ADR-001 Phase 2 — Override per-call du flag soft-budget. À 100% du budget :
+   *  - `true` (default DB) : soft warn + continue Opus (audit-flagged over-budget)
    *  - `false` : throw `BudgetExceededError`
-   *  Si undefined, fallback sur la config constructor du LlmRouter
-   *  (par défaut `false` pour préserver le comportement legacy PR #15
-   *  des call sites qui n'ont pas migré). */
+   *  Si undefined, fallback sur la config constructor du LlmRouter.
+   *  ADR-001 Phase 2 : plus de fallback Haiku (interdit), `forceContinue=true`
+   *  paie le dépassement léger plutôt que dégrader la qualité de la thèse. */
   forceContinue?: boolean;
 }
 
@@ -231,17 +231,20 @@ export class LisaClaudeClient {
    * cette méthode reste utile aux callers qui veulent un coût précis
    * incluant les économies cache_read/cache_write.
    *
-   * Pricing Sonnet 4.6 (à date) :
-   *  - Input : $3 / 1M tokens
-   *  - Output : $15 / 1M tokens
-   *  - Cache write : $3.75 / 1M tokens (1.25x input)
-   *  - Cache read : $0.30 / 1M tokens (0.1x input — économie ~90%)
+   * **ADR-001 Phase 2 (30/04/2026)** : `LisaClaudeClient` n'est utilisé que
+   * pour `thesis_generation` (Opus 4.7). Le pricing reflète Opus.
+   *
+   * Pricing Opus 4.7 (snapshot 30/04/2026) :
+   *  - Input : $15 / 1M tokens
+   *  - Output : $75 / 1M tokens
+   *  - Cache write : $18.75 / 1M tokens (1.25× input)
+   *  - Cache read : $1.50 / 1M tokens (0.1× input — économie ~90%)
    */
   static estimateCostUsd(usage: ClaudeCallResult['usage']): number {
-    const INPUT_PER_M = 3;
-    const OUTPUT_PER_M = 15;
-    const CACHE_WRITE_PER_M = 3.75;
-    const CACHE_READ_PER_M = 0.30;
+    const INPUT_PER_M = 15;
+    const OUTPUT_PER_M = 75;
+    const CACHE_WRITE_PER_M = 18.75;
+    const CACHE_READ_PER_M = 1.50;
 
     const nonCachedInput = usage.inputTokens;
     const cacheWrite = usage.cacheCreationInputTokens ?? 0;
