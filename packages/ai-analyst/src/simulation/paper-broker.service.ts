@@ -21,6 +21,28 @@ import type {
 } from './types';
 import { computeVenueFeeDetail, type VenueFeeBreakdown } from './venue-fees';
 
+/**
+ * P20 (30/04/2026) — Buffer multiplicatif fees → gain min requis pour ouvrir.
+ *
+ * Default 2.0 (= gain attendu au TP doit être ≥ 2× les fees round-trip).
+ * Configurable via env `FEES_AWARE_BUFFER`, clamp [1.0, 5.0].
+ *
+ * Justification valeur : les 9 losses J-7 incluent un closed_target SLV
+ * +0.171 % avec net -$0.92 — ratio gain/fees observé ~0.6×. Le seuil 2.0
+ * laisse une marge confortable pour slippage 5bps non comptabilisé +
+ * inflation des fees IBKR sur les petits volumes.
+ */
+export function resolveFeesAwareBuffer(): Decimal {
+  const raw = process.env.FEES_AWARE_BUFFER;
+  const DEFAULT_BUFFER = 2.0;
+  if (!raw) return new Decimal(DEFAULT_BUFFER);
+  const parsed = parseFloat(raw);
+  if (!Number.isFinite(parsed)) return new Decimal(DEFAULT_BUFFER);
+  // Clamp [1.0, 5.0] : 1.0 = pas de buffer (juste break-even), 5.0 = très conservateur.
+  const clamped = Math.max(1.0, Math.min(5.0, parsed));
+  return new Decimal(clamped);
+}
+
 export interface PriceQuote {
   symbol: string;
   price: string;  // decimal
@@ -167,6 +189,73 @@ export class PaperBrokerService {
       throw new Error(
         `openPosition rejected: entry fee ${estimatedCost.toFixed(2)} >= notional ${notional.toFixed(2)} (symbol=${expression.symbol})`,
       );
+    }
+
+    // P20 (30/04/2026) — FEES-AWARE TARGET guard.
+    // P20.2 (30/04/2026) — include slippage 5bps in roundTripFees calc.
+    //
+    // Bug observed J-7 (2026-04-23 → 2026-04-29) : 9 trades closed_target
+    // avec pct_move POSITIF (+0.003 % à +0.171 %) mais P&L NÉGATIF (-$0.92
+    // à -$5.67). Ex LMT @ $508, +0.019 % = +$0.10/share gross, fees
+    // round-trip ~$5.77 → net -$5.67.
+    //
+    // Cause : le TP configuré (en %) est inférieur au coût round-trip en %
+    // sur petits notionals. Le min commission IBKR ($0.35/side) + SEC fee
+    // sell + TAF rendent le break-even à 0.15-0.40 % selon notional.
+    //
+    // P20.2 ajoute slippage 5bps (entry + exit) dans le calcul :
+    //   roundTripFees = entry_venue_fees + entry_slippage_5bps
+    //                 + exit_venue_fees  + exit_slippage_5bps
+    // Cohérent avec mechanical-trading.closePosition qui charge slippageBps=5
+    // au close. Évite que SLV +0.171 % qty=39 (gain $4.30 vs venue fees
+    // $0.93 → ratio 4.6×) passe le guard alors que le slippage réel
+    // ($1.26 entry + $1.26 exit = $2.52 add) le rend net négatif.
+    //
+    // Fix : reject l'open si gain attendu au TP < BUFFER × round-trip fees+slip.
+    // Default BUFFER=2.0 (configurable via env FEES_AWARE_BUFFER, range
+    // 1.0..5.0). Skip si pas de takeProfitPrice (Lisa narrative sans TP) —
+    // le MIN_NET_PROFIT guard de mechanical-trading prend le relais au close.
+    if (cmd.takeProfitPrice) {
+      const tpPrice = new Decimal(cmd.takeProfitPrice);
+      const tentativeQty = notional.dividedBy(livePrice);
+      const direction = expression.direction as string;
+      const isLong = direction === 'long' || direction.startsWith('long_');
+      const exitSide: 'buy' | 'sell' = isLong ? 'sell' : 'buy';
+      const exitFeeBreakdown = computeVenueFeeDetail(
+        tentativeQty,
+        tpPrice,
+        expression.assetClass as string | undefined,
+        expression.preferredVenue as string | undefined,
+        exitSide,
+      );
+      // P20.2 — slippage 5bps × notional sur chaque side. Cohérent avec
+      // mechanical-trading.service.ts:1082 (entry) et :2087 (exit).
+      const SLIPPAGE_BPS = 5;
+      const entryNotional = tentativeQty.mul(livePrice);
+      const exitNotional = tentativeQty.mul(tpPrice);
+      const entrySlippage = entryNotional.mul(SLIPPAGE_BPS).div(10000);
+      const exitSlippage = exitNotional.mul(SLIPPAGE_BPS).div(10000);
+      const roundTripFees = estimatedCost
+        .plus(new Decimal(exitFeeBreakdown.total))
+        .plus(entrySlippage)
+        .plus(exitSlippage);
+      const expectedGain = isLong
+        ? tpPrice.minus(livePrice).mul(tentativeQty)
+        : livePrice.minus(tpPrice).mul(tentativeQty);
+
+      const buffer = resolveFeesAwareBuffer();
+      const requiredGain = roundTripFees.mul(buffer);
+
+      if (expectedGain.lt(requiredGain)) {
+        throw new Error(
+          `openPosition rejected by P20 fees-aware guard: expected_gain_at_TP=$${expectedGain.toFixed(2)} ` +
+          `< ${buffer.toFixed(2)} × round_trip_fees_with_slippage=$${requiredGain.toFixed(2)} ` +
+          `(entry=$${livePrice.toFixed(4)} TP=$${tpPrice.toFixed(4)} qty=${tentativeQty.toFixed(4)} ` +
+          `notional=$${notional.toFixed(2)} venue_fees=$${estimatedCost.plus(new Decimal(exitFeeBreakdown.total)).toFixed(2)} ` +
+          `slippage_5bps_RT=$${entrySlippage.plus(exitSlippage).toFixed(2)} symbol=${expression.symbol}). ` +
+          `Augmenter le TP ou le notional pour ouvrir cette position.`,
+        );
+      }
     }
 
     // Notional net après coût → quantité finale
