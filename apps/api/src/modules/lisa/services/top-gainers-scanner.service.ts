@@ -38,6 +38,12 @@ import {
   type PersistenceResult,
   isWithinSession,
 } from '@smartvest/ai-analyst';
+import {
+  EARLY_RETURN_REASONS,
+  type EarlyReturnReason,
+  type GainersScannerStatus,
+  type PerExchangeResult,
+} from './gainers-scanner-status.types';
 
 interface EodhdScreenerRow {
   code: string;
@@ -185,6 +191,155 @@ export class TopGainersScannerService implements OnModuleInit {
    */
   private allCandidatesCache: { candidates: TopGainerCandidate[]; asOf: number } | null = null;
   private readonly ALL_CANDIDATES_CACHE_TTL_MS = 15 * 60_000; // 15 min
+
+  // ─────────────────────────────────────────────────────────────────
+  // Observability — état diagnostique read-only exposé via
+  // GET /admin/gainers/scanner-status. N'influence pas la logique scanner.
+  // ─────────────────────────────────────────────────────────────────
+  private lastCycleStartedAt: Date | null = null;
+  private lastCycleCompletedAt: Date | null = null;
+  private lastSuccessfulCompleteAt: Date | null = null;
+  private lastEarlyReturn: { reason: EarlyReturnReason; at: Date; details?: string } | null = null;
+  private lastFetchAllCandidatesInfo: { count: number; fromCache: boolean; at: Date } | null = null;
+  private lastTopGainersSelected: { count: number; at: Date } | null = null;
+  private perExchangeLastResult = new Map<string, { count: number; lastError?: string; at: Date }>();
+  private lastPersistLogAttempt: { count: number; at: Date; error?: string } | null = null;
+  /** Ring buffer 24h des starts de cycle (pour count). */
+  private cyclesLast24h: Date[] = [];
+  /** Ring buffer 24h des early returns (pour breakdown by reason). */
+  private earlyReturnsLast24h: Array<{ reason: EarlyReturnReason; at: Date }> = [];
+
+  private recordCycleStart(): void {
+    const at = new Date();
+    this.lastCycleStartedAt = at;
+    this.cyclesLast24h.push(at);
+    this.pruneOld24h();
+  }
+
+  private recordCycleComplete(success: boolean): void {
+    const at = new Date();
+    this.lastCycleCompletedAt = at;
+    if (success) this.lastSuccessfulCompleteAt = at;
+  }
+
+  private recordEarlyReturn(reason: EarlyReturnReason, details?: string): void {
+    const at = new Date();
+    this.lastEarlyReturn = details !== undefined ? { reason, at, details } : { reason, at };
+    this.earlyReturnsLast24h.push({ reason, at });
+    this.pruneOld24h();
+  }
+
+  private recordFetchAllCandidates(count: number, fromCache: boolean): void {
+    this.lastFetchAllCandidatesInfo = { count, fromCache, at: new Date() };
+  }
+
+  private recordTopSelected(count: number): void {
+    this.lastTopGainersSelected = { count, at: new Date() };
+  }
+
+  private recordExchangeResult(exchange: string, count: number, error?: string): void {
+    const entry = error !== undefined
+      ? { count, lastError: error, at: new Date() }
+      : { count, at: new Date() };
+    this.perExchangeLastResult.set(exchange, entry);
+  }
+
+  private recordPersistLogAttempt(count: number, error?: string): void {
+    this.lastPersistLogAttempt = error !== undefined
+      ? { count, at: new Date(), error }
+      : { count, at: new Date() };
+  }
+
+  private pruneOld24h(): void {
+    const cutoff = Date.now() - 24 * 60 * 60_000;
+    this.cyclesLast24h = this.cyclesLast24h.filter((d) => d.getTime() >= cutoff);
+    this.earlyReturnsLast24h = this.earlyReturnsLast24h.filter((r) => r.at.getTime() >= cutoff);
+  }
+
+  /**
+   * Retourne le snapshot diagnostic complet pour /admin/gainers/scanner-status.
+   * Read-only. Exécute 1 SELECT light sur lisa_session_configs pour extraire
+   * la config courante des portfolios actifs.
+   */
+  async getStatus(): Promise<GainersScannerStatus> {
+    this.pruneOld24h();
+    const earlyReturnsByReason: Record<EarlyReturnReason, number> = EARLY_RETURN_REASONS
+      .reduce((acc, r) => ({ ...acc, [r]: 0 }), {} as Record<EarlyReturnReason, number>);
+    for (const r of this.earlyReturnsLast24h) {
+      earlyReturnsByReason[r.reason] = (earlyReturnsByReason[r.reason] ?? 0) + 1;
+    }
+
+    const { data: configRows } = await this.supabase
+      .getClient()
+      .from('lisa_session_configs')
+      .select('portfolio_id, gainers_cycle_minutes, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct')
+      .eq('strategy_mode', 'gainers')
+      .eq('autopilot_enabled', true)
+      .eq('kill_switch_active', false);
+
+    const activeIds = (configRows ?? []).map((r) => String(r.portfolio_id));
+
+    const perExchange: Record<string, PerExchangeResult> = {};
+    for (const [ex, info] of this.perExchangeLastResult.entries()) {
+      perExchange[ex] = {
+        count: info.count,
+        at: info.at.toISOString(),
+        ...(info.lastError !== undefined ? { lastError: info.lastError } : {}),
+      };
+    }
+
+    const scannerPause = (this.config.get<string>('SCANNER_PAUSE') ?? 'false').toLowerCase() === 'true';
+    const multiTfPause = (this.config.get<string>('MULTITF_PAUSE') ?? 'false').toLowerCase() === 'true';
+    const eodhdApiKeySet = !!this.config.get<string>('EODHD_API_KEY');
+
+    return {
+      lastTickAt: this.lastTickAt ? this.lastTickAt.toISOString() : null,
+      lastCycleStartedAt: this.lastCycleStartedAt ? this.lastCycleStartedAt.toISOString() : null,
+      lastCycleCompletedAt: this.lastCycleCompletedAt ? this.lastCycleCompletedAt.toISOString() : null,
+      lastEarlyReturn: this.lastEarlyReturn
+        ? {
+            reason: this.lastEarlyReturn.reason,
+            at: this.lastEarlyReturn.at.toISOString(),
+            ...(this.lastEarlyReturn.details !== undefined ? { details: this.lastEarlyReturn.details } : {}),
+          }
+        : null,
+      secrets: { scannerPause, multiTfPause, eodhdApiKeySet },
+      lastFetchAllCandidates: this.lastFetchAllCandidatesInfo
+        ? {
+            count: this.lastFetchAllCandidatesInfo.count,
+            fromCache: this.lastFetchAllCandidatesInfo.fromCache,
+            at: this.lastFetchAllCandidatesInfo.at.toISOString(),
+          }
+        : null,
+      lastTopGainersSelected: this.lastTopGainersSelected
+        ? {
+            count: this.lastTopGainersSelected.count,
+            at: this.lastTopGainersSelected.at.toISOString(),
+          }
+        : null,
+      perExchangeLastResult: perExchange,
+      lastPersistLogAttempt: this.lastPersistLogAttempt
+        ? {
+            count: this.lastPersistLogAttempt.count,
+            at: this.lastPersistLogAttempt.at.toISOString(),
+            ...(this.lastPersistLogAttempt.error !== undefined ? { error: this.lastPersistLogAttempt.error } : {}),
+          }
+        : null,
+      activeGainersPortfoliosCount: activeIds.length,
+      activeGainersPortfolioIds: activeIds,
+      currentConfigSnapshot: (configRows ?? []).map((r) => ({
+        portfolio_id: String(r.portfolio_id),
+        gainers_cycle_minutes: r.gainers_cycle_minutes != null ? Number(r.gainers_cycle_minutes) : null,
+        gainers_min_persistence_score: r.gainers_min_persistence_score != null ? Number(r.gainers_min_persistence_score) : null,
+        gainers_min_path_efficiency: r.gainers_min_path_efficiency != null ? Number(r.gainers_min_path_efficiency) : null,
+        gainers_default_tp_pct: r.gainers_default_tp_pct != null ? Number(r.gainers_default_tp_pct) : null,
+        gainers_default_sl_pct: r.gainers_default_sl_pct != null ? Number(r.gainers_default_sl_pct) : null,
+      })),
+      cyclesLast24h: this.cyclesLast24h.length,
+      earlyReturnsLast24hByReason: earlyReturnsByReason,
+      lastSuccessfulCompleteAt: this.lastSuccessfulCompleteAt ? this.lastSuccessfulCompleteAt.toISOString() : null,
+    };
+  }
 
   constructor(
     private readonly supabase: SupabaseService,
@@ -378,6 +533,7 @@ export class TopGainersScannerService implements OnModuleInit {
   }
 
   private async runScannerInner(): Promise<void> {
+    this.recordCycleStart();
     // P19v (30/04/2026 09:00 UTC) — SCANNER_PAUSE feature flag.
     // Émergency kill-switch sans deploy : `flyctl secrets set SCANNER_PAUSE=true`.
     // Pause le scanner cron + les calls EODHD screener associés. Permet d'éponger
@@ -386,6 +542,7 @@ export class TopGainersScannerService implements OnModuleInit {
     const scannerPaused = (this.config.get<string>('SCANNER_PAUSE') ?? 'false').toLowerCase() === 'true';
     if (scannerPaused) {
       this.logger.log('[top-gainers] SCANNER_PAUSE=true — cycle skipped');
+      this.recordEarlyReturn('scanner_paused');
       return;
     }
 
@@ -399,6 +556,7 @@ export class TopGainersScannerService implements OnModuleInit {
       .eq('kill_switch_active', false);
     if (dbErr) {
       this.logger.error(`[top-gainers] fetch configs (db) failed: ${dbErr.message}`);
+      this.recordEarlyReturn('configs_fetch_error', dbErr.message);
       return;
     }
 
@@ -416,6 +574,7 @@ export class TopGainersScannerService implements OnModuleInit {
         .eq('kill_switch_active', false);
       if (envErr) {
         this.logger.error(`[top-gainers] fetch configs (env fallback) failed: ${envErr.message}`);
+        this.recordEarlyReturn('configs_fetch_error', envErr.message);
         return;
       }
       configs = envConfigs ?? [];
@@ -431,6 +590,7 @@ export class TopGainersScannerService implements OnModuleInit {
         '[top-gainers] no active portfolio with strategy_mode=gainers AND autopilot_enabled=true — scanner cycle skipped. ' +
         'Activate via POST /lisa/mode/:portfolioId {mode:"gainers"} or set STRATEGY_MODE=top_gainers env.',
       );
+      this.recordEarlyReturn('no_active_portfolio');
       return;
     }
 
@@ -438,10 +598,12 @@ export class TopGainersScannerService implements OnModuleInit {
     const candidates = await this.fetchAllCandidates();
     if (candidates.length === 0) {
       this.logger.warn('[top-gainers] 0 candidate fetched — skip cycle');
+      this.recordEarlyReturn('no_candidates_fetched');
       return;
     }
 
     const top = selectTopGainers(candidates, 3);
+    this.recordTopSelected(top.length);
     this.logger.log(
       `[top-gainers] ${candidates.length} scanned → ${top.length} retained: ${top.map((t) => `${t.symbol}(${t.assetClass},${t.changePct.toFixed(1)}%,score=${t.score})`).join(', ')}`,
     );
@@ -449,7 +611,10 @@ export class TopGainersScannerService implements OnModuleInit {
     // Persist log entries pour les top retenus + filtered samples (audit)
     await this.persistLog(candidates, top);
 
-    if (top.length === 0) return;
+    if (top.length === 0) {
+      this.recordEarlyReturn('candidates_fetched_but_none_selected');
+      return;
+    }
 
     // P18 — LLM re-ranking (inert when SCANNER_LLM_ROUTER_ENABLED=false)
     const rankedTop = await this.rankCandidates(top);
@@ -473,6 +638,7 @@ export class TopGainersScannerService implements OnModuleInit {
         );
       }
     }
+    this.recordCycleComplete(true);
   }
 
   /**
@@ -558,6 +724,7 @@ export class TopGainersScannerService implements OnModuleInit {
       this.allCandidatesCache
       && now.getTime() - this.allCandidatesCache.asOf < this.ALL_CANDIDATES_CACHE_TTL_MS
     ) {
+      this.recordFetchAllCandidates(this.allCandidatesCache.candidates.length, true);
       return this.allCandidatesCache.candidates;
     }
     const apiKey = this.config.get<string>('EODHD_API_KEY');
@@ -570,10 +737,18 @@ export class TopGainersScannerService implements OnModuleInit {
       // fix UPPERCASE + change_p).
       for (const ex of NON_EU_EXCHANGES) {
         tasks.push(
-          this.fetchEodhdScreener(ex, apiKey).catch((e) => {
-            this.logger.warn(`[top-gainers] ${ex} failed: ${e?.message ?? String(e)}`);
-            return [];
-          }),
+          this.fetchEodhdScreener(ex, apiKey)
+            .then((rows) => {
+              this.recordExchangeResult(ex, rows.length);
+              return rows;
+            })
+            .catch((e) => {
+              const msg = e?.message ?? String(e);
+              this.logger.warn(`[top-gainers] ${ex} failed: ${msg}`);
+              this.recordExchangeResult(ex, 0, msg);
+              this.recordEarlyReturn('upstream_provider_error', `${ex}: ${msg.slice(0, 80)}`);
+              return [];
+            }),
         );
       }
 
@@ -601,7 +776,18 @@ export class TopGainersScannerService implements OnModuleInit {
     }
 
     // Crypto via Binance
-    tasks.push(this.fetchBinanceGainers().catch(() => []));
+    tasks.push(
+      this.fetchBinanceGainers()
+        .then((rows) => {
+          this.recordExchangeResult('BINANCE', rows.length);
+          return rows;
+        })
+        .catch((e) => {
+          const msg = e?.message ?? String(e);
+          this.recordExchangeResult('BINANCE', 0, msg);
+          return [];
+        }),
+    );
 
     const results = await Promise.allSettled(tasks);
     const merged = results
@@ -622,6 +808,7 @@ export class TopGainersScannerService implements OnModuleInit {
     // P19s++ — Cache fill (TTL 15min). Permet aux UI polls et au cron scanner
     // de partager la même fetch sans re-frapper EODHD.
     this.allCandidatesCache = { candidates: deduped, asOf: now.getTime() };
+    this.recordFetchAllCandidates(deduped.length, false);
     return deduped;
   }
 
@@ -1474,9 +1661,18 @@ export class TopGainersScannerService implements OnModuleInit {
         decision: 'filtered',
       });
     }
-    if (rows.length === 0) return;
+    if (rows.length === 0) {
+      this.recordPersistLogAttempt(0);
+      return;
+    }
     const { error } = await this.supabase.getClient().from('top_gainers_log').insert(rows);
-    if (error) this.logger.debug(`[top-gainers] persistLog failed: ${error.message}`);
+    if (error) {
+      this.logger.debug(`[top-gainers] persistLog failed: ${error.message}`);
+      this.recordPersistLogAttempt(rows.length, error.message);
+      this.recordEarlyReturn('persist_log_failed', error.message);
+    } else {
+      this.recordPersistLogAttempt(rows.length);
+    }
   }
 
   /**
