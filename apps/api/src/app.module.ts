@@ -30,6 +30,7 @@ import { StrategyOptimizerModule } from './modules/strategy-optimizer/optimizer.
 import { MonteCarloModule } from './modules/monte-carlo/monte-carlo.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { MeModule } from './modules/me/me.module';
+import { GainersModule } from './modules/gainers-scanner';
 
 @Module({
   imports: [
@@ -70,6 +71,7 @@ import { MeModule } from './modules/me/me.module';
     MonteCarloModule,
     AdminModule,
     MeModule,
+    GainersModule,
   ],
 })
 export class AppModule {}
