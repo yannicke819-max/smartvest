@@ -194,8 +194,9 @@ function computeAsiaFees(
   } else if (v === 'T' || v === 'TSE') {
     // Tokyo — 0.05% commission, no transaction tax
     commission = notional.mul(0.0005);
-  } else if (v === 'SS' || v === 'SZ') {
-    // China A-shares — 0.025% commission + 0.10% stamp duty sell only
+  } else if (v === 'SHG' || v === 'SHE' || v === 'SS' || v === 'SZ') {
+    // China A-shares (Shanghai SHG / Shenzhen SHE) — 0.025% commission + 0.10% stamp duty sell only.
+    // SS/SZ kept as backward-compat aliases (Yahoo Finance convention, legacy log entries).
     commission = notional.mul(0.00025);
     if (side === 'sell') {
       regulatory = notional.mul(0.001);

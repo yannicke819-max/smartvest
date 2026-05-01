@@ -104,7 +104,13 @@ const EU_EXCHANGES = ['LSE', 'XETRA', 'PA', 'SW', 'MI', 'MC', 'BME', 'AS', 'AMS'
 // (KOSPI .KO + KOSDAQ .KQ). Constat user dump SQL Supabase : 9/20 KO + 4/20
 // NSE + 1/20 AU = 70% des candidats Top 20 viennent d'Asie/Inde, mais KOSDAQ
 // (Kakao 035720.KQ, Naver, etc.) n'était pas scanné → trou de couverture.
-const NON_EU_EXCHANGES = ['US', 'TSE', 'HK', 'AU', 'KO', 'KQ', 'TO', 'NSE', 'BSE', 'SS', 'SZ'];
+//
+// P20a (01/05/2026) — Correction codes EODHD officiels (cf. exchanges-list doc) :
+//   SS  → SHG  (Shanghai Stock Exchange, suffix .SHG  — SS = Yahoo Finance convention)
+//   SZ  → SHE  (Shenzhen Stock Exchange, suffix .SHE  — SZ = Yahoo Finance convention)
+//   TSE → T    (Tokyo Stock Exchange,    suffix .T     — TSE était le MIC, pas le code EODHD)
+// Ref : vendor/eodhd-claude-skills/.../exchanges-list.md + symbol-format.md
+const NON_EU_EXCHANGES = ['US', 'T', 'HK', 'AU', 'KO', 'KQ', 'TO', 'NSE', 'BSE', 'SHG', 'SHE'];
 /** Watchlists EU dont la session_open_utc / session_close_utc gate l'EODHD scan. */
 const EU_WATCHLIST_NAMES = ['cac40', 'dax40', 'ftse100'];
 const CRYPTO_PAIRS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT', 'DOTUSDT', 'LINKUSDT', 'MATICUSDT'];

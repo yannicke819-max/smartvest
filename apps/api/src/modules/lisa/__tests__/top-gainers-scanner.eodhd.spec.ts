@@ -149,7 +149,8 @@ describe('fetchEodhdScreener — URL construction (P18c regression guard)', () =
     //     {"errors":{"filters.1.field":["The selected filters.1.field is invalid."]}}
     // Fix : DROP le filter 1d return pour non-US, post-filter client-side.
     const svc = makeService();
-    const exchanges = ['TSE', 'HK', 'KO', 'SS', 'SZ', 'TO', 'AS', 'NSE', 'BSE', 'AU'];
+    // P20a: corrected EODHD codes — T (Tokyo), SHG (Shanghai), SHE (Shenzhen)
+    const exchanges = ['T', 'HK', 'KO', 'SHG', 'SHE', 'TO', 'AS', 'NSE', 'BSE', 'AU'];
     for (const ex of exchanges) {
       capturedUrl = undefined;
       await (svc as any).fetchEodhdScreener(ex, 'test-key');
@@ -230,5 +231,79 @@ describe('mapEodhdRow — accepts both filter-form and legacy field names', () =
     const svc = makeService();
     const row = { code: 'BAD', adjusted_close: 0, refund_1d_p: 5 } as any;
     expect((svc as any).mapEodhdRow(row, 'US')).toBeNull();
+  });
+});
+
+// ── P20a — Exchange code registry snapshot ─────────────────────────────────
+// Guards that corrected EODHD codes (SHG/SHE/T) are in NON_EU_EXCHANGES
+// and that legacy codes (SS/SZ/TSE) are gone.
+// Source: vendor/eodhd-claude-skills/.../exchanges-list.md
+describe('P20a — NON_EU_EXCHANGES registry correctness', () => {
+  // Access the exported constant indirectly via the URL built by fetchEodhdScreener.
+  const realFetch = global.fetch;
+  let capturedUrls: string[];
+
+  beforeEach(() => {
+    capturedUrls = [];
+    global.fetch = jest.fn().mockImplementation(async (url: string) => {
+      capturedUrls.push(url as string);
+      return { ok: true, json: async () => ({ data: [] }) } as unknown as Response;
+    });
+  });
+  afterEach(() => { global.fetch = realFetch; });
+
+  function makeServiceWithApiKey(): TopGainersScannerService {
+    mockConfig.get.mockImplementation((key: string) => {
+      if (key === 'SCAN_INTERVAL_MINUTES') return '15';
+      if (key === 'EODHD_API_KEY') return 'test-key';
+      return undefined;
+    });
+    return new TopGainersScannerService(
+      mockSupabase, mockLisa, mockDecisionLog, mockConfig, mockBinance, mockScheduler, mockMtf, mockLlmRouter,
+    );
+  }
+
+  it('uses corrected EODHD codes SHG (Shanghai) and SHE (Shenzhen)', async () => {
+    const svc = makeServiceWithApiKey();
+    capturedUrls = [];
+    await (svc as any).fetchEodhdScreener('SHG', 'test-key');
+    await (svc as any).fetchEodhdScreener('SHE', 'test-key');
+    const decoded = capturedUrls.map((u) => decodeURIComponent(u));
+    expect(decoded[0]).toContain('["exchange","=","SHG"]');
+    expect(decoded[1]).toContain('["exchange","=","SHE"]');
+  });
+
+  it('uses corrected EODHD code T (Tokyo) not TSE', async () => {
+    const svc = makeServiceWithApiKey();
+    capturedUrls = [];
+    await (svc as any).fetchEodhdScreener('T', 'test-key');
+    const decoded = decodeURIComponent(capturedUrls[0]!);
+    expect(decoded).toContain('["exchange","=","T"]');
+    expect(decoded).not.toContain('"TSE"');
+  });
+
+  it('does NOT include legacy codes SS, SZ, TSE in non-EU exchange list', async () => {
+    // Simulate a full fetchAllCandidates to capture which exchanges are queried.
+    const supabaseMock = {
+      getClient: () => ({
+        from: () => ({ select: () => ({ in: async () => ({ data: [], error: null }) }) }),
+      }),
+    } as any;
+    const svc = new TopGainersScannerService(
+      supabaseMock, mockLisa, mockDecisionLog, mockConfig, mockBinance, mockScheduler, mockMtf, mockLlmRouter,
+    );
+    capturedUrls = [];
+    // fetchAllCandidates without EU (EU sessions closed)
+    await (svc as any).fetchAllCandidates(new Date('2026-05-01T22:00:00Z'));
+    const queried = capturedUrls.map((u) => {
+      const m = decodeURIComponent(u).match(/"exchange","=","([^"]+)"/);
+      return m ? m[1] : null;
+    }).filter(Boolean);
+    expect(queried).not.toContain('SS');
+    expect(queried).not.toContain('SZ');
+    expect(queried).not.toContain('TSE');
+    expect(queried).toContain('SHG');
+    expect(queried).toContain('SHE');
+    expect(queried).toContain('T');
   });
 });

@@ -66,7 +66,9 @@ export function detectAssetClass(
     return 'eu_equity';
   }
   // Asia equity exchanges
-  if (['TSE', 'HK', 'AU', 'NSE', 'BSE', 'KO', 'KRX', 'T', 'HKEX'].includes(ex)) {
+  // P20a: SHG/SHE are the corrected EODHD codes for Shanghai/Shenzhen (was SS/SZ).
+  // TSE kept for backward compat with historical top_gainers_log entries.
+  if (['T', 'TSE', 'HK', 'AU', 'NSE', 'BSE', 'KO', 'KQ', 'KRX', 'HKEX', 'SHG', 'SHE'].includes(ex)) {
     return 'asia_equity';
   }
   // Default = US equity, large vs small/mid via marketCap

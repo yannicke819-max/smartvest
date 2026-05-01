@@ -123,9 +123,9 @@ describe('fetchAllCandidates — EU session gating', () => {
     expect(exchanges.has('XETRA')).toBe(true);
     expect(exchanges.has('PA')).toBe(true);
     expect(exchanges.has('AMS')).toBe(true);
-    // Non-EU still scanned
+    // Non-EU still scanned (P20a: T = Tokyo, corrected from TSE)
     expect(exchanges.has('US')).toBe(true);
-    expect(exchanges.has('TSE')).toBe(true);
+    expect(exchanges.has('T')).toBe(true);
   });
 
   it('skips EU exchanges when all 3 EU sessions closed (e.g. 22:00 UTC)', async () => {
@@ -301,8 +301,9 @@ describe('fetchAllCandidates — merge dedup', () => {
         data = [{ code: 'NVDA', last_price: 800, refund_1d_p: 6.0, volume: 50_000_000, avgvol_50d: 40_000_000, market_capitalization: 2e12 }];
       } else if (decoded.includes('"exchange","=","PA"')) {
         data = [{ code: 'AIR.PA', last_price: 150, refund_1d_p: 4.2, volume: 1_000_000, avgvol_50d: 800_000, market_capitalization: 1e11 }];
-      } else if (decoded.includes('"exchange","=","TSE"')) {
-        data = [{ code: '7203.T', last_price: 2500, refund_1d_p: 5.5, volume: 5_000_000, avgvol_50d: 4_000_000, market_capitalization: 3e11 }];
+      } else if (decoded.includes('"exchange","=","T"')) {
+        // P20a: Tokyo uses code 'T' (suffix .T), not 'TSE'
+        data = [{ code: '7203', last_price: 2500, refund_1d_p: 5.5, volume: 5_000_000, avgvol_50d: 4_000_000, market_capitalization: 3e11 }];
       }
       return { ok: true, status: 200, json: async () => ({ data }), text: async () => '' } as unknown as Response;
     });
@@ -313,12 +314,13 @@ describe('fetchAllCandidates — merge dedup', () => {
     const symbols = candidates.map((c) => c.symbol);
     expect(symbols).toContain('NVDA');
     expect(symbols).toContain('AIR.PA');
-    expect(symbols).toContain('7203.T');
+    // P20a: screener returns bare code '7203', exchange 'T' (not 'TSE')
+    expect(symbols).toContain('7203');
 
     // Verify each candidate gets the correct asset class via detectAssetClass
     const nvda = candidates.find((c) => c.symbol === 'NVDA')!;
     const air = candidates.find((c) => c.symbol === 'AIR.PA')!;
-    const toyota = candidates.find((c) => c.symbol === '7203.T')!;
+    const toyota = candidates.find((c) => c.symbol === '7203')!;
     expect(detectAssetClass(nvda.symbol, nvda.exchange, nvda.marketCap)).toBe('us_equity_large');
     expect(detectAssetClass(air.symbol, air.exchange)).toBe('eu_equity');
     expect(detectAssetClass(toyota.symbol, toyota.exchange)).toBe('asia_equity');
