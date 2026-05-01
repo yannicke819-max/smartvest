@@ -366,9 +366,16 @@ function EquityChart({ equityCurve }: { equityCurve: EquityPoint[] }) {
   const x = (i: number) => (i / (equityCurve.length - 1)) * w;
   const y = (v: number) => h - ((v - min) / (max - min || 1)) * h;
   const path = equityCurve.map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(i)} ${y(p.equityUsd)}`).join(' ');
-  const last = equityCurve[equityCurve.length - 1];
-  const first = equityCurve[0];
+  const last = equityCurve[equityCurve.length - 1]!;
+  const first = equityCurve[0]!;
   const trendUp = last.equityUsd >= first.equityUsd;
+
+  // Sample up to 10 points for the screen-reader table fallback
+  const step = Math.max(1, Math.floor(equityCurve.length / 10));
+  const samplePoints = [
+    ...equityCurve.filter((_, i) => i % step === 0),
+    ...(equityCurve.length % step !== 0 ? [last] : []),
+  ];
 
   return (
     <div className="rounded-lg border p-5">
@@ -378,15 +385,42 @@ function EquityChart({ equityCurve }: { equityCurve: EquityPoint[] }) {
           ${first.equityUsd.toFixed(0)} → ${last.equityUsd.toFixed(0)}
         </span>
       </div>
-      <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-60 overflow-visible">
+      <svg
+        viewBox={`0 0 ${w} ${h}`}
+        className="w-full h-60 overflow-visible"
+        role="img"
+        aria-label={`Courbe d'équité du backtest : de ${first.equityUsd.toFixed(0)} $ le ${first.date} à ${last.equityUsd.toFixed(0)} $ le ${last.date}`}
+      >
+        <title>{`Évolution de l'équité : ${first.equityUsd.toFixed(0)} $ → ${last.equityUsd.toFixed(0)} $`}</title>
         <path
           d={path}
           fill="none"
           stroke={trendUp ? '#10b981' : '#ef4444'}
           strokeWidth={2}
+          aria-hidden="true"
         />
       </svg>
-      <div className="text-xs text-muted-foreground flex justify-between mt-1">
+
+      {/* Screen-reader fallback table */}
+      <table className="sr-only" aria-label="Données de la courbe d'équité">
+        <caption>Évolution de l'équité — points clés</caption>
+        <thead>
+          <tr>
+            <th scope="col">Date</th>
+            <th scope="col">Équité ($)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {samplePoints.map((p) => (
+            <tr key={p.date}>
+              <td>{p.date}</td>
+              <td>{p.equityUsd.toFixed(0)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <div className="text-xs text-muted-foreground flex justify-between mt-1" aria-hidden="true">
         <span>{first.date}</span>
         <span>{last.date}</span>
       </div>
