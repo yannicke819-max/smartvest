@@ -1,9 +1,11 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Rocket, TrendingUp, TrendingDown } from 'lucide-react';
+import { Rocket, TrendingUp, TrendingDown, Settings2 } from 'lucide-react';
 import {
   useGainersStatus,
+  useGainersConfig,
+  useUpdateGainersConfig,
   useOperatingMode,
   usePersistenceSnapshot,
   useUpdateGainersCycle,
@@ -234,8 +236,213 @@ export function GainersStatusTile({ portfolioId }: { portfolioId: string }) {
         </>
       )}
 
+      {/* P19x.2 fix — Paramètres scanner : TP/SL/persistence */}
+      <GainersConfigForm portfolioId={portfolioId} />
+
       {/* P8 + P9-UX — Multi-TF persistence snapshot */}
       <PersistencePanel portfolioId={portfolioId} />
+    </div>
+  );
+}
+
+/**
+ * P19x.2 fix — Formulaire paramètres scanner Gainers.
+ *
+ * Champs : gainers_default_tp_pct (0.1-50), gainers_default_sl_pct (0.1-20),
+ * gainers_min_persistence_score (0-1 ou null = global default 0.67).
+ *
+ * Lecture : GET /lisa/config/:portfolioId
+ * Écriture : POST /lisa/config/:portfolioId (body partiel — champs modifiés uniquement)
+ *
+ * Validation front alignée sur le backend :
+ *   TP : [0.1, 50]%, SL : [0.1, 20]%, persistence : [0, 1] ou vide (null)
+ *
+ * RR = TP/SL affiché live pendant la saisie.
+ * Feedback inline : success (vert 3s) / error (rouge persistant).
+ */
+function GainersConfigForm({ portfolioId }: { portfolioId: string }) {
+  const configQuery = useGainersConfig(portfolioId);
+  const mut = useUpdateGainersConfig(portfolioId);
+
+  const [open, setOpen] = useState(false);
+
+  // Form state — seeded from DB, updated locally
+  const [tp, setTp] = useState('');
+  const [sl, setSl] = useState('');
+  const [ps, setPs] = useState(''); // '' = null (use global default)
+
+  const [feedback, setFeedback] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null);
+
+  // Seed form when DB data arrives (only when panel is opened for the first time)
+  useEffect(() => {
+    if (!open || !configQuery.data) return;
+    setTp(configQuery.data.gainers_default_tp_pct != null
+      ? String(configQuery.data.gainers_default_tp_pct)
+      : '1.5');
+    setSl(configQuery.data.gainers_default_sl_pct != null
+      ? String(configQuery.data.gainers_default_sl_pct)
+      : '1.0');
+    setPs(configQuery.data.gainers_min_persistence_score != null
+      ? String(configQuery.data.gainers_min_persistence_score)
+      : '');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, configQuery.dataUpdatedAt]);
+
+  const tpNum = parseFloat(tp);
+  const slNum = parseFloat(sl);
+  const psNum = ps === '' ? null : parseFloat(ps);
+
+  const tpErr =
+    !tp || isNaN(tpNum) || tpNum < 0.1 || tpNum > 50
+      ? 'TP : 0.1 – 50 %'
+      : null;
+  const slErr =
+    !sl || isNaN(slNum) || slNum < 0.1 || slNum > 20
+      ? 'SL : 0.1 – 20 %'
+      : null;
+  const psErr =
+    ps !== '' && (isNaN(psNum!) || psNum! < 0 || psNum! > 1)
+      ? 'Score : 0 – 1 (ou vide = défaut 0.67)'
+      : null;
+
+  const rr = !tpErr && !slErr && slNum > 0 ? (tpNum / slNum).toFixed(2) : '—';
+  const canSave = !tpErr && !slErr && !psErr && !mut.isPending;
+
+  const handleSave = () => {
+    if (!canSave) return;
+    setFeedback(null);
+    mut.mutate(
+      {
+        gainers_default_tp_pct: tpNum,
+        gainers_default_sl_pct: slNum,
+        gainers_min_persistence_score: psNum,
+      },
+      {
+        onSuccess: () => {
+          setFeedback({ kind: 'ok', msg: 'Sauvegardé ✓' });
+          setTimeout(() => setFeedback(null), 3000);
+        },
+        onError: (err: unknown) => {
+          const msg = err instanceof Error ? err.message : 'Erreur serveur';
+          setFeedback({ kind: 'err', msg });
+        },
+      },
+    );
+  };
+
+  return (
+    <div className="rounded-md border bg-background/60">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between px-3 py-2 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+        aria-expanded={open}
+      >
+        <span className="flex items-center gap-1.5 font-medium uppercase tracking-wide">
+          <Settings2 className="h-3 w-3" />
+          Paramètres scanner
+        </span>
+        <span className="text-[10px]">{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div className="px-3 pb-3 space-y-3 border-t">
+          {configQuery.isLoading && (
+            <p className="text-xs text-muted-foreground pt-2">Chargement…</p>
+          )}
+
+          {!configQuery.isLoading && (
+            <>
+              <div className="grid grid-cols-2 gap-3 pt-2">
+                {/* TP */}
+                <div className="space-y-1">
+                  <label className="text-[10px] text-muted-foreground font-medium">
+                    Take-profit (%)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0.1"
+                    max="50"
+                    value={tp}
+                    onChange={(e) => setTp(e.target.value)}
+                    className="h-7 w-full rounded border bg-background px-2 text-xs"
+                    placeholder="1.5"
+                  />
+                  {tpErr && <p className="text-[10px] text-red-600">{tpErr}</p>}
+                </div>
+
+                {/* SL */}
+                <div className="space-y-1">
+                  <label className="text-[10px] text-muted-foreground font-medium">
+                    Stop-loss (%)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0.1"
+                    max="20"
+                    value={sl}
+                    onChange={(e) => setSl(e.target.value)}
+                    className="h-7 w-full rounded border bg-background px-2 text-xs"
+                    placeholder="1.0"
+                  />
+                  {slErr && <p className="text-[10px] text-red-600">{slErr}</p>}
+                </div>
+              </div>
+
+              {/* R/R computed */}
+              <p className="text-[10px] text-muted-foreground">
+                R/R calculé : <span className="font-medium tabular-nums">{rr}</span>
+                {rr !== '—' && Number(rr) < 1 && (
+                  <span className="text-amber-600"> ⚠ R/R &lt; 1 — risque supérieur au gain potentiel</span>
+                )}
+              </p>
+
+              {/* Min persistence score */}
+              <div className="space-y-1">
+                <label className="text-[10px] text-muted-foreground font-medium">
+                  Score persistence min (0 – 1, vide = défaut 0.67)
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="1"
+                  value={ps}
+                  onChange={(e) => setPs(e.target.value)}
+                  className="h-7 w-32 rounded border bg-background px-2 text-xs"
+                  placeholder="0.67"
+                />
+                {psErr && <p className="text-[10px] text-red-600">{psErr}</p>}
+                <p className="text-[10px] text-muted-foreground/70">
+                  Fraction de TFs positifs requis. Ex : 0.67 = 4/6 TFs en hausse.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleSave}
+                  disabled={!canSave}
+                  className="h-7 rounded bg-orange-600 px-3 text-xs font-medium text-white disabled:opacity-40 hover:bg-orange-700 transition-colors"
+                >
+                  {mut.isPending ? 'Sauvegarde…' : 'Sauvegarder'}
+                </button>
+                {feedback && (
+                  <p
+                    className={`text-[11px] font-medium ${
+                      feedback.kind === 'ok' ? 'text-emerald-600' : 'text-red-600'
+                    }`}
+                  >
+                    {feedback.msg}
+                  </p>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

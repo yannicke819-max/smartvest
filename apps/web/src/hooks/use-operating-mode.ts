@@ -180,3 +180,50 @@ export function useUpdateGainersCycle(portfolioId: string | null) {
     },
   });
 }
+
+/**
+ * P19x.2 fix — Lecture config gainers (TP/SL/persistence) depuis
+ * GET /lisa/config/:portfolioId. Utilisé pour pré-remplir le formulaire
+ * de configuration du scanner Gainers.
+ */
+export interface GainersConfigFields {
+  gainers_default_tp_pct: number | null;
+  gainers_default_sl_pct: number | null;
+  gainers_min_persistence_score: number | null;
+}
+
+export function useGainersConfig(portfolioId: string | null) {
+  return useQuery({
+    queryKey: ['gainers-config', portfolioId],
+    queryFn: async () => {
+      const raw = await apiFetch<Record<string, unknown>>(`/lisa/config/${portfolioId}`);
+      return {
+        gainers_default_tp_pct:
+          raw?.gainers_default_tp_pct != null ? Number(raw.gainers_default_tp_pct) : null,
+        gainers_default_sl_pct:
+          raw?.gainers_default_sl_pct != null ? Number(raw.gainers_default_sl_pct) : null,
+        gainers_min_persistence_score:
+          raw?.gainers_min_persistence_score != null
+            ? Number(raw.gainers_min_persistence_score)
+            : null,
+      } satisfies GainersConfigFields;
+    },
+    enabled: !!portfolioId,
+  });
+}
+
+export function useUpdateGainersConfig(portfolioId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (fields: Partial<GainersConfigFields>) =>
+      apiFetch<unknown>(`/lisa/config/${portfolioId}`, {
+        method: 'POST',
+        body: JSON.stringify(fields),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['gainers-status', portfolioId] });
+      qc.invalidateQueries({ queryKey: ['gainers-config', portfolioId] });
+      qc.invalidateQueries({ queryKey: ['lisa-config', portfolioId] });
+    },
+  });
+}
