@@ -15,6 +15,7 @@ import {
   type PatternAdoption,
 } from '@/hooks/use-bot-lab';
 import { usePortfolios } from '@/hooks/use-portfolio';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 
 export default function PatternsPage() {
   const [statusFilter, setStatusFilter] = useState<PatternStatus | 'all'>('all');
@@ -190,6 +191,7 @@ function PatternCard({
   const expectancy = parseFloat(pattern.expectancy_usd ?? '0');
   const adoptMut = useAdoptPattern();
   const deactivateMut = useDeactivateAdoption();
+  const [confirmDeactivate, setConfirmDeactivate] = useState(false);
 
   const handleAdopt = async (level: AdoptionLevel) => {
     if (!portfolioId) {
@@ -205,7 +207,12 @@ function PatternCard({
 
   const handleDeactivate = async () => {
     if (!currentAdoption) return;
-    if (!confirm(`Désactiver l'adoption ${currentAdoption.adoption_level} de ce pattern ?`)) return;
+    setConfirmDeactivate(true);
+  };
+
+  const doDeactivate = async () => {
+    if (!currentAdoption) return;
+    setConfirmDeactivate(false);
     try {
       await deactivateMut.mutateAsync({ adoptionId: currentAdoption.id, reason: 'user_deactivated' });
     } catch (e) {
@@ -342,6 +349,16 @@ function PatternCard({
           )}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={confirmDeactivate}
+        title="Désactiver cette adoption ?"
+        description={`Désactiver l'adoption ${currentAdoption?.adoption_level ?? ''} de ce pattern ?`}
+        confirmLabel="Désactiver"
+        dangerous
+        onConfirm={doDeactivate}
+        onCancel={() => setConfirmDeactivate(false)}
+      />
     </div>
   );
 }
