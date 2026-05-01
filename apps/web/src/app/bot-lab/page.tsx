@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { FlaskConical, Upload, Plus, Trash2, FileText, ArrowLeft, BarChart3, RefreshCw, TrendingUp } from 'lucide-react';
+import { EmptyState } from '@/components/states/empty-state';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceLine } from 'recharts';
 import {
   useBots,
@@ -136,9 +137,20 @@ function BotListView({ onSelectBot }: { onSelectBot: (botId: string) => void }) 
       )}
 
       {botsQuery.data?.bots.length === 0 && !showCreateForm && (
-        <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-          Aucun bot encore. Crée-en un et importe des trades CSV.
-        </div>
+        <EmptyState
+          icon={<FlaskConical className="h-10 w-10" />}
+          title="Aucune stratégie encore"
+          description="Créez une stratégie et importez vos trades CSV pour analyser ses performances."
+          action={
+            <button
+              type="button"
+              onClick={() => setShowCreateForm(true)}
+              className="text-sm text-primary underline underline-offset-4 hover:no-underline"
+            >
+              Créer ma première stratégie
+            </button>
+          }
+        />
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
