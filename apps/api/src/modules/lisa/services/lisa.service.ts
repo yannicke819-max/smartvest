@@ -272,6 +272,13 @@ export class LisaService {
       // P9-UX — scanner cycle per-portfolio + path quality gate (migration 0089)
       gainers_cycle_minutes: pick('gainers_cycle_minutes', 'gainersCycleMinutes', existing?.gainers_cycle_minutes ?? 15),
       gainers_min_path_efficiency: pick('gainers_min_path_efficiency', 'gainersMinPathEfficiency', existing?.gainers_min_path_efficiency ?? 0.5),
+      // P8 + P19x.2 — gates and TP/SL gainers config (migrations 0086 + 0093).
+      // Avant ce fix, ces 3 colonnes étaient lues par le scanner mais jamais
+      // écrites par upsertSessionConfig → toute saisie UI était silencieusement
+      // ignorée et la valeur DB restait coincée sur le default migration.
+      gainers_min_persistence_score: pick('gainers_min_persistence_score', 'gainersMinPersistenceScore', existing?.gainers_min_persistence_score ?? null),
+      gainers_default_tp_pct: pick('gainers_default_tp_pct', 'gainersDefaultTpPct', existing?.gainers_default_tp_pct ?? 1.5),
+      gainers_default_sl_pct: pick('gainers_default_sl_pct', 'gainersDefaultSlPct', existing?.gainers_default_sl_pct ?? 1.0),
     };
 
     // Validation des valeurs numériques pour renvoyer une 400 lisible plutôt
@@ -294,6 +301,32 @@ export class LisaService {
     validateReturnTarget('return_target_daily_pct', merged.return_target_daily_pct);
     validateReturnTarget('return_target_monthly_pct', merged.return_target_monthly_pct);
     validateReturnTarget('return_target_annual_pct', merged.return_target_annual_pct);
+
+    // P19x.2 — gainers TP/SL : DB CHECK constraints sont (0, 50] pour TP et
+    // (0, 20] pour SL (migration 0093). On valide côté API pour 400 lisible.
+    const validateGainersPct = (key: string, value: unknown, max: number): void => {
+      if (value == null) return;
+      const n = typeof value === 'string' ? parseFloat(value) : Number(value);
+      if (!Number.isFinite(n)) {
+        throw new BadRequestException(`${key} : valeur numérique invalide.`);
+      }
+      if (n <= 0 || n > max) {
+        throw new BadRequestException(`${key} : valeur ${n} hors plage acceptée (0, ${max}].`);
+      }
+    };
+    validateGainersPct('gainers_default_tp_pct', merged.gainers_default_tp_pct, 50);
+    validateGainersPct('gainers_default_sl_pct', merged.gainers_default_sl_pct, 20);
+    // gainers_min_persistence_score est une fraction [0, 1] — null = utilise default.
+    if (merged.gainers_min_persistence_score != null) {
+      const n = typeof merged.gainers_min_persistence_score === 'string'
+        ? parseFloat(merged.gainers_min_persistence_score as string)
+        : Number(merged.gainers_min_persistence_score);
+      if (!Number.isFinite(n) || n < 0 || n > 1) {
+        throw new BadRequestException(
+          `gainers_min_persistence_score : valeur ${merged.gainers_min_persistence_score} hors plage [0, 1].`,
+        );
+      }
+    }
 
     // Validation : auto_approve exige uniquement un portefeuille de simulation
     // (déjà vérifié plus haut). L'expiration est suggestive côté UI mais non
@@ -367,11 +400,18 @@ export class LisaService {
       error = retry.error;
     }
 
-    // P9-UX — fallback si migration 0089_gainers_cycle_minutes pas encore appliquée
-    if (error && /gainers_cycle_minutes|gainers_min_path_efficiency/i.test(error.message)) {
-      this.logger.warn('Colonnes gainers_cycle_minutes / gainers_min_path_efficiency absentes — retry sans ces champs');
-      const { gainers_cycle_minutes: _gc, gainers_min_path_efficiency: _gpe, ...mergedFallback } = merged;
-      void _gc; void _gpe;
+    // P9-UX — fallback si migration 0089/0093 pas encore appliquée
+    if (error && /gainers_cycle_minutes|gainers_min_path_efficiency|gainers_default_tp_pct|gainers_default_sl_pct|gainers_min_persistence_score/i.test(error.message)) {
+      this.logger.warn('Colonnes gainers_* absentes — retry sans ces champs');
+      const {
+        gainers_cycle_minutes: _gc,
+        gainers_min_path_efficiency: _gpe,
+        gainers_min_persistence_score: _gmp,
+        gainers_default_tp_pct: _gtp,
+        gainers_default_sl_pct: _gsl,
+        ...mergedFallback
+      } = merged;
+      void _gc; void _gpe; void _gmp; void _gtp; void _gsl;
       const retry = await this.supabase.getClient()
         .from('lisa_session_configs')
         .upsert(mergedFallback, { onConflict: 'portfolio_id' })
