@@ -160,6 +160,21 @@ export class LisaController {
 
     const supabase = this.supabase.getClient();
 
+    // Read TP/SL and maxPositions from DB (single read, reused below).
+    const { data: cfgRow } = await supabase
+      .from('lisa_session_configs')
+      .select('gainers_default_tp_pct, gainers_default_sl_pct, max_open_positions')
+      .eq('portfolio_id', portfolioId)
+      .maybeSingle();
+    const tpPct = cfgRow?.gainers_default_tp_pct != null
+      ? Math.max(0.1, Math.min(50, Number(cfgRow.gainers_default_tp_pct)))
+      : 1.5;
+    const slPct = cfgRow?.gainers_default_sl_pct != null
+      ? Math.max(0.1, Math.min(20, Number(cfgRow.gainers_default_sl_pct)))
+      : 1.0;
+    const rrRatio = parseFloat((tpPct / slPct).toFixed(2));
+    const maxPositions: number = cfgRow?.max_open_positions ?? 3;
+
     const { count: openCount } = await supabase
       .from('lisa_positions')
       .select('*', { count: 'exact', head: true })
@@ -206,7 +221,10 @@ export class LisaController {
       nextTickInSeconds,
       intervalMinutes,
       openPositions: openCount ?? 0,
-      maxPositions: 3,
+      maxPositions,
+      tpPct,
+      slPct,
+      rrRatio,
       sessionPnlUsd,
       lastCandidates,
     };
