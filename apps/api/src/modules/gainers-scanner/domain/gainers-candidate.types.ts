@@ -36,6 +36,10 @@ export interface GainersCandidateRaw {
   persistenceScore: number | null;
   /** Texte "X/N" depuis P8 (ex : "4/6"). */
   persistenceCount: string | null;
+  /** EMA50 daily — alimente le trend filter BLOC 1 (Golden Cross). */
+  ema50Daily: number | null;
+  /** EMA200 daily — alimente le trend filter BLOC 1 (Golden Cross). */
+  ema200Daily: number | null;
 }
 
 /** Résultat du scoring BLOC 1 : candidat qualifié ou rejeté. */
