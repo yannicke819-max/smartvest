@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { apiFetch } from '@/lib/api-client';
+import { AssetRiskLevel, levelFromMaxDrawdown } from '@/components/risk/asset-risk-level';
 
 interface MCStatistics {
   numPaths: number;
@@ -322,7 +323,14 @@ function ProbabilityCard({ stats, target, initial }: { stats: MCStatistics; targ
 function DistributionCard({ stats }: { stats: MCStatistics }) {
   return (
     <div className="rounded-lg border p-5">
-      <h2 className="font-medium mb-3">Distribution des résultats</h2>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="font-medium">Distribution des résultats</h2>
+        <AssetRiskLevel
+          level={levelFromMaxDrawdown(stats.maxDrawdownPct.p95)}
+          size="sm"
+          showShortHint
+        />
+      </div>
       <table className="w-full text-xs">
         <thead className="text-muted-foreground">
           <tr className="border-b">
