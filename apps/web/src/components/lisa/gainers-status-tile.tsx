@@ -285,7 +285,6 @@ function GainersConfigForm({ portfolioId }: { portfolioId: string }) {
     setPs(configQuery.data.gainers_min_persistence_score != null
       ? String(configQuery.data.gainers_min_persistence_score)
       : '');
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, configQuery.dataUpdatedAt]);
 
   const tpNum = parseFloat(tp);
