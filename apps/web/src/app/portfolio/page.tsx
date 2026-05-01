@@ -11,14 +11,22 @@ import { Button } from '@/components/ui/button';
 import { SkeletonCard } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/states/empty-state';
 import { ErrorState } from '@/components/states/error-state';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 
 export default function PortfolioPage() {
   const { data: portfolios, isLoading, error, refetch } = usePortfolios();
   const qc = useQueryClient();
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteDialog, setDeleteDialog] = useState<{ id: string; name: string } | null>(null);
 
   async function handleDelete(id: string, name: string) {
-    if (!confirm(`Supprimer "${name}" ? Cette action est irréversible.`)) return;
+    setDeleteDialog({ id, name });
+  }
+
+  async function confirmDelete() {
+    if (!deleteDialog) return;
+    const { id } = deleteDialog;
+    setDeleteDialog(null);
     setDeletingId(id);
     try {
       await deletePortfolio(id);
@@ -106,6 +114,16 @@ export default function PortfolioPage() {
           ))}
         </div>
       )}
+
+      <ConfirmDialog
+        open={deleteDialog !== null}
+        title="Supprimer le portefeuille"
+        description={deleteDialog ? `Supprimer "${deleteDialog.name}" ? Cette action est irréversible.` : ''}
+        confirmLabel="Supprimer"
+        onConfirm={() => void confirmDelete()}
+        onCancel={() => setDeleteDialog(null)}
+        dangerous
+      />
     </div>
   );
 }

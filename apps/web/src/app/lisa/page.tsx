@@ -34,6 +34,7 @@ import { AutopilotBudgetBadge } from '@/components/lisa/autopilot-budget-badge';
 import { LisaDecisionLog } from '@/components/lisa/decision-log';
 import { MechanicalAgentCard } from '@/components/lisa/mechanical-agent-card';
 import { OptionPositionsCard } from '@/components/lisa/option-positions-card';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 
 const PROFILE_LABELS: Record<SessionProfile, { label: string; description: string }> = {
   long_term_investor: {
@@ -171,6 +172,14 @@ export default function LisaPage() {
   const [selectedScenarios, setSelectedScenarios] = useState<Set<string>>(new Set());
   const [scenariosExpanded, setScenariosExpanded] = useState(true);
 
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string;
+    description: string;
+    confirmLabel?: string;
+    dangerous?: boolean;
+    onConfirm: () => void;
+  } | null>(null);
+
   const config = configQuery.data;
   const canGenerate = !!(config ?? localConfigSaved);
 
@@ -282,38 +291,7 @@ export default function LisaPage() {
     }
   }
 
-  async function handleSaveConfig() {
-    if (!selectedPortfolioId) return;
-
-    // Confirmation explicite la première fois qu'on active auto-approve
-    if (autopilotAutoApprove && !config?.autopilot_auto_approve) {
-      // Utilise le timestamp figé pour éviter tout décalage entre popup + save
-      let durationLine: string;
-      if (autopilotComputedExpiryMs === null) {
-        durationLine = '• Durée : SANS LIMITE (jusqu\'à ce que tu désactives manuellement).';
-      } else {
-        const durH = parseFloat(autopilotDurationHoursInput);
-        const clamped = Math.min(durH, 24);
-        const expiry = new Date(autopilotComputedExpiryMs);
-        durationLine = `• Durée : ${clamped} h → s'arrête automatiquement le ${expiry.toLocaleString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}.`;
-      }
-
-      const ok = confirm(
-        'ACTIVATION DU MODE AUTONOME\n\n'
-        + '• Lisa ouvrira et fermera des positions toute seule sans te demander.\n'
-        + `• Scan toutes les ${autopilotCycleMin} min.\n`
-        + durationLine + '\n'
-        + '• Simulation paper uniquement — aucune exécution réelle.\n'
-        + '• Tu peux désactiver à tout moment en décochant la case.\n\n'
-        + 'Confirmer ?',
-      );
-      if (!ok) {
-        setAutopilotAutoApprove(false);
-        return;
-      }
-    }
-
-    // Helper : parseFloat ou null si vide / NaN
+  async function _doSaveConfig() {
     const parseOrNull = (s: string): number | null => {
       const t = s.trim();
       if (t === '') return null;
@@ -336,7 +314,6 @@ export default function LisaPage() {
         return_target_monthly_pct: parseOrNull(returnTargetMonthly),
         return_target_annual_pct: parseOrNull(returnTargetAnnual),
         daily_cost_budget_usd: parseOrNull(dailyCostBudget),
-        // Pas d'expiration par défaut — l'utilisateur veut "no-touch" sans limite
         // Utilise le timestamp figé calculé au moment de la saisie user
         // (pas Date.now() courant qui aurait drift entre la saisie et le save).
         autopilot_expires_at: (!autopilotAutoApprove || autopilotComputedExpiryMs === null)
@@ -363,27 +340,75 @@ export default function LisaPage() {
     }
   }
 
+  function handleSaveConfig() {
+    if (!selectedPortfolioId) return;
+
+    // Confirmation explicite la première fois qu'on active auto-approve
+    if (autopilotAutoApprove && !config?.autopilot_auto_approve) {
+      // Utilise le timestamp figé pour éviter tout décalage entre popup + save
+      let durationLine: string;
+      if (autopilotComputedExpiryMs === null) {
+        durationLine = "• Durée : SANS LIMITE (jusqu'à ce que tu désactives manuellement).";
+      } else {
+        const durH = parseFloat(autopilotDurationHoursInput);
+        const clamped = Math.min(durH, 24);
+        const expiry = new Date(autopilotComputedExpiryMs);
+        durationLine = `• Durée : ${clamped} h → s'arrête automatiquement le ${expiry.toLocaleString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}.`;
+      }
+
+      setConfirmDialog({
+        title: 'Activation du mode autonome',
+        description:
+          '• Lisa ouvrira et fermera des positions toute seule sans te demander.\n'
+          + `• Scan toutes les ${autopilotCycleMin} min.\n`
+          + durationLine + '\n'
+          + '• Simulation paper uniquement — aucune exécution réelle.\n'
+          + '• Tu peux désactiver à tout moment en décochant la case.',
+        confirmLabel: 'Activer',
+        onConfirm: () => { setConfirmDialog(null); void _doSaveConfig(); },
+      });
+      return;
+    }
+
+    void _doSaveConfig();
+  }
+
   async function handleGenerate() {
     if (!selectedPortfolioId) return;
     await generateProposal.mutateAsync(userFocus.trim() || undefined);
     setUserFocus('');
   }
 
-  async function handleKillSwitch() {
+  function handleKillSwitch() {
     if (!selectedPortfolioId) return;
     const reason = killReason.trim() || 'Manual kill';
-    if (!confirm(`Fermer TOUTES les positions ? Raison : ${reason}`)) return;
-    await killSwitch.mutateAsync(reason);
-    setKillReason('');
+    setConfirmDialog({
+      title: 'Fermer toutes les positions',
+      description: `Fermer TOUTES les positions ?\nRaison : ${reason}`,
+      confirmLabel: 'Fermer tout',
+      dangerous: true,
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        await killSwitch.mutateAsync(reason);
+        setKillReason('');
+      },
+    });
   }
 
-  async function handleResetSimulation() {
+  function handleResetSimulation() {
     if (!selectedPortfolioId) return;
-    if (!confirm(
-      'Effacer TOUT le portefeuille simulé ? Cela supprime définitivement positions, '
-      + 'propositions, snapshots et décision log. Action irréversible.',
-    )) return;
-    await resetSim.mutateAsync();
+    setConfirmDialog({
+      title: 'Effacer le portefeuille simulé',
+      description:
+        'Effacer TOUT le portefeuille simulé ? Cela supprime définitivement positions, '
+        + 'propositions, snapshots et décision log. Action irréversible.',
+      confirmLabel: 'Effacer',
+      dangerous: true,
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        await resetSim.mutateAsync();
+      },
+    });
   }
 
   async function handleActivateAutonomousHunter() {
@@ -393,7 +418,7 @@ export default function LisaPage() {
       + 'SIMULATION uniquement — ouvre des positions paper sans confirmation à chaque cycle.',
       '4',
     );
-    if (hoursStr === null) return; // cancel
+    if (hoursStr === null) return;
 
     let expiresAt: string | null = null;
     const trimmed = hoursStr.trim();
@@ -410,27 +435,31 @@ export default function LisaPage() {
       ? `• Expire automatiquement dans ${trimmed}h`
       : `• Sans expiration — tourne jusqu'à ce que tu désactives manuellement`;
 
-    if (!confirm(
-      `Activer le mode chasse autonome ?\n\n`
-      + `• Lisa scanne le marché toutes les ${autopilotCycleMin || 15} min\n`
-      + `• Elle OUVRE automatiquement les positions qu'elle juge EV+\n`
-      + `• Elle COUPE sèchement les positions défavorables\n`
-      + `• Simulation paper uniquement — aucune exécution réelle\n`
-      + `• Kill-switch reste accessible à tout instant\n`
-      + expiryLine,
-    )) return;
-
-    await upsertConfig.mutateAsync({
-      autopilot_enabled: true,
-      autopilot_cycle_minutes: autopilotCycleMin || 15,
-      autopilot_auto_approve: true,
-      autopilot_expires_at: expiresAt,
-      autopilot_aggressive: true,
+    setConfirmDialog({
+      title: 'Activer le mode chasse autonome',
+      description:
+        `• Lisa scanne le marché toutes les ${autopilotCycleMin || 15} min\n`
+        + `• Elle OUVRE automatiquement les positions qu'elle juge EV+\n`
+        + `• Elle COUPE sèchement les positions défavorables\n`
+        + `• Simulation paper uniquement — aucune exécution réelle\n`
+        + `• Kill-switch reste accessible à tout instant\n`
+        + expiryLine,
+      confirmLabel: 'Activer',
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        await upsertConfig.mutateAsync({
+          autopilot_enabled: true,
+          autopilot_cycle_minutes: autopilotCycleMin || 15,
+          autopilot_auto_approve: true,
+          autopilot_expires_at: expiresAt,
+          autopilot_aggressive: true,
+        });
+        setAutopilotEnabled(true);
+        setAutopilotAutoApprove(true);
+        setAutopilotExpiresAt(expiresAt);
+        setAutopilotAggressive(true);
+      },
     });
-    setAutopilotEnabled(true);
-    setAutopilotAutoApprove(true);
-    setAutopilotExpiresAt(expiresAt);
-    setAutopilotAggressive(true);
   }
 
   async function handleDisableAutonomousHunter() {
@@ -1343,6 +1372,18 @@ export default function LisaPage() {
           </Button>
         </div>
       </div>
+
+      {confirmDialog && (
+        <ConfirmDialog
+          open
+          title={confirmDialog.title}
+          description={confirmDialog.description}
+          confirmLabel={confirmDialog.confirmLabel}
+          dangerous={confirmDialog.dangerous}
+          onConfirm={confirmDialog.onConfirm}
+          onCancel={() => setConfirmDialog(null)}
+        />
+      )}
     </div>
   );
 }
