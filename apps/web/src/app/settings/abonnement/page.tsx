@@ -2,6 +2,7 @@ import type { Route } from 'next';
 import Link from 'next/link';
 import { BackButton } from '@/components/ui/back-button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { HelpTip } from '@/components/ui/help-tip';
 import { FlaskConical, Sparkles } from 'lucide-react';
 
 export default function AbonnementPage() {
@@ -32,18 +33,45 @@ export default function AbonnementPage() {
           </div>
 
           <ul className="space-y-2 text-sm text-muted-foreground">
-            {[
-              'Portefeuilles de simulation illimités',
-              "Analyse IA via Lisa (sous quota d'API)",
-              'Données de marché en différé (15 min)',
-              'Guides utilisateur et glossaire',
-              'Export des données (RGPD)',
-            ].map((feature) => (
-              <li key={feature} className="flex items-start gap-2">
-                <span className="mt-0.5 text-emerald-500">✓</span>
-                {feature}
-              </li>
-            ))}
+            <li className="flex items-start gap-2">
+              <span className="mt-0.5 text-emerald-500">✓</span>
+              <span className="flex-1">Portefeuilles de simulation illimités</span>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="mt-0.5 text-emerald-500">✓</span>
+              <span className="flex flex-1 flex-wrap items-center gap-1">
+                Analyse IA via Lisa <span className="text-xs">(sous quota d'API)</span>
+                <HelpTip
+                  text="Chaque analyse Lisa consomme un budget LLM. Vous pouvez consulter votre consommation quotidienne dans /lisa et le plafond est paramétrable."
+                  glossarySlug="lisa"
+                  side="right"
+                />
+              </span>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="mt-0.5 text-emerald-500">✓</span>
+              <span className="flex flex-1 flex-wrap items-center gap-1">
+                Données de marché en différé (15 min)
+                <HelpTip
+                  text="Les cours affichés ont 15 minutes de retard sur les marchés temps réel. Pour le suivi long terme c'est sans impact ; pour du scalping intraday, ce délai est trop important — d'où le mode 'mode démo' sur les stratégies auto."
+                  side="right"
+                />
+              </span>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="mt-0.5 text-emerald-500">✓</span>
+              <span className="flex-1">Guides utilisateur et glossaire</span>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="mt-0.5 text-emerald-500">✓</span>
+              <span className="flex flex-1 flex-wrap items-center gap-1">
+                Export des données (RGPD)
+                <HelpTip
+                  text="Le RGPD garantit votre droit à récupérer toutes vos données personnelles au format JSON, ainsi qu'à demander leur suppression définitive. Voir Mon compte → Mes données."
+                  side="right"
+                />
+              </span>
+            </li>
           </ul>
 
           <div className="border-t pt-4">

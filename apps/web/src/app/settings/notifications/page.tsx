@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { BackButton } from '@/components/ui/back-button';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { HelpTip } from '@/components/ui/help-tip';
 import { useUserProfile } from '@/hooks/use-portfolio';
 import { createSupabaseBrowserClient } from '@/lib/supabase/client';
 import { useQueryClient } from '@tanstack/react-query';
@@ -14,16 +15,19 @@ const NOTIFICATION_OPTIONS = [
     key: 'email_alerts',
     label: 'Alertes de portefeuille',
     description: 'Recevez un email quand une alerte se déclenche (seuil de perte, objectif atteint).',
+    help: "Une alerte est un seuil que vous définissez (ex : prévenir si la valeur du portefeuille baisse de 5 %). Elle ne déclenche aucune action automatique — c'est juste un email d'information.",
   },
   {
     key: 'email_weekly_summary',
     label: 'Résumé hebdomadaire',
     description: 'Un récapitulatif de vos performances chaque lundi matin.',
+    help: "Performance de la semaine, top/flop positions, frais cumulés, écart vs votre objectif. Lecture rapide en moins d'une minute.",
   },
   {
     key: 'email_suggestions',
     label: 'Nouvelles suggestions Lisa',
     description: "Notification quand Lisa propose un scénario ou une analyse à valider.",
+    help: "Lisa est l'assistant IA SmartVest. Une suggestion est une proposition qui reste à valider manuellement — jamais une exécution automatique.",
   },
 ] as const;
 
@@ -95,26 +99,35 @@ export default function NotificationsPage() {
             <CardTitle className="text-sm font-medium">Préférences email</CardTitle>
           </CardHeader>
           <CardContent className="divide-y">
-            {NOTIFICATION_OPTIONS.map(({ key, label, description }) => (
+            {NOTIFICATION_OPTIONS.map(({ key, label, description, help }) => (
               <div key={key} className="flex items-start justify-between gap-4 py-3 first:pt-0 last:pb-0">
-                <div>
-                  <p className="text-sm font-medium">{label}</p>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-medium">{label}</p>
+                    <HelpTip text={help} side="right" />
+                  </div>
                   <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
                 </div>
+                {/* Touch target ≥44px: padding around the visible 20×36 switch */}
                 <button
                   type="button"
                   role="switch"
                   aria-checked={getChecked(key)}
+                  aria-label={label}
                   onClick={() => toggle(key)}
-                  className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 ${
-                    getChecked(key) ? 'bg-primary' : 'bg-input'
-                  }`}
+                  className="inline-flex h-11 w-12 shrink-0 cursor-pointer items-center justify-center rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                 >
                   <span
-                    className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-background shadow-lg transition-transform ${
-                      getChecked(key) ? 'translate-x-4' : 'translate-x-0'
+                    className={`relative inline-flex h-5 w-9 rounded-full border-2 border-transparent transition-colors ${
+                      getChecked(key) ? 'bg-primary' : 'bg-input'
                     }`}
-                  />
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-background shadow-lg transition-transform ${
+                        getChecked(key) ? 'translate-x-4' : 'translate-x-0'
+                      }`}
+                    />
+                  </span>
                 </button>
               </div>
             ))}
@@ -125,7 +138,7 @@ export default function NotificationsPage() {
       {error && <p className="text-sm text-destructive">{error}</p>}
       {saved && <p className="text-sm text-emerald-600">Préférences enregistrées.</p>}
 
-      <Button onClick={handleSave} disabled={saving || isLoading}>
+      <Button size="lg" onClick={handleSave} disabled={saving || isLoading}>
         {saving ? 'Enregistrement…' : 'Enregistrer'}
       </Button>
     </div>

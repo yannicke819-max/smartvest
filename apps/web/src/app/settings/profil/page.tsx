@@ -10,6 +10,7 @@ import { createSupabaseBrowserClient } from '@/lib/supabase/client';
 import { useQueryClient } from '@tanstack/react-query';
 import { RiskBadge } from '@/components/ui/risk-badge';
 import type { RiskProfile } from '@/components/ui/risk-badge';
+import { HelpTip } from '@/components/ui/help-tip';
 import { Skeleton } from '@/components/ui/skeleton';
 
 const EXPERIENCE_OPTIONS = [
@@ -103,7 +104,14 @@ export default function ProfilPage() {
           {profile?.risk_profile && (
             <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-sm font-medium">Profil de risque</CardTitle>
+                <CardTitle className="flex items-center gap-2 text-sm font-medium">
+                  Profil de risque
+                  <HelpTip
+                    text="Votre profil oriente les simulations proposées (allocation, drawdown toléré). Il n'est jamais une recommandation d'investissement."
+                    glossarySlug="profil-de-risque"
+                    side="right"
+                  />
+                </CardTitle>
               </CardHeader>
               <CardContent>
                 <RiskBadge
@@ -122,7 +130,13 @@ export default function ProfilPage() {
 
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-medium">Niveau d'expérience</CardTitle>
+              <CardTitle className="flex items-center gap-2 text-sm font-medium">
+                Niveau d'expérience
+                <HelpTip
+                  text="Cette information aide SmartVest à adapter ses explications. Elle ne change pas vos droits ni vos paramètres de simulation."
+                  side="right"
+                />
+              </CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
               {EXPERIENCE_OPTIONS.map(({ value, label, description }) => (

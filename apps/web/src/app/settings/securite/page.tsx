@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { BackButton } from '@/components/ui/back-button';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { HelpTip } from '@/components/ui/help-tip';
 import { createSupabaseBrowserClient } from '@/lib/supabase/client';
 import { ShieldCheck } from 'lucide-react';
 
@@ -101,7 +102,7 @@ export default function SecuritePage() {
           {error && <p className="text-sm text-destructive">{error}</p>}
           {saved && <p className="text-sm text-emerald-600">Mot de passe mis à jour.</p>}
 
-          <Button onClick={handleChangePassword} disabled={saving || !newPassword}>
+          <Button size="lg" onClick={handleChangePassword} disabled={saving || !newPassword}>
             {saving ? 'Mise à jour…' : 'Mettre à jour'}
           </Button>
         </CardContent>
@@ -109,13 +110,19 @@ export default function SecuritePage() {
 
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-sm font-medium">Sessions</CardTitle>
+          <CardTitle className="flex items-center gap-2 text-sm font-medium">
+            Sessions
+            <HelpTip
+              text="Une session = un appareil connecté à votre compte. Cliquer sur 'Se déconnecter partout' force une nouvelle authentification sur tous vos appareils — utile si vous avez perdu votre téléphone ou utilisé un ordinateur public."
+              side="right"
+            />
+          </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
           <p className="text-sm text-muted-foreground">
             Déconnectez-vous de toutes les sessions actives sur tous les appareils.
           </p>
-          <Button variant="outline" onClick={handleSignOutAll}>
+          <Button variant="outline" size="lg" onClick={handleSignOutAll}>
             Se déconnecter partout
           </Button>
         </CardContent>
