@@ -29,6 +29,7 @@ import { BacktestModule } from './modules/backtest/backtest.module';
 import { StrategyOptimizerModule } from './modules/strategy-optimizer/optimizer.module';
 import { MonteCarloModule } from './modules/monte-carlo/monte-carlo.module';
 import { AdminModule } from './modules/admin/admin.module';
+import { MeModule } from './modules/me/me.module';
 
 @Module({
   imports: [
@@ -68,6 +69,7 @@ import { AdminModule } from './modules/admin/admin.module';
     StrategyOptimizerModule,
     MonteCarloModule,
     AdminModule,
+    MeModule,
   ],
 })
 export class AppModule {}
