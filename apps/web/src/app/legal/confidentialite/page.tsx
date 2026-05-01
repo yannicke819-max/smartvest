@@ -96,6 +96,9 @@ export default function ConfidentialitePage() {
           <Link href={'/legal/cgu' as Route} className="text-primary underline underline-offset-4">
             Conditions générales
           </Link>
+          <Link href={'/legal/cookies' as Route} className="text-primary underline underline-offset-4">
+            Cookies
+          </Link>
         </div>
       </div>
     </div>

@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next';
 import './globals.css';
 import { Providers } from './providers';
 import { AppShell } from '@/components/layout/app-shell';
+import { CookieBanner } from '@/components/cookie-banner';
 
 export const metadata: Metadata = {
   title: 'SmartVest — Assistant personnel d\'investissement',
@@ -24,6 +25,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="min-h-screen antialiased">
         <Providers>
           <AppShell>{children}</AppShell>
+          <CookieBanner />
         </Providers>
       </body>
     </html>

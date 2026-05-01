@@ -87,6 +87,9 @@ export default function CguPage() {
           <Link href={'/legal/confidentialite' as Route} className="text-primary underline underline-offset-4">
             Politique de confidentialité
           </Link>
+          <Link href={'/legal/cookies' as Route} className="text-primary underline underline-offset-4">
+            Cookies
+          </Link>
         </div>
       </div>
     </div>
