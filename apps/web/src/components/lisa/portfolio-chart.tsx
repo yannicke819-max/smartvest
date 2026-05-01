@@ -238,7 +238,11 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
       )}
 
       {hasData && (
-        <div className="h-72 w-full">
+        <div
+          className="h-72 w-full"
+          role="img"
+          aria-label={`Évolution du capital sur ${WINDOW_LABELS[window]} : départ ${baselineValue.toFixed(0)} USD, valeur courante ${latestValue.toFixed(0)} USD, ${periodReturn >= 0 ? 'gain' : 'perte'} de ${Math.abs(periodReturn).toFixed(2)}%`}
+        >
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chartData} margin={{ top: 8, right: 12, bottom: 8, left: 8 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="currentColor" opacity={0.1} />
@@ -297,8 +301,40 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
           </ResponsiveContainer>
         </div>
       )}
+
+      {hasData && (
+        <table className="sr-only" aria-label="Données de la courbe d'équité">
+          <caption>{`Évolution du capital — ${WINDOW_LABELS[window]} (échantillon)`}</caption>
+          <thead>
+            <tr>
+              <th scope="col">Date</th>
+              <th scope="col">Valeur (USD)</th>
+              <th scope="col">Return (%)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sampleChartPoints(chartData).map((p) => (
+              <tr key={p.t}>
+                <td>{p.tFull}</td>
+                <td>{p.value.toFixed(2)}</td>
+                <td>{p.returnPct.toFixed(2)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
+}
+
+/** Sample up to 10 points from a chart series for screen-reader fallback. */
+function sampleChartPoints(points: ChartPoint[]): ChartPoint[] {
+  if (points.length <= 10) return points;
+  const step = Math.max(1, Math.floor(points.length / 10));
+  const sampled = points.filter((_, i) => i % step === 0);
+  const last = points[points.length - 1]!;
+  if (sampled[sampled.length - 1] !== last) sampled.push(last);
+  return sampled;
 }
 
 /**
