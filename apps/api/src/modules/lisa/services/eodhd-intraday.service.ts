@@ -127,9 +127,12 @@ export class EodhdIntradayService {
     const base = eodhdTicker.slice(0, lastDot);
     const suffix = eodhdTicker.slice(lastDot + 1).toUpperCase();
     switch (suffix) {
-      case 'SS':   return `${base}.SHG`;    // Shanghai Stock Exchange (scanner→EODHD)
-      case 'SZ':   return `${base}.SHE`;    // Shenzhen Stock Exchange (scanner→EODHD)
-      default:     return eodhdTicker;       // .US, .LSE, .XETRA, .PA, .HK, .TO, .NSE, .BSE, .KO (Korea), .KQ (KOSDAQ), .AU
+      // P20a backward-compat: scanner now uses SHG/SHE but legacy log entries may still carry SS/SZ.
+      case 'SS':   return `${base}.SHG`;    // Shanghai (Yahoo Finance legacy → EODHD)
+      case 'SZ':   return `${base}.SHE`;    // Shenzhen (Yahoo Finance legacy → EODHD)
+      // P20a: TSE was wrong scanner code for Tokyo; correct suffix is .T. Kept for legacy entries.
+      case 'TSE':  return `${base}.T`;      // Tokyo Stock Exchange (MIC alias → EODHD)
+      default:     return eodhdTicker;       // .US .LSE .XETRA .PA .HK .T .TO .NSE .BSE .KO .KQ .SHG .SHE .AU
     }
   }
 
