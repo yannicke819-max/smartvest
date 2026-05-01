@@ -131,6 +131,19 @@ export function GainersStatusTile({ portfolioId }: { portfolioId: string }) {
   const isGainersMode = modeQuery.data?.mode === 'gainers';
   const statusQuery = useGainersStatus(portfolioId, isGainersMode);
 
+  // Client-side countdown that ticks every second between backend polls (30s).
+  // Without this the displayed value freezes for 30s then jumps on each refetch.
+  const [countdown, setCountdown] = useState(0);
+  useEffect(() => {
+    if (statusQuery.data?.nextTickInSeconds != null) {
+      setCountdown(statusQuery.data.nextTickInSeconds);
+    }
+  }, [statusQuery.data?.nextTickInSeconds]);
+  useEffect(() => {
+    const id = setInterval(() => setCountdown((s) => Math.max(0, s - 1)), 1_000);
+    return () => clearInterval(id);
+  }, []);
+
   if (!isGainersMode) return null;
 
   const data = statusQuery.data;
@@ -154,7 +167,7 @@ export function GainersStatusTile({ portfolioId }: { portfolioId: string }) {
                 Prochain scan
               </p>
               <p className="text-lg font-semibold tabular-nums">
-                {formatCountdown(data.nextTickInSeconds)}
+                {formatCountdown(countdown)}
               </p>
               <CycleSelector
                 portfolioId={portfolioId}
@@ -163,8 +176,7 @@ export function GainersStatusTile({ portfolioId }: { portfolioId: string }) {
             </div>
             <Stat
               label="Positions ouvertes"
-              value={`${data.openPositions} / ${data.maxPositions}`}
-              hint={data.openPositions >= data.maxPositions ? 'Plein' : 'Slots disponibles'}
+              value={String(data.openPositions)}
             />
             <Stat
               label="PnL session"
