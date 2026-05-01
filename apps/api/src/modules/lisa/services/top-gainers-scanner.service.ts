@@ -1249,7 +1249,7 @@ export class TopGainersScannerService implements OnModuleInit {
       // P8 — best-effort persist du snapshot persistance dans paper_trades
       // (forward-compat avec P9 qui ajoutera features_at_entry / p_win).
       if (persistence) {
-        await this.persistPaperTrade(userId, portfolioId, cand, openedPos, persistence)
+        await this.persistPaperTrade(userId, portfolioId, cand, openedPos, persistence, effectiveTp, effectiveSl)
           .catch((e) =>
             this.logger.debug(`[top-gainers] persistPaperTrade ${cand.symbol} failed: ${String(e).slice(0, 120)}`),
           );
@@ -1265,6 +1265,8 @@ export class TopGainersScannerService implements OnModuleInit {
   /**
    * P8 — Insert append-only dans paper_trades. Ne fait pas échouer le flow
    * principal en cas de pb (best effort, table optionnelle ce PR).
+   * tpPct/slPct : valeurs effectives depuis DB (gainers_default_tp/sl_pct),
+   * alignées avec les stops actifs dans openTopGainerPosition.
    */
   private async persistPaperTrade(
     userId: string,
@@ -1272,11 +1274,13 @@ export class TopGainersScannerService implements OnModuleInit {
     cand: TopGainerCandidate & { score: number; assetClass: TopGainerAssetClass },
     openedPos: { id: string; entryPrice?: string | number; entryNotionalUsd?: string | number },
     persistence: PersistenceResult,
+    tpPct: number,
+    slPct: number,
   ): Promise<void> {
     const entryPrice = Number(openedPos.entryPrice ?? cand.close);
     const sizeUsd = Number(openedPos.entryNotionalUsd ?? 0);
-    const stopLoss = entryPrice * (1 - 0.015);
-    const takeProfit = entryPrice * (1 + 0.03);
+    const stopLoss = entryPrice * (1 - slPct / 100);
+    const takeProfit = entryPrice * (1 + tpPct / 100);
     const tfChanges = {
       tf1m: persistence.tf1m,
       tf5m: persistence.tf5m,

@@ -45,6 +45,10 @@ export interface GainersStatus {
   intervalMinutes: number;
   openPositions: number;
   maxPositions: number;
+  /** TP/SL effectifs lus depuis lisa_session_configs (DB), fallback 1.5/1.0 si absent. */
+  tpPct: number;
+  slPct: number;
+  rrRatio: number;
   sessionPnlUsd: number;
   lastCandidates: Array<{ symbol: string; changePct: number; score: number }>;
 }
