@@ -42,6 +42,14 @@ jobs:
         # une source casse — bloque le merge auto avant deploy Fly.
         run: npx tsc -b
 
+      - name: Web build (catches ESLint errors before Vercel)
+        # Post-mortem 2026-05-01 : un `} catch {}` vide a passé tsc + Jest mais
+        # cassé `next build` côté Vercel (ESLint no-empty error), bloquant
+        # 2h+ la prod. Cette étape réplique exactement ce que Vercel exécute,
+        # côté CI GitHub, pour échouer AVANT que Vercel ne voie le commit.
+        # Cf. docs/postmortems/2026-05-01-vercel-eslint-blocker.md
+        run: npm run build --workspace=@smartvest/web
+
   test:
     name: Jest unit tests
     runs-on: ubuntu-latest
