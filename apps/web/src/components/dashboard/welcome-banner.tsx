@@ -4,6 +4,7 @@ import type { Route } from 'next';
 import Link from 'next/link';
 import { useState, useEffect } from 'react';
 import { X, BookOpen, FlaskConical, Sparkles, ChevronRight } from 'lucide-react';
+import { GLOSSARY_TERMS } from '@/lib/glossary-terms';
 
 const STORAGE_KEY = 'smartvest_welcome_dismissed_v1';
 
@@ -93,7 +94,7 @@ export function WelcomeBanner() {
           href={'/help/glossaire' as Route}
           className="text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
         >
-          Consulter le glossaire (42 termes)
+          Consulter le glossaire ({GLOSSARY_TERMS.length} termes)
         </Link>
         <button
           type="button"
