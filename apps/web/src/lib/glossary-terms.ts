@@ -383,6 +383,368 @@ export const GLOSSARY_TERMS: GlossaryTerm[] = [
     related: ['risque-de-marche', 'correlation'],
     category: 'strategie',
   },
+
+  // ── Sprint 2 — Complément glossaire grand public (ADR-002 §3) ────
+  // Termes finance / fiscalité / produits
+  {
+    slug: 'pea',
+    term: 'PEA (Plan d\'Épargne en Actions)',
+    definition:
+      "Enveloppe fiscale française permettant d'investir en actions européennes. Après 5 ans de détention, les plus-values sont exonérées d'impôt (hors prélèvements sociaux 17,2 %).",
+    example: 'PEA ouvert en 2020, retrait en 2025 : 10 000 € de plus-value taxée uniquement à 17,2 % au lieu de 30 % en CTO.',
+    related: ['cto', 'plus-value', 'flat-tax'],
+    category: 'finance',
+  },
+  {
+    slug: 'cto',
+    term: 'CTO (Compte Titres Ordinaire)',
+    definition:
+      "Compte d'investissement sans avantage fiscal mais sans contrainte (tous types d'actifs, tous marchés mondiaux). Les gains sont taxés à 30 % (flat tax).",
+    example: 'CTO chez votre banque ou broker : permet d\'acheter Apple, Nvidia, ETF S&P 500, crypto-ETN, etc.',
+    related: ['pea', 'flat-tax'],
+    category: 'finance',
+  },
+  {
+    slug: 'assurance-vie',
+    term: 'Assurance-vie (AV)',
+    definition:
+      "Enveloppe fiscale et successorale française. Après 8 ans, les retraits bénéficient d'un abattement annuel (4 600 € seul, 9 200 € couple). Permet aussi de transmettre hors succession dans certaines limites.",
+    example: 'AV ouverte en 2017, retrait en 2026 : 8 000 € de gains exonérés grâce à l\'abattement.',
+    related: ['per-retraite', 'pea'],
+    category: 'finance',
+  },
+  {
+    slug: 'per-retraite',
+    term: 'PER (Plan d\'Épargne Retraite)',
+    definition:
+      "Enveloppe fiscale dédiée à la préparation de la retraite. Versements déductibles du revenu imposable, capital bloqué jusqu'à la retraite (sauf cas de déblocage anticipé).",
+    example: 'Versement de 5 000 € sur PER avec TMI 30 % : économie d\'impôt immédiate de 1 500 €. Capital récupéré à 67 ans.',
+    related: ['assurance-vie'],
+    category: 'finance',
+  },
+  {
+    slug: 'flat-tax',
+    term: 'Flat tax (PFU)',
+    definition:
+      "Prélèvement Forfaitaire Unique français de 30 % sur les revenus du capital (12,8 % impôt + 17,2 % prélèvements sociaux). S'applique par défaut hors enveloppes spécifiques (PEA, AV).",
+    example: 'Plus-value de 1 000 € sur CTO : 300 € de flat tax = 700 € net.',
+    related: ['pea', 'cto', 'plus-value'],
+    category: 'finance',
+  },
+  {
+    slug: 'ifu',
+    term: 'IFU (Imprimé Fiscal Unique)',
+    definition:
+      "Document récapitulatif fourni chaque année par votre broker ou banque (avant fin février) listant tous vos revenus de capitaux mobiliers de l'année précédente. Sert à remplir votre déclaration de revenus.",
+    example: 'IFU 2026 reçu en février : récapitule dividendes encaissés et plus/moins-values réalisées en 2025.',
+    related: ['flat-tax', 'plus-value'],
+    category: 'finance',
+  },
+  {
+    slug: 'fifo',
+    term: 'FIFO (First In, First Out)',
+    definition:
+      "Méthode de calcul des plus-values utilisée par défaut en France : on considère que les premières actions achetées sont les premières vendues. Détermine le prix de revient en cas de ventes partielles.",
+    example: '10 actions à 50 € puis 10 à 100 €. Vente de 10 actions à 120 € → FIFO : prix de revient 50 € → plus-value 70 €/action.',
+    related: ['lifo', 'plus-value'],
+    category: 'finance',
+  },
+  {
+    slug: 'lifo',
+    term: 'LIFO (Last In, First Out)',
+    definition:
+      "Méthode alternative : on considère que les dernières actions achetées sont les premières vendues. Non utilisée en France pour la fiscalité, mais courante en comptabilité d'entreprise.",
+    example: '10 actions à 50 € puis 10 à 100 €. Vente de 10 actions à 120 € → LIFO : prix de revient 100 € → plus-value 20 €/action.',
+    related: ['fifo'],
+    category: 'finance',
+  },
+  {
+    slug: 'coupon',
+    term: 'Coupon',
+    definition:
+      "Intérêt périodique versé par une obligation à son détenteur. Exprimé en pourcentage du nominal et payé en général chaque semestre ou chaque année jusqu'à l'échéance.",
+    example: 'Obligation 1 000 € nominal, coupon 4 % annuel = 40 €/an versés au détenteur.',
+    related: ['obligation', 'ytm', 'duration'],
+    category: 'finance',
+  },
+  {
+    slug: 'ytm',
+    term: 'YTM (Yield to Maturity / rendement à l\'échéance)',
+    definition:
+      "Rendement annualisé attendu si vous détenez une obligation jusqu'à son remboursement, en tenant compte du prix d'achat, des coupons et du remboursement final.",
+    example: 'Obligation cotée 95 € (nominal 100 €), coupon 3 %, échéance 5 ans → YTM ≈ 4,1 %.',
+    related: ['obligation', 'coupon', 'duration'],
+    category: 'finance',
+  },
+  {
+    slug: 'duration',
+    term: 'Duration',
+    definition:
+      "Mesure de la sensibilité du prix d'une obligation aux variations de taux d'intérêt, exprimée en années. Plus la duration est élevée, plus le prix bouge fort quand les taux varient.",
+    example: 'Obligation duration 7 ans : si les taux montent de 1 %, son prix baisse d\'environ 7 %.',
+    related: ['obligation', 'ytm', 'risque-de-marche'],
+    category: 'finance',
+  },
+  {
+    slug: 'ter',
+    term: 'TER (Total Expense Ratio)',
+    definition:
+      "Frais annuels totaux d'un fonds (ETF, OPCVM…), exprimés en pourcentage des encours. Inclut frais de gestion, dépositaire, audit. Prélevés en continu sur la valeur du fonds.",
+    example: 'ETF S&P 500 TER 0,07 % vs OPCVM actif TER 1,8 % → 1,73 % d\'écart annuel composé sur 20 ans = écart de performance énorme.',
+    related: ['etf', 'opcvm'],
+    category: 'finance',
+  },
+  {
+    slug: 'opcvm',
+    term: 'OPCVM (fonds collectif)',
+    definition:
+      "Organisme de Placement Collectif en Valeurs Mobilières. Fonds qui mutualise l'épargne de plusieurs investisseurs pour acheter un panier d'actifs. Inclut SICAV et FCP.",
+    example: 'Achat d\'1 part d\'OPCVM actions Europe = exposition à 80-200 entreprises européennes en une transaction.',
+    related: ['sicav', 'etf', 'ter'],
+    category: 'finance',
+  },
+  {
+    slug: 'sicav',
+    term: 'SICAV (Société d\'Investissement à Capital Variable)',
+    definition:
+      "Forme juridique d'OPCVM organisée en société anonyme. L'investisseur achète des actions de la SICAV. Les ETF sont une forme de SICAV cotée en continu.",
+    example: 'SICAV Carmignac Patrimoine, SICAV Amundi Index MSCI World, etc. Liste consultable chez votre banque.',
+    related: ['opcvm', 'etf'],
+    category: 'finance',
+  },
+
+  // Métriques de risque & performance
+  {
+    slug: 'sharpe',
+    term: 'Ratio de Sharpe',
+    definition:
+      "Mesure de la performance ajustée du risque : (rendement − taux sans risque) ÷ volatilité. Plus le ratio est élevé, plus le rendement est obtenu efficacement par unité de risque pris.",
+    example: 'Sharpe 1,5 = très bon. Sharpe 0,5 = médiocre. Sharpe < 0 = on aurait mieux fait de laisser sur livret A.',
+    related: ['sortino', 'volatilite'],
+    category: 'risque',
+  },
+  {
+    slug: 'sortino',
+    term: 'Ratio de Sortino',
+    definition:
+      "Variante du Sharpe qui ne pénalise que la volatilité à la baisse (downside deviation). Plus pertinent pour évaluer une stratégie : on ne se plaint pas de la volatilité positive.",
+    example: 'Stratégie avec Sortino 2,0 et Sharpe 1,2 → la « volatilité » de la stratégie est principalement à la hausse, c\'est plutôt rassurant.',
+    related: ['sharpe', 'drawdown'],
+    category: 'risque',
+  },
+  {
+    slug: 'calmar',
+    term: 'Ratio de Calmar',
+    definition:
+      "Rendement annualisé divisé par le drawdown maximum sur la période. Mesure combien de gain on obtient pour chaque unité de perte temporaire subie.",
+    example: 'Stratégie +18 %/an avec drawdown max −12 % → Calmar 1,5. Excellent pour qui supporte mal les baisses temporaires.',
+    related: ['drawdown', 'sortino'],
+    category: 'risque',
+  },
+  {
+    slug: 'beta-financier',
+    term: 'Beta (β)',
+    definition:
+      "Sensibilité d'un actif aux mouvements du marché de référence. β = 1 → bouge comme le marché. β = 1,5 → amplifie les mouvements de 50 %. β = 0 → indépendant.",
+    example: 'Apple a un β proche de 1,2 vs S&P 500. Quand l\'indice fait +10 %, Apple tend à faire +12 %.',
+    related: ['alpha-financier', 'correlation'],
+    category: 'risque',
+  },
+  {
+    slug: 'alpha-financier',
+    term: 'Alpha (α)',
+    definition:
+      "Sur-performance d'un actif par rapport à ce que son beta laissait prévoir. α positif = le gérant a apporté de la valeur ; α négatif = il a détruit de la valeur par rapport au benchmark.",
+    example: 'Fonds qui fait +12 % alors que son indice fait +10 % avec β = 1 → α = +2 % de surperformance attribuable au gérant.',
+    related: ['beta-financier', 'rendement'],
+    category: 'risque',
+  },
+  {
+    slug: 'var',
+    term: 'VaR (Value at Risk)',
+    definition:
+      "Perte maximale probable sur un horizon donné, à un niveau de confiance choisi. VaR 95 % à 1 jour de 200 € = on s'attend à ne pas perdre plus de 200 € sur 95 % des jours.",
+    example: 'Portefeuille 10 000 €, VaR 95 % 1 jour = 250 €. Sur 100 jours, on pourrait dépasser cette perte ~5 fois.',
+    related: ['cvar', 'drawdown'],
+    category: 'risque',
+  },
+  {
+    slug: 'cvar',
+    term: 'CVaR (Conditional VaR / Expected Shortfall)',
+    definition:
+      "Perte moyenne attendue dans les 5 % des pires cas (au-delà de la VaR). Plus pessimiste que la VaR — capture l'épaisseur de la queue gauche de la distribution.",
+    example: 'VaR 95 % = 250 €, mais CVaR 95 % = 600 € → quand ça dépasse la VaR, c\'est en moyenne 600 € de perte.',
+    related: ['var', 'drawdown'],
+    category: 'risque',
+  },
+
+  // Mécanique de trading & exécution
+  {
+    slug: 'ordre-marche',
+    term: 'Ordre au marché',
+    definition:
+      "Instruction d'achat ou de vente exécutée immédiatement au meilleur prix disponible dans le carnet d'ordres. Garantie d'exécution rapide, pas garantie de prix.",
+    example: 'Cours 100 €, carnet : 100,02 € à la vente. Ordre marché → exécuté instantanément à 100,02 €.',
+    related: ['ordre-limite', 'carnet-ordres', 'slippage'],
+    category: 'plateforme',
+  },
+  {
+    slug: 'ordre-limite',
+    term: 'Ordre à cours limité',
+    definition:
+      "Instruction d'achat ou de vente exécutable seulement si le marché atteint le prix défini, ou mieux. Garantie de prix, pas garantie d'exécution.",
+    example: 'Achat limite à 95 € sur action cotée 100 € → ordre attend que le cours descende à 95 €. Si cela n\'arrive pas, l\'ordre ne s\'exécute jamais.',
+    related: ['ordre-marche', 'ordre-stop'],
+    category: 'plateforme',
+  },
+  {
+    slug: 'ordre-stop',
+    term: 'Ordre stop (déclenchement)',
+    definition:
+      "Ordre dormant qui s'active automatiquement quand le cours franchit un seuil. Une fois déclenché, il devient ordre marché (stop) ou ordre limite (stop limit).",
+    example: 'Position longue 100 €, ordre stop à 95 € → si le cours touche 95 €, vente automatique au prix de marché. Sert de stop-loss.',
+    related: ['stop-loss', 'ordre-marche', 'ordre-limite'],
+    category: 'plateforme',
+  },
+  {
+    slug: 'gtc',
+    term: 'GTC (Good Till Cancelled)',
+    definition:
+      "Modalité de validité d'un ordre : reste actif jusqu'à exécution ou annulation manuelle. Utile pour des ordres limites éloignés du cours actuel.",
+    example: 'Ordre achat limite à 95 € en GTC : reste dans le carnet d\'ordres pendant des semaines/mois jusqu\'à atteindre le prix.',
+    related: ['ordre-limite', 'ioc', 'fok'],
+    category: 'plateforme',
+  },
+  {
+    slug: 'ioc',
+    term: 'IOC (Immediate or Cancel)',
+    definition:
+      "Modalité d'ordre : exécute immédiatement la quantité disponible au prix demandé, annule le reste. Évite de laisser un ordre partiel traîner dans le carnet.",
+    example: 'Ordre IOC achat 1 000 actions à 100 € : 700 actions disponibles à ce prix → achat de 700, les 300 restantes sont annulées.',
+    related: ['gtc', 'fok'],
+    category: 'plateforme',
+  },
+  {
+    slug: 'fok',
+    term: 'FOK (Fill or Kill)',
+    definition:
+      "Modalité d'ordre : exécute la totalité immédiatement au prix demandé, ou annule entièrement. Tout ou rien — pas d'exécution partielle acceptée.",
+    example: 'Ordre FOK achat 1 000 actions à 100 € : 700 disponibles → ordre annulé entièrement (pas d\'achat partiel).',
+    related: ['gtc', 'ioc'],
+    category: 'plateforme',
+  },
+  {
+    slug: 'fill',
+    term: 'Fill (exécution)',
+    definition:
+      "Confirmation qu'un ordre a été exécuté, totalement ou partiellement. Détaille la quantité exécutée, le prix moyen et l'horodatage.",
+    example: 'Ordre achat 100 actions → fill de 60 à 100,02 € puis fill de 40 à 100,03 € → prix moyen pondéré 100,024 €.',
+    related: ['ordre-marche', 'commission', 'slippage'],
+    category: 'plateforme',
+  },
+  {
+    slug: 'commission',
+    term: 'Commission (frais de courtage)',
+    definition:
+      "Frais facturés par le broker à chaque transaction. Soit fixe (ex : 1 € par ordre), soit en pourcentage du notionnel (ex : 0,1 %), souvent avec un minimum.",
+    example: 'Achat 5 000 € chez un broker à 0,1 % min 5 € : commission = 5 €. Chez un broker à 1 € fixe : commission = 1 €.',
+    related: ['fill', 'spread', 'slippage'],
+    category: 'plateforme',
+  },
+  {
+    slug: 'spread',
+    term: 'Spread (écart bid-ask)',
+    definition:
+      "Différence entre le meilleur prix vendeur (ask) et le meilleur prix acheteur (bid) dans le carnet. Coût implicite payé à chaque aller-retour.",
+    example: 'Bid 99,98 / Ask 100,02 → spread 0,04 € soit 4 bps. Acheter puis revendre immédiatement coûte 0,04 €/action sans aucune variation de marché.',
+    related: ['bid-ask', 'carnet-ordres', 'slippage'],
+    category: 'plateforme',
+  },
+  {
+    slug: 'slippage',
+    term: 'Slippage (glissement)',
+    definition:
+      "Écart entre le prix attendu d'un ordre et son prix d'exécution réel. Important sur les ordres marché de grande taille ou les actifs peu liquides.",
+    example: 'Ordre marché achat 50 000 actions sur titre liquide ~10k vol/jour : prix de mid 100 €, prix moyen exécuté 100,80 € → slippage 80 bps.',
+    related: ['spread', 'liquidite', 'ordre-marche'],
+    category: 'plateforme',
+  },
+  {
+    slug: 'bid-ask',
+    term: 'Bid / Ask',
+    definition:
+      "Bid = meilleur prix proposé à l'achat dans le carnet. Ask = meilleur prix proposé à la vente. La différence est le spread, et le mid-price = (bid + ask) / 2.",
+    example: 'Bid 99,98 / Ask 100,02 : pour acheter immédiatement, vous payez 100,02 ; pour vendre immédiatement, vous touchez 99,98.',
+    related: ['spread', 'carnet-ordres'],
+    category: 'plateforme',
+  },
+  {
+    slug: 'carnet-ordres',
+    term: 'Carnet d\'ordres',
+    definition:
+      "Liste ordonnée par prix de tous les ordres en attente sur un actif (achats à gauche, ventes à droite). Sa profondeur indique la liquidité disponible à chaque niveau de prix.",
+    example: 'Carnet Apple : 50 000 actions à 100,00 € à l\'achat, 30 000 à 100,02 € à la vente. Acheter 60k au marché traverse plusieurs niveaux et fait monter le prix.',
+    related: ['bid-ask', 'liquidite', 'spread'],
+    category: 'plateforme',
+  },
+
+  // Conformité / réglementaire (gardés en plateforme)
+  {
+    slug: 'kyc',
+    term: 'KYC (Know Your Customer)',
+    definition:
+      "Procédure d'identification du client imposée aux brokers et banques par la réglementation. Inclut justificatif d'identité, justificatif de domicile, et questionnaire de connaissance financière.",
+    example: 'Ouverture compte broker : envoi pièce d\'identité + facture EDF + questionnaire 10 questions sur votre expérience financière. Validation 24-72 h.',
+    related: ['aml'],
+    category: 'plateforme',
+  },
+  {
+    slug: 'aml',
+    term: 'AML (Anti-Money Laundering)',
+    definition:
+      "Ensemble de règles et contrôles destinés à empêcher l'utilisation des marchés financiers pour blanchir de l'argent issu d'activités illicites. Justifie le KYC et le suivi des transactions.",
+    example: 'Virement de 50 000 € vers un broker : déclenche souvent une demande de justificatif d\'origine des fonds (vente immobilière, héritage, etc.).',
+    related: ['kyc'],
+    category: 'plateforme',
+  },
+
+  // Stratégies / méthodologie
+  {
+    slug: 'walk-forward',
+    term: 'Walk-forward (validation glissante)',
+    definition:
+      "Méthode de validation d'une stratégie : on l'optimise sur une période A, on la teste sur la période B suivante (jamais vue), puis on glisse les fenêtres. Évite l'over-fitting d'un backtest classique.",
+    example: 'Optimisation 2018-2020 → test 2021. Optimisation 2019-2021 → test 2022. Etc. Performance moyenne sur les fenêtres de test = robustesse réelle.',
+    related: ['backtest'],
+    category: 'strategie',
+  },
+  {
+    slug: 'backtest',
+    term: 'Backtest',
+    definition:
+      "Simulation d'une stratégie sur des données historiques pour estimer sa performance passée. Indicatif uniquement — les performances passées ne préjugent pas des performances futures.",
+    example: 'Stratégie momentum testée sur 2010-2024 : Sharpe 1,3, drawdown max −22 %. Indique une robustesse, mais pas une garantie pour 2025+.',
+    related: ['walk-forward', 'sharpe', 'drawdown'],
+    category: 'strategie',
+  },
+  {
+    slug: 'dca',
+    term: 'DCA (Dollar Cost Averaging)',
+    definition:
+      "Stratégie d'achat programmé à montant fixe et à fréquence régulière, indépendamment du cours. Lisse le prix de revient et évite le timing de marché.",
+    example: '500 €/mois sur ETF World pendant 10 ans : achat plus d\'unités quand le marché baisse, moins quand il monte → prix moyen lissé.',
+    related: ['buy-and-hold', 'allocation'],
+    category: 'strategie',
+  },
+  {
+    slug: 'buy-and-hold',
+    term: 'Buy & Hold (acheter et conserver)',
+    definition:
+      "Stratégie passive consistant à acheter des actifs de qualité et les conserver à très long terme, en ignorant le bruit court terme. Inverse philosophique du trading actif.",
+    example: 'Achat ETF S&P 500 en 2000, vente en 2025 : malgré 2 krachs majeurs, performance ~+450 % cumulée. Patience récompensée.',
+    related: ['dca', 'horizon-investissement', 'mode-investment'],
+    category: 'strategie',
+  },
 ];
 
 export function searchGlossary(query: string): GlossaryTerm[] {
