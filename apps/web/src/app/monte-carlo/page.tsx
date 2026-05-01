@@ -395,16 +395,58 @@ function FanChart({ fanChart, initialCapital }: { fanChart: MCResult['fanChart']
 
   const medianPath = fanChart.map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(i)} ${y(p.p50)}`).join(' ');
 
+  // Sample up to 6 time points for the screen-reader table
+  const step = Math.max(1, Math.floor(fanChart.length / 6));
+  const sampleDays = fanChart
+    .map((p, i) => ({ day: i, ...p }))
+    .filter((_, i) => i % step === 0 || i === fanChart.length - 1);
+
+  const lastPoint = fanChart[fanChart.length - 1]!;
+
   return (
     <div className="rounded-lg border p-5">
       <h2 className="font-medium mb-3">Fan chart — bandes P5–P95 / P25–P75 / médiane</h2>
-      <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-72 overflow-visible">
-        <line x1={0} y1={yInit} x2={w} y2={yInit} stroke="currentColor" strokeWidth={1} strokeDasharray="4 4" opacity={0.3} />
-        <path d={outerPath} fill="#10b981" opacity={0.15} />
-        <path d={innerPath} fill="#10b981" opacity={0.3} />
-        <path d={medianPath} fill="none" stroke="#10b981" strokeWidth={2} />
+      <svg
+        viewBox={`0 0 ${w} ${h}`}
+        className="w-full h-72 overflow-visible"
+        role="img"
+        aria-label={`Projections futures Monte-Carlo sur ${fanChart.length} jours : médiane finale ${lastPoint.p50.toFixed(0)} $ (P5 ${lastPoint.p5.toFixed(0)} $ — P95 ${lastPoint.p95.toFixed(0)} $)`}
+      >
+        <title>{`Projections Monte-Carlo — médiane : ${lastPoint.p50.toFixed(0)} $ à J+${fanChart.length}`}</title>
+        <line x1={0} y1={yInit} x2={w} y2={yInit} stroke="currentColor" strokeWidth={1} strokeDasharray="4 4" opacity={0.3} aria-hidden="true" />
+        <path d={outerPath} fill="#10b981" opacity={0.15} aria-hidden="true" />
+        <path d={innerPath} fill="#10b981" opacity={0.3} aria-hidden="true" />
+        <path d={medianPath} fill="none" stroke="#10b981" strokeWidth={2} aria-hidden="true" />
       </svg>
-      <div className="text-xs text-muted-foreground flex justify-between mt-1">
+
+      {/* Screen-reader fallback table */}
+      <table className="sr-only" aria-label="Données des projections Monte-Carlo">
+        <caption>Fan chart — percentiles par jour (échantillon)</caption>
+        <thead>
+          <tr>
+            <th scope="col">Jour</th>
+            <th scope="col">P5 ($)</th>
+            <th scope="col">P25 ($)</th>
+            <th scope="col">Médiane ($)</th>
+            <th scope="col">P75 ($)</th>
+            <th scope="col">P95 ($)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sampleDays.map(({ day, p5, p25, p50, p75, p95 }) => (
+            <tr key={day}>
+              <td>J+{day}</td>
+              <td>{p5.toFixed(0)}</td>
+              <td>{p25.toFixed(0)}</td>
+              <td>{p50.toFixed(0)}</td>
+              <td>{p75.toFixed(0)}</td>
+              <td>{p95.toFixed(0)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <div className="text-xs text-muted-foreground flex justify-between mt-1" aria-hidden="true">
         <span>Aujourd'hui</span>
         <span>+{fanChart.length} jours</span>
       </div>
@@ -422,10 +464,20 @@ function Histogram({ histogram, initialCapital, target }: { histogram: MCResult[
   const max = histogram[histogram.length - 1].binEnd;
   const xOf = (val: number) => ((val - min) / (max - min)) * w;
 
+  const totalSims = histogram.reduce((s, b) => s + b.count, 0);
+  const firstBin = histogram[0]!;
+  const lastBin = histogram[histogram.length - 1]!;
+
   return (
     <div className="rounded-lg border p-5">
       <h2 className="font-medium mb-3">Distribution des equity finales</h2>
-      <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-48 overflow-visible">
+      <svg
+        viewBox={`0 0 ${w} ${h}`}
+        className="w-full h-48 overflow-visible"
+        role="img"
+        aria-label={`Histogramme des équités finales simulées : de ${firstBin.binStart.toFixed(0)} $ à ${lastBin.binEnd.toFixed(0)} $, capital initial ${initialCapital.toFixed(0)} $`}
+      >
+        <title>{`Distribution des équités finales — ${totalSims} simulations`}</title>
         {histogram.map((b, i) => {
           const barH = (b.count / maxCount) * h;
           const profitable = b.binEnd > initialCapital;
@@ -438,20 +490,44 @@ function Histogram({ histogram, initialCapital, target }: { histogram: MCResult[
               height={barH}
               fill={profitable ? '#10b981' : '#ef4444'}
               opacity={0.7}
+              aria-hidden="true"
             />
           );
         })}
-        {/* Ligne capital initial */}
-        <line x1={xOf(initialCapital)} y1={0} x2={xOf(initialCapital)} y2={h} stroke="currentColor" strokeWidth={1} strokeDasharray="3 3" opacity={0.6} />
+        <line x1={xOf(initialCapital)} y1={0} x2={xOf(initialCapital)} y2={h} stroke="currentColor" strokeWidth={1} strokeDasharray="3 3" opacity={0.6} aria-hidden="true" />
         {target != null && target >= min && target <= max && (
-          <line x1={xOf(target)} y1={0} x2={xOf(target)} y2={h} stroke="#f59e0b" strokeWidth={2} strokeDasharray="3 3" />
+          <line x1={xOf(target)} y1={0} x2={xOf(target)} y2={h} stroke="#f59e0b" strokeWidth={2} strokeDasharray="3 3" aria-hidden="true" />
         )}
       </svg>
-      <div className="text-xs text-muted-foreground flex justify-between mt-1">
-        <span>${histogram[0].binStart.toFixed(0)}</span>
+
+      {/* Screen-reader fallback table */}
+      <table className="sr-only" aria-label="Distribution des équités finales simulées">
+        <caption>Histogramme — {totalSims} simulations au total</caption>
+        <thead>
+          <tr>
+            <th scope="col">Tranche ($)</th>
+            <th scope="col">Simulations</th>
+            <th scope="col">% du total</th>
+            <th scope="col">Résultat</th>
+          </tr>
+        </thead>
+        <tbody>
+          {histogram.map((b, i) => (
+            <tr key={i}>
+              <td>{b.binStart.toFixed(0)} – {b.binEnd.toFixed(0)}</td>
+              <td>{b.count}</td>
+              <td>{totalSims > 0 ? ((b.count / totalSims) * 100).toFixed(1) : '0'}%</td>
+              <td>{b.binEnd > initialCapital ? 'Profitable' : 'Perte'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <div className="text-xs text-muted-foreground flex justify-between mt-1" aria-hidden="true">
+        <span>${firstBin.binStart.toFixed(0)}</span>
         <span className="font-medium">${initialCapital.toFixed(0)} (initial)</span>
         {target != null && <span className="text-amber-600 font-medium">${target.toFixed(0)} (cible)</span>}
-        <span>${histogram[histogram.length - 1].binEnd.toFixed(0)}</span>
+        <span>${lastBin.binEnd.toFixed(0)}</span>
       </div>
     </div>
   );

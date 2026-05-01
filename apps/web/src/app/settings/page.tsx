@@ -15,6 +15,7 @@ import {
   User,
   Zap,
 } from 'lucide-react';
+import { useIsAdmin } from '@/hooks/use-is-admin';
 
 const PROFILE_SECTIONS = [
   {
@@ -106,6 +107,8 @@ function SectionList({ sections }: { sections: readonly { href: string; icon: Re
 }
 
 export default function SettingsPage() {
+  const isAdmin = useIsAdmin();
+
   return (
     <div className="mx-auto max-w-2xl space-y-6 p-6">
       <div>
@@ -120,10 +123,12 @@ export default function SettingsPage() {
         <SectionList sections={PROFILE_SECTIONS} />
       </section>
 
-      <section className="space-y-2">
-        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground px-1">Simulation & automatisation</p>
-        <SectionList sections={ADVANCED_SECTIONS} />
-      </section>
+      {isAdmin && (
+        <section className="space-y-2">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground px-1">Réglages avancés</p>
+          <SectionList sections={ADVANCED_SECTIONS} />
+        </section>
+      )}
     </div>
   );
 }

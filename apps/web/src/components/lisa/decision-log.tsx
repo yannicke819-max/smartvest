@@ -1,7 +1,8 @@
 'use client';
 
 import { ScrollText, Sparkles, ShieldCheck, Swords, AlertTriangle, UserCheck, Clock, CheckCircle2, XCircle, Wrench } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { useLisaDecisionLog, useAuditChainVerify, useRepairAuditChain, type LisaDecisionLogRow } from '@/hooks/use-lisa';
 import { SkeletonCard } from '@/components/ui/skeleton';
 
@@ -34,11 +35,14 @@ export function LisaDecisionLog({ portfolioId }: { portfolioId: string }) {
   const logQuery = useLisaDecisionLog(portfolioId, 50);
   const verifyQuery = useAuditChainVerify(portfolioId);
   const repairMutation = useRepairAuditChain(portfolioId);
+  const [confirmRepair, setConfirmRepair] = useState(false);
   const entries = logQuery.data ?? [];
   const chain = verifyQuery.data;
 
-  const handleRepair = async () => {
-    if (!confirm('Recalculer tous les hashs avec la canonisation Node.js ?\n\nIdempotent — peut être ré-exécuté sans danger. Aucune donnée perdue.')) return;
+  const handleRepair = () => setConfirmRepair(true);
+
+  const doRepair = async () => {
+    setConfirmRepair(false);
     try {
       const result = await repairMutation.mutateAsync();
       const status = result.verifiedAfterRepair.isValid ? '✅ intègre' : `❌ encore corrompue #${result.verifiedAfterRepair.firstCorruptedIndex}`;
@@ -93,6 +97,15 @@ export function LisaDecisionLog({ portfolioId }: { portfolioId: string }) {
           {entries.map((e) => <DecisionRow key={e.id} entry={e} />)}
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmRepair}
+        title="Recalculer les hashs ?"
+        description={'Recalculer tous les hashs avec la canonisation Node.js ?\n\nIdempotent — peut être ré-exécuté sans danger. Aucune donnée perdue.'}
+        confirmLabel="Recalculer"
+        onConfirm={doRepair}
+        onCancel={() => setConfirmRepair(false)}
+      />
     </div>
   );
 }

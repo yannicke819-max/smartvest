@@ -298,15 +298,16 @@ export default function OptimizerPage() {
         <div className="rounded-lg border p-5">
           <h2 className="font-medium mb-3 text-sm">Historique des runs</h2>
           <table className="w-full text-xs">
+            <caption className="sr-only">Historique des runs d'optimisation</caption>
             <thead className="text-muted-foreground">
               <tr className="border-b">
-                <th className="text-left py-1">Quand</th>
-                <th className="text-left py-1">Mode</th>
-                <th className="text-left py-1">Période</th>
-                <th className="text-right py-1">Configs</th>
-                <th className="text-right py-1">Best score</th>
-                <th className="text-right py-1">Durée</th>
-                <th className="text-left py-1">Applied</th>
+                <th scope="col" className="text-left py-1">Quand</th>
+                <th scope="col" className="text-left py-1">Mode</th>
+                <th scope="col" className="text-left py-1">Période</th>
+                <th scope="col" className="text-right py-1">Configs</th>
+                <th scope="col" className="text-right py-1">Best score</th>
+                <th scope="col" className="text-right py-1">Durée</th>
+                <th scope="col" className="text-left py-1">Applied</th>
               </tr>
             </thead>
             <tbody>
@@ -408,22 +409,23 @@ function Leaderboard({ result, onApply }: { result: OptimizerRunResult; onApply:
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
+          <caption className="sr-only">Top 10 configurations triées par score composite</caption>
           <thead className="text-muted-foreground">
             <tr className="border-b">
-              <th className="text-left py-1">#</th>
-              <th className="text-right py-1">Score</th>
-              <th className="text-right py-1">Sharpe</th>
-              <th className="text-right py-1">DD%</th>
-              <th className="text-right py-1">Return%</th>
-              <th className="text-right py-1">Win%</th>
-              <th className="text-right py-1">PF</th>
-              <th className="text-center py-1">AntiCons</th>
-              <th className="text-center py-1">Pos%</th>
-              <th className="text-center py-1">Class%</th>
-              <th className="text-center py-1">Stop</th>
-              <th className="text-center py-1">TP</th>
-              {result.mode !== 'single_shot' && <th className="text-right py-1">Stab</th>}
-              <th className="text-center py-1">Action</th>
+              <th scope="col" className="text-left py-1">#</th>
+              <th scope="col" className="text-right py-1">Score</th>
+              <th scope="col" className="text-right py-1" title="Sharpe ratio">Sharpe</th>
+              <th scope="col" className="text-right py-1" title="Max drawdown (%)"><abbr title="Drawdown maximum">DD</abbr>%</th>
+              <th scope="col" className="text-right py-1">Return%</th>
+              <th scope="col" className="text-right py-1">Win%</th>
+              <th scope="col" className="text-right py-1" title="Profit factor"><abbr title="Profit factor">PF</abbr></th>
+              <th scope="col" className="text-center py-1" title="Force anti-consensus"><abbr title="Force anti-consensus">AntiCons</abbr></th>
+              <th scope="col" className="text-center py-1" title="Max position size (%)"><abbr title="Max position size">Pos</abbr>%</th>
+              <th scope="col" className="text-center py-1" title="Max exposure per asset class (%)"><abbr title="Max exposure per asset class">Class</abbr>%</th>
+              <th scope="col" className="text-center py-1">Stop</th>
+              <th scope="col" className="text-center py-1" title="Take-profit"><abbr title="Take-profit">TP</abbr></th>
+              {result.mode !== 'single_shot' && <th scope="col" className="text-right py-1" title="Score de stabilité"><abbr title="Score de stabilité">Stab</abbr></th>}
+              <th scope="col" className="text-center py-1">Action</th>
             </tr>
           </thead>
           <tbody>
