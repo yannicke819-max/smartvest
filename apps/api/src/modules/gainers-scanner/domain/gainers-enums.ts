@@ -67,6 +67,8 @@ export enum InvalidationReason {
   PERSISTENCE_LOST = 'PERSISTENCE_LOST',
   /** Spread proxy remonté au-delà du cap post-entrée. */
   SPREAD_EXPANDED = 'SPREAD_EXPANDED',
+  /** Cassure de structure : prix < swing low N=5 post-signal pullback. */
+  STRUCTURE_BREAK = 'STRUCTURE_BREAK',
 }
 
 /** BLOC 4 — Raison de clôture de position. */
