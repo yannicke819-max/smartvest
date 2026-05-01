@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { CheckCircle2, XCircle, ChevronDown, ChevronUp, AlertTriangle, TrendingUp, TrendingDown, Search, Play, AlertCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -81,6 +82,7 @@ export function LisaProposalCard({
 }) {
   const [expanded, setExpanded] = useState(proposal.status === 'proposed');
   const [showAllTheses, setShowAllTheses] = useState(false);
+  const [confirmApprove, setConfirmApprove] = useState(false);
   const approve = useApproveProposal(portfolioId);
   const reject = useRejectProposal(portfolioId);
 
@@ -88,7 +90,11 @@ export function LisaProposalCard({
   const thesesToShow = showAllTheses ? theses : theses.slice(0, 2);
 
   async function handleApprove() {
-    if (!confirm(`Ouvrir ${proposal.allocations.length} position(s) en simulation ?`)) return;
+    setConfirmApprove(true);
+  }
+
+  async function doApprove() {
+    setConfirmApprove(false);
     await approve.mutateAsync(proposal.id);
   }
 
@@ -409,6 +415,15 @@ export function LisaProposalCard({
           )}
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmApprove}
+        title="Approuver cette proposition ?"
+        description={`Ouvrir ${proposal.allocations.length} position(s) en simulation ?`}
+        confirmLabel="Approuver & ouvrir"
+        onConfirm={doApprove}
+        onCancel={() => setConfirmApprove(false)}
+      />
     </div>
   );
 }

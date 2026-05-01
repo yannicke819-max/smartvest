@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Activity, ChevronDown, ChevronUp, Trash2, ChevronsDown, ChevronsUp } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { SkeletonCard } from '@/components/ui/skeleton';
@@ -25,8 +26,8 @@ export function LisaProposalsGroupedByDay({
   isLoading: boolean;
 }) {
   const purge = usePurgeOldProposals(portfolioId);
-  // Set des jours dépliés. Vide au mount → tout replié.
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [confirmPurge, setConfirmPurge] = useState(false);
 
   const grouped = useMemo(() => {
     const buckets = new Map<string, { key: string; label: string; items: LisaProposalRow[] }>();
@@ -71,13 +72,13 @@ export function LisaProposalsGroupedByDay({
     }
   };
 
-  async function handlePurge() {
+  function handlePurge() {
     if (!portfolioId) return;
-    if (!confirm(
-      'Supprimer les propositions terminales (approuvées / rejetées / expirées) '
-      + 'ET les propositions de plus de 24h ?\n\n'
-      + 'Les propositions récentes en attente d\'approbation sont préservées.',
-    )) return;
+    setConfirmPurge(true);
+  }
+
+  async function doPurge() {
+    setConfirmPurge(false);
     const { deleted } = await purge.mutateAsync(24);
     alert(`${deleted} proposition(s) supprimée(s).`);
   }
@@ -155,6 +156,20 @@ export function LisaProposalsGroupedByDay({
           </div>
         );
       })}
+
+      <ConfirmDialog
+        open={confirmPurge}
+        title="Purger les anciennes propositions ?"
+        description={
+          'Supprimer les propositions terminales (approuvées / rejetées / expirées) '
+          + 'ET les propositions de plus de 24h ?\n\n'
+          + "Les propositions récentes en attente d'approbation sont préservées."
+        }
+        confirmLabel="Purger"
+        dangerous
+        onConfirm={doPurge}
+        onCancel={() => setConfirmPurge(false)}
+      />
     </div>
   );
 }

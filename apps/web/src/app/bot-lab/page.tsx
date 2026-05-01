@@ -22,6 +22,7 @@ import {
   type SessionMetrics,
 } from '@/hooks/use-bot-lab';
 import { Zap } from 'lucide-react';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 
 type DetailTab = 'overview' | 'metrics' | 'equity' | 'sessions' | 'trades';
 
@@ -76,6 +77,7 @@ function BotListView({ onSelectBot }: { onSelectBot: (botId: string) => void }) 
   const deleteMut = useDeleteBot();
   const autoSyncMut = useTriggerAutoSync();
   const [showCreateForm, setShowCreateForm] = useState(false);
+  const [botToDelete, setBotToDelete] = useState<{ id: string; name: string } | null>(null);
 
   const handleAutoSync = async () => {
     try {
@@ -144,14 +146,23 @@ function BotListView({ onSelectBot }: { onSelectBot: (botId: string) => void }) 
             key={bot.id}
             bot={bot}
             onClick={() => onSelectBot(bot.id)}
-            onDelete={() => {
-              if (confirm(`Supprimer le bot ${bot.name} et tous ses trades ?`)) {
-                deleteMut.mutate(bot.id);
-              }
-            }}
+            onDelete={() => setBotToDelete({ id: bot.id, name: bot.name })}
           />
         ))}
       </div>
+
+      <ConfirmDialog
+        open={botToDelete !== null}
+        title="Supprimer ce bot ?"
+        description={`Supprimer le bot « ${botToDelete?.name ?? ''} » et tous ses trades ?\n\nCette action est irréversible.`}
+        confirmLabel="Supprimer"
+        dangerous
+        onConfirm={() => {
+          if (botToDelete) deleteMut.mutate(botToDelete.id);
+          setBotToDelete(null);
+        }}
+        onCancel={() => setBotToDelete(null)}
+      />
     </div>
   );
 }
