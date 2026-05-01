@@ -206,10 +206,10 @@ export class TopGainersScannerService implements OnModuleInit {
   /**
    * P8 — Resolve config min persistence score.
    * Priority chain : DB > env > default(0.67).
-   * `lisa_session_configs.gainers_min_persistence_score` est par-portfolio
-   * mais le seuil est globalement uniforme dans v1 (1 valeur côté scanner).
-   * Le caller passe `portfolioMinScore` quand il a la row sous la main ;
-   * sinon on retombe sur env / default.
+   *
+   * Note: 0.67 est intentionnellement ≥ 4/6 (pas 5/6). La comparaison
+   * réelle utilise Math.round(minScore × availableCount) pour éviter
+   * le float off-by-one : 0.67 × 6 = 4.02 → round → 4 (= 4/6 gate).
    */
   resolveMinPersistenceScore(portfolioMinScore?: number | null): number {
     if (typeof portfolioMinScore === 'number' && Number.isFinite(portfolioMinScore)) {
@@ -426,7 +426,13 @@ export class TopGainersScannerService implements OnModuleInit {
       }
     }
 
-    if (configs.length === 0) return;
+    if (configs.length === 0) {
+      this.logger.warn(
+        '[top-gainers] no active portfolio with strategy_mode=gainers AND autopilot_enabled=true — scanner cycle skipped. ' +
+        'Activate via POST /lisa/mode/:portfolioId {mode:"gainers"} or set STRATEGY_MODE=top_gainers env.',
+      );
+      return;
+    }
 
     // Fetch global candidates UNE SEULE fois (partagé entre tous les portfolios)
     const candidates = await this.fetchAllCandidates();
@@ -1001,9 +1007,9 @@ export class TopGainersScannerService implements OnModuleInit {
         //   [0.66, 0.83) 4/6   → shadow_466 log + skip (no open)
         //   < 0.66             → skip silencieux (comportement standard)
         //
-        // NB : 4/6 = 0.66666… donc le cutoff est 0.66, PAS 0.67. Le seuil
-        // historique `gainers_min_persistence_score` default = 0.67 est en
-        // pratique strict ≥ 5/6 (0.8333 ≥ 0.67 ✓ ; 0.6667 < 0.67 ✗).
+        // Converti en entier via Math.round pour éviter l'off-by-one float :
+        // 0.67 × 6 = 4.02 → Math.round → 4 → positiveCount ≥ 4 (et non 5).
+        // Voir fix(gainers-scoring-threshold) — le bug 4/6 est corrigé ici.
         const STRICT_MODE_THRESHOLD = 0.999; // tolérance float pour 1.0
         if (minScore >= STRICT_MODE_THRESHOLD) {
           const score = persistence.persistenceScore;
@@ -1071,9 +1077,12 @@ export class TopGainersScannerService implements OnModuleInit {
           // qui pass-through (1.0 not < 1.0)
         }
 
-        if (persistence.persistenceScore < minScore) {
+        // Integer gate: Math.round avoids float off-by-one (4/6=0.6666 < 0.67 was
+        // silently excluding 4/6-TF candidates). 0.67×6=4.02 → rounds to 4.
+        const minPositive = Math.round(minScore * persistence.availableCount);
+        if (persistence.positiveCount < minPositive) {
           this.logger.log(
-            `[top-gainers] ${cand.symbol} persistenceScore=${persistence.persistenceScore.toFixed(2)} (${persistence.persistenceCount}) < min=${minScore.toFixed(2)} → skip`,
+            `[top-gainers] ${cand.symbol} ${persistence.persistenceCount} (${persistence.positiveCount}/${persistence.availableCount} TFs) < min=${minPositive}/${persistence.availableCount} → skip`,
           );
           continue;
         }
