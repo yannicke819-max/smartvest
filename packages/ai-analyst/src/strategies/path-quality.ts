@@ -21,7 +21,8 @@
  * Pure : pas d'I/O, testable en isolation.
  */
 
-export type SmoothnessLabel = 'smooth' | 'mixed' | 'choppy';
+/** 'idle' = série plate (Σ|Δp|=0) : marché fermé ou données figées — pas un jugement de qualité. */
+export type SmoothnessLabel = 'smooth' | 'mixed' | 'choppy' | 'idle';
 
 export interface PathQualityMetrics {
   pathEfficiency: number;
@@ -114,11 +115,18 @@ export function evaluatePathQuality(prices: number[]): PathQualityMetrics | null
   if (eff === null) return null;
   const pullback = computePullbackDepth(prices);
   const monotonicity = computeMonotonicity(prices);
+
+  // Flat series: Σ|Δp|=0 means all prices identical (market closed / data frozen).
+  // computePathEfficiency returns 1 for flat, which would be misclassified as 'smooth'.
+  let totalVariation = 0;
+  for (let i = 1; i < prices.length; i++) totalVariation += Math.abs(prices[i] - prices[i - 1]);
+  const isFlat = totalVariation === 0;
+
   return {
     pathEfficiency: eff,
     pullbackDepth: pullback,
     monotonicity,
-    smoothnessLabel: classifySmoothness(eff, pullback),
+    smoothnessLabel: isFlat ? 'idle' : classifySmoothness(eff, pullback),
     n: prices.length,
   };
 }
