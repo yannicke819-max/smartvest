@@ -43,7 +43,7 @@ export function WelcomeBanner() {
   function dismiss() {
     try {
       localStorage.setItem(STORAGE_KEY, '1');
-    } catch {}
+    } catch { /* localStorage indisponible (SSR, private browsing) */ }
     setVisible(false);
   }
 
