@@ -68,13 +68,13 @@ export interface PathQualityMetric {
   pathEfficiency: number;
   pullbackDepth: number;
   monotonicity: number;
-  smoothnessLabel: 'smooth' | 'mixed' | 'choppy';
+  smoothnessLabel: 'smooth' | 'mixed' | 'choppy' | 'idle';
   n: number;
 }
 
 export interface PathQualityByTf {
   overallEfficiency: number | null;
-  overallSmoothness: 'smooth' | 'mixed' | 'choppy' | null;
+  overallSmoothness: 'smooth' | 'mixed' | 'choppy' | 'idle' | null;
   tf5m: PathQualityMetric | null;
   tf10m: PathQualityMetric | null;
   tf15m: PathQualityMetric | null;

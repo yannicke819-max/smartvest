@@ -563,6 +563,13 @@ function PathBadge({ pq }: { pq: PathQualityByTf | null }) {
       </span>
     );
   }
+  if (pq.overallSmoothness === 'idle') {
+    return (
+      <span title="Données figées (marché fermé ou prix constant) — path quality non évaluable" className="cursor-help opacity-40">
+        ⚪
+      </span>
+    );
+  }
   const emoji =
     pq.overallSmoothness === 'smooth' ? '🟢'
     : pq.overallSmoothness === 'mixed' ? '🟡'
@@ -657,6 +664,11 @@ function PathLegend() {
       emoji: '🔴',
       label: 'Choppy',
       tooltip: 'Path bloqué — efficiency<40% OU pullback>2%. Pump-and-dump probable. Rejeté par le gate path quality.',
+    },
+    {
+      emoji: '⚪',
+      label: 'Idle',
+      tooltip: 'Données figées — marché fermé ou prix constants. Path non évaluable, exclu des statistiques.',
     },
   ];
   return (

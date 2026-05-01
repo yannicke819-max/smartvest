@@ -58,8 +58,8 @@ export interface PathQualityByTf {
   tf1h: PathQualityMetrics | null;
   /** Path efficiency moyenne pondérée sur les TFs disponibles. */
   overallEfficiency: number | null;
-  /** Smooth si toutes les TFs dispos sont smooth. Choppy si au moins une choppy. */
-  overallSmoothness: 'smooth' | 'mixed' | 'choppy' | null;
+  /** Smooth si tous les TFs actifs sont smooth. Choppy si ≥1 choppy. Idle si tous les TFs sont figés (données = marché fermé). */
+  overallSmoothness: 'smooth' | 'mixed' | 'choppy' | 'idle' | null;
 }
 
 /**
@@ -542,13 +542,16 @@ function summarizePathQuality(byTf: {
   const dispos = [byTf.tf5m, byTf.tf10m, byTf.tf15m, byTf.tf30m, byTf.tf1h].filter(
     (m): m is PathQualityMetrics => m !== null,
   );
-  const overallEfficiency = dispos.length > 0
-    ? dispos.reduce((s, m) => s + m.pathEfficiency, 0) / dispos.length
+  // Exclude idle TFs (flat/frozen prices) from efficiency average and smoothness logic.
+  const activeTfs = dispos.filter((m) => m.smoothnessLabel !== 'idle');
+  const overallEfficiency = activeTfs.length > 0
+    ? activeTfs.reduce((s, m) => s + m.pathEfficiency, 0) / activeTfs.length
     : null;
-  let overallSmoothness: 'smooth' | 'mixed' | 'choppy' | null = null;
+  let overallSmoothness: 'smooth' | 'mixed' | 'choppy' | 'idle' | null = null;
   if (dispos.length > 0) {
-    if (dispos.some((m) => m.smoothnessLabel === 'choppy')) overallSmoothness = 'choppy';
-    else if (dispos.every((m) => m.smoothnessLabel === 'smooth')) overallSmoothness = 'smooth';
+    if (dispos.every((m) => m.smoothnessLabel === 'idle')) overallSmoothness = 'idle';
+    else if (activeTfs.some((m) => m.smoothnessLabel === 'choppy')) overallSmoothness = 'choppy';
+    else if (activeTfs.every((m) => m.smoothnessLabel === 'smooth')) overallSmoothness = 'smooth';
     else overallSmoothness = 'mixed';
   }
   return { ...byTf, overallEfficiency, overallSmoothness };
