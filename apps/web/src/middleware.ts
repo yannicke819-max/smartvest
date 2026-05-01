@@ -2,6 +2,15 @@ import { type NextRequest, NextResponse } from 'next/server';
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
 
 const PUBLIC_PATHS = ['/sign-in', '/auth/callback'];
+const ONBOARDING_PATH = '/onboarding';
+const ONBOARDING_COOKIE = 'sv_onboarded_v1';
+const ONBOARDING_SKIP_PATHS = [
+  '/sign-in',
+  '/auth/callback',
+  '/onboarding',
+  '/legal',
+  '/help',
+];
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -45,6 +54,16 @@ export async function middleware(request: NextRequest) {
     const signIn = new URL('/sign-in', request.url);
     signIn.searchParams.set('next', pathname);
     return NextResponse.redirect(signIn);
+  }
+
+  // Onboarding guard : redirige les nouveaux utilisateurs vers /onboarding.
+  // Exempté pour les chemins légaux, aide, et /onboarding lui-même.
+  const skipOnboarding = ONBOARDING_SKIP_PATHS.some((p) => pathname.startsWith(p));
+  if (!skipOnboarding) {
+    const onboardingCookie = request.cookies.get(ONBOARDING_COOKIE);
+    if (!onboardingCookie) {
+      return NextResponse.redirect(new URL(ONBOARDING_PATH, request.url));
+    }
   }
 
   return response;

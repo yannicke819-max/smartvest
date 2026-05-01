@@ -44,7 +44,7 @@ const LEVELS: Array<{
 ];
 
 export function StepExperience() {
-  const { firstName, experience, setExperience, next } = useOnboardingStore();
+  const { experience, setExperience, next } = useOnboardingStore();
 
   return (
     <WizardShell
@@ -55,9 +55,7 @@ export function StepExperience() {
       <div className="space-y-4">
         <div>
           <h2 className="text-lg font-semibold">
-            {firstName
-              ? `${firstName}, quel est votre niveau en investissement ?`
-              : "Quel est votre niveau en investissement ?"}
+            Quel est votre niveau en investissement ?
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">
             Cela module la complexité des simulations. Pas de bonne ou mauvaise réponse.

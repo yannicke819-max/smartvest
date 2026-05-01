@@ -1,9 +1,59 @@
 'use server';
 
+import { cookies } from 'next/headers';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 import type { RiskProfileId } from '@smartvest/domain';
-import type { PortfolioType } from '@smartvest/shared-types';
+import type { PortfolioType, ExperienceLevel, ToleranceOption } from '@smartvest/shared-types';
 import type { ProfileScoreResult } from '@smartvest/portfolio-engine';
+
+const ONBOARDING_COOKIE = 'sv_onboarded_v1';
+
+export async function completeOnboarding(
+  level: ExperienceLevel,
+  tolerance: ToleranceOption,
+): Promise<void> {
+  const supabase = createSupabaseServerClient();
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+  if (authError || !user) throw new Error('Utilisateur non authentifié.');
+
+  await supabase.from('user_onboarding').upsert({
+    user_id: user.id,
+    level,
+    risk_tolerance: tolerance,
+    completed_at: new Date().toISOString(),
+    skipped_at: null,
+    updated_at: new Date().toISOString(),
+  });
+
+  // Cookie 30 jours — middleware guard lira ce cookie.
+  const jar = await cookies();
+  jar.set(ONBOARDING_COOKIE, 'done', {
+    path: '/',
+    maxAge: 60 * 60 * 24 * 30,
+    sameSite: 'lax',
+    httpOnly: true,
+  });
+}
+
+export async function skipOnboarding(): Promise<void> {
+  const supabase = createSupabaseServerClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (user) {
+    await supabase.from('user_onboarding').upsert({
+      user_id: user.id,
+      skipped_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+  }
+
+  // Cookie session uniquement (pas de maxAge) → effacé à la fermeture du navigateur.
+  const jar = await cookies();
+  jar.set(ONBOARDING_COOKIE, 'skipped', {
+    path: '/',
+    sameSite: 'lax',
+    httpOnly: true,
+  });
+}
 
 interface OnboardingPayload {
   baseCurrency: string;
