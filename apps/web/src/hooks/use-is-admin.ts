@@ -14,8 +14,18 @@
 import { useEffect, useState } from 'react';
 import { createSupabaseBrowserClient } from '@/lib/supabase/client';
 
-export function useIsAdmin(): boolean {
-  const [isAdmin, setIsAdmin] = useState(false);
+export interface AdminStatus {
+  isAdmin: boolean;
+  isLoaded: boolean;
+}
+
+/**
+ * Returns admin status with explicit loading state. Use this when you need to
+ * differentiate "still checking" from "confirmed not admin" (e.g. before
+ * redirecting non-admins from a guarded page).
+ */
+export function useAdminStatus(): AdminStatus {
+  const [state, setState] = useState<AdminStatus>({ isAdmin: false, isLoaded: false });
 
   useEffect(() => {
     let cancelled = false;
@@ -23,13 +33,17 @@ export function useIsAdmin(): boolean {
       const supabase = createSupabaseBrowserClient();
       const { data } = await supabase.auth.getUser();
       const user = data.user;
-      if (cancelled || !user) return;
+      if (cancelled) return;
+      if (!user) {
+        setState({ isAdmin: false, isLoaded: true });
+        return;
+      }
 
       const role = (user.app_metadata?.role ?? user.user_metadata?.role) as
         | string
         | undefined;
       if (role === 'admin') {
-        setIsAdmin(true);
+        setState({ isAdmin: true, isLoaded: true });
         return;
       }
 
@@ -38,14 +52,21 @@ export function useIsAdmin(): boolean {
         .split(',')
         .map((s) => s.trim().toLowerCase())
         .filter(Boolean);
-      if (user.email && allowed.includes(user.email.toLowerCase())) {
-        setIsAdmin(true);
-      }
+      const isAdmin = !!user.email && allowed.includes(user.email.toLowerCase());
+      setState({ isAdmin, isLoaded: true });
     })();
     return () => {
       cancelled = true;
     };
   }, []);
 
-  return isAdmin;
+  return state;
+}
+
+/**
+ * Backwards-compat boolean variant. Returns `false` during initial load — do
+ * not use for redirect guards (race condition on first paint).
+ */
+export function useIsAdmin(): boolean {
+  return useAdminStatus().isAdmin;
 }
