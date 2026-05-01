@@ -653,7 +653,11 @@ function EquityCurveTab({ botId }: { botId: string }) {
           {totalReturn >= 0 ? '+' : ''}{totalReturn.toFixed(2)}%
         </span>
       </div>
-      <div className="h-72 w-full">
+      <div
+        className="h-72 w-full"
+        role="img"
+        aria-label={`Courbe equity sur ${curve.length} jours : départ $${firstEquity.toFixed(0)}, fin $${lastEquity.toFixed(0)}, ${totalReturn >= 0 ? 'gain' : 'perte'} de ${Math.abs(totalReturn).toFixed(2)}%`}
+      >
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={data} margin={{ top: 8, right: 12, bottom: 8, left: 8 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="currentColor" opacity={0.1} />
@@ -686,8 +690,37 @@ function EquityCurveTab({ botId }: { botId: string }) {
           </LineChart>
         </ResponsiveContainer>
       </div>
+
+      <table className="sr-only" aria-label="Données de la courbe equity">
+        <caption>{`Courbe equity — ${curve.length} jours (échantillon)`}</caption>
+        <thead>
+          <tr>
+            <th scope="col">Date</th>
+            <th scope="col">Equity ($)</th>
+            <th scope="col">P&amp;L cumulé ($)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sampleEquityPoints(data).map((p) => (
+            <tr key={p.t}>
+              <td>{new Date(p.t).toLocaleDateString('fr-FR')}</td>
+              <td>{p.equity.toFixed(2)}</td>
+              <td>{p.pnl.toFixed(2)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
+}
+
+function sampleEquityPoints<T extends { t: number }>(points: T[]): T[] {
+  if (points.length <= 10) return points;
+  const step = Math.max(1, Math.floor(points.length / 10));
+  const sampled = points.filter((_, i) => i % step === 0);
+  const last = points[points.length - 1]!;
+  if (sampled[sampled.length - 1] !== last) sampled.push(last);
+  return sampled;
 }
 
 // ═══════════════════════════════════════════════════════════════════
