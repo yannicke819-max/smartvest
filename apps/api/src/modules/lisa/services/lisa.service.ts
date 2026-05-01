@@ -274,6 +274,27 @@ export class LisaService {
       gainers_min_path_efficiency: pick('gainers_min_path_efficiency', 'gainersMinPathEfficiency', existing?.gainers_min_path_efficiency ?? 0.5),
     };
 
+    // Validation des valeurs numériques pour renvoyer une 400 lisible plutôt
+    // qu'un cryptique "numeric field overflow" venu de Postgres. La DB elle
+    // peut accepter jusqu'à numeric(8,4) = 9999.9999 après migration 0100,
+    // mais on cap côté API à des valeurs sensées (≤ 9999%) pour bloquer la
+    // saisie accidentelle de 1e9.
+    const validateReturnTarget = (key: string, value: unknown): void => {
+      if (value == null) return;
+      const n = typeof value === 'string' ? parseFloat(value) : Number(value);
+      if (!Number.isFinite(n)) {
+        throw new BadRequestException(`${key} : valeur numérique invalide.`);
+      }
+      if (n < -100 || n > 9999) {
+        throw new BadRequestException(
+          `${key} : valeur ${n} hors plage acceptée (-100 à 9999%).`,
+        );
+      }
+    };
+    validateReturnTarget('return_target_daily_pct', merged.return_target_daily_pct);
+    validateReturnTarget('return_target_monthly_pct', merged.return_target_monthly_pct);
+    validateReturnTarget('return_target_annual_pct', merged.return_target_annual_pct);
+
     // Validation : auto_approve exige uniquement un portefeuille de simulation
     // (déjà vérifié plus haut). L'expiration est suggestive côté UI mais non
     // bloquante ici — l'utilisateur peut laisser tourner sans deadline s'il
