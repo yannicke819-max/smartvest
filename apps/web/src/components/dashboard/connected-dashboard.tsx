@@ -27,6 +27,7 @@ import { SkeletonCard } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/states/empty-state';
 import { Button } from '@/components/ui/button';
 import { ErrorState } from '@/components/states/error-state';
+import { HelpTip } from '@/components/ui/help-tip';
 
 export function ConnectedDashboard() {
   const router = useRouter();
@@ -152,6 +153,11 @@ export function ConnectedDashboard() {
             <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
               {activePortfolio?.name ?? 'Mon tableau de bord'}
             </h1>
+            <HelpTip
+              text="Vue d'ensemble de votre portefeuille actif : valeur de marché, P&L latent, alertes et répartition par classe d'actifs."
+              glossarySlug="portefeuille"
+              side="right"
+            />
             {(activePortfolio as { is_simulation?: boolean } | null)?.is_simulation && (
               <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
                 <FlaskConical className="h-3 w-3" />

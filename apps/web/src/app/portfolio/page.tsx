@@ -12,6 +12,7 @@ import { SkeletonCard } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/states/empty-state';
 import { ErrorState } from '@/components/states/error-state';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { HelpTip } from '@/components/ui/help-tip';
 
 export default function PortfolioPage() {
   const { data: portfolios, isLoading, error, refetch } = usePortfolios();
@@ -42,7 +43,14 @@ export default function PortfolioPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Mon portefeuille</h1>
+          <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
+            Mon portefeuille
+            <HelpTip
+              text="Un portefeuille regroupe l'ensemble de vos actifs financiers. Vous pouvez en créer plusieurs : un réel et un ou plusieurs en simulation."
+              glossarySlug="portefeuille"
+              side="right"
+            />
+          </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Gérez vos portefeuilles et les comptes associés.
           </p>
@@ -81,7 +89,13 @@ export default function PortfolioPage() {
             <Card key={p.id} className="transition-shadow hover:shadow-md">
               <CardHeader>
                 <CardTitle className="text-base">{p.name}</CardTitle>
-                <CardDescription>Devise : {p.base_currency}</CardDescription>
+                <CardDescription className="flex items-center gap-1">
+                  Devise : {p.base_currency}
+                  <HelpTip
+                    text="Devise de référence pour le calcul des P&L et de la valorisation globale. Les actifs en devise étrangère sont convertis à cours du jour."
+                    side="right"
+                  />
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
                 {p.description ? (
