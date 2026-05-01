@@ -1,7 +1,10 @@
+'use client';
+
 import type { Route } from 'next';
 import Link from 'next/link';
 import { BookOpen, FileSearch, Wrench, Settings, BookMarked } from 'lucide-react';
 import { BackButton } from '@/components/ui/back-button';
+import { useIsAdmin } from '@/hooks/use-is-admin';
 import { HELP_DOCS, type HelpDocEntry } from '@/lib/help-docs';
 import { GLOSSARY_TERMS } from '@/lib/glossary-terms';
 
@@ -15,11 +18,13 @@ const CATEGORY_META: Record<HelpDocEntry['category'], { label: string; Icon: typ
 const CATEGORY_ORDER: HelpDocEntry['category'][] = ['guide', 'concept', 'audit', 'admin'];
 
 export default function HelpIndexPage() {
+  const isAdmin = useIsAdmin();
   const listed = HELP_DOCS.filter((d) => d.listed);
   const grouped = CATEGORY_ORDER.map((cat) => ({
     cat,
     items: listed.filter((d) => d.category === cat),
-  })).filter((g) => g.items.length > 0);
+  })).filter((g) => g.items.length > 0)
+    .filter((g) => isAdmin || (g.cat !== 'admin' && g.cat !== 'audit'));
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 p-6">
@@ -37,10 +42,10 @@ export default function HelpIndexPage() {
         const { label, Icon } = CATEGORY_META[cat];
         return (
           <section key={cat} className="space-y-2">
-            <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              <Icon className="h-3.5 w-3.5" />
+            <h2 className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              <Icon className="h-3.5 w-3.5" aria-hidden />
               {label}
-            </div>
+            </h2>
             <div className="rounded-lg border divide-y">
               {items.map((doc) => (
                 <Link
@@ -59,10 +64,10 @@ export default function HelpIndexPage() {
 
       {/* Glossaire */}
       <section className="space-y-2">
-        <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          <BookMarked className="h-3.5 w-3.5" />
+        <h2 className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <BookMarked className="h-3.5 w-3.5" aria-hidden />
           Glossaire
-        </div>
+        </h2>
         <Link
           href={'/help/glossaire' as Route}
           className="flex items-center justify-between rounded-lg border px-4 py-3 transition-colors hover:bg-muted/30"
