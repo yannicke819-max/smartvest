@@ -1,0 +1,26 @@
+{
+  "generated_at": "2026-05-01T00:00:00Z",
+  "algo_version": "v1",
+  "note": "Seed initial mega12+crypto_tradable. Exécuter scripts/audit-universe-legacy.ts après premier déploiement pour inclure sp500+nasdaq100.",
+  "watchlist_hash_mega12_crypto": "run_audit_script_to_populate",
+  "exchanges": {
+    "US": {
+      "asset_class": "equity",
+      "source": "universes.ts MEGA12_UNIVERSE",
+      "symbols": [
+        "AAPL.US", "MSFT.US", "NVDA.US", "META.US", "GOOGL.US", "TSLA.US",
+        "AMD.US", "AVGO.US", "SPY.US", "QQQ.US", "IWM.US", "XOM.US"
+      ]
+    },
+    "BINANCE": {
+      "asset_class": "crypto",
+      "source": "migration 0091 crypto_tradable",
+      "symbols": [
+        "BTC-USD.CC", "ETH-USD.CC", "SOL-USD.CC"
+      ]
+    }
+  },
+  "total_symbols": 15,
+  "sp500_pending": true,
+  "nasdaq100_pending": true
+}

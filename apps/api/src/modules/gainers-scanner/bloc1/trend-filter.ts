@@ -3,6 +3,10 @@
  *
  * Filtre binaire : EMA50 daily > EMA200 daily ⇒ Golden Cross établi.
  * Empiriquement : 41% → 54% win-rate sur les setups long avec ce filtre actif.
+ *
+ * TODO(PR6-shadow): vérifier l'affirmation "41%→54%" sur le dataset shadow run.
+ * Documenter le dataset source (nb sessions, nb signaux ACCEPT, date range)
+ * dans docs/adr/ADR-005-gainers-algo-v1.md §Shadow mode — rapport G*Power.
  */
 
 import { CandidateRejectReason, TrendFilterKind } from '../domain/gainers-enums';
