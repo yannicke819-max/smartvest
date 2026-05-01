@@ -48,6 +48,8 @@ export interface GainersScoredCandidate {
   /** null si REJECT, valeur composite [0..1] si ACCEPT. */
   compositeScore: number | null;
   decision: 'ACCEPT' | 'REJECT';
+  /** Signal d'entrée BLOC 3 — null avant évaluation BLOC 3 ou si REJECT. */
+  entrySignal?: GainersEntrySignal | null;
   rejectReason: CandidateRejectReason | null;
   /** BLOC 2 enrichissements (null avant BLOC 2). */
   spreadProxy: number | null;

@@ -1,12 +1,19 @@
 /**
- * BLOC 2 — Spread proxy (ADR-005 §1bis, cap 0.30%).
+ * BLOC 2 — Spread proxy v2 (synchro algo item #9 — formule canonique locked).
  *
- * Implémentation : médiane de (H-L)×0.5/close sur les N dernières bougies
- * ayant un volume > 0. Inspiré de Corwin & Schultz (2012) "A Simple Way to
- * Estimate Bid-Ask Spreads from Daily High and Low Prices", simplifié pour
- * l'intraday 1m/5m.
+ * Formule : median_5candles( (H - L) / ((H + L) / 2) )
+ *   - Numérateur  : range absolu H-L
+ *   - Dénominateur: mid-price = (H+L)/2 (Corwin-Schultz 2012 JF, eq. approchée)
+ *   - Correction PR4 vs PR3 : ancien code utilisait (H-L)*0.5/close → sous-estimait 2×
  *
- * Toutes les fonctions sont pures — pas d'I/O.
+ * Volume floor : ignorer bougies dont vol < p20(volumes_window) pour éviter
+ * biais des bougies mortes (illiquidité transitoire, auction pré-marché).
+ *
+ * Seuils gate (asset-class-aware, ADR-005 §synchro-v2) :
+ *   - Equity  : spread ≤ 0.004 (0.40%)
+ *   - Crypto  : spread ≤ 0.006 (0.60%)
+ *
+ * Fenêtre bougies : param explicite (1h ou daily selon orchestrateur).
  */
 
 import { SpreadProxySource } from '../domain/gainers-enums';
@@ -20,23 +27,35 @@ export interface CandleOHLCV {
 }
 
 export interface SpreadProxyResult {
-  /** Spread proxy en fraction décimale (0.003 = 0.30%). */
+  /** Spread proxy en fraction décimale (0.004 = 0.40%). */
   spreadFraction: number;
   source: SpreadProxySource;
-  /** Nombre de bougies avec vol > 0 effectivement utilisées dans la médiane. */
+  /** Nombre de bougies retenues après filtre p20 volume. */
   usableCandles: number;
 }
 
 export interface SpreadProxyConfig {
-  /** Nombre minimum de bougies avec vol > 0 requis pour la médiane. Défaut 3. */
-  minVolCandles: number;
-  /** Cap absolu appliqué au résultat (fallback statique si < minVolCandles). Défaut 0.003. */
-  spreadCapFraction: number;
+  /** Nombre de bougies les plus récentes à utiliser pour la médiane (défaut 5). */
+  windowCandles: number;
+  /**
+   * Taille de la fenêtre pour calculer p20 du volume (défaut 20).
+   * Si candles.length < volumePercentileWindow, utilise toutes les candles dispo.
+   */
+  volumePercentileWindow: number;
+  /** Nombre minimum de bougies utilisables requis pour la médiane (défaut 3). */
+  minUsableCandles: number;
+  /** Seuil de rejet equity (défaut 0.004 = 0.40%). */
+  spreadCapEquityFraction: number;
+  /** Seuil de rejet crypto (défaut 0.006 = 0.60%). */
+  spreadCapCryptoFraction: number;
 }
 
 export const DEFAULT_SPREAD_PROXY_CONFIG: SpreadProxyConfig = {
-  minVolCandles: 3,
-  spreadCapFraction: 0.003,
+  windowCandles: 5,
+  volumePercentileWindow: 20,
+  minUsableCandles: 3,
+  spreadCapEquityFraction: 0.004,
+  spreadCapCryptoFraction: 0.006,
 };
 
 function median(values: number[]): number {
@@ -46,40 +65,70 @@ function median(values: number[]): number {
   return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
 }
 
+/** Calcule le k-ième percentile (interpolation linéaire). */
+export function percentile(values: number[], k: number): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const pos = (k / 100) * (sorted.length - 1);
+  const lower = Math.floor(pos);
+  const frac = pos - lower;
+  if (lower + 1 >= sorted.length) return sorted[lower];
+  return sorted[lower] + frac * (sorted[lower + 1] - sorted[lower]);
+}
+
 /**
  * Calcule le spread proxy sur un lot de bougies.
  *
- * Si les bougies sont des 1m → source HL_1M_MEDIAN.
- * Si les bougies sont des 5m → source HL_5M_MEDIAN.
- * Si < minVolCandles bougies utilisables → STATIC_CAP_FALLBACK.
+ * @param candles - Bougies dans l'ordre chronologique (la dernière = la plus récente).
+ *                  Recommandé : 20+ bougies pour un p20 fiable.
+ * @param resolution - Résolution des bougies : '1h' | 'daily' | '1m'
+ * @param marketClass - Détermine le cap de rejet (equity vs crypto).
  */
 export function computeSpreadProxy(
   candles: CandleOHLCV[],
-  resolution: '1m' | '5m',
+  resolution: '1m' | '1h' | 'daily',
+  marketClass: 'equity' | 'crypto',
   cfg: SpreadProxyConfig = DEFAULT_SPREAD_PROXY_CONFIG,
 ): SpreadProxyResult {
-  const usable = candles.filter((c) => c.volume > 0 && c.close > 0);
+  const spreadCap = marketClass === 'crypto' ? cfg.spreadCapCryptoFraction : cfg.spreadCapEquityFraction;
 
-  if (usable.length < cfg.minVolCandles) {
+  if (candles.length === 0) {
+    return { spreadFraction: spreadCap, source: SpreadProxySource.STATIC_CAP_FALLBACK, usableCandles: 0 };
+  }
+
+  // p20 du volume sur la fenêtre de percentile (toutes les bougies dispo)
+  const volWindow = candles.slice(-cfg.volumePercentileWindow);
+  const p20Vol = percentile(volWindow.map((c) => c.volume), 20);
+
+  // Bougies récentes pour la médiane spread
+  const recentCandles = candles.slice(-cfg.windowCandles);
+  const usable = recentCandles.filter(
+    (c) => c.volume > 0 && c.volume >= p20Vol && c.high > 0 && c.low > 0 && c.high > c.low,
+  );
+
+  if (usable.length < cfg.minUsableCandles) {
     return {
-      spreadFraction: cfg.spreadCapFraction,
+      spreadFraction: spreadCap,
       source: SpreadProxySource.STATIC_CAP_FALLBACK,
       usableCandles: usable.length,
     };
   }
 
-  const halfSpreads = usable.map((c) => (c.high - c.low) * 0.5 / c.close);
-  const medianHalfSpread = median(halfSpreads);
-  // Pas de cap ici — la comparaison vs spreadCapFraction est faite par le caller (gate SPREAD_TOO_WIDE).
+  // Formule canonique : (H - L) / ((H + L) / 2)
+  const spreads = usable.map((c) => (c.high - c.low) / ((c.high + c.low) / 2));
+  const medianSpread = median(spreads);
 
-  return {
-    spreadFraction: medianHalfSpread,
-    source: resolution === '1m' ? SpreadProxySource.HL_1M_MEDIAN : SpreadProxySource.HL_5M_MEDIAN,
-    usableCandles: usable.length,
-  };
+  const source: SpreadProxySource =
+    resolution === '1m' ? SpreadProxySource.HL_1M_MEDIAN : SpreadProxySource.HL_5M_MEDIAN;
+
+  return { spreadFraction: medianSpread, source, usableCandles: usable.length };
 }
 
-/** Détermine si le spread proxy dépasse le cap (rejet BLOC 2). */
-export function isSpreadTooWide(result: SpreadProxyResult, capFraction: number): boolean {
-  return result.spreadFraction > capFraction;
+export function isSpreadTooWide(
+  result: SpreadProxyResult,
+  marketClass: 'equity' | 'crypto',
+  cfg: SpreadProxyConfig = DEFAULT_SPREAD_PROXY_CONFIG,
+): boolean {
+  const cap = marketClass === 'crypto' ? cfg.spreadCapCryptoFraction : cfg.spreadCapEquityFraction;
+  return result.spreadFraction > cap;
 }

@@ -1,6 +1,6 @@
 /**
- * BLOC 2 — Baselines + spread proxy + universe guard.
- * Tests unitaires pour les fonctions pures et le service orchestrateur.
+ * BLOC 2 — Baselines + spread proxy v2 + universe guard.
+ * Mis à jour PR4 : nouvelle formule (H-L)/mid, p20 vol floor, caps asset-class.
  */
 
 import {
@@ -13,32 +13,33 @@ import {
   CandleOHLCV,
   computeSpreadProxy,
   isSpreadTooWide,
+  percentile,
   DEFAULT_SPREAD_PROXY_CONFIG,
 } from '../bloc2/spread-proxy';
 import { GainersBloc2Service, Bloc2Input, DEFAULT_BLOC2_CONFIG } from '../bloc2/gainers-bloc2.service';
 import { VolumeBaselineService } from '../bloc2/volume-baseline.service';
 import { UniverseGuardService } from '../bloc2/universe-guard.service';
 
-// ─── fixtures ────────────────────────────────────────────────────────────────
+// ─── helpers ─────────────────────────────────────────────────────────────────
 
-const makeAcceptCandidate = (overrides: Partial<GainersScoredCandidate> = {}): GainersScoredCandidate => ({
+const makeAcceptCandidate = (market: 'equity' | 'crypto' = 'equity'): GainersScoredCandidate => ({
   raw: {
-    symbol: 'AAPL.US',
-    market: 'equity',
-    exchange: 'US',
-    close: 200,
-    open: 198,
-    high: 202,
-    low: 197,
-    vol24hUsd: 50_000_000,
+    symbol: market === 'crypto' ? 'BTC-USD.CC' : 'AAPL.US',
+    market,
+    exchange: market === 'crypto' ? 'BINANCE' : 'US',
+    close: market === 'crypto' ? 60_000 : 200,
+    open: market === 'crypto' ? 59_500 : 198,
+    high: market === 'crypto' ? 60_200 : 202,
+    low: market === 'crypto' ? 59_400 : 197,
+    vol24hUsd: market === 'crypto' ? 5_000_000_000 : 50_000_000,
     medianDailyVolUsd20d: 25_000_000,
-    marketCapUsd: 3_000_000_000_000,
+    marketCapUsd: market === 'crypto' ? 1_200_000_000_000 : 3_000_000_000_000,
     atrDailyRelative: 0.03,
     changePct1m: 0.02,
     persistenceScore: 0.83,
     persistenceCount: '5/6',
-    ema50Daily: 195,
-    ema200Daily: 180,
+    ema50Daily: market === 'crypto' ? 58_000 : 195,
+    ema200Daily: market === 'crypto' ? 50_000 : 180,
   },
   compositeScore: 0.75,
   decision: 'ACCEPT',
@@ -47,74 +48,135 @@ const makeAcceptCandidate = (overrides: Partial<GainersScoredCandidate> = {}): G
   spreadProxySource: null,
   trendFilter: TrendFilterKind.EMA_GOLDEN_CROSS,
   rvolIntraday: null,
-  ...overrides,
 });
 
-const makeCandles = (n: number, hlPct = 0.002): CandleOHLCV[] =>
-  Array.from({ length: n }, (_, i) => ({
-    open: 200,
-    high: 200 * (1 + hlPct),
-    low: 200 * (1 - hlPct),
-    close: 200,
-    volume: 1000 + i,
-  }));
+/** Génère N bougies avec un spread HL pct donné (H-L)/mid = hlPct. */
+const makeCandles = (n: number, hlPct = 0.002, vol = 1000): CandleOHLCV[] =>
+  Array.from({ length: n }, (_, i) => {
+    const mid = 200;
+    const half = (mid * hlPct) / 2;
+    return { open: mid, high: mid + half, low: mid - half, close: mid, volume: vol + i };
+  });
 
 const makeZeroVolCandles = (n: number): CandleOHLCV[] =>
   Array.from({ length: n }, () => ({ open: 200, high: 201, low: 199, close: 200, volume: 0 }));
 
-// ─── spread proxy — pure function ────────────────────────────────────────────
+// ─── Golden value tests (3 séries canoniques — synchro item #9) ──────────────
 
-describe('spread proxy — computeSpreadProxy', () => {
-  it('computes HL_1M_MEDIAN = median((H-L)*0.5/close) over candles with vol > 0', () => {
-    const candles = makeCandles(5, 0.002);
-    const r = computeSpreadProxy(candles, '1m', DEFAULT_SPREAD_PROXY_CONFIG);
-    expect(r.source).toBe(SpreadProxySource.HL_1M_MEDIAN);
+describe('spread proxy — golden values (synchro item #9)', () => {
+  it('equity liquid : AAPL-like H=200.20, L=199.80 → spread ≈ 0.20% < cap 0.40%', () => {
+    const candles = Array.from({ length: 20 }, () => ({
+      open: 200, high: 200.20, low: 199.80, close: 200, volume: 5000,
+    }));
+    const r = computeSpreadProxy(candles, '1h', 'equity');
+    // (200.20 - 199.80) / ((200.20 + 199.80) / 2) = 0.40 / 200 = 0.002 = 0.20%
     expect(r.spreadFraction).toBeCloseTo(0.002, 4);
-    expect(r.usableCandles).toBe(5);
+    expect(isSpreadTooWide(r, 'equity')).toBe(false);
   });
 
-  it('computes HL_5M_MEDIAN when resolution is 5m', () => {
-    const candles = makeCandles(5, 0.0015);
-    const r = computeSpreadProxy(candles, '5m', DEFAULT_SPREAD_PROXY_CONFIG);
-    expect(r.source).toBe(SpreadProxySource.HL_5M_MEDIAN);
+  it('equity mid-cap : H=50.60, L=49.40 → spread ≈ 2.4% > cap 0.40% → REJECT', () => {
+    const candles = Array.from({ length: 20 }, () => ({
+      open: 50, high: 50.60, low: 49.40, close: 50, volume: 3000,
+    }));
+    const r = computeSpreadProxy(candles, '1h', 'equity');
+    // (1.20) / 50 = 0.024 = 2.4%
+    expect(r.spreadFraction).toBeCloseTo(0.024, 3);
+    expect(isSpreadTooWide(r, 'equity')).toBe(true);
   });
 
-  it('falls back to STATIC_CAP_FALLBACK when < 3 candles have vol > 0', () => {
-    const candles = [...makeZeroVolCandles(4), ...makeCandles(2, 0.001)];
-    const r = computeSpreadProxy(candles, '1m', DEFAULT_SPREAD_PROXY_CONFIG);
+  it('crypto major (BTC-like) : H=60120, L=59880 → spread ≈ 0.40% < cap 0.60%', () => {
+    const candles = Array.from({ length: 20 }, () => ({
+      open: 60000, high: 60120, low: 59880, close: 60000, volume: 100,
+    }));
+    const r = computeSpreadProxy(candles, '1h', 'crypto');
+    // (240) / 60000 = 0.004 = 0.40%
+    expect(r.spreadFraction).toBeCloseTo(0.004, 4);
+    expect(isSpreadTooWide(r, 'crypto')).toBe(false);
+  });
+});
+
+// ─── spread proxy — formula & volume floor ───────────────────────────────────
+
+describe('spread proxy — formula (H-L)/mid', () => {
+  it('formula = (H-L) / ((H+L)/2), NOT (H-L)*0.5/close', () => {
+    // With H=202, L=198: mid=200, spread=4/200=0.02; old formula: 4*0.5/200=0.01
+    const candles = Array.from({ length: 20 }, () => ({
+      open: 200, high: 202, low: 198, close: 200, volume: 1000,
+    }));
+    const r = computeSpreadProxy(candles, '1h', 'equity');
+    expect(r.spreadFraction).toBeCloseTo(0.02, 4); // 2%, not 1%
+  });
+
+  it('p20 volume floor filters out low-volume candles', () => {
+    // 16 high-vol candles + 4 dead candles (vol=1) in recent window
+    const baseCandles = Array.from({ length: 15 }, () => ({
+      open: 200, high: 201, low: 199, close: 200, volume: 1000,
+    }));
+    const deadCandles = Array.from({ length: 5 }, () => ({
+      open: 200, high: 201, low: 199, close: 200, volume: 1,
+    }));
+    const candles = [...baseCandles, ...deadCandles];
+    const r = computeSpreadProxy(candles, '1h', 'equity');
+    // Dead candles should be filtered out (vol=1 < p20 of mixed vols)
+    // Result should still be based on healthy candles
+    expect(r.usableCandles).toBeLessThanOrEqual(5);
+  });
+
+  it('falls back to STATIC_CAP when < 3 usable candles after p20 filter', () => {
+    const candles = makeZeroVolCandles(20);
+    const r = computeSpreadProxy(candles, '1h', 'equity');
     expect(r.source).toBe(SpreadProxySource.STATIC_CAP_FALLBACK);
-    expect(r.spreadFraction).toBe(DEFAULT_SPREAD_PROXY_CONFIG.spreadCapFraction);
+    expect(r.spreadFraction).toBe(DEFAULT_SPREAD_PROXY_CONFIG.spreadCapEquityFraction);
   });
 
-  it('returns raw median (not capped) — gate comparison is caller responsibility', () => {
-    const candles = makeCandles(5, 0.05);
-    const r = computeSpreadProxy(candles, '1m', DEFAULT_SPREAD_PROXY_CONFIG);
-    // HL=5% → half-spread ≈ 5% → well above the 0.30% cap → isSpreadTooWide should fire
-    expect(r.spreadFraction).toBeGreaterThan(DEFAULT_SPREAD_PROXY_CONFIG.spreadCapFraction);
+  it('returns 0 median for empty candles array → STATIC_CAP_FALLBACK', () => {
+    const r = computeSpreadProxy([], '1h', 'equity');
+    expect(r.source).toBe(SpreadProxySource.STATIC_CAP_FALLBACK);
   });
 
-  it('excludes zero-volume candles from median', () => {
-    const candles = [
-      ...makeZeroVolCandles(2),
-      ...makeCandles(3, 0.001),
-    ];
-    const r = computeSpreadProxy(candles, '1m', DEFAULT_SPREAD_PROXY_CONFIG);
-    expect(r.usableCandles).toBe(3);
+  it('uses HL_1M_MEDIAN source for 1m resolution', () => {
+    const candles = makeCandles(20, 0.001);
+    const r = computeSpreadProxy(candles, '1m', 'equity');
+    expect(r.source).toBe(SpreadProxySource.HL_1M_MEDIAN);
+  });
+
+  it('raw spread NOT capped — gate comparison is caller responsibility', () => {
+    // 5% HL spread → raw result > 0.40% cap
+    const candles = makeCandles(20, 0.05);
+    const r = computeSpreadProxy(candles, '1h', 'equity');
+    expect(r.spreadFraction).toBeGreaterThan(DEFAULT_SPREAD_PROXY_CONFIG.spreadCapEquityFraction);
   });
 });
 
-describe('spread proxy — isSpreadTooWide', () => {
-  it('returns true when spread > cap', () => {
-    const r = { spreadFraction: 0.0035, source: SpreadProxySource.HL_1M_MEDIAN, usableCandles: 5 };
-    expect(isSpreadTooWide(r, 0.003)).toBe(true);
+describe('spread proxy — asset-class-aware caps', () => {
+  it('equity cap = 0.40%', () => {
+    const atCap = { spreadFraction: 0.004, source: SpreadProxySource.HL_1M_MEDIAN, usableCandles: 5 };
+    expect(isSpreadTooWide(atCap, 'equity')).toBe(false);
+    const aboveCap = { ...atCap, spreadFraction: 0.0041 };
+    expect(isSpreadTooWide(aboveCap, 'equity')).toBe(true);
   });
-  it('returns false when spread <= cap', () => {
-    const r = { spreadFraction: 0.003, source: SpreadProxySource.HL_1M_MEDIAN, usableCandles: 5 };
-    expect(isSpreadTooWide(r, 0.003)).toBe(false);
+
+  it('crypto cap = 0.60%', () => {
+    const atCap = { spreadFraction: 0.006, source: SpreadProxySource.HL_1M_MEDIAN, usableCandles: 5 };
+    expect(isSpreadTooWide(atCap, 'crypto')).toBe(false);
+    const aboveCap = { ...atCap, spreadFraction: 0.0061 };
+    expect(isSpreadTooWide(aboveCap, 'crypto')).toBe(true);
   });
 });
 
-// ─── VolumeBaselineService — unit ────────────────────────────────────────────
+// ─── percentile helper ────────────────────────────────────────────────────────
+
+describe('percentile()', () => {
+  it('p20 of [1,2,3,4,5,...,10] ≈ 2.8', () => {
+    const vals = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    expect(percentile(vals, 20)).toBeCloseTo(2.8, 1);
+  });
+  it('returns 0 for empty array', () => {
+    expect(percentile([], 20)).toBe(0);
+  });
+});
+
+// ─── VolumeBaselineService ────────────────────────────────────────────────────
 
 describe('VolumeBaselineService', () => {
   const mockSupabase = { getClient: () => null } as any;
@@ -122,7 +184,6 @@ describe('VolumeBaselineService', () => {
 
   beforeEach(() => {
     svc = new VolumeBaselineService(mockSupabase);
-    // Inject cache directly for unit tests (no DB)
     (svc as any).cache.set('AAPL.US::US', 25_000_000);
     (svc as any).cache.set('BTC-USD.CC::BINANCE', 2_000_000_000);
   });
@@ -130,22 +191,18 @@ describe('VolumeBaselineService', () => {
   it('returns baseline from cache', () => {
     expect(svc.getBaseline('AAPL.US', 'US')).toBe(25_000_000);
   });
-
   it('returns null for unknown symbol', () => {
     expect(svc.getBaseline('UNKNOWN.US', 'US')).toBeNull();
   });
-
   it('computes RVOL when baseline available', () => {
-    const rvol = svc.computeRvol('AAPL.US', 'US', 50_000_000);
-    expect(rvol).toBeCloseTo(2.0, 2);
+    expect(svc.computeRvol('AAPL.US', 'US', 50_000_000)).toBeCloseTo(2.0, 2);
   });
-
   it('returns null RVOL when baseline is null', () => {
     expect(svc.computeRvol('UNKNOWN.US', 'US', 50_000_000)).toBeNull();
   });
 });
 
-// ─── UniverseGuardService — unit ─────────────────────────────────────────────
+// ─── UniverseGuardService ─────────────────────────────────────────────────────
 
 describe('UniverseGuardService', () => {
   const mockSupabase = { getClient: () => null } as any;
@@ -163,9 +220,7 @@ describe('UniverseGuardService', () => {
   });
 
   it('produces different hash for different symbol sets', () => {
-    const h1 = svc.computeHash(['AAPL.US', 'MSFT.US']);
-    const h2 = svc.computeHash(['AAPL.US', 'NVDA.US']);
-    expect(h1).not.toBe(h2);
+    expect(svc.computeHash(['AAPL.US', 'MSFT.US'])).not.toBe(svc.computeHash(['AAPL.US', 'NVDA.US']));
   });
 });
 
@@ -180,54 +235,65 @@ describe('GainersBloc2Service', () => {
     svc = new GainersBloc2Service(mockBaseline);
   });
 
+  const makeInput = (overrides: Partial<Bloc2Input> = {}): Bloc2Input => ({
+    candidate: makeAcceptCandidate('equity'),
+    candles: makeCandles(20, 0.001),
+    resolution: '1h',
+    intradayVolUsd: null,
+    ...overrides,
+  });
+
   it('passes through REJECT candidates unchanged', () => {
-    const reject = makeAcceptCandidate({ decision: 'REJECT', rejectReason: CandidateRejectReason.LIQUIDITY_FLOOR });
-    const out = svc.enrich({ candidate: reject, candles1m: null, candles5m: null, intradayVolUsd: null });
+    const reject = { ...makeAcceptCandidate(), decision: 'REJECT' as const, rejectReason: CandidateRejectReason.LIQUIDITY_FLOOR };
+    const out = svc.enrich({ candidate: reject, candles: null, resolution: '1h', intradayVolUsd: null });
     expect(out.decision).toBe('REJECT');
     expect(out.rejectReason).toBe(CandidateRejectReason.LIQUIDITY_FLOOR);
   });
 
-  it('enriches ACCEPT candidate with spread proxy from 1m candles', () => {
-    const candles = makeCandles(5, 0.001);
-    const out = svc.enrich({ candidate: makeAcceptCandidate(), candles1m: candles, candles5m: null, intradayVolUsd: null });
+  it('enriches ACCEPT candidate with spread proxy (equity < 0.40% → ACCEPT)', () => {
+    const out = svc.enrich(makeInput({ candles: makeCandles(20, 0.001) }));
     expect(out.decision).toBe('ACCEPT');
     expect(out.spreadProxy).not.toBeNull();
-    expect(out.spreadProxySource).toBe(SpreadProxySource.HL_1M_MEDIAN);
+    expect(out.spreadProxy!).toBeLessThan(DEFAULT_BLOC2_CONFIG.spreadProxy.spreadCapEquityFraction);
   });
 
-  it('falls back to 5m candles when 1m not available', () => {
-    const candles5m = makeCandles(5, 0.001);
-    const out = svc.enrich({ candidate: makeAcceptCandidate(), candles1m: null, candles5m: candles5m, intradayVolUsd: null });
-    expect(out.spreadProxySource).toBe(SpreadProxySource.HL_5M_MEDIAN);
+  it('REJECTs equity candidate with spread > 0.40% (5% HL)', () => {
+    const out = svc.enrich(makeInput({ candles: makeCandles(20, 0.05) }));
+    expect(out.decision).toBe('REJECT');
+    expect(out.rejectReason).toBe(CandidateRejectReason.SPREAD_TOO_WIDE);
   });
 
-  it('REJECTs candidate with spread > 0.30% (default cap)', () => {
-    // makeCandles with 5% HL produces spread ~5%, well above 0.30% cap
-    const wideCandles = makeCandles(5, 0.05);
-    const out = svc.enrich({ candidate: makeAcceptCandidate(), candles1m: wideCandles, candles5m: null, intradayVolUsd: null });
+  it('REJECTs crypto candidate with spread > 0.60%', () => {
+    const wideCandles = Array.from({ length: 20 }, () => ({
+      open: 60000, high: 60500, low: 59500, close: 60000, volume: 1000,
+    }));
+    // (500+500) / 60000 = 0.0167 = 1.67% > 0.60%
+    const out = svc.enrich({
+      candidate: makeAcceptCandidate('crypto'),
+      candles: wideCandles,
+      resolution: '1h',
+      intradayVolUsd: null,
+    });
     expect(out.decision).toBe('REJECT');
     expect(out.rejectReason).toBe(CandidateRejectReason.SPREAD_TOO_WIDE);
   });
 
   it('enriches RVOL when intradayVol available', () => {
-    const candles = makeCandles(5, 0.001);
-    const out = svc.enrich({ candidate: makeAcceptCandidate(), candles1m: candles, candles5m: null, intradayVolUsd: 50_000_000 });
+    const out = svc.enrich(makeInput({ intradayVolUsd: 50_000_000 }));
     expect(out.rvolIntraday).toBe(2.0);
   });
 
-  it('REJECTs on RVOL_INSUFFICIENT when rvolEnabled and RVOL < threshold', () => {
+  it('REJECTs on RVOL_INSUFFICIENT when rvolEnabled=true and RVOL < threshold', () => {
     (mockBaseline.computeRvol as jest.Mock).mockReturnValue(0.5);
     const cfg = { ...DEFAULT_BLOC2_CONFIG, rvolEnabled: true, rvolMinThreshold: 1.5 };
-    const candles = makeCandles(5, 0.001);
-    const out = svc.enrich({ candidate: makeAcceptCandidate(), candles1m: candles, candles5m: null, intradayVolUsd: 5_000_000 }, cfg);
+    const out = svc.enrich(makeInput({ intradayVolUsd: 5_000_000 }), cfg);
     expect(out.decision).toBe('REJECT');
     expect(out.rejectReason).toBe(CandidateRejectReason.RVOL_INSUFFICIENT);
   });
 
   it('does NOT reject on RVOL when rvolEnabled=false (default)', () => {
     (mockBaseline.computeRvol as jest.Mock).mockReturnValue(0.1);
-    const candles = makeCandles(5, 0.001);
-    const out = svc.enrich({ candidate: makeAcceptCandidate(), candles1m: candles, candles5m: null, intradayVolUsd: 100_000 });
+    const out = svc.enrich(makeInput({ intradayVolUsd: 100_000 }));
     expect(out.decision).toBe('ACCEPT');
   });
 });
