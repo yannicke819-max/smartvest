@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { apiFetch } from '@/lib/api-client';
+import { AssetRiskLevel, levelFromMaxDrawdown } from '@/components/risk/asset-risk-level';
 
 type Mode = 'single_shot' | 'walk_forward' | 'auto_apply';
 
@@ -401,12 +402,24 @@ function ApplyDecisionCard({ decision }: { decision: ApplyDecision }) {
 
 function Leaderboard({ result, onApply }: { result: OptimizerRunResult; onApply: (c: Candidate) => void }) {
   const top = result.leaderboard.ranked.slice(0, 10);
+  const champion = result.leaderboard.best ?? top[0];
   return (
     <div className="rounded-lg border p-5">
-      <div className="flex justify-between items-baseline mb-3">
+      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-3">
         <h2 className="font-medium">Leaderboard ({result.candidatesTested} configs testées)</h2>
         <span className="text-xs text-muted-foreground">Run en {(result.durationMs / 1000).toFixed(1)}s</span>
       </div>
+
+      {champion && (
+        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md bg-emerald-50 px-3 py-2 dark:bg-emerald-950/20">
+          <span className="text-xs uppercase tracking-wide text-muted-foreground">Risque de la config championne</span>
+          <AssetRiskLevel
+            level={levelFromMaxDrawdown(champion.metrics.maxDrawdownPct)}
+            size="sm"
+            showShortHint
+          />
+        </div>
+      )}
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <caption className="sr-only">Top 10 configurations triées par score composite</caption>

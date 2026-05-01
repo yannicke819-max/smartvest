@@ -23,6 +23,7 @@ import {
 } from '@/hooks/use-bot-lab';
 import { Zap } from 'lucide-react';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { AssetRiskLevel, levelFromMaxDrawdown } from '@/components/risk/asset-risk-level';
 
 type DetailTab = 'overview' | 'metrics' | 'equity' | 'sessions' | 'trades';
 
@@ -563,6 +564,15 @@ function MetricsTab({ botId }: { botId: string }) {
 
   return (
     <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/30 px-3 py-2">
+        <span className="text-xs uppercase tracking-wide text-muted-foreground">Niveau de risque de la stratégie</span>
+        <AssetRiskLevel
+          level={levelFromMaxDrawdown(m.maxDrawdownPct)}
+          size="sm"
+          showShortHint
+        />
+      </div>
+
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <BigMetric
           label="Net PnL"

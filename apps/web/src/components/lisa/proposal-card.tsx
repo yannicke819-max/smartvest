@@ -9,6 +9,7 @@ import {
   useRejectProposal,
   type LisaProposalRow,
 } from '@/hooks/use-lisa';
+import { AssetRiskLevel, levelFromMaxDrawdown } from '@/components/risk/asset-risk-level';
 
 interface Thesis {
   id: string;
@@ -292,6 +293,15 @@ export function LisaProposalCard({
                         </div>
                       </div>
                     )}
+
+                    <div className="flex flex-wrap items-center gap-2 rounded-md bg-muted/30 px-2 py-1.5">
+                      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Risque de cette idée</span>
+                      <AssetRiskLevel
+                        level={levelFromMaxDrawdown(Math.abs(t.riskReward.adverseScenarioReturnPct))}
+                        size="sm"
+                        showLabel
+                      />
+                    </div>
 
                     <div className="grid grid-cols-3 gap-2 text-xs">
                       <div>
