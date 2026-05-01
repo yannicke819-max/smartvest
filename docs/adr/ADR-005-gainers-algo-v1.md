@@ -2,7 +2,7 @@
 
 | Champ | Valeur |
 |---|---|
-| **Statut** | Proposed — AMEND v2 (01/05/2026) |
+| **Statut** | Proposed — AMEND v3 (01/05/2026) |
 | **Author** | Claude Code session 014G5f17WdhyTYUFirJBUrLb |
 | **Related** | ADR-006 (découplage scanner Gainers — *contraintes architecturales*) |
 | **Decision-makers** | Owner SmartVest |
@@ -23,6 +23,181 @@ Symptômes observés en production (avril 2026) :
 **Objectif Algo V1** : poser un système de trading explicite, quantifié, testable, avec des invariants techniques traçables dans le code et un protocole de bascule live mesuré statistiquement.
 
 L'algo V1 vit obligatoirement dans le futur module `apps/api/src/modules/gainers-scanner/` (cf. ADR-006). Il n'est jamais ajouté à `lisa/services/`.
+
+---
+
+## 1bis. Paramètres V1 officiels (AMEND v3 — décision 01/05/2026)
+
+Cette section consolide les seuils numériques officiels pour la V1. Toute valeur ci-dessous est canonique : aucune autre valeur ne doit apparaître dans le code sans revue ADR. Les valeurs sont configurables en DB (`lisa_session_configs`) avec ces defaults stricts.
+
+### 1bis.1 — Tableau récapitulatif
+
+| Paramètre | Equity | Crypto | Source | Configurable |
+|---|---|---|---|---|
+| **Liquidity floor** (median daily $ volume 20j) | ≥ $10 M | 24h $ volume ≥ $50 M (exchange source) | EODHD `/eod` × close, Binance ticker 24h | `gainers_min_liquidity_usd_eq` / `_crypto` |
+| **Market cap minimum** | ≥ $300 M | `circulating_supply × price` ≥ $500 M (proxy mcap) | EODHD `/fundamentals`, CoinGecko fallback crypto | `gainers_min_market_cap_usd_eq` / `_crypto` |
+| **Volatility clamp** | `ATR(14, daily) / close ≤ 0.15` (15%) | identique | Calcul interne sur candles daily | `gainers_max_atr_pct` (default 0.15) |
+| **HL local pullback** | swing pivot 5 bougies 1m, retracement Fibonacci 38.2–61.8% du dernier swing up | identique | Cf. §1bis.4 | `gainers_pullback_fibo_min_pct` / `_max_pct` |
+
+### 1bis.2 — Liquidity floor
+
+**Equity** : `median($_daily_volume) ≥ $10 M` sur les 20 derniers jours ouvrés.
+
+```
+$_daily_volume_t = volume_t × close_t
+```
+
+Justification : $10 M assure une exécution sans market impact significatif sur des positions $1k-$10k. En dessous, le slippage estimé dépasse 5 bps (notre budget). Cf. Almgren & Chriss (2000) *"Optimal Execution of Portfolio Transactions"*.
+
+**Crypto** : `volume_24h_quote ≥ $50 M` sur l'exchange source utilisé.
+
+Justification : le marché crypto fragmenté nécessite un seuil par exchange (pas global). $50 M sur Binance/Coinbase = ordre de grandeur des top-100 par volume. En dessous, spread et profondeur sont insuffisants.
+
+**Gate** : si floor non atteint → REJECT `liquidity_floor_fail`. Cf. enum `CandidateRejectReason`.
+
+### 1bis.3 — Market cap minimum
+
+**Equity** : `market_cap ≥ $300 M`.
+
+Justification : seuil small-cap supérieur. En dessous (penny stocks, micro-caps), la volatilité incompatible avec un stop 1% dominant + risque de manipulation (pump-and-dump organisés). Cf. SEC bulletin "Microcap Stock: A Guide for Investors" (2013).
+
+**Crypto** : `circulating_supply × price ≥ $500 M` (proxy market cap).
+
+Justification : seuil plus élevé en valeur absolue qu'equity car le marché crypto est plus volatil et moins régulé. $500 M filtre les altcoins très spéculatifs tout en gardant le top-50 par mcap.
+
+**Source** : EODHD `/fundamentals/SYMBOL.US` pour equity (champ `Highlights.MarketCapitalization`). Pour crypto : CoinGecko `/coins/{id}` champ `market_data.circulating_supply` × prix EODHD/Binance. Cache 24h.
+
+**Gate** : REJECT `market_cap_below_min`.
+
+### 1bis.4 — Volatility clamp
+
+**Formule** :
+
+```
+ATR(14, daily) = moyenne mobile sur 14 jours de True Range
+True Range = max(high − low, |high − prev_close|, |low − prev_close|)
+
+Clamp = ATR(14, daily) / close_today ≤ 0.15
+```
+
+Justification :
+- 15% est volontairement large pour ne pas exclure les gainers en hausse forte (qui ont par construction un ATR élevé).
+- Au-delà, l'asset est en régime "ultra-volatile" (annonces, halts, news shocks) → entries non fiables, stop 1% rapidement traversé par bruit.
+- Référence : Wilder (1978) *New Concepts in Technical Trading Systems* — origine de l'ATR. Le seuil 15% normalisé par close est une convention SmartVest, pas académique.
+
+**Source** : calcul interne sur candles daily (déjà fetchées pour EMA50/200 du trend filter `vwap_reclaim`).
+
+**Gate** : REJECT `volatility_clamp_exceed`.
+
+### 1bis.5 — Définition formelle du HL local (pullback_HL)
+
+#### Swing pivot detection (N=5)
+
+Une bougie 1m index `t` est un **swing high local** ssi :
+
+```
+candle[t].high > max(candle[t-2].high, candle[t-1].high,
+                      candle[t+1].high, candle[t+2].high)
+```
+
+Symétrique pour swing low. N=5 (2 bougies de chaque côté) suit la convention Bulkowski.
+
+**Référence** : Bulkowski, T. *Encyclopedia of Chart Patterns* (3rd ed., 2021), ch. 1 — définition swing point. URL : https://www.thepatternsite.com/
+
+#### Validation pullback_HL avec retracement Fibonacci
+
+```
+1. Identifier le dernier swing up complet : [swing_low_prev → swing_high_recent]
+2. Calculer le retracement actuel :
+   retracement_pct = (swing_high_recent − price_now)
+                   / (swing_high_recent − swing_low_prev)
+3. Valider : 0.382 ≤ retracement_pct ≤ 0.618 (zone Fibonacci classique)
+```
+
+**Pourquoi 38.2–61.8%** :
+- Zone de retracement la plus statistiquement significative selon Bulkowski (2021) : ~58% des pullbacks dans une tendance saine s'arrêtent dans cette fourchette.
+- En dehors :
+  - `< 38.2%` : pullback trop superficiel, pas de vraie correction → entry tardive sur extension.
+  - `> 61.8%` : pullback trop profond, risque de retournement de tendance.
+
+**Référence** : Bulkowski (2021) ch. 11 "Fibonacci Retracements" + Robert Carver *Systematic Trading* (2015) §6.4 sur l'usage des ratios Fibonacci comme filtres de mean-reversion contrôlée.
+
+**Gate** : si retracement hors zone → REJECT `no_trigger` (pas un setup pullback_HL valide). Différent du `trend_filter_fail` qui rejette si la structure HH/HL globale est cassée.
+
+#### Pseudo-code intégré
+
+```typescript
+function detectPullbackHL(candles1m: Candle[]): {
+  trigger: boolean;
+  swing_high: number;
+  swing_low_prev: number;
+  retracement_pct: number;
+  reject_reason?: string;
+} {
+  // 1. Détecter swing pivots (N=5) sur les 30 dernières bougies 1m
+  const swings = findSwingPivots(candles1m.slice(-30), { n: 5 });
+  if (swings.length < 2) {
+    return { trigger: false, reject_reason: 'insufficient_swing_pivots', /*...*/ };
+  }
+
+  // 2. Identifier le dernier swing up : [swing_low → swing_high]
+  const last_swing_high = swings.findLast((s) => s.kind === 'high');
+  const swing_low_prev = swings.findLast((s) =>
+    s.kind === 'low' && s.index < last_swing_high.index
+  );
+  if (!last_swing_high || !swing_low_prev) {
+    return { trigger: false, reject_reason: 'no_complete_swing_up', /*...*/ };
+  }
+
+  // 3. Retracement actuel
+  const price_now = candles1m[candles1m.length - 1].close;
+  const swing_range = last_swing_high.price - swing_low_prev.price;
+  if (swing_range <= 0) {
+    return { trigger: false, reject_reason: 'invalid_swing_range', /*...*/ };
+  }
+  const retracement_pct = (last_swing_high.price - price_now) / swing_range;
+
+  // 4. Gate Fibonacci 38.2–61.8%
+  if (retracement_pct < 0.382 || retracement_pct > 0.618) {
+    return { trigger: false, reject_reason: 'fibo_out_of_range', /*...*/ };
+  }
+
+  return {
+    trigger: true,
+    swing_high: last_swing_high.price,
+    swing_low_prev: swing_low_prev.price,
+    retracement_pct,
+  };
+}
+```
+
+### 1bis.6 — Cohérence avec les enums existants (cf. domain/gainers-enums.ts à venir BLOC 1)
+
+Les seuils de cette section sont vérifiés par `prefilter-gates.service.ts` (BLOC 1) et `pullback-hl.detector.ts` (BLOC 3). Reject reasons ajoutés à `CandidateRejectReason` :
+
+```typescript
+export enum CandidateRejectReason {
+  // …existing
+  LIQUIDITY_FLOOR_FAIL    = 'liquidity_floor_fail',
+  MARKET_CAP_BELOW_MIN    = 'market_cap_below_min',
+  VOLATILITY_CLAMP_EXCEED = 'volatility_clamp_exceed',
+  // pullback_HL specific
+  INSUFFICIENT_SWING_PIVOTS = 'insufficient_swing_pivots',
+  NO_COMPLETE_SWING_UP      = 'no_complete_swing_up',
+  FIBO_OUT_OF_RANGE         = 'fibo_out_of_range',
+}
+```
+
+### 1bis.7 — Recalibration prévue (V1.1)
+
+Tous les seuils ci-dessus sont **defaults V1**, pas des constantes immuables. Calibration empirique post-shadow run (Step 9) :
+
+| Paramètre | Méthode de recalibration |
+|---|---|
+| Liquidity floor | Distribution des slippages observés sur shadow trades : ajuster pour cibler P95 slippage ≤ 5 bps |
+| Market cap min | Win-rate par bucket de mcap : monter le seuil si bucket < $300M sous-performe statistiquement |
+| Volatility clamp | Distribution win-rate vs ATR/close : abaisser le clamp si win-rate corrélé négativement |
+| Fibonacci 38.2–61.8% | A/B test sur 100 trades : essayer 50%–61.8% vs 38.2–50% pour identifier la zone optimale |
 
 ---
 
