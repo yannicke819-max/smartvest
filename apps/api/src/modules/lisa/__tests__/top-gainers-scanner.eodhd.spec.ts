@@ -36,7 +36,7 @@ jest.spyOn(Logger.prototype, 'debug').mockImplementation(() => undefined);
 function makeService(): TopGainersScannerService {
   mockConfig.get.mockImplementation((key: string) => (key === 'SCAN_INTERVAL_MINUTES' ? '15' : undefined));
   return new TopGainersScannerService(
-    mockSupabase, mockLisa, mockDecisionLog, mockConfig, mockBinance, mockScheduler, mockMtf, mockLlmRouter, { isShadowEnabled: () => false } as any, { evaluate: () => ({ raw: {} as any, compositeScore: null, decision: "REJECT", rejectReason: null, spreadProxy: null, spreadProxySource: null, trendFilter: null, rvolIntraday: null }) } as any,
+    mockSupabase, mockLisa, mockDecisionLog, mockConfig, mockBinance, mockScheduler, mockMtf, mockLlmRouter, { isShadowEnabled: () => false } as any, { evaluate: () => ({ raw: {} as any, compositeScore: null, decision: "REJECT", rejectReason: null, spreadProxy: null, spreadProxySource: null, trendFilter: null, rvolIntraday: null }) } as any, { enrich: (i: any) => i.candidate } as any, { evaluate: (i: any) => i.candidate } as any, { getCandles: () => Promise.resolve(null) } as any,
   );
 }
 
@@ -259,7 +259,7 @@ describe('P20a — NON_EU_EXCHANGES registry correctness', () => {
       return undefined;
     });
     return new TopGainersScannerService(
-      mockSupabase, mockLisa, mockDecisionLog, mockConfig, mockBinance, mockScheduler, mockMtf, mockLlmRouter, { isShadowEnabled: () => false } as any, { evaluate: () => ({ raw: {} as any, compositeScore: null, decision: "REJECT", rejectReason: null, spreadProxy: null, spreadProxySource: null, trendFilter: null, rvolIntraday: null }) } as any,
+      mockSupabase, mockLisa, mockDecisionLog, mockConfig, mockBinance, mockScheduler, mockMtf, mockLlmRouter, { isShadowEnabled: () => false } as any, { evaluate: () => ({ raw: {} as any, compositeScore: null, decision: "REJECT", rejectReason: null, spreadProxy: null, spreadProxySource: null, trendFilter: null, rvolIntraday: null }) } as any, { enrich: (i: any) => i.candidate } as any, { evaluate: (i: any) => i.candidate } as any, { getCandles: () => Promise.resolve(null) } as any,
     );
   }
 
@@ -290,7 +290,7 @@ describe('P20a — NON_EU_EXCHANGES registry correctness', () => {
       }),
     } as any;
     const svc = new TopGainersScannerService(
-      supabaseMock, mockLisa, mockDecisionLog, mockConfig, mockBinance, mockScheduler, mockMtf, mockLlmRouter, { isShadowEnabled: () => false } as any, { evaluate: () => ({ raw: {} as any, compositeScore: null, decision: "REJECT", rejectReason: null, spreadProxy: null, spreadProxySource: null, trendFilter: null, rvolIntraday: null }) } as any,
+      supabaseMock, mockLisa, mockDecisionLog, mockConfig, mockBinance, mockScheduler, mockMtf, mockLlmRouter, { isShadowEnabled: () => false } as any, { evaluate: () => ({ raw: {} as any, compositeScore: null, decision: "REJECT", rejectReason: null, spreadProxy: null, spreadProxySource: null, trendFilter: null, rvolIntraday: null }) } as any, { enrich: (i: any) => i.candidate } as any, { evaluate: (i: any) => i.candidate } as any, { getCandles: () => Promise.resolve(null) } as any,
     );
     capturedUrls = [];
     // fetchAllCandidates without EU (EU sessions closed)

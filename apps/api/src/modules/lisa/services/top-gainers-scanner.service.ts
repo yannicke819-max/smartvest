@@ -34,10 +34,15 @@ import { ScannerLlmRouterService } from './scanner-llm-router.service';
 // PR6.3 — Shadow wiring (LisaModule import GainersModule pour résolution DI)
 import { GainersShadowRunService } from '../../gainers-scanner/shadow/shadow-run.service';
 import { GainersBloc1Service, DEFAULT_BLOC1_FULL_CONFIG } from '../../gainers-scanner/bloc1/gainers-bloc1.service';
+import { GainersBloc2Service, DEFAULT_BLOC2_CONFIG } from '../../gainers-scanner/bloc2/gainers-bloc2.service';
+import { GainersBloc3Service, DEFAULT_BLOC3_CONFIG } from '../../gainers-scanner/bloc3/gainers-bloc3.service';
 import { SHADOW_BLOC1_CONFIG } from '../../gainers-scanner/bloc1/prefilter-gates';
 import { CandidateRejectReason } from '../../gainers-scanner/domain/gainers-enums';
+import type { CandleOHLCV } from '../../gainers-scanner/bloc2/spread-proxy';
 // PR6.4 — Enrichment helpers (ATR + EMA + persistence depuis ohlcv_cache_daily)
 import { enrichShadowCandidate } from './shadow-enrichment.helper';
+// PR6.7 — Intraday candles for BLOC 2 spread + BLOC 3 entry triggers
+import { EodhdIntradayService } from './eodhd-intraday.service';
 import {
   detectAssetClass,
   selectTopGainers,
@@ -402,6 +407,21 @@ export class TopGainersScannerService implements OnModuleInit {
      * scorer réels avec SHADOW_BLOC1_CONFIG (tolère atr/persistence null).
      */
     private readonly bloc1: GainersBloc1Service,
+    /**
+     * PR6.7 — BLOC 2 enrich (spread proxy + RVOL) sur les BLOC 1 ACCEPT.
+     * Inject pour pipeline shadow complet.
+     */
+    private readonly bloc2: GainersBloc2Service,
+    /**
+     * PR6.7 — BLOC 3 entry trigger detection (PULLBACK_HL_FIBO + VWAP_RECLAIM).
+     * Inject pour pipeline shadow complet.
+     */
+    private readonly bloc3: GainersBloc3Service,
+    /**
+     * PR6.7 — Intraday candles fetcher pour equity (BLOC 2 1h + BLOC 3 1m).
+     * Crypto utilise binanceMarket déjà inject.
+     */
+    private readonly eodhdIntraday: EodhdIntradayService,
   ) {}
 
   /**
@@ -746,33 +766,68 @@ export class TopGainersScannerService implements OnModuleInit {
     let rejectCount = 0;
     let failures = 0;
 
+    let bloc2RejectCount = 0;
+    let bloc3RejectCount = 0;
+    let triggerHitCount = 0;
+
     for (const c of candidates) {
       try {
         // PR6.4 : enrich BLOC 1 réel
         // PR6.6 : enrich crypto via Binance + pathEff réel via mtfPersistence
         const enriched = await enrichShadowCandidate(c, supabaseClient, this.mtfPersistence, this.binanceMarket);
-        const bloc1Result = this.bloc1.evaluate(enriched.raw, {
+        let scored = this.bloc1.evaluate(enriched.raw, {
           ...DEFAULT_BLOC1_FULL_CONFIG,
           prefilter: SHADOW_BLOC1_CONFIG,
         });
+
+        // PR6.7 — Pipeline BLOC 1 → 2 → 3 sur les ACCEPT seulement (cost guard).
+        // Skip BLOC 2/3 si BLOC 1 a déjà REJECT (court-circuit ADR-005 §1bis.5).
+        if (scored.decision === 'ACCEPT') {
+          // BLOC 2 — fetch 1h candles, enrich spread proxy
+          const candles1h = await this.fetchOhlcvForBloc23(enriched.raw, '1h', 20);
+          scored = this.bloc2.enrich({
+            candidate: scored,
+            candles: candles1h,
+            resolution: '1h',
+            intradayVolUsd: null, // RVOL désactivé par défaut (DEFAULT_BLOC2_CONFIG.rvolEnabled=false)
+          }, DEFAULT_BLOC2_CONFIG);
+
+          if (scored.decision === 'ACCEPT') {
+            // BLOC 3 — fetch 1m candles, evaluate entry triggers
+            const candles1m = await this.fetchOhlcvForBloc23(enriched.raw, '1m', 60);
+            const candles1mForBloc3 = candles1m ?? [];
+            scored = this.bloc3.evaluate({
+              candidate: scored,
+              candles: candles1mForBloc3,
+              volumeBaseline: null, // surge check disabled in shadow (baseline lookup = follow-up)
+              detectedAt: new Date().toISOString(),
+              resolution: '1m',
+            }, DEFAULT_BLOC3_CONFIG);
+
+            if (scored.decision === 'REJECT') bloc3RejectCount++;
+            else if (scored.entrySignal) triggerHitCount++;
+          } else {
+            bloc2RejectCount++;
+          }
+        }
 
         const isTopLegacy = topSymbolsSet.has(c.symbol.toUpperCase());
         const legacyDecision: 'ACCEPT' | 'REJECT' = isTopLegacy ? 'ACCEPT' : 'REJECT';
 
         await this.shadowRun.persistShadowSignal({
           raw: enriched.raw,
-          compositeScore: bloc1Result.compositeScore,
-          decision: bloc1Result.decision,
-          rejectReason: bloc1Result.rejectReason,
-          spreadProxy: null, // PR6.7 BLOC 2
-          spreadProxySource: null,
-          trendFilter: bloc1Result.trendFilter,
-          rvolIntraday: null,
-          entrySignal: null, // PR6.5 BLOC 3
-          bloc3Diagnostics: null,
+          compositeScore: scored.compositeScore,
+          decision: scored.decision,
+          rejectReason: scored.rejectReason,
+          spreadProxy: scored.spreadProxy ?? null,
+          spreadProxySource: scored.spreadProxySource ?? null,
+          trendFilter: scored.trendFilter,
+          rvolIntraday: scored.rvolIntraday ?? null,
+          entrySignal: scored.entrySignal ?? null,
+          bloc3Diagnostics: scored.bloc3Diagnostics ?? null,
         }, legacyDecision, enriched.pathEff);
 
-        if (bloc1Result.decision === 'ACCEPT') acceptCount++;
+        if (scored.decision === 'ACCEPT') acceptCount++;
         else rejectCount++;
         success++;
       } catch (e) {
@@ -782,7 +837,46 @@ export class TopGainersScannerService implements OnModuleInit {
         }
       }
     }
-    this.logger.log(`[shadow] persisted ${success} signals (V1: ${acceptCount} ACCEPT, ${rejectCount} REJECT, ${failures} failures) — enrichi BLOC 1 réel`);
+    this.logger.log(
+      `[shadow] persisted ${success} signals (V1: ${acceptCount} ACCEPT, ${rejectCount} REJECT, ` +
+      `BLOC2 reject=${bloc2RejectCount}, BLOC3 reject=${bloc3RejectCount}, trigger hits=${triggerHitCount}, ` +
+      `${failures} failures) — pipeline BLOC 1+2+3 réel (PR6.7)`,
+    );
+  }
+
+  /**
+   * PR6.7 — Helper fetch OHLCV candles pour BLOC 2 (1h) ou BLOC 3 (1m).
+   *
+   * Equity → EodhdIntradayService.getCandles
+   * Crypto → BinanceMarketService.getKlines (eodhd → binance symbol mapping)
+   *
+   * Retourne null si fetch échoue ou si interval non supporté pour le market.
+   * Le caller (BLOC 2/3) gère le null en fallback (STATIC_CAP_FALLBACK pour
+   * spread, REJECT NO_ENTRY_TRIGGER pour bloc3 si <5 candles).
+   */
+  private async fetchOhlcvForBloc23(
+    raw: import('../../gainers-scanner/domain/gainers-candidate.types').GainersCandidateRaw,
+    interval: '1m' | '1h',
+    count: number,
+  ): Promise<CandleOHLCV[] | null> {
+    try {
+      if (raw.market === 'crypto') {
+        // eodhd format BTC-USD.CC → binance BTCUSDT (PR6.5/6.6 helper)
+        const m = raw.symbol.match(/^([A-Z0-9]+)-USD\.CC$/);
+        const binanceSymbol = m ? `${m[1]}USDT` : raw.symbol;
+        const klines = await this.binanceMarket.getKlines(binanceSymbol, interval, count);
+        return klines ? klines.map((k) => ({
+          open: k.open, high: k.high, low: k.low, close: k.close, volume: k.volume,
+        })) : null;
+      }
+      const series = await this.eodhdIntraday.getCandles(raw.symbol, interval, count);
+      return series ? series.candles.map((c) => ({
+        open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume,
+      })) : null;
+    } catch (e) {
+      // Fail soft : caller (BLOC 2/3) handle null en fallback gracieux
+      return null;
+    }
   }
 
   /**
