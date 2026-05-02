@@ -253,6 +253,74 @@ describe('replayTicks() — 3 scénarios state machine canoniques', () => {
     const r = applyTick({ position: closed, currentPrice: 101 });
     expect(r.newState).toBe(PositionState.CLOSED);
     expect(r.exitReason).toBeNull();
+    expect(r.slippagePct).toBeNull();
+    expect(r.anomalousFill).toBe(false);
+  });
+});
+
+// ─── Slippage + anomalous_fill (Garde-fou ADR-005 §11.3) ─────────────────────
+
+describe('slippage tracking — ADR-005 §11.3', () => {
+  it('TP_FULL: slippage = (actual - tp_price) / entry, positif sur gap-up favorable', () => {
+    // entry 100, TP 100.90, gap-up à 101.00 → slippage = (101-100.90)/100 = +0.001 = +0.1%
+    const r = applyTick({ position: buildOpenPosition(), currentPrice: 101.00 });
+    expect(r.exitReason).toBe(ExitReason.TP_FULL);
+    expect(r.slippagePct).toBeCloseTo(0.001, 5);
+    expect(r.anomalousFill).toBe(false);
+  });
+
+  it('SL: slippage = (actual - sl_price) / entry, négatif si tick sous le stop', () => {
+    // entry 100, SL 99.40, tick à 99.30 → slippage = (99.30-99.40)/100 = -0.001 = -0.1%
+    const r = applyTick({ position: buildOpenPosition(), currentPrice: 99.30 });
+    expect(r.exitReason).toBe(ExitReason.SL);
+    expect(r.slippagePct).toBeCloseTo(-0.001, 5);
+    expect(r.anomalousFill).toBe(false);
+  });
+
+  it('SL exact: slippage = 0 (fill exactement au niveau)', () => {
+    const r = applyTick({ position: buildOpenPosition(), currentPrice: 99.40 });
+    expect(r.exitReason).toBe(ExitReason.SL);
+    expect(r.slippagePct).toBeCloseTo(0, 6);
+  });
+
+  it('anomalous_fill flag: |slippage| > 1% → true', () => {
+    // gap-up massive at 102 (entry 100, TP 100.90, slippage = (102-100.90)/100 = 1.10% > 1%)
+    const r = applyTick({ position: buildOpenPosition(), currentPrice: 102.00 });
+    expect(r.exitReason).toBe(ExitReason.TP_FULL);
+    expect(r.slippagePct).toBeCloseTo(0.011, 4);
+    expect(r.anomalousFill).toBe(true);
+  });
+
+  it('anomalous_fill SL: gap-down massive (halt) → true', () => {
+    // SL 99.40, tick à 98.00 → slippage = (98-99.40)/100 = -1.4% > 1% absolute
+    const r = applyTick({ position: buildOpenPosition(), currentPrice: 98.00 });
+    expect(r.exitReason).toBe(ExitReason.SL);
+    expect(r.slippagePct).toBeCloseTo(-0.014, 4);
+    expect(r.anomalousFill).toBe(true);
+  });
+
+  it('non-exit ticks: slippagePct=null, anomalousFill=false', () => {
+    const r = applyTick({ position: buildOpenPosition(), currentPrice: 100.30 });
+    expect(r.exitReason).toBeNull();
+    expect(r.slippagePct).toBeNull();
+    expect(r.anomalousFill).toBe(false);
+  });
+
+  it('replayTicks surfaces exitSlippagePct and exitAnomalousFill', () => {
+    // SCENARIO 1 dryrun: gap-up à 202.55, TP 202.0562 → slippage ≈ +0.250%
+    const initial: PositionSnapshot = {
+      state: PositionState.OPEN,
+      entryPrice: 197.61,
+      pathEff: 1.5,
+      tpPrice: 202.0562,
+      initialSlPrice: 194.6459,
+      currentStopPrice: 194.6459,
+      mfePrice: 197.61,
+    };
+    const r = replayTicks(initial, [202.55]);
+    expect(r.exitReason).toBe(ExitReason.TP_FULL);
+    expect(r.exitSlippagePct).toBeCloseTo(0.0025, 4);
+    expect(r.exitAnomalousFill).toBe(false);
   });
 });
 

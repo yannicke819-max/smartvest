@@ -218,6 +218,15 @@ export class PositionsManagerService {
     }
 
     if (result.exitReason) {
+      // Garde-fou C — log slippage + anomalous_fill flag pour audit ADR-005 §11.3.
+      // Equity slippage > 5% emit additional WARNING (gap/halt context, ne bloque pas).
+      const equitySlippageWarn = position.assetClass === 'equity' && result.slippagePct !== null && Math.abs(result.slippagePct) > 0.05;
+      if (result.anomalousFill) {
+        this.logger.error(`[anomalous_fill] position=${positionId} reason=${result.exitReason} slippage=${(result.slippagePct! * 100).toFixed(3)}% — review required`);
+      }
+      if (equitySlippageWarn) {
+        this.logger.warn(`[slippage_>5%_equity] position=${positionId} slippage=${(result.slippagePct! * 100).toFixed(3)}% — possible halt/gap, audit only (no block)`);
+      }
       await this.logEvent(
         positionId,
         result.exitReason as string,
@@ -228,6 +237,9 @@ export class PositionsManagerService {
           pnl_pct: (updates.realized_pnl_pct as number),
           pnl_usd: (updates.realized_pnl_usd as number),
           mfe_price: result.newMfePrice,
+          slippage_pct: result.slippagePct,
+          anomalous_fill: result.anomalousFill,
+          equity_slippage_warn: equitySlippageWarn,
         },
       );
     }

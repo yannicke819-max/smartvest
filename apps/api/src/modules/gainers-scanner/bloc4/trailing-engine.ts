@@ -72,6 +72,20 @@ export interface TickResult {
   exitReason: ExitReason | null;
   /** Si non-null : transition d'état signalée (pour audit). */
   stateTransition: 'TO_TRAILING_20' | 'TO_TRAILING_50' | null;
+  /**
+   * Slippage du fill par rapport au niveau théorique (fraction décimale du
+   * prix d'entrée). Non-null uniquement quand exitReason est set.
+   * - TP_FULL  : (actual - tp_price) / entry — typiquement ≥ 0 (gap-up)
+   * - SL       : (actual - initial_sl_price) / entry — typiquement ≤ 0
+   * - TRAILING_*_HIT : (actual - trailing_stop) / entry — typiquement ≤ 0
+   * Voir ADR-005 §11.3 — modèle de fill tick-based avec audit slippage.
+   */
+  slippagePct: number | null;
+  /**
+   * true si |slippagePct| > 1% — flag pour audit/review post-hoc.
+   * Indique potentiel tick corrompu, halt de marché, ou gap massif.
+   */
+  anomalousFill: boolean;
 }
 
 /**
@@ -98,6 +112,8 @@ export function applyTick(
       newMfePrice: mfePrice,
       exitReason: null,
       stateTransition: null,
+      slippagePct: null,
+      anomalousFill: false,
     };
   }
 
@@ -112,23 +128,29 @@ export function applyTick(
       state === PositionState.OPEN ? ExitReason.SL
       : state === PositionState.TRAILING_20 ? ExitReason.TRAILING_20_HIT
       : ExitReason.TRAILING_50_HIT;
+    const slippage = (currentPrice - currentStopPrice) / entryPrice;
     return {
       newState: PositionState.CLOSED,
       newStopPrice: currentStopPrice,
       newMfePrice,
       exitReason,
       stateTransition: null,
+      slippagePct: slippage,
+      anomalousFill: Math.abs(slippage) > 0.01,
     };
   }
 
   // 2. TP hit ? (uniquement en OPEN — let winners run sous trailing)
   if (state === PositionState.OPEN && currentPrice >= tpPrice) {
+    const slippage = (currentPrice - tpPrice) / entryPrice;
     return {
       newState: PositionState.CLOSED,
       newStopPrice: currentStopPrice,
       newMfePrice,
       exitReason: ExitReason.TP_FULL,
       stateTransition: null,
+      slippagePct: slippage,
+      anomalousFill: Math.abs(slippage) > 0.01,
     };
   }
 
@@ -161,6 +183,8 @@ export function applyTick(
     newMfePrice,
     exitReason: null,
     stateTransition,
+    slippagePct: null,
+    anomalousFill: false,
   };
 }
 
@@ -176,12 +200,16 @@ export function replayTicks(
   finalSnapshot: PositionSnapshot;
   exitReason: ExitReason | null;
   exitPrice: number | null;
+  exitSlippagePct: number | null;
+  exitAnomalousFill: boolean;
   transitions: Array<{ index: number; transition: 'TO_TRAILING_20' | 'TO_TRAILING_50' }>;
 } {
   let snap = { ...initial };
   const transitions: Array<{ index: number; transition: 'TO_TRAILING_20' | 'TO_TRAILING_50' }> = [];
   let exitReason: ExitReason | null = null;
   let exitPrice: number | null = null;
+  let exitSlippagePct: number | null = null;
+  let exitAnomalousFill = false;
 
   for (let i = 0; i < prices.length; i++) {
     const r = applyTick({ position: snap, currentPrice: prices[i] }, cfg);
@@ -195,9 +223,11 @@ export function replayTicks(
     if (r.exitReason) {
       exitReason = r.exitReason;
       exitPrice = prices[i];
+      exitSlippagePct = r.slippagePct;
+      exitAnomalousFill = r.anomalousFill;
       break;
     }
   }
 
-  return { finalSnapshot: snap, exitReason, exitPrice, transitions };
+  return { finalSnapshot: snap, exitReason, exitPrice, exitSlippagePct, exitAnomalousFill, transitions };
 }

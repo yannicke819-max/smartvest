@@ -700,7 +700,42 @@ Math Fibonacci confirmée correcte sur les 2 cas pullback. Distance VWAP au
 fiboLevel sélectionné cohérente avec la règle `nearestFiboLevel` (distance
 absolue minimale).
 
-### 11.3 — Dette technique BLOC 3 ouverte (à traiter avant merge PR5/PR6)
+### 11.3 — Modèle de fill (synchro PR5, 02/05/2026)
+
+**Décision maître d'œuvre** : les ordres TP/SL/trailing sont modélisés **MARKET au
+premier tick qui cross le niveau** (pas LIMIT). Réalisme prod : un broker fill
+au prochain prix disponible après cassure du stop, pas au niveau théorique.
+
+**Règles** :
+
+1. **Fill = tick price brut** : exit_price = prix de la candle qui a cross le niveau.
+   - SL/trailing : tick souvent ≤ stop level (slippage négatif sur gaps et faible liquidité).
+   - TP_FULL : tick souvent ≥ tp_price (slippage positif sur gap-up favorable).
+2. **Slippage tracé** : `slippage_pct = (exit_actual - exit_theoretical) / entry`
+   où :
+   - `theoretical = tp_price` pour TP_FULL
+   - `theoretical = currentStopPrice` pour SL / TRAILING_*_HIT
+3. **Audit decision_log** : chaque close écrit `slippage_pct` et `anomalous_fill`
+   dans `gainers_position_events.payload`.
+
+**Garde-fous** :
+
+| Condition | Niveau | Action |
+|---|---|---|
+| `\|slippage_pct\| > 1%` | error | flag `anomalous_fill=true`, log ERROR — review post-hoc |
+| equity ET `\|slippage_pct\| > 5%` | warn | log WARNING (contexte halt/gap) — pas de bloc |
+
+**Cohérence backtest/prod** : en shadow mode, slippage est enregistré pour stat
+post-hoc. En prod live, on compare réel vs simulé pour détecter dérive (cf.
+PR6 Step 9 shadow analysis).
+
+**Tests de référence** (gainers-bloc4.spec.ts §"slippage tracking") :
+- TP_FULL gap-up favorable → slippage positif
+- SL exact → slippage = 0
+- Gap-up 2% (massive) → anomalous_fill=true
+- Gap-down 1.4% (halt) → anomalous_fill=true
+
+### 11.4 — Dette technique BLOC 3 ouverte (à traiter avant merge PR5/PR6)
 
 Trois dettes identifiées par revue maître d'œuvre PR #192, tracées dans
 GitHub :
@@ -715,7 +750,7 @@ GitHub :
   selection rule : règle officielle "niveau le plus proche, tie-break sur le
   plus profond" + harnais 30+ symboles golden values historiques.
 
-### 11.4 — BLOC 4.0 ETL pre-req (réparé en PR5)
+### 11.5 — BLOC 4.0 ETL pre-req (réparé en PR5)
 
 Dette critique découverte : `gainers_volume_baselines` restait vide en prod
 car aucun caller de `upsertBaselines()` n'existait. Le cron
