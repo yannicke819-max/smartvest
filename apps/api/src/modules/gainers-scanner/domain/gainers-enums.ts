@@ -51,16 +51,20 @@ export enum SpreadProxySource {
   STATIC_CAP_FALLBACK = 'STATIC_CAP_FALLBACK',
 }
 
-/** BLOC 4 — Raison d'invalidation d'un setup actif. */
+/** BLOC 4 — Raison d'invalidation d'un setup actif (PR5 — synchro item #18 locked). */
 export enum InvalidationReason {
-  /** Stop-loss touché. */
+  /** Stop-loss initial touché. */
   SL_HIT = 'SL_HIT',
   /** Take-profit complet atteint. */
   TP_HIT = 'TP_HIT',
-  /** MFE ≥ 40% du TP → stop ramené au breakeven. */
-  TRAILING_BREAKEVEN_TRIGGERED = 'TRAILING_BREAKEVEN_TRIGGERED',
-  /** MFE ≥ 70% du TP → lock 50% TP. */
-  TRAILING_LOCK_50_TRIGGERED = 'TRAILING_LOCK_50_TRIGGERED',
+  /** Activation TRAILING_20 — gain ≥ +path_eff, lock 20% MFE. */
+  TRAILING_20_TRIGGERED = 'TRAILING_20_TRIGGERED',
+  /** Activation TRAILING_50 — gain ≥ +2×path_eff, lock 50% MFE. */
+  TRAILING_50_TRIGGERED = 'TRAILING_50_TRIGGERED',
+  /** Stop trailing 20% MFE touché. */
+  TRAILING_20_HIT = 'TRAILING_20_HIT',
+  /** Stop trailing 50% MFE touché. */
+  TRAILING_50_HIT = 'TRAILING_50_HIT',
   /** Durée max de détention dépassée (horizon < 3h). */
   TIME_LIMIT_EXCEEDED = 'TIME_LIMIT_EXCEEDED',
   /** Score de persistance multi-TF tombé sous le plancher post-entrée. */
@@ -71,22 +75,34 @@ export enum InvalidationReason {
   STRUCTURE_BREAK = 'STRUCTURE_BREAK',
 }
 
-/** BLOC 4 — Raison de clôture de position. */
+/** BLOC 4 — Raison de clôture de position (PR5 — trailing renamed). */
 export enum ExitReason {
-  /** Take-profit complet. */
+  /** Take-profit complet (price ≥ tp_price). */
   TP_FULL = 'TP_FULL',
-  /** Lock partiel 50% du TP (MFE ≥ 70%). */
-  TP_PARTIAL_LOCK = 'TP_PARTIAL_LOCK',
-  /** Stop-loss. */
+  /** Stop-loss initial (price ≤ sl_price, état OPEN). */
   SL = 'SL',
-  /** Trailing stop ramené au breakeven (MFE ≥ 40%). */
-  TRAILING_BREAKEVEN = 'TRAILING_BREAKEVEN',
-  /** Trailing lock 50% TP déclenché. */
-  TRAILING_LOCK = 'TRAILING_LOCK',
+  /** Stop trailing 20% MFE touché (état TRAILING_20). */
+  TRAILING_20_HIT = 'TRAILING_20_HIT',
+  /** Stop trailing 50% MFE touché (état TRAILING_50). */
+  TRAILING_50_HIT = 'TRAILING_50_HIT',
+  /** Cassure de structure : price < entry_swing_low post-signal pullback. */
+  STRUCTURE_BREAK = 'STRUCTURE_BREAK',
   /** Durée max de détention dépassée. */
   TIME_LIMIT = 'TIME_LIMIT',
-  /** Invalidation générique (persistence lost, spread expanded, etc.). */
+  /** Invalidation générique (persistence_lost, spread_expanded). */
   INVALIDATION = 'INVALIDATION',
+}
+
+/** BLOC 4 — État d'une position dans la state machine. */
+export enum PositionState {
+  /** Position fraîchement ouverte, SL initial actif. */
+  OPEN = 'OPEN',
+  /** Gain ≥ +path_eff atteint → stop ratchet à 20% du MFE_gain. */
+  TRAILING_20 = 'TRAILING_20',
+  /** Gain ≥ +2×path_eff atteint → stop ratchet à 50% du MFE_gain. */
+  TRAILING_50 = 'TRAILING_50',
+  /** Position fermée (TP, SL, trailing hit, structure break, time limit). */
+  CLOSED = 'CLOSED',
 }
 
 /** État courant du scanner Gainers — utilisé par le module d'observabilité. */
