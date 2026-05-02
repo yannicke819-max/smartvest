@@ -147,6 +147,13 @@ import { ScannerLlmRouterService } from './services/scanner-llm-router.service';
     DailyProfitGovernor,
     MacroModeService,
     EodhdQuotaService,
+    // Hotfix 02/05/2026 : TopGainersScannerService était provider mais pas exporté.
+    // AdminGainersStatusController (importe LisaModule via forwardRef) crashait au
+    // boot NestJS avec "Nest can't resolve dependencies of AdminGainersStatusController
+    // (?, ConfigService). Make sure TopGainersScannerService at index [0] is available
+    // in the AdminModule context." → empêchait app.listen → port 3001 jamais bindé →
+    // Fly proxy fail. Cf. PR #200.
+    TopGainersScannerService,
   ],
 })
 export class LisaModule {}
