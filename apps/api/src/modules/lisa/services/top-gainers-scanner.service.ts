@@ -31,6 +31,10 @@ import { DecisionLogService } from './decision-log.service';
 import { BinanceMarketService } from './binance-market.service';
 import { MultiTimeframePersistenceService } from './multi-tf-persistence.service';
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
+// PR6.3 — Shadow wiring (LisaModule import GainersModule pour résolution DI)
+import { GainersShadowRunService } from '../../gainers-scanner/shadow/shadow-run.service';
+import { CandidateRejectReason } from '../../gainers-scanner/domain/gainers-enums';
+import { mapTopGainerToCandidateRaw } from './shadow-mapping.helper';
 import {
   selectTopGainers,
   type TopGainerCandidate,
@@ -356,6 +360,13 @@ export class TopGainersScannerService implements OnModuleInit {
      * Wiring des call sites = follow-up post-validation utilisateur.
      */
     private readonly llmRouter: ScannerLlmRouterService,
+    /**
+     * PR6.3 — ShadowRunService inject pour persister chaque candidat scanné
+     * dans gainers_v1_shadow_signals quand GAINERS_V1_SHADOW=true.
+     * Première version : persiste decision LEGACY (pas pipeline V1 complet).
+     * PR6.4 enrichira avec BLOC 1+2+3 V1 réelle.
+     */
+    private readonly shadowRun: GainersShadowRunService,
   ) {}
 
   /**
@@ -608,6 +619,13 @@ export class TopGainersScannerService implements OnModuleInit {
       `[top-gainers] ${candidates.length} scanned → ${top.length} retained: ${top.map((t) => `${t.symbol}(${t.assetClass},${t.changePct.toFixed(1)}%,score=${t.score})`).join(', ')}`,
     );
 
+    // PR6.3 — Shadow run wiring : persiste chaque candidat scanné dans
+    // gainers_v1_shadow_signals quand GAINERS_V1_SHADOW=true.
+    // Première version : decision = ACCEPT pour les top-N retenus (legacy
+    // scoring), REJECT pour les autres avec reject_reason générique.
+    // PR6.4 swappera vers décision V1 pipeline complet (BLOC 1+2+3 enrichi).
+    await this.persistShadowSignalsBatch(candidates, top);
+
     // Persist log entries pour les top retenus + filtered samples (audit)
     await this.persistLog(candidates, top);
 
@@ -639,6 +657,57 @@ export class TopGainersScannerService implements OnModuleInit {
       }
     }
     this.recordCycleComplete(true);
+  }
+
+  /**
+   * PR6.3 — Persiste chaque candidat scanné dans gainers_v1_shadow_signals
+   * quand GAINERS_V1_SHADOW=true. Première version : decision basée sur le
+   * legacy scoring (top-N retenus = ACCEPT, autres = REJECT). PR6.4 swappera
+   * vers BLOC 1+2+3 V1 réel.
+   *
+   * Performance : 1 INSERT par candidat (≤215 par cycle scanner /15min).
+   * Erreurs individuelles loggées en warn, n'arrêtent pas le batch.
+   */
+  private async persistShadowSignalsBatch(
+    candidates: TopGainerCandidate[],
+    top: ReturnType<typeof selectTopGainers>,
+  ): Promise<void> {
+    if (!this.shadowRun.isShadowEnabled()) return;
+    const topSymbolsSet = new Set(top.map((t) => t.symbol.toUpperCase()));
+    let success = 0;
+    let failures = 0;
+
+    for (const c of candidates) {
+      try {
+        const isTop = topSymbolsSet.has(c.symbol.toUpperCase());
+        const decision: 'ACCEPT' | 'REJECT' = isTop ? 'ACCEPT' : 'REJECT';
+        // Pour REJECT : raison générique "scanner_legacy_filter" — PR6.4 mettra
+        // les vraies CandidateRejectReason via BLOC 1 prefilter eval.
+        const rejectReason = isTop ? null : CandidateRejectReason.PERSISTENCE_BELOW_THRESHOLD;
+
+        const cWithScore = c as TopGainerCandidate & { score?: number; assetClass?: TopGainerAssetClass };
+        const raw = mapTopGainerToCandidateRaw(cWithScore);
+        await this.shadowRun.persistShadowSignal({
+          raw,
+          compositeScore: typeof cWithScore.score === 'number' ? cWithScore.score / 100 : null,
+          decision,
+          rejectReason,
+          spreadProxy: null,
+          spreadProxySource: null,
+          trendFilter: null,
+          rvolIntraday: null,
+          entrySignal: null,
+          bloc3Diagnostics: null,
+        }, decision); // legacyDecision = même decision (pas de divergence dans v1)
+        success++;
+      } catch (e) {
+        failures++;
+        if (failures <= 3) {
+          this.logger.warn(`[shadow] persist ${c.symbol} failed: ${String(e).slice(0, 80)}`);
+        }
+      }
+    }
+    this.logger.log(`[shadow] persisted ${success} signals (${top.length} ACCEPT, ${success - top.length} REJECT, ${failures} failures)`);
   }
 
   /**

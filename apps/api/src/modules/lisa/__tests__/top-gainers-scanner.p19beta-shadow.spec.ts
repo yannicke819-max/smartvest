@@ -62,6 +62,7 @@ function makeService(): TopGainersScannerService {
     mockScheduler,
     mockMtf,
     mockLlmRouter,
+    { isShadowEnabled: () => false } as any,
   );
 }
 

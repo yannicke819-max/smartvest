@@ -48,7 +48,7 @@ function makeService(): TopGainersScannerService {
     return undefined;
   });
   return new TopGainersScannerService(
-    mockSupabase, mockLisa, mockDecisionLog, mockConfig, mockBinance, mockScheduler, mockMtf, mockLlmRouter,
+    mockSupabase, mockLisa, mockDecisionLog, mockConfig, mockBinance, mockScheduler, mockMtf, mockLlmRouter, { isShadowEnabled: () => false } as any,
   );
 }
 
