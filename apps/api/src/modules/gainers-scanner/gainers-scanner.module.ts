@@ -9,6 +9,7 @@ import { GainersBloc2Service } from './bloc2/gainers-bloc2.service';
 import { GainersBloc3Service } from './bloc3/gainers-bloc3.service';
 import { PositionsManagerService } from './bloc4/positions-manager.service';
 import { GainersShadowRunService } from './shadow/shadow-run.service';
+import { ShadowDailyReportService } from './shadow/shadow-daily-report.service';
 import { TargetDerivationService } from './target-modes/target-derivation.service';
 import { KellySizingService } from './kelly/kelly-sizing.service';
 import { ModePresetsService } from './presets/mode-presets.service';
@@ -32,6 +33,7 @@ import { ModePresetsService } from './presets/mode-presets.service';
     GainersBloc3Service,
     PositionsManagerService,
     GainersShadowRunService,
+    ShadowDailyReportService,
     TargetDerivationService,
     KellySizingService,
     ModePresetsService,
@@ -45,6 +47,7 @@ import { ModePresetsService } from './presets/mode-presets.service';
     GainersBloc3Service,
     PositionsManagerService,
     GainersShadowRunService,
+    ShadowDailyReportService,
     TargetDerivationService,
     KellySizingService,
     ModePresetsService,
