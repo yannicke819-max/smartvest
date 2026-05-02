@@ -56,6 +56,11 @@ export class GainersShadowRunService {
   /**
    * Persiste un signal V1 (ACCEPT ou REJECT) dans la table shadow.
    * Idempotent côté DB (pas d'unique constraint sur ce flux append-only).
+   *
+   * PR6.5 — enrichi avec entry_path_eff + tp_price + sl_price calculés via
+   * BLOC 4 §11.1 pour permettre le worker exit-simulator de replay la state
+   * machine. path_eff par défaut = 0.5 (= 0.5% mouvement attendu, conservateur)
+   * tant que P9-UX path efficiency n'est pas wired pour shadow.
    */
   async persistShadowSignal(
     candidate: GainersScoredCandidate,
@@ -65,6 +70,17 @@ export class GainersShadowRunService {
 
     const { raw, decision, rejectReason, compositeScore, entrySignal, bloc3Diagnostics } = candidate;
 
+    // BLOC 4 §11.1 : equity TP=×1.5/SL=×1.0, crypto TP=×2.0/SL=×0.8
+    // path_eff default 0.5 (% conservateur). PR6.6 enrichira avec P9-UX réel.
+    const PATH_EFF_DEFAULT = 0.5;
+    const tpMul = raw.market === 'crypto' ? 2.0 : 1.5;
+    const slMul = raw.market === 'crypto' ? 0.8 : 1.0;
+    const tpPct = (PATH_EFF_DEFAULT * tpMul) / 100;
+    const slPct = (PATH_EFF_DEFAULT * slMul) / 100;
+    const entryPrice = entrySignal ? raw.close : (decision === 'ACCEPT' ? raw.close : null);
+    const tpPrice = entryPrice !== null ? entryPrice * (1 + tpPct) : null;
+    const slPrice = entryPrice !== null ? entryPrice * (1 - slPct) : null;
+
     const payload: Record<string, unknown> = {
       symbol: raw.symbol,
       exchange: raw.exchange,
@@ -73,10 +89,10 @@ export class GainersShadowRunService {
       composite_score: compositeScore,
       decision,
       reject_reason: rejectReason,
-      entry_price: entrySignal ? raw.close : null,
-      entry_path_eff: null,
-      tp_price: null,
-      sl_price: null,
+      entry_price: entryPrice,
+      entry_path_eff: entryPrice !== null ? PATH_EFF_DEFAULT : null,
+      tp_price: tpPrice,
+      sl_price: slPrice,
       fibo_level: entrySignal?.fiboLevel ?? null,
       spread_proxy: bloc3Diagnostics?.spreadProxy ?? null,
       volume_ratio: bloc3Diagnostics?.volumeRatio ?? null,
