@@ -26,6 +26,14 @@ export interface SwingPivotResult {
   swingHigh: SwingPivot | null;
   swingLow: SwingPivot | null;
   fiboLevels: FiboLevels | null;
+  /**
+   * Issue #193 — diagnostic when pivots not found:
+   * - CANDLE_COUNT_BELOW_9 : moins de 9 bougies (besoin 5+5-1 chevauchés)
+   * - INSUFFICIENT_SWING_AMPLITUDE : pivots existent mais swingHigh ≤ swingLow
+   * - NOISE_TOO_HIGH : aucune bougie ne bat ses voisines
+   * null si swingHigh ET swingLow détectés avec amplitude valide.
+   */
+  noPivotReason: 'CANDLE_COUNT_BELOW_9' | 'INSUFFICIENT_SWING_AMPLITUDE' | 'NOISE_TOO_HIGH' | null;
 }
 
 const N_HALF = 2;
@@ -58,15 +66,38 @@ export function computeSwingPivots(
   highs: number[],
   lows: number[],
 ): SwingPivotResult {
-  if (highs.length < N_HALF * 2 + 1 || lows.length < N_HALF * 2 + 1) {
-    return { swingHigh: null, swingLow: null, fiboLevels: null };
+  // Need at least 9 candles for 2 non-overlapping N=5 pivots
+  // (5+5-1 = 9 with shared center, or 10 fully separated).
+  if (highs.length < 9 || lows.length < 9) {
+    return {
+      swingHigh: null,
+      swingLow: null,
+      fiboLevels: null,
+      noPivotReason: 'CANDLE_COUNT_BELOW_9',
+    };
   }
 
   const swingHigh = findLastSwingHigh(highs);
   const swingLow = findLastSwingLow(lows);
 
-  if (!swingHigh || !swingLow || swingHigh.price <= swingLow.price) {
-    return { swingHigh, swingLow, fiboLevels: null };
+  if (!swingHigh || !swingLow) {
+    // At least one pivot was never validated by neighbors → noisy/flat series
+    return {
+      swingHigh,
+      swingLow,
+      fiboLevels: null,
+      noPivotReason: 'NOISE_TOO_HIGH',
+    };
+  }
+
+  if (swingHigh.price <= swingLow.price) {
+    // Both pivots exist but swingHigh below or equal to swingLow → degenerate
+    return {
+      swingHigh,
+      swingLow,
+      fiboLevels: null,
+      noPivotReason: 'INSUFFICIENT_SWING_AMPLITUDE',
+    };
   }
 
   const range = swingHigh.price - swingLow.price;
@@ -76,7 +107,7 @@ export function computeSwingPivots(
     level618: swingHigh.price - 0.618 * range,
   };
 
-  return { swingHigh, swingLow, fiboLevels };
+  return { swingHigh, swingLow, fiboLevels, noPivotReason: null };
 }
 
 /** Retourne le niveau Fibonacci (38.2, 50, 61.8) le plus proche du prix courant. */
