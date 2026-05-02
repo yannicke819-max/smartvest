@@ -5,4 +5,5 @@ export * from './vwap';
 export * from './swing-pivot';
 export * from './pullback-hl';
 export * from './vwap-reclaim';
+export * from './session-detector';
 export * from './gainers-bloc3.service';

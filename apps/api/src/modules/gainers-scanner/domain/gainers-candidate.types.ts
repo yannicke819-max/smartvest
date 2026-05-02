@@ -57,6 +57,54 @@ export interface GainersScoredCandidate {
   trendFilter: TrendFilterKind | null;
   /** RVOL cumulatif intraday calculé en BLOC 1. */
   rvolIntraday: number | null;
+  /**
+   * BLOC 3 dry-run observability (issue #193 — P1 prereq PR6 shadow run).
+   * Champs additionnels au decision_log pour audit post-hoc.
+   * null avant l'évaluation BLOC 3.
+   */
+  bloc3Diagnostics?: Bloc3Diagnostics | null;
+}
+
+/**
+ * BLOC 3 dry-run observability (issue #193).
+ * Émis par GainersBloc3Service.evaluate() sur tous les candidats (ACCEPT et REJECT).
+ */
+export interface Bloc3Diagnostics {
+  /** ISO 8601 du tick d'évaluation. */
+  timestamp: string;
+  /** Résolution des bougies fournies. */
+  resolution: '1m' | '5m' | '1h' | 'daily';
+  /**
+   * Session inférée du timestamp + marketClass :
+   * - RTH (regular trading hours equity US 14:30-21:00 UTC)
+   * - PRE_MARKET (09:00-14:30 UTC equity)
+   * - AFTER_HOURS (21:00-01:00 UTC equity)
+   * - CRYPTO_24_7 (toujours pour crypto)
+   * - UNKNOWN (impossible à déterminer)
+   */
+  session: 'RTH' | 'PRE_MARKET' | 'AFTER_HOURS' | 'CRYPTO_24_7' | 'UNKNOWN';
+  /** Spread proxy fraction décimale (= spreadProxy ci-dessus, dupliqué pour decision_log). */
+  spreadProxy: number | null;
+  /**
+   * Volume current candle / baseline 20j USD.
+   * null si baseline absente (gainers_volume_baselines vide pour ce symbole).
+   */
+  volumeRatio: number | null;
+  /**
+   * true si BLOC 1 vol24h ≥ floor ET BLOC 2 spread ≤ cap.
+   * false signale une raison déjà capturée par rejectReason (LIQUIDITY_FLOOR/SPREAD_TOO_WIDE).
+   */
+  gateLiquidityPassed: boolean;
+  /** Nombre de pivots N=5 détectés (max 2 — un swingHigh + un swingLow). */
+  pivotsDetected: number;
+  /**
+   * Raison absence de pivots si pivotsDetected = 0 :
+   * - CANDLE_COUNT_BELOW_9 : moins de 9 bougies (besoin pour 2 pivots N=5 non chevauchés)
+   * - INSUFFICIENT_SWING_AMPLITUDE : pivots existent mais swingHigh ≤ swingLow
+   * - NOISE_TOO_HIGH : aucune bougie ne bat ses voisines (chaque pivot battu)
+   * null si pivotsDetected ≥ 1.
+   */
+  pivotsReason: 'CANDLE_COUNT_BELOW_9' | 'INSUFFICIENT_SWING_AMPLITUDE' | 'NOISE_TOO_HIGH' | null;
 }
 
 /** Signal d'entrée produit par BLOC 3. */
