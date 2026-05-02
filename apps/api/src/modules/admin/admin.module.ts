@@ -30,6 +30,7 @@ import { AdminGainersMetricsController } from './admin-gainers-metrics.controlle
 import { AdminGainersExtendedController } from './admin-gainers-extended.controller';
 import { AdminModePresetsController } from './admin-mode-presets.controller';
 import { AdminShadowDailyReportController } from './admin-shadow-daily-report.controller';
+import { AdminGainersSeedUniverseController } from './admin-gainers-seed-universe.controller';
 
 @Module({
   imports: [SupabaseModule, forwardRef(() => LisaModule), GainersModule],
@@ -44,6 +45,7 @@ import { AdminShadowDailyReportController } from './admin-shadow-daily-report.co
     AdminGainersExtendedController,
     AdminModePresetsController,
     AdminShadowDailyReportController,
+    AdminGainersSeedUniverseController,
   ],
 })
 export class AdminModule {}

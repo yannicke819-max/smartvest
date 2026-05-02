@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { SupabaseModule } from '../supabase/supabase.module';
 import { PerformanceModule } from '../performance/performance.module';
 import { BotLabModule } from '../bot-lab/bot-lab.module';
+// PR6.3 — Shadow wiring : GainersShadowRunService inject dans TopGainersScannerService
+import { GainersModule } from '../gainers-scanner';
 import { LisaController } from './lisa.controller';
 import { AutopilotController } from './autopilot.controller';
 import { LisaService } from './services/lisa.service';
@@ -52,7 +54,7 @@ import { PersistenceProbabilityService } from './services/persistence-probabilit
 import { ScannerLlmRouterService } from './services/scanner-llm-router.service';
 
 @Module({
-  imports: [SupabaseModule, PerformanceModule, BotLabModule],
+  imports: [SupabaseModule, PerformanceModule, BotLabModule, GainersModule],
   controllers: [LisaController, AutopilotController],
   providers: [
     LisaService,
