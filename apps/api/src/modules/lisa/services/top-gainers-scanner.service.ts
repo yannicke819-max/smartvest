@@ -609,6 +609,26 @@ export class TopGainersScannerService implements OnModuleInit {
         'Activate via POST /lisa/mode/:portfolioId {mode:"gainers"} or set STRATEGY_MODE=top_gainers env.',
       );
       this.recordEarlyReturn('no_active_portfolio');
+
+      // PR6.6.1 — Shadow run est pipeline-agnostic (ADR-005 §5 Step 9).
+      // Même sans portfolio actif, on persiste les shadow signals pour valider
+      // le pipeline V1 (BLOC 1 enrichi + crypto Binance + path_eff réel).
+      // Sans ce bypass, aucun signal n'est persisté tant qu'aucun portfolio
+      // n'est en strategy_mode='gainers' — ce qui bloque la Phase 4 bascule.
+      if (this.shadowRun.isShadowEnabled()) {
+        try {
+          const candidates = await this.fetchAllCandidates();
+          if (candidates.length > 0) {
+            const top = selectTopGainers(candidates, 3);
+            await this.persistShadowSignalsBatch(candidates, top);
+            this.logger.log(
+              `[top-gainers] shadow-only: ${candidates.length} scanned → ${top.length} top, persisted to gainers_v1_shadow_signals`,
+            );
+          }
+        } catch (e) {
+          this.logger.warn(`[top-gainers] shadow-only persist failed: ${String(e).slice(0, 200)}`);
+        }
+      }
       return;
     }
 
