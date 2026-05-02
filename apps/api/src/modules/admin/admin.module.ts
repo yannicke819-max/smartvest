@@ -14,20 +14,23 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { SupabaseModule } from '../supabase/supabase.module';
 import { LisaModule } from '../lisa/lisa.module';
+import { GainersModule } from '../gainers-scanner';
 import { AdminMigrationsController } from './admin-migrations.controller';
 import { AdminSupabaseQueryController } from './admin-supabase-query.controller';
 import { AdminLogsController } from './admin-logs.controller';
 import { AdminEodhdStatusController } from './admin-eodhd-status.controller';
 import { AdminGainersStatusController } from './admin-gainers-status.controller';
+import { AdminGainersBaselineController } from './admin-gainers-baseline.controller';
 
 @Module({
-  imports: [SupabaseModule, forwardRef(() => LisaModule)],
+  imports: [SupabaseModule, forwardRef(() => LisaModule), GainersModule],
   controllers: [
     AdminMigrationsController,
     AdminSupabaseQueryController,
     AdminLogsController,
     AdminEodhdStatusController,
     AdminGainersStatusController,
+    AdminGainersBaselineController,
   ],
 })
 export class AdminModule {}
