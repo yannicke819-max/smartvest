@@ -39,6 +39,7 @@ import { CandidateRejectReason } from '../../gainers-scanner/domain/gainers-enum
 // PR6.4 — Enrichment helpers (ATR + EMA + persistence depuis ohlcv_cache_daily)
 import { enrichShadowCandidate } from './shadow-enrichment.helper';
 import {
+  detectAssetClass,
   selectTopGainers,
   type TopGainerCandidate,
   type TopGainerAssetClass,
@@ -1032,6 +1033,10 @@ export class TopGainersScannerService implements OnModuleInit {
     return {
       symbol,
       exchange,
+      // PR6.6.2 — pré-classifie pour que les raw candidates exposent assetClass
+      // correctement (consommé par persistShadowSignalsBatch sans passer par
+      // selectTopGainers qui re-calcule).
+      assetClass: detectAssetClass(symbol, exchange, marketCap),
       close,
       high,
       changePct,
@@ -1054,6 +1059,10 @@ export class TopGainersScannerService implements OnModuleInit {
         out.push({
           symbol: pair,
           exchange: 'BINANCE',
+          // PR6.6.2 — set assetClass upstream (whitelisted CRYPTO_PAIRS = majors).
+          // Sans ça, persistShadowSignalsBatch tombait en fallback equity sur les
+          // 10 paires Binance et fail LIQUIDITY_FLOOR à tort.
+          assetClass: 'crypto_major',
           close: t.lastPrice,
           high: t.high ?? t.lastPrice,
           changePct: t.priceChangePct,

@@ -18,13 +18,27 @@
  *   - BLOC 3 trigger detection sur candles 1m intraday
  */
 
-import type { TopGainerCandidate, TopGainerAssetClass } from '@smartvest/ai-analyst';
+import { detectAssetClass, type TopGainerCandidate, type TopGainerAssetClass } from '@smartvest/ai-analyst';
 import type { GainersCandidateRaw } from '../../gainers-scanner/domain/gainers-candidate.types';
 
-/** Mappe TopGainerAssetClass → 'equity' | 'crypto' attendu par V1. */
-function mapAssetClass(legacyAssetClass: TopGainerAssetClass | undefined): 'equity' | 'crypto' {
-  if (!legacyAssetClass) return 'equity';
-  if (legacyAssetClass === 'crypto_major' || legacyAssetClass === 'crypto_alt') return 'crypto';
+/**
+ * Mappe TopGainerAssetClass → 'equity' | 'crypto' attendu par V1.
+ *
+ * PR6.6.2 — Fallback sur detectAssetClass(symbol, exchange, marketCap) quand
+ * `legacyAssetClass` est undefined. Cas critique : les raw candidates produits
+ * par fetchBinanceGainers/mapEodhdRow ne set jamais `assetClass` (seul
+ * selectTopGainers le fait downstream pour les top-N qui passent le filtre).
+ * Sans ce fallback, BTCUSDT/ETHUSDT/etc. tombaient en `equity` → fail
+ * LIQUIDITY_FLOOR alors que crypto majors devraient passer.
+ */
+function mapAssetClass(
+  legacyAssetClass: TopGainerAssetClass | undefined,
+  symbol: string,
+  exchange: string | null | undefined,
+  marketCap: number | null,
+): 'equity' | 'crypto' {
+  const cls = legacyAssetClass ?? detectAssetClass(symbol, exchange, marketCap);
+  if (cls === 'crypto_major' || cls === 'crypto_alt') return 'crypto';
   return 'equity';
 }
 
@@ -38,7 +52,12 @@ export function mapTopGainerToCandidateRaw(
 ): GainersCandidateRaw {
   return {
     symbol: candidate.symbol,
-    market: mapAssetClass(candidate.assetClass),
+    market: mapAssetClass(
+      candidate.assetClass,
+      candidate.symbol,
+      candidate.exchange,
+      candidate.marketCap ?? null,
+    ),
     exchange: candidate.exchange ?? 'UNKNOWN',
     close: candidate.close,
     open: candidate.close, // single-tick fallback
