@@ -3,3 +3,4 @@ export * from './domain/gainers-enums';
 export * from './domain/gainers-candidate.types';
 export * from './bloc1';
 export * from './bloc2';
+export * from './bloc3';
