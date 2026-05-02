@@ -130,6 +130,33 @@ const EU_WATCHLIST_NAMES = ['cac40', 'dax40', 'ftse100'];
 const CRYPTO_PAIRS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT', 'DOTUSDT', 'LINKUSDT', 'MATICUSDT'];
 
 /**
+ * PR6.6.3 — Market cap approximatif pour les 10 Binance majors whitelistés.
+ *
+ * Binance ticker24hr ne renvoie pas market cap (OHLCV-only). Sans valeur réelle,
+ * BLOC 1 V1 gate `MARKET_CAP_MIN` (seuil 500M crypto) fail systématiquement avec
+ * marketCap=0. Les 10 majors actuels ont tous un cap entre 8B et 1.3T (>>500M),
+ * la gate est de fait redondante pour cette whitelist contrôlée.
+ *
+ * Valeurs au 02/05/2026 (approximatives, conservatrices). La marge vs seuil 500M
+ * tolère ×10 dérive avant fail.
+ *
+ * Long-term : intégration CoinGecko/CMC pour caps live (cron quotidien). Out of
+ * scope PR6.6.3.
+ */
+const CRYPTO_MARKET_CAP_USD: Record<string, number> = {
+  BTCUSDT:  1_300_000_000_000,
+  ETHUSDT:    400_000_000_000,
+  BNBUSDT:     90_000_000_000,
+  SOLUSDT:    100_000_000_000,
+  XRPUSDT:     60_000_000_000,
+  ADAUSDT:     15_000_000_000,
+  AVAXUSDT:    15_000_000_000,
+  DOTUSDT:      8_000_000_000,
+  LINKUSDT:    10_000_000_000,
+  MATICUSDT:    8_000_000_000,
+};
+
+/**
  * P18f (29/04/2026, autonomous) — `crypto_tradable` concept : whitelist
  * opt-in via env var `CRYPTO_TRADABLE_WHITELIST=BTCUSDT,ETHUSDT,...` qui
  * RESTREINT les ouvertures de positions crypto à ces symboles.
@@ -1067,8 +1094,10 @@ export class TopGainersScannerService implements OnModuleInit {
           high: t.high ?? t.lastPrice,
           changePct: t.priceChangePct,
           volume: t.quoteVolume ?? 0,
-          avgVol50d: 0,
-          marketCap: 0, // Crypto major filter ne nécessite pas marketCap si on whitelist top pairs
+          avgVol50d: t.quoteVolume ?? 0, // PR6.6.3 — fallback sur 24h volume (pas de 50d Binance ticker24hr)
+          // PR6.6.3 — marketCap depuis table CRYPTO_MARKET_CAP_USD (Binance ne renvoie
+          // pas market cap, et BLOC 1 V1 gate MARKET_CAP_MIN check ce field).
+          marketCap: CRYPTO_MARKET_CAP_USD[pair] ?? 0,
         });
       } catch (e) {
         this.logger.debug(`[top-gainers] binance ${pair} error: ${String(e).slice(0, 80)}`);
