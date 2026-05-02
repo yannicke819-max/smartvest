@@ -11,6 +11,7 @@ import { PositionsManagerService } from './bloc4/positions-manager.service';
 import { GainersShadowRunService } from './shadow/shadow-run.service';
 import { TargetDerivationService } from './target-modes/target-derivation.service';
 import { KellySizingService } from './kelly/kelly-sizing.service';
+import { ModePresetsService } from './presets/mode-presets.service';
 
 /**
  * ADR-005 Gainers Algo V1 — Module NestJS découplé (ADR-006).
@@ -18,6 +19,7 @@ import { KellySizingService } from './kelly/kelly-sizing.service';
  * BLOC 4.0 ETL câblé via OnModuleInit pour éviter dépendance circulaire.
  * Shadow run (PR6) wired pour Step 9 validation.
  * Target modes + Kelly sizing (ADR-007 PR #207a) wired.
+ * Mode presets (ADR-007 PR #207b) wired.
  */
 @Module({
   imports: [SupabaseModule, ConfigModule],
@@ -32,6 +34,7 @@ import { KellySizingService } from './kelly/kelly-sizing.service';
     GainersShadowRunService,
     TargetDerivationService,
     KellySizingService,
+    ModePresetsService,
   ],
   exports: [
     GainersBloc1Service,
@@ -44,6 +47,7 @@ import { KellySizingService } from './kelly/kelly-sizing.service';
     GainersShadowRunService,
     TargetDerivationService,
     KellySizingService,
+    ModePresetsService,
   ],
 })
 export class GainersModule implements OnModuleInit {

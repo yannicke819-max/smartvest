@@ -8,3 +8,4 @@ export * from './bloc4';
 export * from './shadow';
 export * from './target-modes';
 export * from './kelly';
+export * from './presets';
