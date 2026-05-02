@@ -642,3 +642,123 @@ ADR-006 (découplage)  →  Step 4 (module skeleton)  →  Steps 6, 7, 8  →  S
 - [ ] Critères bascule tous validés (win-rate ≥ 45%, divergence ≤ 20%, zéro erreur, snapshot OK)
 - [ ] Dashboard Step 10 livré et opérationnel
 - [ ] Flag `GAINERS_V1_LIVE=true` activé
+
+---
+
+## 11. AMEND PR5 — BLOC 4 spec lock + dette technique BLOC 3
+
+### 11.1 — Trailing item #18 sémantique officielle locked (02/05/2026)
+
+Décision maître d'œuvre 02/05/2026 — l'ancien naming `TRAILING_BREAKEVEN` /
+`TRAILING_LOCK_50` est remplacé par `TRAILING_20` / `TRAILING_50` reflétant la
+fraction du MFE_gain lockée. **Tableau décisionnel officiel** :
+
+| État courant | Condition tick | Action |
+|---|---|---|
+| `OPEN` | `price ≤ sl_price` | → CLOSED (`SL`) |
+| `OPEN` | `price ≥ tp_price` | → CLOSED (`TP_FULL`) **immédiatement** — pas de promotion trailing |
+| `OPEN` | `gain ≥ +path_eff` ET `price < tp_price` | → `TRAILING_20` (promotion précoce) |
+| `TRAILING_20` | `price ≤ trailing_stop` | → CLOSED (`TRAILING_20_HIT`) |
+| `TRAILING_20` | `gain ≥ +2×path_eff` | → `TRAILING_50` (promotion) |
+| `TRAILING_20` | tick non-terminal | ratchet `stop = max(stop, entry × (1 + 0.20 × MFE_gain%))` |
+| `TRAILING_50` | `price ≤ trailing_stop` | → CLOSED (`TRAILING_50_HIT`) |
+| `TRAILING_50` | tick non-terminal | ratchet `stop = max(stop, entry × (1 + 0.50 × MFE_gain%))` |
+| `TRAILING_*` | n'importe quel prix ≥ TP | **TP cap LEVÉ** — pas de close au TP, on laisse courir sous trailing |
+
+**Clé de la sémantique** :
+
+1. Le TP initial (`+path_eff × 1.5` equity / `× 2.0` crypto) est **actif uniquement
+   en état `OPEN`**. Un gap-up dans la même candle qui dépasse TP ferme au TP.
+2. Une montée graduelle à `+path_eff` (= 67% du TP equity) déclenche la
+   **promotion précoce vers `TRAILING_20`** AVANT que le TP soit atteint. Le
+   TP cap est alors annulé — la position court jusqu'au trailing stop ou
+   `TRAILING_50` puis trailing stop.
+3. Sans cette règle, `TRAILING_50` (activation ≥ `+2×path_eff` = 133% du TP
+   equity) serait inatteignable car le TP ferme avant.
+
+**Trade-off assumé** : on capture les TP fulgurants par gap-up (momentum violent),
+ET on laisse courir les ascensions graduelles via trailing — au prix de quelques
+sorties trailing en-dessous d'un TP cap qui aurait pu être atteint si maintenu.
+
+**Tests de référence** (gainers-bloc4.spec.ts) :
+- SCENARIO 4 `GAP_UP_TP_HIT` : tick unique 101.08 (= +1.8×path_eff) → TP_FULL en OPEN
+- SCENARIO 5 `T20 wins, TP cap lifted` : montée graduelle 100.65→100.78→101.00
+  (price 101 > TP 100.90 mais en T20 → reste open) → reversal 100.10 →
+  TRAILING_20_HIT à 100.10 (locked +0.1%)
+
+### 11.2 — Math validation BLOC 3 par maître d'œuvre (02/05/2026)
+
+Dry-run validé 3/3 symboles :
+
+| Symbol | Trigger | Valeurs vérifiées |
+|---|---|---|
+| AAPL.US (equity) | `PULLBACK_HL_FIBO` fiboLevel=50 | range 14pts, 38.2%=199.65, 50%=198.00, 61.8%=196.35 ✅ |
+| CRWD.US (equity) | `VWAP_RECLAIM` | prev<VWAP, curr>VWAP, golden cross, surge ✅ |
+| BTC-USD.CC (crypto) | `PULLBACK_HL_FIBO` fiboLevel=61.8 | range 3700pts, 38.2%=60086.60, 50%=59650, 61.8%=59213.40 ✅ |
+
+Math Fibonacci confirmée correcte sur les 2 cas pullback. Distance VWAP au
+fiboLevel sélectionné cohérente avec la règle `nearestFiboLevel` (distance
+absolue minimale).
+
+### 11.3 — Modèle de fill (synchro PR5, 02/05/2026)
+
+**Décision maître d'œuvre** : les ordres TP/SL/trailing sont modélisés **MARKET au
+premier tick qui cross le niveau** (pas LIMIT). Réalisme prod : un broker fill
+au prochain prix disponible après cassure du stop, pas au niveau théorique.
+
+**Règles** :
+
+1. **Fill = tick price brut** : exit_price = prix de la candle qui a cross le niveau.
+   - SL/trailing : tick souvent ≤ stop level (slippage négatif sur gaps et faible liquidité).
+   - TP_FULL : tick souvent ≥ tp_price (slippage positif sur gap-up favorable).
+2. **Slippage tracé** : `slippage_pct = (exit_actual - exit_theoretical) / entry`
+   où :
+   - `theoretical = tp_price` pour TP_FULL
+   - `theoretical = currentStopPrice` pour SL / TRAILING_*_HIT
+3. **Audit decision_log** : chaque close écrit `slippage_pct` et `anomalous_fill`
+   dans `gainers_position_events.payload`.
+
+**Garde-fous** :
+
+| Condition | Niveau | Action |
+|---|---|---|
+| `\|slippage_pct\| > 1%` | error | flag `anomalous_fill=true`, log ERROR — review post-hoc |
+| equity ET `\|slippage_pct\| > 5%` | warn | log WARNING (contexte halt/gap) — pas de bloc |
+
+**Cohérence backtest/prod** : en shadow mode, slippage est enregistré pour stat
+post-hoc. En prod live, on compare réel vs simulé pour détecter dérive (cf.
+PR6 Step 9 shadow analysis).
+
+**Tests de référence** (gainers-bloc4.spec.ts §"slippage tracking") :
+- TP_FULL gap-up favorable → slippage positif
+- SL exact → slippage = 0
+- Gap-up 2% (massive) → anomalous_fill=true
+- Gap-down 1.4% (halt) → anomalous_fill=true
+
+### 11.4 — Dette technique BLOC 3 ouverte (à traiter avant merge PR5/PR6)
+
+Trois dettes identifiées par revue maître d'œuvre PR #192, tracées dans
+GitHub :
+
+- **Issue #193** (P1, avant PR5 merge) — Dry-run observability : ajouter
+  `timestamp`, `resolution`, `session`, `spread_proxy`, `volume_ratio`,
+  `gate_liquidity_passed`, `pivots_detected/reason` aux logs trigger.
+- **Issue #194** (P1, avant PR5 merge) — Dry-run REJECT coverage : exercer
+  chaque `rejectReason` avec ≥2 symboles attendus REJECT (penny stock, spread
+  trop large, altcoin illiquide, etc.).
+- **Issue #195** (P2, avant PR6 shadow mode) — Extended panel + fiboLevel
+  selection rule : règle officielle "niveau le plus proche, tie-break sur le
+  plus profond" + harnais 30+ symboles golden values historiques.
+
+### 11.5 — BLOC 4.0 ETL pre-req (réparé en PR5)
+
+Dette critique découverte : `gainers_volume_baselines` restait vide en prod
+car aucun caller de `upsertBaselines()` n'existait. Le cron
+`handleDailyBaselinesRefresh` ne faisait que recharger un cache vide.
+
+Fix livré commit 1 PR5 :
+- `VolumeBaselineCalculatorService` ajouté (lit `ohlcv_cache_daily` source
+  primaire, fallback live EODHD/Binance per-row)
+- Garde-fous : fraîcheur cache 26h, fallback per-symbol, TZ UTC asserted,
+  crypto = Binance systématique, idempotence via `onConflict='symbol,exchange'`
+- Wiring cron : ETL exécuté **avant** `reloadCache()` via `setEtlRunner()`
