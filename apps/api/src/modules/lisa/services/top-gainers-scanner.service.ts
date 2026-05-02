@@ -33,8 +33,11 @@ import { MultiTimeframePersistenceService } from './multi-tf-persistence.service
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
 // PR6.3 — Shadow wiring (LisaModule import GainersModule pour résolution DI)
 import { GainersShadowRunService } from '../../gainers-scanner/shadow/shadow-run.service';
+import { GainersBloc1Service, DEFAULT_BLOC1_FULL_CONFIG } from '../../gainers-scanner/bloc1/gainers-bloc1.service';
+import { SHADOW_BLOC1_CONFIG } from '../../gainers-scanner/bloc1/prefilter-gates';
 import { CandidateRejectReason } from '../../gainers-scanner/domain/gainers-enums';
-import { mapTopGainerToCandidateRaw } from './shadow-mapping.helper';
+// PR6.4 — Enrichment helpers (ATR + EMA + persistence depuis ohlcv_cache_daily)
+import { enrichShadowCandidate } from './shadow-enrichment.helper';
 import {
   selectTopGainers,
   type TopGainerCandidate,
@@ -363,10 +366,14 @@ export class TopGainersScannerService implements OnModuleInit {
     /**
      * PR6.3 — ShadowRunService inject pour persister chaque candidat scanné
      * dans gainers_v1_shadow_signals quand GAINERS_V1_SHADOW=true.
-     * Première version : persiste decision LEGACY (pas pipeline V1 complet).
-     * PR6.4 enrichira avec BLOC 1+2+3 V1 réelle.
+     * PR6.4 — Enrichi avec BLOC 1 réel + persistence multi-TF + ATR/EMA.
      */
     private readonly shadowRun: GainersShadowRunService,
+    /**
+     * PR6.4 — GainersBloc1Service inject pour run prefilter + composite
+     * scorer réels avec SHADOW_BLOC1_CONFIG (tolère atr/persistence null).
+     */
+    private readonly bloc1: GainersBloc1Service,
   ) {}
 
   /**
@@ -660,13 +667,24 @@ export class TopGainersScannerService implements OnModuleInit {
   }
 
   /**
-   * PR6.3 — Persiste chaque candidat scanné dans gainers_v1_shadow_signals
-   * quand GAINERS_V1_SHADOW=true. Première version : decision basée sur le
-   * legacy scoring (top-N retenus = ACCEPT, autres = REJECT). PR6.4 swappera
-   * vers BLOC 1+2+3 V1 réel.
+   * PR6.3+PR6.4 — Persiste chaque candidat scanné dans gainers_v1_shadow_signals
+   * quand GAINERS_V1_SHADOW=true.
    *
-   * Performance : 1 INSERT par candidat (≤215 par cycle scanner /15min).
+   * PR6.4 enrichment :
+   *   - enrichShadowCandidate : ATR(14) + EMA50/200 from ohlcv_cache_daily +
+   *     persistenceScore from mtfPersistence (vraie analyse multi-TF)
+   *   - Run BLOC 1 réel via GainersBloc1Service.process(...) avec
+   *     SHADOW_BLOC1_CONFIG (skipNullFields=true pour tolérer crypto sans
+   *     ohlcv_cache_daily)
+   *   - Persist real decision + rejectReason + composite score V1
+   *   - legacyDecision = top-N (pour audit divergence)
+   *
+   * Performance : 1 enrich + 1 INSERT par candidat (≤215 / cycle 15min).
+   * Sequential async pour limiter rate-limit (mtfPersistence cache interne).
    * Erreurs individuelles loggées en warn, n'arrêtent pas le batch.
+   *
+   * Out of scope (PR6.5) : BLOC 2 spread proxy + BLOC 3 entry trigger
+   * (nécessitent fetch candles 1h + 1m, +860 EODHD calls/cycle).
    */
   private async persistShadowSignalsBatch(
     candidates: TopGainerCandidate[],
@@ -674,31 +692,39 @@ export class TopGainersScannerService implements OnModuleInit {
   ): Promise<void> {
     if (!this.shadowRun.isShadowEnabled()) return;
     const topSymbolsSet = new Set(top.map((t) => t.symbol.toUpperCase()));
+    const supabaseClient = this.supabase.getClient();
     let success = 0;
+    let acceptCount = 0;
+    let rejectCount = 0;
     let failures = 0;
 
     for (const c of candidates) {
       try {
-        const isTop = topSymbolsSet.has(c.symbol.toUpperCase());
-        const decision: 'ACCEPT' | 'REJECT' = isTop ? 'ACCEPT' : 'REJECT';
-        // Pour REJECT : raison générique "scanner_legacy_filter" — PR6.4 mettra
-        // les vraies CandidateRejectReason via BLOC 1 prefilter eval.
-        const rejectReason = isTop ? null : CandidateRejectReason.PERSISTENCE_BELOW_THRESHOLD;
+        // PR6.4 : enrich + run BLOC 1 réel
+        const enrichedRaw = await enrichShadowCandidate(c, supabaseClient, this.mtfPersistence);
+        const bloc1Result = this.bloc1.evaluate(enrichedRaw, {
+          ...DEFAULT_BLOC1_FULL_CONFIG,
+          prefilter: SHADOW_BLOC1_CONFIG,
+        });
 
-        const cWithScore = c as TopGainerCandidate & { score?: number; assetClass?: TopGainerAssetClass };
-        const raw = mapTopGainerToCandidateRaw(cWithScore);
+        const isTopLegacy = topSymbolsSet.has(c.symbol.toUpperCase());
+        const legacyDecision: 'ACCEPT' | 'REJECT' = isTopLegacy ? 'ACCEPT' : 'REJECT';
+
         await this.shadowRun.persistShadowSignal({
-          raw,
-          compositeScore: typeof cWithScore.score === 'number' ? cWithScore.score / 100 : null,
-          decision,
-          rejectReason,
-          spreadProxy: null,
+          raw: enrichedRaw,
+          compositeScore: bloc1Result.compositeScore,
+          decision: bloc1Result.decision,
+          rejectReason: bloc1Result.rejectReason,
+          spreadProxy: null, // PR6.5 BLOC 2
           spreadProxySource: null,
-          trendFilter: null,
+          trendFilter: bloc1Result.trendFilter,
           rvolIntraday: null,
-          entrySignal: null,
+          entrySignal: null, // PR6.5 BLOC 3
           bloc3Diagnostics: null,
-        }, decision); // legacyDecision = même decision (pas de divergence dans v1)
+        }, legacyDecision);
+
+        if (bloc1Result.decision === 'ACCEPT') acceptCount++;
+        else rejectCount++;
         success++;
       } catch (e) {
         failures++;
@@ -707,7 +733,7 @@ export class TopGainersScannerService implements OnModuleInit {
         }
       }
     }
-    this.logger.log(`[shadow] persisted ${success} signals (${top.length} ACCEPT, ${success - top.length} REJECT, ${failures} failures)`);
+    this.logger.log(`[shadow] persisted ${success} signals (V1: ${acceptCount} ACCEPT, ${rejectCount} REJECT, ${failures} failures) — enrichi BLOC 1 réel`);
   }
 
   /**
