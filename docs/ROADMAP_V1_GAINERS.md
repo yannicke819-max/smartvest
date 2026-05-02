@@ -1,6 +1,6 @@
 # Roadmap V1 Gainers Scanner — État consolidé
 
-**Source de vérité** pour la prochaine session. Décrit l'état au **2026-05-02 09:50 UTC** après **17 PRs mergées** (cumul session 02/05).
+**Source de vérité** pour la prochaine session. Décrit l'état au **2026-05-02 14:10 UTC** après **20 PRs mergées** (cumul session 02/05).
 
 ---
 
@@ -10,8 +10,12 @@
 - **Phase 2** ✅ Fermée (Step 10 dashboard + extended panel + shadow init)
 - **Phase 3.1** ✅ Pré-flight verts (107 migrations, baselines, cron */15)
 - **Phase 3.2** ✅ Daily report cron + endpoints (PR6.2 #209)
-- **Phase 3.3** ✅ **Wiring fixed** — TopGainersScanner persiste shadow signals (PR6.3 #211 `21770a9`)
-- **Phase 3.4** ⏳ **PR6.4** : enrichir mapping (BLOC 1+2+3 réel + worker exit-simulator)
+- **Phase 3.3** ✅ Wiring fixed — TopGainersScanner persiste shadow signals (PR6.3 #211 `21770a9`)
+- **Phase 3.4** ✅ **Mapping enrichi V1 livré** :
+  - PR6.4 #213 `45e901b` — ATR/EMA/persistence depuis cache (equity)
+  - PR6.5 #214 `78ff79e` — Worker exit-simulator (cron */5 replay BLOC 4)
+  - PR6.6 #215 `705ff2c` — Crypto Binance enrichment + path_eff réel P9-UX
+- **Phase 3.5** ⏳ **PR6.7** : BLOC 2 spread proxy + BLOC 3 entry triggers (PULLBACK_HL_FIBO + VWAP_RECLAIM)
 - **Phase 4** ⏳ Bascule live + canary 10% (T0+30j)
 - **ADR-007** ✅ Kelly + Target Modes + 12 Presets backend (PR #207a/b)
 - **Brief S-DESIGN-V2** ⏳ PR #207c UI dashboard simulator (8 components + 5 deps)
@@ -42,49 +46,65 @@ Implémenté :
 
 ---
 
-## 🟡 Phase 3.4 — PR6.4 Mapping enrichi V1 + worker exit-simulator
+## ✅ Phase 3.4 RÉSOLUE — Mapping enrichi V1 + Worker exit-simulator
 
-**Scope estimé** : ~400-600 LoC + tests + 1 migration.
+**3 PRs mergées** : PR6.4 (#213), PR6.5 (#214), PR6.6 (#215).
 
-### Plan d'exécution PR6.4
+### PR6.4 #213 `45e901b` — Mapping enrichi V1 (equity)
+- `enrichShadowCandidate(candidate, supabase, mtfPersistence)` helper async
+- Equity : fetch `ohlcv_cache_daily` ticker → 200 closes → ATR(14) + EMA50/200
+- `persistenceScore` + `persistenceCount` via `mtfPersistence.analyze()`
+- Replace legacy proxy par BLOC 1 réel : `runAllPrefilterGates(enriched, DEFAULT_BLOC1_CONFIG)` + `computeCompositeScore`
+- Bloc3Diagnostics enrichi (volume_ratio + gateLiquidityPassed réels)
 
-**Étape 1 — Helper enrichment** (`apps/api/src/modules/lisa/services/shadow-enrichment.helper.ts`) :
-- `enrichShadowCandidate(candidate, supabase, mtfPersistence): GainersCandidateRaw`
-- Pour equity : fetch `ohlcv_cache_daily` ticker → derniers 200 closes
-  - Compute `ema50Daily` (EMA 50 sur 50 derniers closes)
-  - Compute `ema200Daily` (EMA 200 sur 200 derniers closes)
-  - Compute `atrDailyRelative` (ATR 14 sur 14 derniers H/L/C, divisé par close)
-- Pour crypto : Binance klines `interval=1d limit=200`, compute idem
-- `persistenceScore` + `persistenceCount` : `mtfPersistence.analyze({symbol, exchange, currentPrice})` (déjà inject)
+### PR6.5 #214 `78ff79e` — Worker exit-simulator (Phase 3.4 étape 5)
+- `ShadowExitSimulatorService` cron `*/5` minutes
+- Replay state machine BLOC 4 (TP/SL/trailing 20/50) via `applyTick`
+- Fetch candles 1m EODHD (equity) ou Binance (crypto) depuis `entry_at`
+- Update `simulated_exit_price/at/reason/pnl_pct/slippage_pct`
+- TIME_LIMIT après MAX_HOLD_HOURS=3 (ADR-005 §2.4)
+- Persist `entry_path_eff + tp_price + sl_price` au signal pour permettre le replay
 
-**Étape 2 — Run BLOC 1 réel** :
-- Replace `persistShadowSignalsBatch` legacy proxy par appel à `runAllPrefilterGates(enrichedRaw, DEFAULT_BLOC1_CONFIG)` + `computeCompositeScore`
-- Persist avec real decision + rejectReason + score
-- Skip BLOC 2/3 (cf. Étape 4)
+### PR6.6 #215 `705ff2c` — Crypto enrichment + path_eff réel P9-UX
+- `readBinanceDailyCandles(binance, symbol, 200)` : ATR/EMA pour crypto via Binance klines '1d'
+- `enrichShadowCandidate` retourne `{raw, pathEff}` — pathEff = `mtfPersistence.pathQuality.overallEfficiency`
+- `persistShadowSignal(candidate, legacyDecision, pathEffOverride?)` 3rd arg
+- TP/SL recalc avec pathEff réel (capped à 5%) au lieu de default 0.5%
+- Symbol mapping eodhd→binance : `BTC-USD.CC` → `BTCUSDT`
 
-**Étape 3 — Bloc3Diagnostics enriched** :
-- Surface `persistenceScore` reel + `volume_ratio` réel + `gateLiquidityPassed` basé sur BLOC 1 (LIQUIDITY_FLOOR/SPREAD_TOO_WIDE check)
+---
 
-**Étape 4 — BLOC 2/3 (optionnel cette PR ou défer PR6.5)** :
-- BLOC 2 spread proxy : fetch 1h candles (~5-20 par symbole), run computeSpreadProxy
-- BLOC 3 trigger : fetch 1m candles (~60 par symbole), run evaluatePullbackHL + evaluateVwapReclaim
-- COÛT : 215 symbols × (1h + 1m candles) = ~860 EODHD calls/cycle × cron */15 = ~3440 calls/heure
-- Quota EODHD ALL-IN-ONE = 100k/jour. Marge OK mais surveiller.
-- Recommandation : commencer en BLOC 1 only puis ajouter BLOC 2/3 dans PR6.5 si quota le permet
+## 🟡 Phase 3.5 — PR6.7 BLOC 2 spread proxy + BLOC 3 entry triggers
 
-**Étape 5 — Worker exit-simulator** (séparation logique = PR6.5) :
-- Cron 5min ou worker continu
-- Pour chaque shadow signal ACCEPT non encore exit-simulated :
-  - Fetch candles depuis `entry_at` jusqu'à maintenant
-  - Replay state machine BLOC 4 (TP/SL/trailing 20/50)
-  - Update `simulated_exit_price`, `simulated_exit_at`, `simulated_exit_reason`, `simulated_pnl_pct`, `simulated_slippage_pct`
-- Permet le calcul win-rate dans daily report
+**Scope estimé** : ~300-500 LoC + tests + cache layer.
 
-### Risques PR6.4
+### Plan d'exécution PR6.7
+
+**Étape 1 — Cache intraday partagé** :
+- Réutiliser `IntradayCacheService` (P19i) pour 1h + 1m candles
+- TTL court (15 min pour 1h, 5 min pour 1m)
+
+**Étape 2 — BLOC 2 spread proxy** :
+- Fetch 1h candles (~5-20 par symbole) depuis EODHD/Binance
+- Run `computeSpreadProxy(candles)` → `(H-L)/((H+L)/2)`
+- Surface dans `bloc3Diagnostics.spreadProxy`
+
+**Étape 3 — BLOC 3 trigger detection** :
+- Fetch 1m candles (~60 par symbole)
+- Run `evaluatePullbackHL(candles, fiboLevels)` + `evaluateVwapReclaim(candles, vwap)`
+- Surface dans `entrySignal.triggerKind` ('PULLBACK_HL_FIBO' | 'VWAP_RECLAIM' | null)
+- Setup_type column shadow signal alimentée
+
+**Étape 4 — Quota EODHD** :
+- 215 symbols × (1h + 1m) = ~860 calls/cycle × cron */15 = ~3440 calls/heure
+- Quota ALL-IN-ONE = 100k/jour → marge x29 OK
+- Surveiller via `EodhdQuotaService.dailyUsed` et back-off auto
+
+### Risques PR6.7
 
 - **DI failure** régression style #199/#200 : test local boot OBLIGATOIRE pré-push
-- **EODHD quota** : 215 × ATR/EMA calc nécessite cache ohlcv_cache_daily à jour — vérifier avec `MAX(fetched_at) FROM ohlcv_cache_daily`
-- **Performance** : enrichment async sequential = N × IO. Considérer batch parallel `Promise.all` avec sémaphore (max 10 concurrent)
+- **EODHD quota burst** : back-off `EodhdQuotaService.shouldThrottle()` à intégrer
+- **Performance** : sémaphore 5 concurrent par source (Binance 1200 weight/min, EODHD plan-dependent)
 
 ---
 
@@ -135,6 +155,10 @@ E2E Playwright : charger preset Modéré Gainers → modifier kelly_fraction →
 | #209 | `9aae561` | 02/05 09:02 | feat PR6.2 daily report cron + endpoints (Phase 3.2) | ✅ |
 | #210 | `a6b4b1f` | 02/05 09:16 | docs ROADMAP update — Phase 3.3 wiring gap diagnostic | ✅ |
 | #211 | `21770a9` | 02/05 09:35 | feat PR6.3 wiring TopGainersScanner + admin seed-universe + baseline chain | ✅ |
+| #212 | `f08b33e` | 02/05 09:50 | docs ROADMAP update post-#211 — Phase 3.3 résolue + PR6.4 plan | ✅ |
+| #213 | `45e901b` | 02/05 11:?? | feat PR6.4 mapping enrichi V1 + ATR/EMA/persistence depuis cache (equity) | ✅ |
+| #214 | `78ff79e` | 02/05 13:?? | feat PR6.5 exit-simulator worker (cron */5 replay BLOC 4 state machine) | ✅ |
+| #215 | `705ff2c` | 02/05 14:08 | feat PR6.6 crypto Binance enrichment + path_eff réel P9-UX | ✅ |
 
 ---
 
@@ -352,47 +376,44 @@ Garde-fou : branches `ui/` ou `design/` uniquement, **aucune modif** `apps/api/s
 
 ---
 
-## Next session — checklist reprise propre (UPDATED 09:50 UTC post-#211)
+## Next session — checklist reprise propre (UPDATED 14:10 UTC post-#215)
 
 Au démarrage de la prochaine session :
 
-1. `git pull origin main` — sync (HEAD = `21770a9`)
-2. Lire ce fichier (`ROADMAP_V1_GAINERS.md`) + sections "Phase 3.4 PR6.4" + "PR #207c"
-3. **OPTION A — PR6.4 Mapping enrichi V1** (priorité 1 pour Phase 4) :
-   - `shadow-enrichment.helper.ts` : ATR(14) + EMA50/200 depuis `ohlcv_cache_daily`
-   - `mtfPersistence.analyze()` pour persistence multi-TF réelle
-   - Replace `persistShadowSignalsBatch` legacy proxy par `runAllPrefilterGates` réel
-   - Surface `Bloc3Diagnostics` enriched (persistenceScore, volumeRatio)
-   - Estimé ~400-600 LoC + tests + local boot
-   - Plan détaillé dans la section "Phase 3.4" ci-dessus
-4. **OPTION B — PR6.5 Worker exit-simulator** (peut tourner en parallèle de A) :
-   - Cron 5min : pour chaque shadow signal ACCEPT, replay BLOC 4 state machine
-   - Update `simulated_exit_*` + `simulated_pnl_pct` dans `gainers_v1_shadow_signals`
-   - Permet calcul win-rate dans daily report
-5. **OPTION C — PR #207c UI dashboard simulator** (parallèle, fresh session frontend) :
+1. `git pull origin main` — sync (HEAD = `705ff2c`)
+2. Lire ce fichier (`ROADMAP_V1_GAINERS.md`) + sections "Phase 3.5 PR6.7" + "PR #207c"
+3. **OPTION A — PR6.7 BLOC 2 spread + BLOC 3 entry triggers** (priorité 1 pour Phase 4) :
+   - Cache intraday partagé (`IntradayCacheService` réutilisé)
+   - BLOC 2 `computeSpreadProxy` sur 1h candles
+   - BLOC 3 `evaluatePullbackHL` + `evaluateVwapReclaim` sur 1m candles
+   - Surface `entrySignal.triggerKind` + `bloc3Diagnostics.spreadProxy`
+   - Plan détaillé dans la section "Phase 3.5" ci-dessus
+4. **OPTION B — PR #207c UI dashboard simulator** (parallèle, fresh session frontend) :
    - 8 composants UI + 5 stack deps + migration 0109
    - Plan détaillé dans la section "PR #207c" ci-dessus
-6. Vérifier post-deploy `21770a9` :
-   - `curl POST /admin/gainers/seed-legacy-universe` pour étendre 15→215 + populate baselines
-   - `curl GET /admin/gainers/v1-metrics` → `last_24h.totalScanned > 0`
-   - Premier daily report ce soir 23:30 UTC
-7. Monitor cadence : si < 0.5 ACCEPT/jour sur 7j → `low_cadence_flag` → enquête
-8. Phase 4 bascule live = T0+30j sous réserve cadence shadow OK
+5. Vérifier post-deploy `705ff2c` :
+   - `curl GET /admin/gainers/v1-metrics` → `shadow.last_24h.totalSignals > 0`
+   - Vérifier exit-simulator (cron */5) : `SELECT COUNT(*) FROM gainers_v1_shadow_signals WHERE simulated_exit_at IS NOT NULL`
+   - Premier daily report ce soir 23:30 UTC avec PnL réels
+6. Monitor cadence : si < 0.5 ACCEPT/jour sur 7j → `low_cadence_flag` → enquête
+7. Phase 4 bascule live = T0+30j sous réserve cadence shadow OK + win-rate ≥ 45%
 
 ---
 
-## Live prod state (2026-05-02 09:50 UTC post-#211)
+## Live prod state (2026-05-02 14:10 UTC post-#215)
 
 | Item | Statut |
 |---|---|
-| Live SHA (target post-deploy) | `21770a9` (PR #211 wiring) — vérifier `/version` après Fly deploy |
+| Live SHA (target post-deploy) | `705ff2c` (PR #215 PR6.6 crypto + path_eff) — vérifier `/version` après Fly deploy |
 | Fly machine | `d8d4070a719018` healthy |
-| `gainers_volume_baselines` | **15 rows** (mega12 + crypto) — `POST /admin/gainers/seed-legacy-universe` extends 15→215 + chain baseline ETL |
-| `gainers_legacy_snapshot` | **15 rows** — idem |
-| `gainers_v1_shadow_signals` | À se remplir au prochain cron `*/15` post-deploy `21770a9` (mode dégradé legacy decisions, PR6.4 enrichira) |
-| `_smartvest_migrations` | **108/108** — 0108 (gainers_shadow_daily_report) à appliquer post-deploy |
-| `GAINERS_V1_SHADOW` flag | ✅ activé Fly secret + wiring actif PR6.3 |
-| Cron */15 scanner | ✅ schedule actif + persiste shadow signals |
+| `gainers_volume_baselines` | **215 rows** (mega12 + crypto + sp500 extended) post-seed |
+| `gainers_legacy_snapshot` | **215 rows** post-seed |
+| `gainers_v1_shadow_signals` | Se remplit cron `*/15` avec mapping enrichi V1 (BLOC 1 réel + path_eff réel + crypto Binance) |
+| `simulated_exit_*` | Se remplit cron `*/5` (ShadowExitSimulatorService) avec replay BLOC 4 |
+| `_smartvest_migrations` | **108/108** |
+| `GAINERS_V1_SHADOW` flag | ✅ activé Fly secret + wiring actif + enrichment réel |
+| Cron */15 scanner | ✅ schedule actif + persiste shadow signals enrichis |
+| Cron */5 exit-simulator | ✅ schedule actif (PR #214) |
 | Cron 23:30 daily-report | ✅ schedule actif (PR #209) |
 | ADMIN_TOKEN | 🔴 **À ROTATE** — exposé chat session |
 
