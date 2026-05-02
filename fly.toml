@@ -1,7 +1,10 @@
 # fly.toml — SmartVest API (NestJS)
 #
-# Last forced redeploy : 2026-04-28 — sync Fly with main HEAD (P0 hotfix
-# #52 snapshot-history-types + #53 profile-label-defensive).
+# Last forced redeploy : 2026-05-02 — unstuck v334 image after migration 0097
+# hotfix (#197). Machine d8d4070a719018 had exhausted 10 restart attempts on
+# pre-hotfix build; #197 only touched supabase/migrations/* which doesn't
+# match fly.yml `paths` filter, so no auto-deploy was triggered. This bump
+# forces fly.yml to re-deploy from main HEAD (post-#196 BLOC 4 + #197 fix).
 #
 # auto_stop_machines = 'off' : la machine reste TOUJOURS up.
 # Indispensable pour que les crons Lisa tournent sans interruption :
