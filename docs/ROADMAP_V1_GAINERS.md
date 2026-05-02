@@ -1,6 +1,6 @@
 # Roadmap V1 Gainers Scanner — État consolidé
 
-**Source de vérité** pour la prochaine session. Décrit l'état au **2026-05-02 09:30 UTC** après 15 PRs mergées (cumul session 02/05).
+**Source de vérité** pour la prochaine session. Décrit l'état au **2026-05-02 09:50 UTC** après **17 PRs mergées** (cumul session 02/05).
 
 ---
 
@@ -8,73 +8,110 @@
 
 - **Phase 1** ✅ Fermée (dette tech BLOC 3 + ETL admin endpoint + hotfixes)
 - **Phase 2** ✅ Fermée (Step 10 dashboard + extended panel + shadow init)
-- **Phase 3.1** ✅ Pré-flight verts (107 migrations, 15 baselines, cron */15 actif)
+- **Phase 3.1** ✅ Pré-flight verts (107 migrations, baselines, cron */15)
 - **Phase 3.2** ✅ Daily report cron + endpoints (PR6.2 #209)
-- **Phase 3.3** 🚨 **GAP CRITIQUE** : flag GAINERS_V1_SHADOW=true activé MAIS pipeline V1 non branché au scanner cron → **0 signal généré**
-- **Phase 4** ⏳ Bascule live + canary 10% (bloqué par 3.3)
-- **ADR-007** ✅ Kelly + Target Modes + 12 Presets backend (PR #207a/b #207/#208)
-- **Brief S-DESIGN-V2** ⏳ Consigné, démarrage T0+3j
+- **Phase 3.3** ✅ **Wiring fixed** — TopGainersScanner persiste shadow signals (PR6.3 #211 `21770a9`)
+- **Phase 3.4** ⏳ **PR6.4** : enrichir mapping (BLOC 1+2+3 réel + worker exit-simulator)
+- **Phase 4** ⏳ Bascule live + canary 10% (T0+30j)
+- **ADR-007** ✅ Kelly + Target Modes + 12 Presets backend (PR #207a/b)
+- **Brief S-DESIGN-V2** ⏳ PR #207c UI dashboard simulator (8 components + 5 deps)
 
 ---
 
-## 🚨 GAP CRITIQUE PHASE 3.3 — Shadow wiring manquant
+## ✅ Phase 3.3 RÉSOLUE — PR6.3 Shadow wiring (`21770a9`)
 
-**Symptôme prod** :
-- `fly secrets set GAINERS_V1_SHADOW=true` ✅ exécuté
-- `gainers_v1_shadow_signals` reste **vide** depuis activation
-- `GET /admin/gainers/shadow-daily-report` retourne 0 reports
+**Mergé** : PR #211 (`feat(shadow): PR6.3 wiring`).
 
-**Cause racine** : `ShadowRunService.persistShadowSignal()` n'est appelé **par aucun orchestrateur**. Confirmé par `grep -rn "persistShadowSignal" src/` → uniquement définition, 0 caller.
+Implémenté :
+- `LisaModule.imports += GainersModule` (no cycle, no forwardRef)
+- `TopGainersScannerService` constructor 9th arg : `GainersShadowRunService`
+- `persistShadowSignalsBatch(candidates, top)` private method appelée après `fetchAllCandidates`
+- `mapTopGainerToCandidateRaw` helper TopGainerCandidate → GainersCandidateRaw
+- 7 tests TopGainersScanner patchés (mock 9th arg)
 
-Le `TopGainersScannerService` (legacy, scanner cron `*/15`) :
-- Fetch les candidats via `fetchAllCandidates()`
-- Sélectionne top 3 + ranking LLM optionnel
-- Crée pseudo-proposal + paperBroker.openPosition (legacy paper-trading)
-- **Ne touche jamais** au pipeline V1 (`GainersBloc1Service` → `GainersBloc2Service` → `GainersBloc3Service` → `PositionsManagerService`)
-- **Ne call jamais** `ShadowRunService.persistShadowSignal`
+**Endpoint admin combiné** : `POST /admin/gainers/seed-legacy-universe` :
+- Lit `watchlist_universe` → upsert `gainers_legacy_snapshot` (ON CONFLICT DO NOTHING)
+- Chaîne baseline refresh ETL (default ON)
+- Réponse `{seed: {...}, baseline: {...}, totalDurationMs}`
+- 1 seul curl extends 15→215 + populate baselines
 
-Le pipeline V1 (BLOC 1-4) est **complètement isolé** du scanner cron — il existe en module mais aucun orchestrateur ne le déclenche.
+**Mode dégradé actuel** (PR6.4 enrichira) :
+- `compositeScore` = legacy/100 (pas pipeline V1 enrichi)
+- `decision` = ACCEPT pour top-N, REJECT autres
+- `setup_type` / `spread_proxy` / `volume_ratio` / `pivots_*` / `fibo_level` = null
 
-### Ce qu'il faut coder (PR6.3 — Shadow wiring)
+---
 
-**Scope** : ~250-400 LoC + tests + risque DI léger.
+## 🟡 Phase 3.4 — PR6.4 Mapping enrichi V1 + worker exit-simulator
 
-1. `LisaModule` import `GainersModule` (créer dépendance one-way, pas de cycle)
-2. `TopGainersScannerService` constructor inject :
-   - `GainersBloc1Service`
-   - `GainersBloc2Service`
-   - `GainersBloc3Service`
-   - `GainersShadowRunService`
-3. Dans `runScannerInner()`, après `fetchAllCandidates()` :
-   - Si `shadowRun.isShadowEnabled()` → mapper `TopGainerCandidate` vers `GainersCandidateRaw`, run BLOC 1+2 pipeline, persist via `persistShadowSignal`
-4. **Mapping TopGainerCandidate → GainersCandidateRaw** : champs manquants à dériver/défaut :
-   - `ema50Daily`, `ema200Daily` : à fetcher (cache `ohlcv_cache_daily` + EMA helper) ou null + skip BLOC 3 trend filter
-   - `atrDailyRelative` : calc depuis cache OHLC ou null + skip volatility clamp
-   - `medianDailyVolUsd20d` : déjà dans `gainers_volume_baselines`
-5. Tests unitaires sur le mapping + integration mock
-6. **Test local boot OBLIGATOIRE** (pré-push) — éviter régression DI #199/#200
+**Scope estimé** : ~400-600 LoC + tests + 1 migration.
 
-### Procédure manuelle pour valider end-to-end (sans wiring)
+### Plan d'exécution PR6.4
 
-Pour générer 1 signal shadow synthétique tout de suite :
+**Étape 1 — Helper enrichment** (`apps/api/src/modules/lisa/services/shadow-enrichment.helper.ts`) :
+- `enrichShadowCandidate(candidate, supabase, mtfPersistence): GainersCandidateRaw`
+- Pour equity : fetch `ohlcv_cache_daily` ticker → derniers 200 closes
+  - Compute `ema50Daily` (EMA 50 sur 50 derniers closes)
+  - Compute `ema200Daily` (EMA 200 sur 200 derniers closes)
+  - Compute `atrDailyRelative` (ATR 14 sur 14 derniers H/L/C, divisé par close)
+- Pour crypto : Binance klines `interval=1d limit=200`, compute idem
+- `persistenceScore` + `persistenceCount` : `mtfPersistence.analyze({symbol, exchange, currentPrice})` (déjà inject)
 
-```bash
-TOKEN="<ADMIN_TOKEN>"
-# Étape 1 : (TODO future PR) ajouter endpoint /admin/gainers/shadow/run-test
-# qui prend un symbole en input et fait passer un GainersCandidateRaw
-# minimal dans le pipeline + persist.
-# Pas dispo actuellement.
+**Étape 2 — Run BLOC 1 réel** :
+- Replace `persistShadowSignalsBatch` legacy proxy par appel à `runAllPrefilterGates(enrichedRaw, DEFAULT_BLOC1_CONFIG)` + `computeCompositeScore`
+- Persist avec real decision + rejectReason + score
+- Skip BLOC 2/3 (cf. Étape 4)
 
-# Workaround : insert direct via SQL Editor Supabase :
-INSERT INTO gainers_v1_shadow_signals
-  (symbol, exchange, asset_class, decision, setup_type, composite_score,
-   entry_price, fibo_level, spread_proxy, volume_ratio, session, legacy_decision)
-VALUES
-  ('AAPL.US', 'US', 'equity', 'ACCEPT', 'PULLBACK_HL_FIBO', 0.75,
-   200.50, 50, 0.0021, 1.85, 'RTH', 'ACCEPT');
-```
+**Étape 3 — Bloc3Diagnostics enriched** :
+- Surface `persistenceScore` reel + `volume_ratio` réel + `gateLiquidityPassed` basé sur BLOC 1 (LIQUIDITY_FLOOR/SPREAD_TOO_WIDE check)
 
-Puis `POST /admin/gainers/shadow-daily-report/recompute body {date: '2026-05-02'}` pour aggregate.
+**Étape 4 — BLOC 2/3 (optionnel cette PR ou défer PR6.5)** :
+- BLOC 2 spread proxy : fetch 1h candles (~5-20 par symbole), run computeSpreadProxy
+- BLOC 3 trigger : fetch 1m candles (~60 par symbole), run evaluatePullbackHL + evaluateVwapReclaim
+- COÛT : 215 symbols × (1h + 1m candles) = ~860 EODHD calls/cycle × cron */15 = ~3440 calls/heure
+- Quota EODHD ALL-IN-ONE = 100k/jour. Marge OK mais surveiller.
+- Recommandation : commencer en BLOC 1 only puis ajouter BLOC 2/3 dans PR6.5 si quota le permet
+
+**Étape 5 — Worker exit-simulator** (séparation logique = PR6.5) :
+- Cron 5min ou worker continu
+- Pour chaque shadow signal ACCEPT non encore exit-simulated :
+  - Fetch candles depuis `entry_at` jusqu'à maintenant
+  - Replay state machine BLOC 4 (TP/SL/trailing 20/50)
+  - Update `simulated_exit_price`, `simulated_exit_at`, `simulated_exit_reason`, `simulated_pnl_pct`, `simulated_slippage_pct`
+- Permet le calcul win-rate dans daily report
+
+### Risques PR6.4
+
+- **DI failure** régression style #199/#200 : test local boot OBLIGATOIRE pré-push
+- **EODHD quota** : 215 × ATR/EMA calc nécessite cache ohlcv_cache_daily à jour — vérifier avec `MAX(fetched_at) FROM ohlcv_cache_daily`
+- **Performance** : enrichment async sequential = N × IO. Considérer batch parallel `Promise.all` avec sémaphore (max 10 concurrent)
+
+---
+
+## 🟡 PR #207c — UI dashboard simulator (chantier S-DESIGN-V2 livrable C)
+
+**Scope estimé** : ~5-10j fresh session frontend.
+
+8 composants UI :
+1. `<PresetPicker mode={...}>` — 4 cards horizontales par mode
+2. `<ObjectiveEditor>` × 3 modes (Investment / Harvest / Gainers)
+3. 3-tabs split GAINERS purple / HARVEST emerald / INVESTMENT sky
+4. Modal warning Kamikaze (full Kelly disclaimer)
+5. `/dashboard/gainers/simulator` form complet (zod + react-hook-form)
+6. Live shadow feed toggle (overlay shadow signals 7d sur sim)
+7. Charts Recharts (equity curve, drawdown, P&L histogram)
+8. KPIs cards (total return, CAGR, Sharpe, max DD, win rate)
+
+5 stack deps à ajouter :
+- `framer-motion` (micro-interactions)
+- `@tremor/react` (cards dashboard riches)
+- `cmdk` (command palette ⌘K)
+- `react-hook-form` + `zod` (form validation)
+- `canvas-confetti` (milestones)
+
+Migration `0109_gainers_simulator_presets` (table user save preset).
+
+E2E Playwright : charger preset Modéré Gainers → modifier kelly_fraction → submit → vérifier graph rendu.
 
 ---
 
@@ -96,6 +133,8 @@ Puis `POST /admin/gainers/shadow-daily-report/recompute body {date: '2026-05-02'
 | #207 | `3c34a19` | 02/05 07:36 | feat PR #207a Kelly + Target Modes backend (ADR-007) | ✅ |
 | #208 | `600740f` | 02/05 07:46 | feat PR #207b 12 builtin presets backend (4×3 modes ADR-007) | ✅ |
 | #209 | `9aae561` | 02/05 09:02 | feat PR6.2 daily report cron + endpoints (Phase 3.2) | ✅ |
+| #210 | `a6b4b1f` | 02/05 09:16 | docs ROADMAP update — Phase 3.3 wiring gap diagnostic | ✅ |
+| #211 | `21770a9` | 02/05 09:35 | feat PR6.3 wiring TopGainersScanner + admin seed-universe + baseline chain | ✅ |
 
 ---
 
@@ -313,42 +352,47 @@ Garde-fou : branches `ui/` ou `design/` uniquement, **aucune modif** `apps/api/s
 
 ---
 
-## Next session — checklist reprise propre (UPDATED 09:30 UTC)
+## Next session — checklist reprise propre (UPDATED 09:50 UTC post-#211)
 
 Au démarrage de la prochaine session :
 
-1. `git pull origin main` — sync (HEAD = `9aae561`)
-2. Lire ce fichier (`ROADMAP_V1_GAINERS.md`) + section 🚨 **GAP CRITIQUE PHASE 3.3**
-3. **PRIORITÉ 1 — PR6.3 Shadow wiring** :
-   - Modifier `LisaModule.imports` pour ajouter `GainersModule`
-   - Inject `GainersBloc{1,2,3}Service` + `GainersShadowRunService` dans `TopGainersScannerService`
-   - Ajouter mapping `TopGainerCandidate → GainersCandidateRaw` (helper)
-   - Wire `persistShadowSignal` dans `runScannerInner()` post `fetchAllCandidates`
-   - Tests unitaires + local boot test OBLIGATOIRE (éviter régression DI #199/#200)
-   - Estimé ~250-400 LoC + tests
-4. Après merge PR6.3 → vérifier `gainers_v1_shadow_signals` se remplit (1+ row dans l'heure)
-5. Daily report cron générera la première aggregation ce soir 23:30 UTC
-6. Monitor cadence : si < 0.5 ACCEPT/jour sur 7j → `low_cadence_flag=true` → enquête
-7. **PR #207c (UI dashboard simulator)** : indépendant de Phase 3.3, peut démarrer en parallèle
-   - 8 composants UI (PresetPicker, ObjectiveEditor, 3-tabs split, modal Kamikaze, simulator form, charts, Playwright E2E)
-   - 5 stack deps à ajouter (framer-motion, tremor, cmdk, react-hook-form, canvas-confetti)
-   - Migration 0109 `gainers_simulator_presets`
+1. `git pull origin main` — sync (HEAD = `21770a9`)
+2. Lire ce fichier (`ROADMAP_V1_GAINERS.md`) + sections "Phase 3.4 PR6.4" + "PR #207c"
+3. **OPTION A — PR6.4 Mapping enrichi V1** (priorité 1 pour Phase 4) :
+   - `shadow-enrichment.helper.ts` : ATR(14) + EMA50/200 depuis `ohlcv_cache_daily`
+   - `mtfPersistence.analyze()` pour persistence multi-TF réelle
+   - Replace `persistShadowSignalsBatch` legacy proxy par `runAllPrefilterGates` réel
+   - Surface `Bloc3Diagnostics` enriched (persistenceScore, volumeRatio)
+   - Estimé ~400-600 LoC + tests + local boot
+   - Plan détaillé dans la section "Phase 3.4" ci-dessus
+4. **OPTION B — PR6.5 Worker exit-simulator** (peut tourner en parallèle de A) :
+   - Cron 5min : pour chaque shadow signal ACCEPT, replay BLOC 4 state machine
+   - Update `simulated_exit_*` + `simulated_pnl_pct` dans `gainers_v1_shadow_signals`
+   - Permet calcul win-rate dans daily report
+5. **OPTION C — PR #207c UI dashboard simulator** (parallèle, fresh session frontend) :
+   - 8 composants UI + 5 stack deps + migration 0109
+   - Plan détaillé dans la section "PR #207c" ci-dessus
+6. Vérifier post-deploy `21770a9` :
+   - `curl POST /admin/gainers/seed-legacy-universe` pour étendre 15→215 + populate baselines
+   - `curl GET /admin/gainers/v1-metrics` → `last_24h.totalScanned > 0`
+   - Premier daily report ce soir 23:30 UTC
+7. Monitor cadence : si < 0.5 ACCEPT/jour sur 7j → `low_cadence_flag` → enquête
 8. Phase 4 bascule live = T0+30j sous réserve cadence shadow OK
 
 ---
 
-## Live prod state (2026-05-02 09:30 UTC)
+## Live prod state (2026-05-02 09:50 UTC post-#211)
 
 | Item | Statut |
 |---|---|
-| Live SHA | `9aae561` (PR #209 daily report) build 09:02 UTC |
+| Live SHA (target post-deploy) | `21770a9` (PR #211 wiring) — vérifier `/version` après Fly deploy |
 | Fly machine | `d8d4070a719018` healthy |
-| `gainers_volume_baselines` | **15 rows** (mega12 + crypto seed) — extension à 215 via `audit-universe-legacy.ts --apply` requise |
-| `gainers_legacy_snapshot` | **15 rows** (idem — extension nécessaire pour 215 symboles) |
-| `gainers_v1_shadow_signals` | **0 rows** — wiring PR6.3 manquant |
-| `_smartvest_migrations` | **107/107** (incluant 0104-0107) — 0108 sera appliqué après prochain push |
-| `GAINERS_V1_SHADOW` flag | ✅ activé Fly secret (mais inutile sans wiring) |
-| Cron */15 scanner | ✅ schedule actif |
+| `gainers_volume_baselines` | **15 rows** (mega12 + crypto) — `POST /admin/gainers/seed-legacy-universe` extends 15→215 + chain baseline ETL |
+| `gainers_legacy_snapshot` | **15 rows** — idem |
+| `gainers_v1_shadow_signals` | À se remplir au prochain cron `*/15` post-deploy `21770a9` (mode dégradé legacy decisions, PR6.4 enrichira) |
+| `_smartvest_migrations` | **108/108** — 0108 (gainers_shadow_daily_report) à appliquer post-deploy |
+| `GAINERS_V1_SHADOW` flag | ✅ activé Fly secret + wiring actif PR6.3 |
+| Cron */15 scanner | ✅ schedule actif + persiste shadow signals |
 | Cron 23:30 daily-report | ✅ schedule actif (PR #209) |
 | ADMIN_TOKEN | 🔴 **À ROTATE** — exposé chat session |
 
@@ -372,6 +416,6 @@ Au démarrage de la prochaine session :
 
 ---
 
-_Document mis à jour 2026-05-02 09:30 UTC après session 15 PRs (#196 → #209)._
-_main HEAD = `9aae561`._
+_Document mis à jour 2026-05-02 09:50 UTC après session 17 PRs (#196 → #211)._
+_main HEAD = `21770a9`._
 _Source de vérité jusqu'à la session suivante._
