@@ -1,6 +1,6 @@
 # Roadmap V1 Gainers Scanner — État consolidé
 
-**Source de vérité** pour la prochaine session. Décrit l'état au **2026-05-02 14:10 UTC** après **20 PRs mergées** (cumul session 02/05).
+**Source de vérité** pour la prochaine session. Décrit l'état au **2026-05-02 18:00 UTC** après **24 PRs mergées** (cumul session 02/05).
 
 ---
 
@@ -15,10 +15,79 @@
   - PR6.4 #213 `45e901b` — ATR/EMA/persistence depuis cache (equity)
   - PR6.5 #214 `78ff79e` — Worker exit-simulator (cron */5 replay BLOC 4)
   - PR6.6 #215 `705ff2c` — Crypto Binance enrichment + path_eff réel P9-UX
+- **Phase 3.4.1** ✅ **Hotfixes shadow architecture (Sat afternoon session)** :
+  - PR6.6.1 #217 `4b7c99e` — Shadow run pipeline-agnostic (decouple from active portfolios)
+  - PR6.6.2 #218 `13ead74` — Crypto asset_class propagation (Binance + EODHD upstream)
+  - PR6.6.3 #219 `5d5c790` — Crypto vol24hUsd correct + marketCap CRYPTO_MARKET_CAP_USD
 - **Phase 3.5** ⏳ **PR6.7** : BLOC 2 spread proxy + BLOC 3 entry triggers (PULLBACK_HL_FIBO + VWAP_RECLAIM)
 - **Phase 4** ⏳ Bascule live + canary 10% (T0+30j)
 - **ADR-007** ✅ Kelly + Target Modes + 12 Presets backend (PR #207a/b)
 - **Brief S-DESIGN-V2** ⏳ PR #207c UI dashboard simulator (8 components + 5 deps)
+
+---
+
+## ✅ Phase 3.4.1 RÉSOLUE — Hotfixes shadow architecture (02/05 PM)
+
+3 PRs hotfix livrées dans la session afternoon Sat 02/05 pour corriger les
+dysfonctionnements observés post-PR6.6 :
+
+### PR6.6.1 #217 `4b7c99e` — Shadow run pipeline-agnostic
+
+**Diagnostic** : 0 shadow signal persisté en 30j malgré flag `GAINERS_V1_SHADOW=true`
++ 4 cycles cron par jour. Cause : early return `no_active_portfolio` AVANT
+l'appel à `persistShadowSignalsBatch`. Sans portfolio en `strategy_mode=gainers`,
+le shadow batch n'était jamais exécuté.
+
+**Fix** : quand `shadowRun.isShadowEnabled()` et `configs.length === 0`, fetch +
+select top + persist shadow batch quand même, puis early return. Conforme à
+l'intent ADR-005 §5 Step 9 (shadow run = test pipeline indépendant des
+portfolios utilisateur).
+
+**Effet validé** : 372 signals persistés au 1er cron post-deploy.
+
+### PR6.6.2 #218 `13ead74` — Crypto asset_class propagation
+
+**Diagnostic** : 10 cryptos Binance étiquetés `asset_class=equity` → fail
+`LIQUIDITY_FLOOR` à tort. Cause : `mapEodhdRow` + `fetchBinanceGainers` ne
+set jamais `assetClass`. `selectTopGainers` le calcule via `detectAssetClass`
+mais uniquement pour les top-N qui passent le filtre legacy. Les raw
+candidates iterés par `persistShadowSignalsBatch` n'avaient jamais
+`assetClass` → fallback `equity`.
+
+**Fix (a)** defensive : `mapTopGainerToCandidateRaw` appelle `detectAssetClass`
+quand `assetClass` undefined.
+**Fix (b)** upstream : `fetchBinanceGainers` set `assetClass: 'crypto_major'`
++ `mapEodhdRow` set via `detectAssetClass`.
+
+**Effet validé** : 10/10 crypto correctement classés `market='crypto'`.
+
+### PR6.6.3 #219 `5d5c790` — Crypto vol24hUsd + marketCap
+
+**Diagnostic** : Post-PR6.6.2, asset_class OK mais 10/10 cryptos REJECT avec
+7×MARKET_CAP_MIN + 3×LIQUIDITY_FLOOR. Causes :
+- Bug A : `vol24hUsd = volume × close` faux pour crypto (Binance quoteVolume
+  déjà en USDT, multiplier par close donne USD² absurde)
+- Bug B : `marketCap: 0` hardcodé dans `fetchBinanceGainers` → fail seuil 500M
+
+**Fix (a)** : skip × close pour crypto dans mapping helper.
+**Fix (b)** : table `CRYPTO_MARKET_CAP_USD` avec valeurs approximatives pour
+les 10 majors whitelistés (BTC=1.3T, ETH=400B, ..., MATIC=8B).
+
+ADR-005 §1bis seuils non touchés. Tous > seuil 500M, marge ×10 dérive marché.
+
+**Effet validé** (run 17:45 UTC samedi) :
+- 0/10 MARKET_CAP_MIN ✅
+- 3 PASS liquidity (BTC, ETH, SOL — quoteVolume > 50M weekend) → fail
+  PERSISTENCE_BELOW_THRESHOLD légitime
+- 7 FAIL LIQUIDITY_FLOOR (BNB, XRP, ADA, AVAX, DOT, LINK, MATIC) — quoteVolume
+  weekend < 50M (BNB=$36M, MATIC=$1M) — **comportement correct du gate**,
+  rejets légitimes en regime low-vol weekend
+
+### Conclusion analyse weekend
+
+Le gate LIQUIDITY_FLOOR fonctionne **comme spec ADR-005 §1bis**. Validation
+weekday attendue lundi 09:00 UTC où volumes crypto reviennent à niveau normal
+(BNB ~$300-500M, ADA ~$150M). Aucune PR6.6.4 nécessaire.
 
 ---
 
@@ -159,6 +228,10 @@ E2E Playwright : charger preset Modéré Gainers → modifier kelly_fraction →
 | #213 | `45e901b` | 02/05 11:?? | feat PR6.4 mapping enrichi V1 + ATR/EMA/persistence depuis cache (equity) | ✅ |
 | #214 | `78ff79e` | 02/05 13:?? | feat PR6.5 exit-simulator worker (cron */5 replay BLOC 4 state machine) | ✅ |
 | #215 | `705ff2c` | 02/05 14:08 | feat PR6.6 crypto Binance enrichment + path_eff réel P9-UX | ✅ |
+| #216 | `551d0bb` | 02/05 14:30 | docs ROADMAP update post-#215 — Phase 3.4 résolue | ✅ |
+| #217 | `4b7c99e` | 02/05 15:25 | fix PR6.6.1 shadow run pipeline-agnostic (decouple from portfolios) | ✅ |
+| #218 | `13ead74` | 02/05 16:21 | fix PR6.6.2 crypto asset_class propagation (Binance + EODHD) | ✅ |
+| #219 | `5d5c790` | 02/05 17:00 | fix PR6.6.3 crypto vol24hUsd + marketCap CRYPTO_MARKET_CAP_USD | ✅ |
 
 ---
 
@@ -376,46 +449,71 @@ Garde-fou : branches `ui/` ou `design/` uniquement, **aucune modif** `apps/api/s
 
 ---
 
-## Next session — checklist reprise propre (UPDATED 14:10 UTC post-#215)
+## Next session — checklist reprise propre (UPDATED 18:00 UTC post-trilogy 6.6.x)
 
 Au démarrage de la prochaine session :
 
-1. `git pull origin main` — sync (HEAD = `705ff2c`)
-2. Lire ce fichier (`ROADMAP_V1_GAINERS.md`) + sections "Phase 3.5 PR6.7" + "PR #207c"
-3. **OPTION A — PR6.7 BLOC 2 spread + BLOC 3 entry triggers** (priorité 1 pour Phase 4) :
+1. `git pull origin main` — sync (HEAD = `5d5c790` post-PR6.6.3)
+2. Lire ce fichier (`ROADMAP_V1_GAINERS.md`) + sections "Phase 3.4.1" (hotfixes
+   shadow architecture) + "Phase 3.5 PR6.7" + "PR #207c"
+3. **TASK PRIORITAIRE 1 — Bilan weekday lundi 09:00+4h UTC** :
+   - Re-query A3 Supabase :
+     ```sql
+     SELECT symbol, asset_class, decision, reject_reason, entry_path_eff,
+            composite_score, legacy_decision, created_at
+     FROM gainers_v1_shadow_signals
+     WHERE asset_class = 'crypto'
+       AND created_at >= 'lundi 09:00:00Z'
+     ORDER BY created_at DESC LIMIT 30;
+     ```
+   - Validation success criteria :
+     - 0 rows MARKET_CAP_MIN sur les 10 majors ✅ (déjà OK PR6.6.3)
+     - Volumes weekday > 50M sur ≥ 8/10 majors → 0-2 LIQUIDITY_FLOOR
+     - ≥ 3-5 ACCEPT crypto attendus (sinon PERSISTENCE/VOLATILITY/TREND legitimes)
+   - Si KO : drill-down ciblé selon reject_reason dominant
+4. **TASK PRIORITAIRE 2 — PR6.7 BLOC 2 spread + BLOC 3 entry triggers** (post #1 OK) :
    - Cache intraday partagé (`IntradayCacheService` réutilisé)
    - BLOC 2 `computeSpreadProxy` sur 1h candles
    - BLOC 3 `evaluatePullbackHL` + `evaluateVwapReclaim` sur 1m candles
    - Surface `entrySignal.triggerKind` + `bloc3Diagnostics.spreadProxy`
    - Plan détaillé dans la section "Phase 3.5" ci-dessus
-4. **OPTION B — PR #207c UI dashboard simulator** (parallèle, fresh session frontend) :
+5. **TASK SECONDAIRE — UX polish** (~½ journée, post-PR6.7) :
+   - Filtre "Hide choppy" toggle dans `GainersStatusTile`
+   - Filtre "Hide flat 0/5" pour cacher rows weekend stale
+   - Colonne `Vol $M` pour aider décision tradability
+6. **OPTION C parallèle — PR #207c UI dashboard simulator** (fresh session frontend) :
    - 8 composants UI + 5 stack deps + migration 0109
    - Plan détaillé dans la section "PR #207c" ci-dessus
-5. Vérifier post-deploy `705ff2c` :
-   - `curl GET /admin/gainers/v1-metrics` → `shadow.last_24h.totalSignals > 0`
-   - Vérifier exit-simulator (cron */5) : `SELECT COUNT(*) FROM gainers_v1_shadow_signals WHERE simulated_exit_at IS NOT NULL`
-   - Premier daily report ce soir 23:30 UTC avec PnL réels
-6. Monitor cadence : si < 0.5 ACCEPT/jour sur 7j → `low_cadence_flag` → enquête
 7. Phase 4 bascule live = T0+30j sous réserve cadence shadow OK + win-rate ≥ 45%
 
 ---
 
-## Live prod state (2026-05-02 14:10 UTC post-#215)
+## Live prod state (2026-05-02 18:00 UTC post-PR6.6.3)
 
 | Item | Statut |
 |---|---|
-| Live SHA (target post-deploy) | `705ff2c` (PR #215 PR6.6 crypto + path_eff) — vérifier `/version` après Fly deploy |
-| Fly machine | `d8d4070a719018` healthy |
+| Live SHA | `5d5c790` (PR #219 PR6.6.3 crypto vol+marketCap) — confirmé `/version` |
+| Fly machine | `d8d4070a719018` healthy (cdg) |
 | `gainers_volume_baselines` | **215 rows** (mega12 + crypto + sp500 extended) post-seed |
 | `gainers_legacy_snapshot` | **215 rows** post-seed |
-| `gainers_v1_shadow_signals` | Se remplit cron `*/15` avec mapping enrichi V1 (BLOC 1 réel + path_eff réel + crypto Binance) |
-| `simulated_exit_*` | Se remplit cron `*/5` (ShadowExitSimulatorService) avec replay BLOC 4 |
+| `gainers_v1_shadow_signals` | ✅ Se remplit cron `*/15` (~186 rows/cycle, validé sur 4+ cycles 17:30-17:45 UTC) |
+| `simulated_exit_*` | ⏳ Se remplit cron `*/5` (ShadowExitSimulatorService) — efficace uniquement crypto weekend (equity attend lundi 13:30 UTC US open) |
 | `_smartvest_migrations` | **108/108** |
-| `GAINERS_V1_SHADOW` flag | ✅ activé Fly secret + wiring actif + enrichment réel |
-| Cron */15 scanner | ✅ schedule actif + persiste shadow signals enrichis |
+| `GAINERS_V1_SHADOW` flag | ✅ activé Fly secret + wiring actif + enrichment réel + crypto fix |
+| Cron */15 scanner | ✅ shadow batch tourne pipeline-agnostic |
 | Cron */5 exit-simulator | ✅ schedule actif (PR #214) |
-| Cron 23:30 daily-report | ✅ schedule actif (PR #209) |
-| ADMIN_TOKEN | 🔴 **À ROTATE** — exposé chat session |
+| Cron 23:30 daily-report | ✅ schedule actif (PR #209) — ⚠️ cache stale, POST recompute requis |
+| ADMIN_TOKEN | 🔴 **À ROTATE** — exposé chat session ×3 |
+
+### Bilan analyse weekend Sat 02/05 17:45 UTC
+
+Sur 10 crypto majors fetchés, gates BLOC 1 V1 :
+- ✅ 0/10 MARKET_CAP_MIN (PR6.6.3 valide)
+- ✅ 3 PASS liquidity (BTC $584M, ETH $172M, SOL $88M) → fail PERSISTENCE_BELOW_THRESHOLD
+- 🟡 7 FAIL LIQUIDITY_FLOOR (BNB $36M, XRP $44M, ADA $10M, AVAX $6M, DOT $3M, LINK $12M, MATIC $1M) — quoteVolume Binance weekend < 50M floor — **comportement correct du gate**, rejets légitimes
+
+**Conclusion** : pipeline V1 fonctionne comme spec. Pas de PR6.6.4 nécessaire.
+Validation weekday attendue lundi avec volumes normaux (×3-10 weekend).
 
 ---
 
@@ -438,5 +536,5 @@ Au démarrage de la prochaine session :
 ---
 
 _Document mis à jour 2026-05-02 09:50 UTC après session 17 PRs (#196 → #211)._
-_main HEAD = `21770a9`._
+_main HEAD = `5d5c790` (post-PR6.6.3)._
 _Source de vérité jusqu'à la session suivante._
