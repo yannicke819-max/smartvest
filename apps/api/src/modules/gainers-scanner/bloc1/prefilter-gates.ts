@@ -26,6 +26,12 @@ export interface GainersBloc1Config {
   volatilityClampMaxAtrRel: number;
   /** Score persistance minimum P8 ([0..1]). Défaut 0.67. */
   minPersistenceScore: number;
+  /**
+   * PR6.4 — opt-in shadow mode dégradé : si true et atrDailyRelative null
+   * → SKIP (PASS) au lieu de FAIL. Idem pour persistenceScore null.
+   * Default false : préserve comportement strict prod (algos lockés ADR-005 §1bis).
+   */
+  shadowSkipNullFields?: boolean;
 }
 
 export const DEFAULT_BLOC1_CONFIG: GainersBloc1Config = {
@@ -35,6 +41,13 @@ export const DEFAULT_BLOC1_CONFIG: GainersBloc1Config = {
   marketCapMinCryptoUsd: 500_000_000,
   volatilityClampMaxAtrRel: 0.15,
   minPersistenceScore: 0.67,
+  shadowSkipNullFields: false,
+};
+
+/** Shadow run : version dégradée tolérante aux nulls (atr/persistence). */
+export const SHADOW_BLOC1_CONFIG: GainersBloc1Config = {
+  ...DEFAULT_BLOC1_CONFIG,
+  shadowSkipNullFields: true,
 };
 
 export interface GateResult {
@@ -85,7 +98,11 @@ export function checkMarketCapMin(raw: GainersCandidateRaw, cfg: GainersBloc1Con
 export function checkVolatilityClamp(raw: GainersCandidateRaw, cfg: GainersBloc1Config): GateResult {
   const threshold = cfg.volatilityClampMaxAtrRel;
   const atrRel = raw.atrDailyRelative;
-  if (atrRel === null) return FAIL(CandidateRejectReason.VOLATILITY_CLAMP, null, threshold);
+  if (atrRel === null) {
+    // PR6.4 shadow mode : tolère null pour scanner dégradé sans cache OHLC daily
+    if (cfg.shadowSkipNullFields) return PASS(null, threshold);
+    return FAIL(CandidateRejectReason.VOLATILITY_CLAMP, null, threshold);
+  }
   if (atrRel > threshold) return FAIL(CandidateRejectReason.VOLATILITY_CLAMP, atrRel, threshold);
   return PASS(atrRel, threshold);
 }
@@ -94,7 +111,11 @@ export function checkVolatilityClamp(raw: GainersCandidateRaw, cfg: GainersBloc1
 export function checkPersistence(raw: GainersCandidateRaw, cfg: GainersBloc1Config): GateResult {
   const threshold = cfg.minPersistenceScore;
   const score = raw.persistenceScore;
-  if (score === null) return FAIL(CandidateRejectReason.PERSISTENCE_BELOW_THRESHOLD, null, threshold);
+  if (score === null) {
+    // PR6.4 shadow mode : tolère null si persistence service indispo (Yahoo fallback échoue)
+    if (cfg.shadowSkipNullFields) return PASS(null, threshold);
+    return FAIL(CandidateRejectReason.PERSISTENCE_BELOW_THRESHOLD, null, threshold);
+  }
   if (score < threshold) return FAIL(CandidateRejectReason.PERSISTENCE_BELOW_THRESHOLD, score, threshold);
   return PASS(score, threshold);
 }

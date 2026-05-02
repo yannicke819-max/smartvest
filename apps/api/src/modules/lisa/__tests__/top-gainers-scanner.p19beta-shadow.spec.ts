@@ -62,7 +62,7 @@ function makeService(): TopGainersScannerService {
     mockScheduler,
     mockMtf,
     mockLlmRouter,
-    { isShadowEnabled: () => false } as any,
+    { isShadowEnabled: () => false } as any, { evaluate: () => ({ raw: {} as any, compositeScore: null, decision: "REJECT", rejectReason: null, spreadProxy: null, spreadProxySource: null, trendFilter: null, rvolIntraday: null }) } as any,
   );
 }
 
