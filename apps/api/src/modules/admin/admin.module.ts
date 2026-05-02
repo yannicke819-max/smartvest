@@ -21,6 +21,7 @@ import { AdminLogsController } from './admin-logs.controller';
 import { AdminEodhdStatusController } from './admin-eodhd-status.controller';
 import { AdminGainersStatusController } from './admin-gainers-status.controller';
 import { AdminGainersBaselineController } from './admin-gainers-baseline.controller';
+import { AdminGainersMetricsController } from './admin-gainers-metrics.controller';
 
 @Module({
   imports: [SupabaseModule, forwardRef(() => LisaModule), GainersModule],
@@ -31,6 +32,7 @@ import { AdminGainersBaselineController } from './admin-gainers-baseline.control
     AdminEodhdStatusController,
     AdminGainersStatusController,
     AdminGainersBaselineController,
+    AdminGainersMetricsController,
   ],
 })
 export class AdminModule {}
