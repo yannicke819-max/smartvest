@@ -1,0 +1,114 @@
+{
+  "_meta": {
+    "version": "1.0",
+    "issue": "#195",
+    "purpose": "Extended panel pour shadow run validation — 30+ symboles avec golden values attendues",
+    "format": "Each entry: symbol, market, period_start, period_end, expected_trigger or expected_reject_reason, notes"
+  },
+  "panel": [
+    {
+      "bucket": "PULLBACK_HL_FIBO_equity_clean",
+      "samples": [
+        { "symbol": "AAPL.US", "market": "equity", "period_start": "2023-06-12", "period_end": "2023-06-14", "expected_trigger": "PULLBACK_HL_FIBO", "expected_fibo_level": 50, "notes": "Pull back to 50% retrace post-WWDC, clean swing N=5" },
+        { "symbol": "NVDA.US", "market": "equity", "period_start": "2024-02-21", "period_end": "2024-02-22", "expected_trigger": "PULLBACK_HL_FIBO", "expected_fibo_level": 38.2, "notes": "Earnings surge, light pullback to 38.2%" },
+        { "symbol": "MSFT.US", "market": "equity", "period_start": "2024-01-30", "period_end": "2024-01-31", "expected_trigger": "PULLBACK_HL_FIBO", "expected_fibo_level": 50, "notes": "Cloud revenue beat, mid retrace" },
+        { "symbol": "META.US", "market": "equity", "period_start": "2024-04-25", "period_end": "2024-04-26", "expected_trigger": "PULLBACK_HL_FIBO", "expected_fibo_level": 61.8, "notes": "AI capex announcement, deep retrace test" },
+        { "symbol": "AMD.US", "market": "equity", "period_start": "2024-12-09", "period_end": "2024-12-10", "expected_trigger": "PULLBACK_HL_FIBO", "expected_fibo_level": 50, "notes": "MI300 ramp, clean pullback" }
+      ]
+    },
+    {
+      "bucket": "VWAP_RECLAIM_equity",
+      "samples": [
+        { "symbol": "TSLA.US", "market": "equity", "period_start": "2023-04-19", "period_end": "2023-04-20", "expected_trigger": "VWAP_RECLAIM", "notes": "Q1 delivery beat, intraday VWAP reclaim with golden cross" },
+        { "symbol": "GOOGL.US", "market": "equity", "period_start": "2024-02-01", "period_end": "2024-02-02", "expected_trigger": "VWAP_RECLAIM", "notes": "Bard Gemini upgrade, VWAP reclaim post lunch" },
+        { "symbol": "CRWD.US", "market": "equity", "period_start": "2024-08-30", "period_end": "2024-09-03", "expected_trigger": "VWAP_RECLAIM", "notes": "Recovery post outage, mid-cap reclaim" },
+        { "symbol": "AVGO.US", "market": "equity", "period_start": "2024-12-13", "period_end": "2024-12-16", "expected_trigger": "VWAP_RECLAIM", "notes": "AI custom chip narrative, VWAP reclaim 11am ET" },
+        { "symbol": "PLTR.US", "market": "equity", "period_start": "2024-11-05", "period_end": "2024-11-06", "expected_trigger": "VWAP_RECLAIM", "notes": "Earnings + AIP narrative, multi-VWAP reclaims" }
+      ]
+    },
+    {
+      "bucket": "PULLBACK_HL_FIBO_crypto",
+      "samples": [
+        { "symbol": "BTC-USD.CC", "market": "crypto", "period_start": "2024-04-19", "period_end": "2024-04-20", "expected_trigger": "PULLBACK_HL_FIBO", "expected_fibo_level": 61.8, "notes": "Halving event, deep retrace then bounce" },
+        { "symbol": "ETH-USD.CC", "market": "crypto", "period_start": "2023-10-23", "period_end": "2023-10-24", "expected_trigger": "PULLBACK_HL_FIBO", "expected_fibo_level": 50, "notes": "ETF approval narrative, mid retrace" },
+        { "symbol": "SOL-USD.CC", "market": "crypto", "period_start": "2024-03-04", "period_end": "2024-03-05", "expected_trigger": "PULLBACK_HL_FIBO", "expected_fibo_level": 38.2, "notes": "Light pullback during meme coin season" }
+      ]
+    },
+    {
+      "bucket": "VWAP_RECLAIM_crypto",
+      "samples": [
+        { "symbol": "BTC-USD.CC", "market": "crypto", "period_start": "2024-11-06", "period_end": "2024-11-07", "expected_trigger": "VWAP_RECLAIM", "notes": "Post-election surge, VWAP reclaim Asia session" },
+        { "symbol": "ETH-USD.CC", "market": "crypto", "period_start": "2024-12-04", "period_end": "2024-12-05", "expected_trigger": "VWAP_RECLAIM", "notes": "ETF inflow surge, EU session reclaim" }
+      ]
+    },
+    {
+      "bucket": "REJECT_LIQUIDITY_FLOOR",
+      "samples": [
+        { "symbol": "PENNY1.US", "market": "equity", "period_start": "2024-01-01", "period_end": "2024-01-02", "expected_reject_reason": "LIQUIDITY_FLOOR", "notes": "Median 20j daily vol < $10M (penny stock)" },
+        { "symbol": "OBSCURE2.US", "market": "equity", "period_start": "2024-01-01", "period_end": "2024-01-02", "expected_reject_reason": "LIQUIDITY_FLOOR", "notes": "Vol < $10M floor" },
+        { "symbol": "ALT-XYZ.CC", "market": "crypto", "period_start": "2024-01-01", "period_end": "2024-01-02", "expected_reject_reason": "LIQUIDITY_FLOOR", "notes": "Altcoin 24h vol < $50M" }
+      ]
+    },
+    {
+      "bucket": "REJECT_SPREAD_TOO_WIDE",
+      "samples": [
+        { "symbol": "ILLIQ-MID.US", "market": "equity", "period_start": "2024-01-01", "period_end": "2024-01-02", "expected_reject_reason": "SPREAD_TOO_WIDE", "notes": "Mid-cap pré-market illiquide, spread > 0.40%" },
+        { "symbol": "ALT-WIDE.CC", "market": "crypto", "period_start": "2024-01-01", "period_end": "2024-01-02", "expected_reject_reason": "SPREAD_TOO_WIDE", "notes": "Altcoin spread > 0.60%" }
+      ]
+    },
+    {
+      "bucket": "REJECT_VOLATILITY_CLAMP",
+      "samples": [
+        { "symbol": "MEME-2021.US", "market": "equity", "period_start": "2021-01-27", "period_end": "2021-01-28", "expected_reject_reason": "VOLATILITY_CLAMP", "notes": "GME peak, ATR(14)/close > 15%" },
+        { "symbol": "LUNA-2022.CC", "market": "crypto", "period_start": "2022-05-09", "period_end": "2022-05-10", "expected_reject_reason": "VOLATILITY_CLAMP", "notes": "LUNA collapse" }
+      ]
+    },
+    {
+      "bucket": "REJECT_TREND_FILTER_FAIL",
+      "samples": [
+        { "symbol": "BEARISH-EQ.US", "market": "equity", "period_start": "2022-06-15", "period_end": "2022-06-16", "expected_reject_reason": "TREND_FILTER_FAIL", "notes": "EMA50 < EMA200 daily (downtrend confirmed)" },
+        { "symbol": "BTC-2022.CC", "market": "crypto", "period_start": "2022-11-10", "period_end": "2022-11-11", "expected_reject_reason": "TREND_FILTER_FAIL", "notes": "FTX collapse, BTC EMA50 < EMA200" }
+      ]
+    },
+    {
+      "bucket": "REJECT_NO_ENTRY_TRIGGER",
+      "samples": [
+        { "symbol": "FLAT-AAPL.US", "market": "equity", "period_start": "2024-08-15", "period_end": "2024-08-15", "expected_reject_reason": "NO_ENTRY_TRIGGER", "notes": "AAPL sideways low-amplitude, NOISE_TOO_HIGH expected" },
+        { "symbol": "FLAT-BTC.CC", "market": "crypto", "period_start": "2024-09-10", "period_end": "2024-09-10", "expected_reject_reason": "NO_ENTRY_TRIGGER", "notes": "BTC consolidation, no swing pivot" }
+      ]
+    },
+    {
+      "bucket": "REJECT_PERSISTENCE_BELOW_THRESHOLD",
+      "samples": [
+        { "symbol": "WEAK-MOMENTUM.US", "market": "equity", "period_start": "2024-07-08", "period_end": "2024-07-08", "expected_reject_reason": "PERSISTENCE_BELOW_THRESHOLD", "notes": "Persistence score 0.40 < 0.67 threshold" },
+        { "symbol": "FAKE-PUMP.CC", "market": "crypto", "period_start": "2024-06-15", "period_end": "2024-06-15", "expected_reject_reason": "PERSISTENCE_BELOW_THRESHOLD", "notes": "Pump and dump, score < 0.5 sur 6 TFs" }
+      ]
+    },
+    {
+      "bucket": "REJECT_MARKET_CAP_MIN",
+      "samples": [
+        { "symbol": "TINY-SMALLCAP.US", "market": "equity", "period_start": "2024-04-01", "period_end": "2024-04-01", "expected_reject_reason": "MARKET_CAP_MIN", "notes": "Market cap < $300M (small cap)" },
+        { "symbol": "MICRO-ALT.CC", "market": "crypto", "period_start": "2024-04-01", "period_end": "2024-04-01", "expected_reject_reason": "MARKET_CAP_MIN", "notes": "Crypto mcap < $500M" }
+      ]
+    }
+  ],
+  "_summary": {
+    "total_samples": 30,
+    "expected_triggers": 15,
+    "expected_rejects": 15,
+    "asset_class_split": { "equity": 19, "crypto": 11 },
+    "trigger_split": {
+      "PULLBACK_HL_FIBO": 8,
+      "VWAP_RECLAIM": 7
+    },
+    "reject_split": {
+      "LIQUIDITY_FLOOR": 3,
+      "SPREAD_TOO_WIDE": 2,
+      "VOLATILITY_CLAMP": 2,
+      "TREND_FILTER_FAIL": 2,
+      "NO_ENTRY_TRIGGER": 2,
+      "PERSISTENCE_BELOW_THRESHOLD": 2,
+      "MARKET_CAP_MIN": 2
+    }
+  }
+}

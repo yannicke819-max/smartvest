@@ -110,15 +110,35 @@ export function computeSwingPivots(
   return { swingHigh, swingLow, fiboLevels, noPivotReason: null };
 }
 
-/** Retourne le niveau Fibonacci (38.2, 50, 61.8) le plus proche du prix courant. */
+/**
+ * Retourne le niveau Fibonacci (38.2, 50, 61.8) le plus proche du prix courant.
+ *
+ * Règle officielle (issue #195, ADR-005 §1bis.5) :
+ * "niveau Fibonacci le plus proche du prix courant en distance absolue, avec
+ * tie-break sur le niveau le plus profond (61.8 > 50 > 38.2)".
+ *
+ * Justification : un retracement plus profond signale une absorption d'ordre
+ * plus forte → setup plus probable de continuation. En cas d'ex-aequo strict
+ * sur la distance, on retient le pivot le plus bas du retracement.
+ *
+ * EPSILON tolerance 1e-9 sur la comparaison des distances pour gérer les
+ * tie-breaks numériques (sinon les midpoints calculés produisent des écarts
+ * float < 1e-15 qui invalident la règle).
+ */
 export function nearestFiboLevel(
   price: number,
   levels: FiboLevels,
 ): 38.2 | 50 | 61.8 {
-  const dists: [38.2 | 50 | 61.8, number][] = [
-    [38.2, Math.abs(price - levels.level382)],
-    [50,   Math.abs(price - levels.level500)],
-    [61.8, Math.abs(price - levels.level618)],
+  const EPSILON = 1e-9;
+  const candidates: Array<{ level: 38.2 | 50 | 61.8; dist: number }> = [
+    { level: 38.2, dist: Math.abs(price - levels.level382) },
+    { level: 50,   dist: Math.abs(price - levels.level500) },
+    { level: 61.8, dist: Math.abs(price - levels.level618) },
   ];
-  return dists.reduce((best, cur) => (cur[1] < best[1] ? cur : best))[0];
+  candidates.sort((a, b) => {
+    const diff = a.dist - b.dist;
+    if (Math.abs(diff) < EPSILON) return b.level - a.level; // tie → deeper wins
+    return diff;
+  });
+  return candidates[0].level;
 }

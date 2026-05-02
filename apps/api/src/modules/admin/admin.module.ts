@@ -9,6 +9,11 @@
  *   - GET /admin/supabase-query/:queryName                   (P19x.5)
  *   - GET /admin/logs/recent[?pattern=&level=&limit=]        (P19x.6)
  *   - GET /admin/eodhd-status                                (P19v 30/04)
+ *   - GET /admin/gainers/scanner-status                      (P19x.10)
+ *   - POST /admin/gainers/baseline/refresh                   (PR #199)
+ *   - GET /admin/gainers/v1-metrics                          (PR #202 Step 10)
+ *   - GET /admin/gainers/v1-metrics/signals                  (PR #203 #195)
+ *   - GET /admin/gainers/v1-metrics/sessions[.csv]           (PR #203 #195)
  */
 
 import { Module, forwardRef } from '@nestjs/common';
@@ -22,6 +27,7 @@ import { AdminEodhdStatusController } from './admin-eodhd-status.controller';
 import { AdminGainersStatusController } from './admin-gainers-status.controller';
 import { AdminGainersBaselineController } from './admin-gainers-baseline.controller';
 import { AdminGainersMetricsController } from './admin-gainers-metrics.controller';
+import { AdminGainersExtendedController } from './admin-gainers-extended.controller';
 
 @Module({
   imports: [SupabaseModule, forwardRef(() => LisaModule), GainersModule],
@@ -33,6 +39,7 @@ import { AdminGainersMetricsController } from './admin-gainers-metrics.controlle
     AdminGainersStatusController,
     AdminGainersBaselineController,
     AdminGainersMetricsController,
+    AdminGainersExtendedController,
   ],
 })
 export class AdminModule {}
