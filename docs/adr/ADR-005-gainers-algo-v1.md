@@ -642,3 +642,68 @@ ADR-006 (découplage)  →  Step 4 (module skeleton)  →  Steps 6, 7, 8  →  S
 - [ ] Critères bascule tous validés (win-rate ≥ 45%, divergence ≤ 20%, zéro erreur, snapshot OK)
 - [ ] Dashboard Step 10 livré et opérationnel
 - [ ] Flag `GAINERS_V1_LIVE=true` activé
+
+---
+
+## 11. AMEND PR5 — BLOC 4 spec lock + dette technique BLOC 3
+
+### 11.1 — Trailing renamed item #18 (synchro locked, 02/05/2026)
+
+L'ancien naming `TRAILING_BREAKEVEN` / `TRAILING_LOCK_50` est remplacé par
+`TRAILING_20` / `TRAILING_50` reflétant la fraction du MFE_gain lockée :
+
+| État | Activation | Stop ratchet |
+|---|---|---|
+| `OPEN` | — | `entry × (1 - sl_pct)` initial |
+| `TRAILING_20` | `gain ≥ +path_eff` | `entry × (1 + 0.20 × MFE_gain%)` |
+| `TRAILING_50` | `gain ≥ +2 × path_eff` | `entry × (1 + 0.50 × MFE_gain%)` |
+| `CLOSED` | stop hit, TP_FULL en OPEN | — |
+
+**Spec clarification importante** : `TP_FULL` ne ferme la position **qu'en état `OPEN`**.
+Une fois en `TRAILING_20` ou `TRAILING_50`, le TP cap est levé — on laisse
+courir les winners sous protection trailing. Sans cette règle, `TRAILING_50`
+(activation ≥ +2×path_eff) serait inatteignable car le TP equity (+1.5×path_eff)
+ferme avant. C'est un trade-off conscient : maximiser le gain par trade au prix
+de quelques `TP_FULL` qui auraient pu monter plus haut sans le cap.
+
+### 11.2 — Math validation BLOC 3 par maître d'œuvre (02/05/2026)
+
+Dry-run validé 3/3 symboles :
+
+| Symbol | Trigger | Valeurs vérifiées |
+|---|---|---|
+| AAPL.US (equity) | `PULLBACK_HL_FIBO` fiboLevel=50 | range 14pts, 38.2%=199.65, 50%=198.00, 61.8%=196.35 ✅ |
+| CRWD.US (equity) | `VWAP_RECLAIM` | prev<VWAP, curr>VWAP, golden cross, surge ✅ |
+| BTC-USD.CC (crypto) | `PULLBACK_HL_FIBO` fiboLevel=61.8 | range 3700pts, 38.2%=60086.60, 50%=59650, 61.8%=59213.40 ✅ |
+
+Math Fibonacci confirmée correcte sur les 2 cas pullback. Distance VWAP au
+fiboLevel sélectionné cohérente avec la règle `nearestFiboLevel` (distance
+absolue minimale).
+
+### 11.3 — Dette technique BLOC 3 ouverte (à traiter avant merge PR5/PR6)
+
+Trois dettes identifiées par revue maître d'œuvre PR #192, tracées dans
+GitHub :
+
+- **Issue #193** (P1, avant PR5 merge) — Dry-run observability : ajouter
+  `timestamp`, `resolution`, `session`, `spread_proxy`, `volume_ratio`,
+  `gate_liquidity_passed`, `pivots_detected/reason` aux logs trigger.
+- **Issue #194** (P1, avant PR5 merge) — Dry-run REJECT coverage : exercer
+  chaque `rejectReason` avec ≥2 symboles attendus REJECT (penny stock, spread
+  trop large, altcoin illiquide, etc.).
+- **Issue #195** (P2, avant PR6 shadow mode) — Extended panel + fiboLevel
+  selection rule : règle officielle "niveau le plus proche, tie-break sur le
+  plus profond" + harnais 30+ symboles golden values historiques.
+
+### 11.4 — BLOC 4.0 ETL pre-req (réparé en PR5)
+
+Dette critique découverte : `gainers_volume_baselines` restait vide en prod
+car aucun caller de `upsertBaselines()` n'existait. Le cron
+`handleDailyBaselinesRefresh` ne faisait que recharger un cache vide.
+
+Fix livré commit 1 PR5 :
+- `VolumeBaselineCalculatorService` ajouté (lit `ohlcv_cache_daily` source
+  primaire, fallback live EODHD/Binance per-row)
+- Garde-fous : fraîcheur cache 26h, fallback per-symbol, TZ UTC asserted,
+  crypto = Binance systématique, idempotence via `onConflict='symbol,exchange'`
+- Wiring cron : ETL exécuté **avant** `reloadCache()` via `setEtlRunner()`
