@@ -59,24 +59,28 @@ export class GainersShadowRunService {
    *
    * PR6.5 — enrichi avec entry_path_eff + tp_price + sl_price calculés via
    * BLOC 4 §11.1 pour permettre le worker exit-simulator de replay la state
-   * machine. path_eff par défaut = 0.5 (= 0.5% mouvement attendu, conservateur)
-   * tant que P9-UX path efficiency n'est pas wired pour shadow.
+   * machine.
+   * PR6.6 — accepte pathEffOverride (P9-UX réel) ; default 0.5% si absent.
    */
   async persistShadowSignal(
     candidate: GainersScoredCandidate,
     legacyDecision: 'ACCEPT' | 'REJECT' | null = null,
+    pathEffOverride: number | null = null,
   ): Promise<void> {
     if (!this.isShadowEnabled()) return;
 
     const { raw, decision, rejectReason, compositeScore, entrySignal, bloc3Diagnostics } = candidate;
 
     // BLOC 4 §11.1 : equity TP=×1.5/SL=×1.0, crypto TP=×2.0/SL=×0.8
-    // path_eff default 0.5 (% conservateur). PR6.6 enrichira avec P9-UX réel.
-    const PATH_EFF_DEFAULT = 0.5;
+    // PR6.6 : pathEffOverride (mtfPersistence.pathQuality) si dispo, else 0.5%
+    // pathEff est un % (0.5 = 0.5% mouvement attendu)
+    const pathEffRaw = pathEffOverride !== null && pathEffOverride > 0
+      ? Math.min(pathEffOverride * 100, 5) // overallEfficiency [0,1] → cap 5% mvt
+      : 0.5;
     const tpMul = raw.market === 'crypto' ? 2.0 : 1.5;
     const slMul = raw.market === 'crypto' ? 0.8 : 1.0;
-    const tpPct = (PATH_EFF_DEFAULT * tpMul) / 100;
-    const slPct = (PATH_EFF_DEFAULT * slMul) / 100;
+    const tpPct = (pathEffRaw * tpMul) / 100;
+    const slPct = (pathEffRaw * slMul) / 100;
     const entryPrice = entrySignal ? raw.close : (decision === 'ACCEPT' ? raw.close : null);
     const tpPrice = entryPrice !== null ? entryPrice * (1 + tpPct) : null;
     const slPrice = entryPrice !== null ? entryPrice * (1 - slPct) : null;
@@ -90,7 +94,7 @@ export class GainersShadowRunService {
       decision,
       reject_reason: rejectReason,
       entry_price: entryPrice,
-      entry_path_eff: entryPrice !== null ? PATH_EFF_DEFAULT : null,
+      entry_path_eff: entryPrice !== null ? pathEffRaw : null,
       tp_price: tpPrice,
       sl_price: slPrice,
       fibo_level: entrySignal?.fiboLevel ?? null,

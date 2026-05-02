@@ -700,9 +700,10 @@ export class TopGainersScannerService implements OnModuleInit {
 
     for (const c of candidates) {
       try {
-        // PR6.4 : enrich + run BLOC 1 réel
-        const enrichedRaw = await enrichShadowCandidate(c, supabaseClient, this.mtfPersistence);
-        const bloc1Result = this.bloc1.evaluate(enrichedRaw, {
+        // PR6.4 : enrich BLOC 1 réel
+        // PR6.6 : enrich crypto via Binance + pathEff réel via mtfPersistence
+        const enriched = await enrichShadowCandidate(c, supabaseClient, this.mtfPersistence, this.binanceMarket);
+        const bloc1Result = this.bloc1.evaluate(enriched.raw, {
           ...DEFAULT_BLOC1_FULL_CONFIG,
           prefilter: SHADOW_BLOC1_CONFIG,
         });
@@ -711,17 +712,17 @@ export class TopGainersScannerService implements OnModuleInit {
         const legacyDecision: 'ACCEPT' | 'REJECT' = isTopLegacy ? 'ACCEPT' : 'REJECT';
 
         await this.shadowRun.persistShadowSignal({
-          raw: enrichedRaw,
+          raw: enriched.raw,
           compositeScore: bloc1Result.compositeScore,
           decision: bloc1Result.decision,
           rejectReason: bloc1Result.rejectReason,
-          spreadProxy: null, // PR6.5 BLOC 2
+          spreadProxy: null, // PR6.7 BLOC 2
           spreadProxySource: null,
           trendFilter: bloc1Result.trendFilter,
           rvolIntraday: null,
           entrySignal: null, // PR6.5 BLOC 3
           bloc3Diagnostics: null,
-        }, legacyDecision);
+        }, legacyDecision, enriched.pathEff);
 
         if (bloc1Result.decision === 'ACCEPT') acceptCount++;
         else rejectCount++;
