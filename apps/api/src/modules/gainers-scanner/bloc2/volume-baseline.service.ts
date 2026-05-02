@@ -97,14 +97,33 @@ export class VolumeBaselineService {
 
   /**
    * Cron quotidien 01:00 UTC — recharge le cache après la clôture US.
-   * Le peuplement des baselines depuis EODHD/Binance est géré par un
-   * process externe (pipeline ETL à brancher en PR-baseline-etl).
+   *
+   * Depuis BLOC 4.0 (PR5) : déclenche d'abord l'ETL `VolumeBaselineCalculatorService`
+   * pour recalculer les médianes 20j depuis ohlcv_cache_daily (equity, déjà
+   * alimenté par OhlcvCacheService 21:30 UTC) + Binance klines (crypto).
+   * L'ETL est wired via setEtlRunner() au boot du module pour éviter une
+   * dépendance circulaire (calculator → baseline service).
    */
   @Cron('0 1 * * *')
   async handleDailyBaselinesRefresh(): Promise<void> {
-    this.logger.log('Daily volume baselines cache refresh started');
+    this.logger.log('Daily volume baselines cron started');
+    if (this.etlRunner) {
+      try {
+        await this.etlRunner();
+      } catch (e) {
+        this.logger.error(`[baseline-etl] runner failed: ${String(e).slice(0, 200)}`);
+      }
+    } else {
+      this.logger.warn('[baseline-etl] no ETL runner registered — skipping calculation, cache reload only');
+    }
     await this.reloadCache();
   }
+
+  /** Wire l'ETL runner depuis le module (évite cycle DI). */
+  setEtlRunner(runner: () => Promise<void>): void {
+    this.etlRunner = runner;
+  }
+  private etlRunner: (() => Promise<void>) | null = null;
 
   /** Calcule le RVOL intraday cumulatif pour un candidat donné. */
   computeRvol(
