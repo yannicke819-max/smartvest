@@ -6,3 +6,5 @@ export * from './bloc2';
 export * from './bloc3';
 export * from './bloc4';
 export * from './shadow';
+export * from './target-modes';
+export * from './kelly';
