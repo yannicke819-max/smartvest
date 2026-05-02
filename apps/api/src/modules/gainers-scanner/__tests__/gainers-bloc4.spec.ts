@@ -216,14 +216,36 @@ describe('replayTicks() — 3 scénarios state machine canoniques', () => {
     expect(r.transitions).toEqual([]);
   });
 
-  it('SCENARIO 4 — TP_FULL only from OPEN (gap-up before path_eff): entry → TP direct', () => {
-    // entry 100, TP 100.90. Direct gap to 101 (no intermediate < path_eff tick) → TP_FULL.
-    // Single tick at 101 hits TP from OPEN state (TP cap active).
+  it('SCENARIO 4 — GAP_UP_TP_HIT: gap-up direct OPEN→TP sans passer par +path_eff', () => {
+    // entry 100, TP 100.90. Gap-up à 101.08 (= +1.8×path_eff) → TP_FULL en OPEN.
+    // Confirme : gap-up déclenche TP avant promotion trailing (spec officielle).
     const initial = buildOpenPosition();
-    const prices = [101];
+    const prices = [101.08];
     const r = replayTicks(initial, prices);
     expect(r.exitReason).toBe(ExitReason.TP_FULL);
-    expect(r.exitPrice).toBe(101);
+    expect(r.exitPrice).toBe(101.08);
+    expect(r.transitions).toEqual([]); // pas de promotion trailing
+  });
+
+  it('SCENARIO 5 — TP_REACHED_IN_OPEN_WITHOUT_TRAILING (rename: T20 wins, TP cap lifted)', () => {
+    // path_eff=0.6, TP=100.90.
+    // Slow ascent: 100.65 (T20, MFE 100.65, stop 100.13)
+    //              100.78 (T20, MFE 100.78, gain 0.78% < 2×path_eff, stop = max(100.13, 100×(1+0.20×0.78/100)) = 100.156)
+    //              101.00 (T20 — TP cap LEVÉ, gain 1.00% < 1.20% T50 threshold, MFE 101.00, stop = max(100.156, 100×(1+0.20×1.00/100)) = 100.20)
+    //              100.10 (100.10 ≤ 100.20 → T20_HIT at 100.10, locked +0.10% above entry)
+    // Vérifie : malgré price 101 > TP 100.90, position reste OPEN (TP cap lifted en T20),
+    // et finit par sortir au trailing 20 — pas au TP.
+    const initial = buildOpenPosition();
+    const prices = [100.65, 100.78, 101.00, 100.10];
+    const r = replayTicks(initial, prices);
+    expect(r.exitReason).toBe(ExitReason.TRAILING_20_HIT);
+    expect(r.exitPrice).toBe(100.10);
+    expect(r.transitions).toEqual([{ index: 0, transition: 'TO_TRAILING_20' }]);
+    expect(r.finalSnapshot.state).toBe(PositionState.CLOSED);
+    expect(r.finalSnapshot.mfePrice).toBeCloseTo(101.00, 4);
+    // realized gain = (100.10 - 100) / 100 = 0.001 = 0.1%
+    const realizedGainPct = (r.exitPrice! - initial.entryPrice) / initial.entryPrice;
+    expect(realizedGainPct).toBeCloseTo(0.001, 4);
   });
 
   it('handles closed position no-op', () => {

@@ -647,24 +647,44 @@ ADR-006 (découplage)  →  Step 4 (module skeleton)  →  Steps 6, 7, 8  →  S
 
 ## 11. AMEND PR5 — BLOC 4 spec lock + dette technique BLOC 3
 
-### 11.1 — Trailing renamed item #18 (synchro locked, 02/05/2026)
+### 11.1 — Trailing item #18 sémantique officielle locked (02/05/2026)
 
-L'ancien naming `TRAILING_BREAKEVEN` / `TRAILING_LOCK_50` est remplacé par
-`TRAILING_20` / `TRAILING_50` reflétant la fraction du MFE_gain lockée :
+Décision maître d'œuvre 02/05/2026 — l'ancien naming `TRAILING_BREAKEVEN` /
+`TRAILING_LOCK_50` est remplacé par `TRAILING_20` / `TRAILING_50` reflétant la
+fraction du MFE_gain lockée. **Tableau décisionnel officiel** :
 
-| État | Activation | Stop ratchet |
+| État courant | Condition tick | Action |
 |---|---|---|
-| `OPEN` | — | `entry × (1 - sl_pct)` initial |
-| `TRAILING_20` | `gain ≥ +path_eff` | `entry × (1 + 0.20 × MFE_gain%)` |
-| `TRAILING_50` | `gain ≥ +2 × path_eff` | `entry × (1 + 0.50 × MFE_gain%)` |
-| `CLOSED` | stop hit, TP_FULL en OPEN | — |
+| `OPEN` | `price ≤ sl_price` | → CLOSED (`SL`) |
+| `OPEN` | `price ≥ tp_price` | → CLOSED (`TP_FULL`) **immédiatement** — pas de promotion trailing |
+| `OPEN` | `gain ≥ +path_eff` ET `price < tp_price` | → `TRAILING_20` (promotion précoce) |
+| `TRAILING_20` | `price ≤ trailing_stop` | → CLOSED (`TRAILING_20_HIT`) |
+| `TRAILING_20` | `gain ≥ +2×path_eff` | → `TRAILING_50` (promotion) |
+| `TRAILING_20` | tick non-terminal | ratchet `stop = max(stop, entry × (1 + 0.20 × MFE_gain%))` |
+| `TRAILING_50` | `price ≤ trailing_stop` | → CLOSED (`TRAILING_50_HIT`) |
+| `TRAILING_50` | tick non-terminal | ratchet `stop = max(stop, entry × (1 + 0.50 × MFE_gain%))` |
+| `TRAILING_*` | n'importe quel prix ≥ TP | **TP cap LEVÉ** — pas de close au TP, on laisse courir sous trailing |
 
-**Spec clarification importante** : `TP_FULL` ne ferme la position **qu'en état `OPEN`**.
-Une fois en `TRAILING_20` ou `TRAILING_50`, le TP cap est levé — on laisse
-courir les winners sous protection trailing. Sans cette règle, `TRAILING_50`
-(activation ≥ +2×path_eff) serait inatteignable car le TP equity (+1.5×path_eff)
-ferme avant. C'est un trade-off conscient : maximiser le gain par trade au prix
-de quelques `TP_FULL` qui auraient pu monter plus haut sans le cap.
+**Clé de la sémantique** :
+
+1. Le TP initial (`+path_eff × 1.5` equity / `× 2.0` crypto) est **actif uniquement
+   en état `OPEN`**. Un gap-up dans la même candle qui dépasse TP ferme au TP.
+2. Une montée graduelle à `+path_eff` (= 67% du TP equity) déclenche la
+   **promotion précoce vers `TRAILING_20`** AVANT que le TP soit atteint. Le
+   TP cap est alors annulé — la position court jusqu'au trailing stop ou
+   `TRAILING_50` puis trailing stop.
+3. Sans cette règle, `TRAILING_50` (activation ≥ `+2×path_eff` = 133% du TP
+   equity) serait inatteignable car le TP ferme avant.
+
+**Trade-off assumé** : on capture les TP fulgurants par gap-up (momentum violent),
+ET on laisse courir les ascensions graduelles via trailing — au prix de quelques
+sorties trailing en-dessous d'un TP cap qui aurait pu être atteint si maintenu.
+
+**Tests de référence** (gainers-bloc4.spec.ts) :
+- SCENARIO 4 `GAP_UP_TP_HIT` : tick unique 101.08 (= +1.8×path_eff) → TP_FULL en OPEN
+- SCENARIO 5 `T20 wins, TP cap lifted` : montée graduelle 100.65→100.78→101.00
+  (price 101 > TP 100.90 mais en T20 → reste open) → reversal 100.10 →
+  TRAILING_20_HIT à 100.10 (locked +0.1%)
 
 ### 11.2 — Math validation BLOC 3 par maître d'œuvre (02/05/2026)
 
