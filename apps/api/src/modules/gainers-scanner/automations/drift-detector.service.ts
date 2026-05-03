@@ -21,8 +21,13 @@ const CADENCE_DROP_THRESHOLD_PCT = 0.30; // 30% drop W-1 vs W-2
 const DIVERGENCE_RISE_THRESHOLD_PCT = 0.10; // +10pp rise W-1 vs W-2
 const REJECT_CONCENTRATION_THRESHOLD = 0.60; // > 60% same reject_reason
 const ZERO_ACCEPT_DAYS_THRESHOLD = 7;
+// PR6.8.2 — Fetch instability detection (BTC/ETH/etc TREND_FAIL anomalous)
+const TOP5_TREND_FAIL_RATE_THRESHOLD = 0.20;  // > 20% des top 5 fail TREND = fetch flaky suspected
+const TOP5_TREND_MIN_SAMPLES = 20;            // anti FP-rate sur 3 datapoints
+const TOP5_CRYPTO_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT'];
 
 interface ShadowSignalRow {
+  symbol: string;
   decision: string;
   reject_reason: string | null;
   diverges_from_legacy: boolean | null;
@@ -146,6 +151,44 @@ export class DriftDetectorService {
       insightsLogged++;
     }
 
+    // 5. PR6.8.2 — TREND_FILTER_FAIL anormalement élevé sur top 5 crypto (fetch instability)
+    //
+    // Heuristique : BTC/ETH/BNB/SOL/XRP sont en uptrend long-terme structurel
+    // (EMA50 > EMA200 daily depuis des années). Un TREND_FILTER_FAIL sur ces
+    // 5 majors révèle quasi-toujours un fetch Binance daily klines flaky
+    // (rate-limit, network, < 200 candles dispo) → EMA null → REJECT à tort.
+    //
+    // Si > 20% des cycles top 5 fail TREND → log insight 'data_quality' pour
+    // alerter ops avant que AutoTuner V2 ne propose à tort de relâcher TREND
+    // (soigner symptôme au lieu de la maladie).
+    const top5W1 = w1.filter((r) => TOP5_CRYPTO_SYMBOLS.includes(r.symbol));
+    const top5TrendFail = top5W1.filter((r) => r.reject_reason === 'TREND_FILTER_FAIL').length;
+    const top5TrendFailRate = top5W1.length > 0 ? top5TrendFail / top5W1.length : 0;
+    if (top5W1.length >= TOP5_TREND_MIN_SAMPLES && top5TrendFailRate > TOP5_TREND_FAIL_RATE_THRESHOLD) {
+      await this.insights.logInsight({
+        type: 'data_quality',
+        source: 'auto_drift_detector',
+        severity: top5TrendFailRate > 0.40 ? 'high' : 'medium',
+        summary: `Fetch Binance daily klines flaky suspecté : ${(top5TrendFailRate * 100).toFixed(0)}% des top 5 crypto fail TREND_FILTER (${top5TrendFail}/${top5W1.length} cycles 7j)`,
+        payload: {
+          top5_symbols: TOP5_CRYPTO_SYMBOLS,
+          top5_total_cycles: top5W1.length,
+          top5_trend_fail_count: top5TrendFail,
+          top5_trend_fail_rate: top5TrendFailRate,
+          threshold_pct: TOP5_TREND_FAIL_RATE_THRESHOLD,
+          hypothesis: 'Binance getKlines(\'1d\', 200) échoue intermittemment → EMA50/EMA200 null → trend-filter REJECT à tort. Ces 5 cryptos sont structurellement en uptrend long-terme.',
+          action_items: [
+            'Vérifier timeout AbortSignal dans BinanceMarketService.getKlines',
+            'Vérifier rate-limit usage Binance (1200 weight/min)',
+            'Ajouter retry logic avec exponential backoff si absent',
+            'Vérifier que getKlines retourne bien 200 candles (sinon trend EMA200 = NaN)',
+            'AVANT de relâcher seuil TREND : fix le fetch — sinon AutoTuner V2 corrompu',
+          ],
+        },
+      });
+      insightsLogged++;
+    }
+
     if (insightsLogged > 0) {
       this.logger.log(`[drift] detected ${insightsLogged} new insight(s) — written to gainers_insights_log`);
     }
@@ -155,7 +198,8 @@ export class DriftDetectorService {
     const { data, error } = await this.supabase
       .getClient()
       .from('gainers_v1_shadow_signals')
-      .select('decision, reject_reason, diverges_from_legacy, created_at')
+      // PR6.8.2 — `symbol` ajouté pour filtrer top 5 crypto fetch instability
+      .select('symbol, decision, reject_reason, diverges_from_legacy, created_at')
       .gte('created_at', start)
       .lt('created_at', end)
       .limit(50_000);
