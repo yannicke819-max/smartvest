@@ -27,8 +27,8 @@ export class ProbabilityRefitCronService {
     private readonly insights: GainersInsightsService,
   ) {}
 
-  /** Cron Sunday 02:00 UTC — refit hebdomadaire. */
-  @Cron('0 2 * * 0')
+  /** Cron Sunday 02:00 UTC strict (PR6.8.1 timezone explicite). */
+  @Cron('0 2 * * 0', { timeZone: 'UTC' })
   async runWeeklyRefit(): Promise<void> {
     try {
       await this.runInner();

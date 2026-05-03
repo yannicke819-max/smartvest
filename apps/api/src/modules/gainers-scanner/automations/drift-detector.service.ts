@@ -38,8 +38,8 @@ export class DriftDetectorService {
     private readonly insights: GainersInsightsService,
   ) {}
 
-  /** Cron daily 23:50 UTC. */
-  @Cron('50 23 * * *')
+  /** Cron daily 23:50 UTC strict (PR6.8.1 timezone explicite). */
+  @Cron('50 23 * * *', { timeZone: 'UTC' })
   async runDriftDetection(): Promise<void> {
     try {
       await this.runInner();

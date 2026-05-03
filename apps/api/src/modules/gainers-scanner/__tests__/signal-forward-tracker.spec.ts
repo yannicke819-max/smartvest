@@ -133,6 +133,67 @@ describe('SignalForwardTrackerService', () => {
     expect((svc as any).envTag).toBe('shadow');
   });
 
+  // PR6.8.1 — Default env_tag regression check
+  it('default env_tag stays "shadow" when GAINERS_ENV_TAG unset', () => {
+    const config = { get: () => undefined } as any;
+    const svc = new SignalForwardTrackerService(
+      makeMockSupabase(),
+      makeMockBinance(),
+      makeMockEodhd(),
+      makeMockInsights(),
+      config,
+    );
+    expect((svc as any).envTag).toBe('shadow');
+  });
+
+  // PR6.8.1 — resolveEnvTag hook callable, returns process-level envTag today
+  it('resolveEnvTag returns process-level envTag (canary-ready hook)', () => {
+    const svc = new SignalForwardTrackerService(
+      makeMockSupabase(),
+      makeMockBinance(),
+      makeMockEodhd(),
+      makeMockInsights(),
+      makeMockConfig('canary'),
+    );
+    const fakeRow = { id: 'x', symbol: 'BTCUSDT', asset_class: 'crypto', decision: 'REJECT',
+      reject_reason: null, created_at: '2026-05-04T00:00:00Z', entry_price: 60000 };
+    expect((svc as any).resolveEnvTag(fakeRow)).toBe('canary');
+  });
+
+  // PR6.8.1 — env vars override outcome thresholds at compute time
+  it('resolveOutcomeThresholds uses env vars over row defaults', () => {
+    const config = {
+      get: (key: string) => {
+        if (key === 'CHAMPION_RET_PCT') return '0.10';
+        if (key === 'FAILURE_RET_PCT') return '-0.05';
+        return undefined;
+      },
+    } as any;
+    const svc = new SignalForwardTrackerService(
+      makeMockSupabase(),
+      makeMockBinance(),
+      makeMockEodhd(),
+      makeMockInsights(),
+      config,
+    );
+    const result = (svc as any).resolveOutcomeThresholds(0.05, -0.02);
+    expect(result.champion).toBe(0.10);  // env override
+    expect(result.failure).toBe(-0.05);  // env override
+  });
+
+  it('resolveOutcomeThresholds falls back to row values when env unset', () => {
+    const svc = new SignalForwardTrackerService(
+      makeMockSupabase(),
+      makeMockBinance(),
+      makeMockEodhd(),
+      makeMockInsights(),
+      makeMockConfig(),
+    );
+    const result = (svc as any).resolveOutcomeThresholds(0.05, -0.02);
+    expect(result.champion).toBe(0.05); // row default
+    expect(result.failure).toBe(-0.02); // row default
+  });
+
   it('skips equity weekend rejects (Saturday/Sunday)', () => {
     const svc = new SignalForwardTrackerService(
       makeMockSupabase(),

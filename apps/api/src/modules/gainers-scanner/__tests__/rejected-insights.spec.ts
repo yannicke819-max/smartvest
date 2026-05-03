@@ -30,10 +30,11 @@ describe('RejectedInsightsService', () => {
     expect(result.global_fp_rate).toBeNull();
     expect(result.global_failure_rate).toBeNull();
     expect(result.accept_stats.fp_rate).toBeNull();
+    expect(result.accept_stats.status).toBe('insufficient_data');
     expect(Object.keys(result.by_reason).length).toBe(0);
   });
 
-  it('returns fp_rate=null when sample < min_samples (anti FP-rate sur 3 datapoints)', async () => {
+  it('returns fp_rate=null AND status=insufficient_data when sample < min_samples', async () => {
     // 5 REJECT LIQUIDITY_FLOOR avec outcome computed, min_samples=20 default
     const rows = Array.from({ length: 5 }, (_, i) => ({
       symbol: `SYM${i}`,
@@ -49,9 +50,11 @@ describe('RejectedInsightsService', () => {
     const result = await svc.getFalsePositiveRate({ minSamples: 20 });
     expect(result.by_reason.LIQUIDITY_FLOOR.total).toBe(5);
     expect(result.by_reason.LIQUIDITY_FLOOR.fp_rate).toBeNull(); // < min_samples
+    // PR6.8.1 — explicit status field
+    expect(result.by_reason.LIQUIDITY_FLOOR.status).toBe('insufficient_data');
   });
 
-  it('computes fp_rate correctly when sample >= min_samples', async () => {
+  it('computes fp_rate AND status=ok when sample >= min_samples', async () => {
     // 30 REJECT LIQUIDITY_FLOOR : 9 champions, 21 neutral → fp_rate = 30%
     const rows = Array.from({ length: 30 }, (_, i) => ({
       symbol: `SYM${i}`,
@@ -68,6 +71,8 @@ describe('RejectedInsightsService', () => {
     expect(result.by_reason.LIQUIDITY_FLOOR.total).toBe(30);
     expect(result.by_reason.LIQUIDITY_FLOOR.champions).toBe(9);
     expect(result.by_reason.LIQUIDITY_FLOOR.fp_rate).toBeCloseTo(0.30);
+    // PR6.8.1 — explicit status='ok' when computed
+    expect(result.by_reason.LIQUIDITY_FLOOR.status).toBe('ok');
   });
 
   it('computes ACCEPT failure_rate symmetrically', async () => {
