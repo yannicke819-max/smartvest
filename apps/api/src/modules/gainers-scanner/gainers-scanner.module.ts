@@ -15,6 +15,7 @@ import { KellySizingService } from './kelly/kelly-sizing.service';
 import { ModePresetsService } from './presets/mode-presets.service';
 import { GainersInsightsService } from './insights/gainers-insights.service';
 import { DriftDetectorService } from './automations/drift-detector.service';
+import { RejectedInsightsService } from './automations/rejected-insights.service';
 
 /**
  * ADR-005 Gainers Algo V1 — Module NestJS découplé (ADR-006).
@@ -43,6 +44,8 @@ import { DriftDetectorService } from './automations/drift-detector.service';
     GainersInsightsService,
     // Phase B — cron daily 23:50 UTC qui auto-log drifts/anomalies
     DriftDetectorService,
+    // PR6.8 RCFT — FP-rate par reject_reason × env_tag (input AutoTuner Phase C V2)
+    RejectedInsightsService,
   ],
   exports: [
     GainersBloc1Service,
@@ -58,6 +61,7 @@ import { DriftDetectorService } from './automations/drift-detector.service';
     KellySizingService,
     ModePresetsService,
     GainersInsightsService,
+    RejectedInsightsService,
   ],
 })
 export class GainersModule implements OnModuleInit {
