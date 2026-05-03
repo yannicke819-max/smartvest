@@ -13,6 +13,7 @@ import { ShadowDailyReportService } from './shadow/shadow-daily-report.service';
 import { TargetDerivationService } from './target-modes/target-derivation.service';
 import { KellySizingService } from './kelly/kelly-sizing.service';
 import { ModePresetsService } from './presets/mode-presets.service';
+import { GainersInsightsService } from './insights/gainers-insights.service';
 
 /**
  * ADR-005 Gainers Algo V1 — Module NestJS découplé (ADR-006).
@@ -37,6 +38,7 @@ import { ModePresetsService } from './presets/mode-presets.service';
     TargetDerivationService,
     KellySizingService,
     ModePresetsService,
+    GainersInsightsService,
   ],
   exports: [
     GainersBloc1Service,
@@ -51,6 +53,7 @@ import { ModePresetsService } from './presets/mode-presets.service';
     TargetDerivationService,
     KellySizingService,
     ModePresetsService,
+    GainersInsightsService,
   ],
 })
 export class GainersModule implements OnModuleInit {
