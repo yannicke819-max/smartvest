@@ -87,6 +87,46 @@ describe('GainersBloc1 — prefilter gates', () => {
       expect(r.pass).toBe(false);
       expect(r.observed).toBeNull();
     });
+
+    // PR6.6.4 — Bypass top 5 crypto majors
+    describe('PR6.6.4 — TOP5_CRYPTO_BYPASS_LIQUIDITY (TEMPORAIRE jusqu\'au 17/05/2026)', () => {
+      it('PASS BTCUSDT même si vol24hUsd < 50M floor', () => {
+        const r = checkLiquidityFloor(
+          baseCrypto({ symbol: 'BTCUSDT', vol24hUsd: 1_000_000 }),
+          DEFAULT_BLOC1_CONFIG,
+        );
+        expect(r.pass).toBe(true);
+      });
+      it('PASS BNBUSDT même si vol24hUsd = 36M (cas weekend réel)', () => {
+        const r = checkLiquidityFloor(
+          baseCrypto({ symbol: 'BNBUSDT', vol24hUsd: 36_000_000 }),
+          DEFAULT_BLOC1_CONFIG,
+        );
+        expect(r.pass).toBe(true);
+      });
+      it('NOT bypass DOGEUSDT (pas dans top 5) → fail si vol < 50M', () => {
+        const r = checkLiquidityFloor(
+          baseCrypto({ symbol: 'DOGEUSDT', vol24hUsd: 30_000_000 }),
+          DEFAULT_BLOC1_CONFIG,
+        );
+        expect(r.pass).toBe(false);
+        expect(r.reason).toBe(CandidateRejectReason.LIQUIDITY_FLOOR);
+      });
+      it('NOT bypass ADAUSDT (pas dans top 5) → fail si vol < 50M', () => {
+        const r = checkLiquidityFloor(
+          baseCrypto({ symbol: 'ADAUSDT', vol24hUsd: 10_000_000 }),
+          DEFAULT_BLOC1_CONFIG,
+        );
+        expect(r.pass).toBe(false);
+      });
+      it('NOT bypass equity ticker (bypass crypto only)', () => {
+        const r = checkLiquidityFloor(
+          baseEquity({ symbol: 'BTCUSDT', medianDailyVolUsd20d: 5_000_000 }),
+          DEFAULT_BLOC1_CONFIG,
+        );
+        expect(r.pass).toBe(false); // equity branch, pas concerné par bypass
+      });
+    });
   });
 
   describe('market cap minimum', () => {
