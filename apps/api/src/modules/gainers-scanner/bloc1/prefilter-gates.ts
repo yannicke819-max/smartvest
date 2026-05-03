@@ -50,6 +50,28 @@ export const SHADOW_BLOC1_CONFIG: GainersBloc1Config = {
   shadowSkipNullFields: true,
 };
 
+/**
+ * PR6.6.4 (TEMPORAIRE) — Bypass LIQUIDITY_FLOOR pour les 5 crypto majors hardcoded.
+ *
+ * Contexte : weekend Sat-Sun, volumes Binance crypto chutent ×3-10 vs weekday
+ * (BNB $36M sat vs $400M weekday typique). 7/10 majors fail liquidity à tort
+ * en regime low-vol. Bilan A3 lundi 13:00 UTC bloqué à 0 ACCEPT → 14j paralysie
+ * en attendant RCFT productive (mardi 17/05+).
+ *
+ * Solution intermédiaire : skip LIQUIDITY_FLOOR pour BTC/ETH/BNB/SOL/XRP
+ * (top 5 par market cap, tous > $50B). Persistence gate aval reste actif
+ * (filtre légitime, pas bypass).
+ *
+ * TODO REMOVAL DATE : 2026-05-17 (mardi, T+14j RCFT data productive).
+ * Une fois RCFT fournit FP-rate par gate, AutoTuner V2 #224 propose
+ * relaxation seuil officielle ADR-005 §1bis si justifiée par data.
+ *
+ * Sécurité : whitelist explicite des 5 symbols les plus liquides au monde,
+ * impossible que market cap < $50B → liquidity réelle largement OK toutes
+ * sessions. Risque pump-and-dump nul sur ces majors.
+ */
+export const TOP5_CRYPTO_BYPASS_LIQUIDITY = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT'];
+
 export interface GateResult {
   pass: boolean;
   reason: CandidateRejectReason | null;
@@ -75,6 +97,10 @@ const PASS = (observed: number | null, threshold: number): GateResult => ({
 export function checkLiquidityFloor(raw: GainersCandidateRaw, cfg: GainersBloc1Config): GateResult {
   if (raw.market === 'crypto') {
     const threshold = cfg.liquidityFloorCryptoUsd;
+    // PR6.6.4 — bypass top 5 crypto majors (TEMPORAIRE jusqu'à 2026-05-17 RCFT productive)
+    if (TOP5_CRYPTO_BYPASS_LIQUIDITY.includes(raw.symbol)) {
+      return PASS(raw.vol24hUsd, threshold);
+    }
     if (raw.vol24hUsd < threshold) return FAIL(CandidateRejectReason.LIQUIDITY_FLOOR, raw.vol24hUsd, threshold);
     return PASS(raw.vol24hUsd, threshold);
   }
