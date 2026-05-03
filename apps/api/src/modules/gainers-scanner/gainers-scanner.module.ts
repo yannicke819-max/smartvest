@@ -14,6 +14,7 @@ import { TargetDerivationService } from './target-modes/target-derivation.servic
 import { KellySizingService } from './kelly/kelly-sizing.service';
 import { ModePresetsService } from './presets/mode-presets.service';
 import { GainersInsightsService } from './insights/gainers-insights.service';
+import { DriftDetectorService } from './automations/drift-detector.service';
 
 /**
  * ADR-005 Gainers Algo V1 — Module NestJS découplé (ADR-006).
@@ -22,6 +23,7 @@ import { GainersInsightsService } from './insights/gainers-insights.service';
  * Shadow run (PR6) wired pour Step 9 validation.
  * Target modes + Kelly sizing (ADR-007 PR #207a) wired.
  * Mode presets (ADR-007 PR #207b) wired.
+ * Insights log (Phase A) + DriftDetector (Phase B) wired.
  */
 @Module({
   imports: [SupabaseModule, ConfigModule],
@@ -39,6 +41,8 @@ import { GainersInsightsService } from './insights/gainers-insights.service';
     KellySizingService,
     ModePresetsService,
     GainersInsightsService,
+    // Phase B — cron daily 23:50 UTC qui auto-log drifts/anomalies
+    DriftDetectorService,
   ],
   exports: [
     GainersBloc1Service,

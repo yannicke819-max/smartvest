@@ -53,6 +53,8 @@ import { YahooIntradayService } from './services/yahoo-intraday.service';
 import { IntradayCacheService } from './services/intraday-cache.service';
 import { PersistenceProbabilityService } from './services/persistence-probability.service';
 import { ScannerLlmRouterService } from './services/scanner-llm-router.service';
+// Phase B — Weekly P9 ML refit cron auto-logging insights
+import { ProbabilityRefitCronService } from '../gainers-scanner/automations/probability-refit-cron.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule, BotLabModule, GainersModule],
@@ -121,6 +123,9 @@ import { ScannerLlmRouterService } from './services/scanner-llm-router.service';
     ScannerLlmRouterService,
     // P19v (30/04/2026) — Quota service centralisé EODHD (cost map + auto-throttle)
     EodhdQuotaService,
+    // Phase B — Cron Sunday 02:00 UTC qui refit P9 logistic regression et auto-log
+    // un insight `ml_refit` avec metrics (AUC, accuracy, sample_size, accepted/rejected).
+    ProbabilityRefitCronService,
   ],
   exports: [
     LisaService,
