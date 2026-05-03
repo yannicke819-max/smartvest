@@ -13,6 +13,7 @@
  */
 
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../supabase/supabase.service';
 
 export interface FpRateStats {
@@ -29,6 +30,10 @@ export interface FpRateStats {
     return_72h: number;
     rejected_at: string;
   }>;
+  // PR6.8.1 — Status explicite pour AutoTuner V2 (anti décision sur 3 datapoints)
+  // 'ok' : evaluated >= min_samples, fp_rate/failure_rate calculables
+  // 'insufficient_data' : evaluated < min_samples, fp_rate=null en sortie
+  status: 'ok' | 'insufficient_data';
 }
 
 export interface RejectedInsightsQuery {
@@ -51,7 +56,10 @@ interface SignalForwardAggRow {
 export class RejectedInsightsService {
   private readonly logger = new Logger(RejectedInsightsService.name);
 
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(
+    private readonly supabase: SupabaseService,
+    private readonly config?: ConfigService,
+  ) {}
 
   async getFalsePositiveRate(query: RejectedInsightsQuery = {}): Promise<{
     by_reason: Record<string, FpRateStats>;
@@ -137,6 +145,7 @@ export class RejectedInsightsService {
       failure_rate: null,
       avg_return_72h: null,
       samples_top_missed: [],
+      status: 'insufficient_data',
     };
 
     const evaluated: SignalForwardAggRow[] = [];
@@ -162,6 +171,10 @@ export class RejectedInsightsService {
     if (evaluated.length >= minSamples) {
       stats.fp_rate = stats.champions / evaluated.length;
       stats.failure_rate = stats.failures / evaluated.length;
+      stats.status = 'ok';
+    } else {
+      // PR6.8.1 — explicit status field pour AutoTuner V2 lecture
+      stats.status = 'insufficient_data';
     }
     if (returnCount > 0) {
       stats.avg_return_72h = returnSum / returnCount;
@@ -192,6 +205,7 @@ export class RejectedInsightsService {
       failure_rate: null,
       avg_return_72h: null,
       samples_top_missed: [],
+      status: 'insufficient_data',
     };
   }
 }

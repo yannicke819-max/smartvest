@@ -94,8 +94,8 @@ export class SignalForwardTrackerService {
     this.envTag = ['shadow', 'canary', 'prod'].includes(tag) ? tag : 'shadow';
   }
 
-  /** Cron daily 00:30 UTC. */
-  @Cron('30 0 * * *')
+  /** Cron daily 00:30 UTC strict (PR6.8.1 timezone explicite, anti drift Europe/Paris). */
+  @Cron('30 0 * * *', { timeZone: 'UTC' })
   async runForwardTracking(): Promise<void> {
     try {
       const stats = await this.runInner();
@@ -171,7 +171,8 @@ export class SignalForwardTrackerService {
           decision: r.decision,
           reject_reason: r.reject_reason,
           gate_passed_until: gateBeforeReject(r.reject_reason, r.decision),
-          env_tag: this.envTag,
+          // PR6.8.1 — Per-row env_tag via resolveEnvTag hook (canary-ready)
+          env_tag: this.resolveEnvTag(r),
           rejected_at: r.created_at,
           price_at_signal: r.entry_price ?? 0,
           source: r.asset_class === 'crypto' ? 'binance' : 'eodhd',
@@ -192,6 +193,51 @@ export class SignalForwardTrackerService {
       }
     }
     return seeded;
+  }
+
+  /**
+   * PR6.8.1 — Resolve thresholds at compute time : env vars override migration
+   * defaults (CHAMPION_RET_PCT / FAILURE_RET_PCT). Permet ajustement runtime
+   * sans ALTER TABLE.
+   *
+   * Default flow : utilise les valeurs stockées sur la row (champion=0.05,
+   * failure=-0.02 from migration 0111).
+   *
+   * Override flow : si env var set ET parsable as number, l'utilise prioritaire.
+   */
+  private resolveOutcomeThresholds(
+    rowChampionPct: number,
+    rowFailurePct: number,
+  ): { champion: number; failure: number } {
+    const envChampion = parseFloat(this.config.get<string>('CHAMPION_RET_PCT') ?? '');
+    const envFailure = parseFloat(this.config.get<string>('FAILURE_RET_PCT') ?? '');
+    return {
+      champion: Number.isFinite(envChampion) ? envChampion : rowChampionPct,
+      failure: Number.isFinite(envFailure) ? envFailure : rowFailurePct,
+    };
+  }
+
+  /**
+   * PR6.8.1 — Hook per-row env_tag injection (canary-ready).
+   *
+   * Aujourd'hui : retourne le process-level envTag (lit GAINERS_ENV_TAG env var
+   * au constructor, défaut 'shadow').
+   *
+   * TODO Phase 4 canary 10% routing : quand le routing intra-process canary est
+   * implémenté (#224 V2 ou subsequent), cette méthode doit lookup le contexte
+   * du signal (e.g., portfolios.execution_mode='canary' OU
+   * gainers_v1_shadow_signals.env_tag column si ajoutée) pour distinguer shadow
+   * vs canary vs prod. Single point of change pour passer de process-level à
+   * per-row tagging.
+   *
+   * Le call site `seedNewSignals.upsertRows[].env_tag = this.resolveEnvTag(r)`
+   * est PRÊT pour ce switch sans changer le rest du flow.
+   */
+  private resolveEnvTag(_signalRow: ShadowSignalSeed): string {
+    // TODO 2026-Q2 canary routing : lookup `_signalRow.portfolio_id` (à ajouter
+    // dans select query) puis lire `lisa_session_configs.execution_mode` ou un
+    // futur champ `env_tag` sur shadow_signals. Pour l'instant, process-level.
+    return this.envTag;
   }
 
   /**
@@ -304,6 +350,11 @@ export class SignalForwardTrackerService {
   /**
    * Step 4 — compute outcome (champion/failure/neutral) sur rows avec
    * price_t_plus_72h non null mais outcome null.
+   *
+   * PR6.8.1 :
+   *  - Inclusivité boundaries : >= et <= (cas exact +5% ou -2% labellé)
+   *  - Env vars CHAMPION_RET_PCT + FAILURE_RET_PCT override migration default
+   *    AT COMPUTE TIME (no ALTER TABLE needed pour ajuster seuils)
    */
   private async computeOutcomes(): Promise<{ computed: number; champions: number; failures: number }> {
     const { data, error } = await this.supabase
@@ -326,11 +377,17 @@ export class SignalForwardTrackerService {
       champion_threshold_pct: number;
       failure_threshold_pct: number;
     }>) {
+      // PR6.8.1 — env var override at compute time (pas migration ALTER)
+      const { champion: championPct, failure: failurePct } = this.resolveOutcomeThresholds(
+        Number(r.champion_threshold_pct),
+        Number(r.failure_threshold_pct),
+      );
       let outcome: 'champion' | 'failure' | 'neutral' = 'neutral';
-      if (r.decision === 'REJECT' && r.return_72h > Number(r.champion_threshold_pct)) {
+      // PR6.8.1 — inclusivité (>= et <=) au lieu de strict (> et <)
+      if (r.decision === 'REJECT' && r.return_72h >= championPct) {
         outcome = 'champion';
         champions++;
-      } else if (r.decision === 'ACCEPT' && r.return_72h < Number(r.failure_threshold_pct)) {
+      } else if (r.decision === 'ACCEPT' && r.return_72h <= failurePct) {
         outcome = 'failure';
         failures++;
       }
