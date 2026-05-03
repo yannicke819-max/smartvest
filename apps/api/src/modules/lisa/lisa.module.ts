@@ -55,6 +55,8 @@ import { PersistenceProbabilityService } from './services/persistence-probabilit
 import { ScannerLlmRouterService } from './services/scanner-llm-router.service';
 // Phase B — Weekly P9 ML refit cron auto-logging insights
 import { ProbabilityRefitCronService } from '../gainers-scanner/automations/probability-refit-cron.service';
+// PR6.8 RCFT — Cron daily 00:30 UTC qui suit forward returns des shadow signals
+import { SignalForwardTrackerService } from '../gainers-scanner/automations/signal-forward-tracker.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule, BotLabModule, GainersModule],
@@ -126,6 +128,9 @@ import { ProbabilityRefitCronService } from '../gainers-scanner/automations/prob
     // Phase B — Cron Sunday 02:00 UTC qui refit P9 logistic regression et auto-log
     // un insight `ml_refit` avec metrics (AUC, accuracy, sample_size, accepted/rejected).
     ProbabilityRefitCronService,
+    // PR6.8 RCFT — Cron daily 00:30 UTC qui suit forward returns shadow signals
+    // (T+24h + T+72h) et compute outcome (champion/failure/neutral) pour FP-rate.
+    SignalForwardTrackerService,
   ],
   exports: [
     LisaService,
