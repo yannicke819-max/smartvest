@@ -33,7 +33,7 @@ import { MultiTimeframePersistenceService } from './multi-tf-persistence.service
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
 // PR6.3 — Shadow wiring (LisaModule import GainersModule pour résolution DI)
 import { GainersShadowRunService } from '../../gainers-scanner/shadow/shadow-run.service';
-import { GainersBloc1Service, DEFAULT_BLOC1_FULL_CONFIG } from '../../gainers-scanner/bloc1/gainers-bloc1.service';
+import { GainersBloc1Service, SHADOW_BLOC1_FULL_CONFIG } from '../../gainers-scanner/bloc1/gainers-bloc1.service';
 import { SHADOW_BLOC1_CONFIG } from '../../gainers-scanner/bloc1/prefilter-gates';
 import { CandidateRejectReason } from '../../gainers-scanner/domain/gainers-enums';
 // PR6.4 — Enrichment helpers (ATR + EMA + persistence depuis ohlcv_cache_daily)
@@ -750,11 +750,10 @@ export class TopGainersScannerService implements OnModuleInit {
       try {
         // PR6.4 : enrich BLOC 1 réel
         // PR6.6 : enrich crypto via Binance + pathEff réel via mtfPersistence
+        // PR6.6.5 : SHADOW_BLOC1_FULL_CONFIG tolère null sur prefilter ET trend filter
+        // (cache OHLCV partiel equity, fetch Binance flaky crypto). Prod inchangée.
         const enriched = await enrichShadowCandidate(c, supabaseClient, this.mtfPersistence, this.binanceMarket);
-        const bloc1Result = this.bloc1.evaluate(enriched.raw, {
-          ...DEFAULT_BLOC1_FULL_CONFIG,
-          prefilter: SHADOW_BLOC1_CONFIG,
-        });
+        const bloc1Result = this.bloc1.evaluate(enriched.raw, SHADOW_BLOC1_FULL_CONFIG);
 
         const isTopLegacy = topSymbolsSet.has(c.symbol.toUpperCase());
         const legacyDecision: 'ACCEPT' | 'REJECT' = isTopLegacy ? 'ACCEPT' : 'REJECT';

@@ -10,11 +10,13 @@ import type {
 } from '../domain/gainers-candidate.types';
 import {
   DEFAULT_BLOC1_CONFIG,
+  SHADOW_BLOC1_CONFIG,
   GainersBloc1Config,
   runAllPrefilterGates,
 } from './prefilter-gates';
 import {
   DEFAULT_TREND_FILTER_CONFIG,
+  SHADOW_TREND_FILTER_CONFIG,
   TrendFilterConfig,
   evaluateTrendFilter,
 } from './trend-filter';
@@ -33,6 +35,17 @@ export interface Bloc1FullConfig {
 export const DEFAULT_BLOC1_FULL_CONFIG: Bloc1FullConfig = {
   prefilter: DEFAULT_BLOC1_CONFIG,
   trendFilter: DEFAULT_TREND_FILTER_CONFIG,
+  scorer: DEFAULT_COMPOSITE_SCORER_CONFIG,
+};
+
+/**
+ * PR6.6.5 — Bloc1 full config pour shadow run.
+ * Tolère null fields à la fois sur prefilter (PR6.4) et trend filter (PR6.6.5).
+ * Prod garde DEFAULT_BLOC1_FULL_CONFIG strict (ADR-005 §1bis lock).
+ */
+export const SHADOW_BLOC1_FULL_CONFIG: Bloc1FullConfig = {
+  prefilter: SHADOW_BLOC1_CONFIG,
+  trendFilter: SHADOW_TREND_FILTER_CONFIG,
   scorer: DEFAULT_COMPOSITE_SCORER_CONFIG,
 };
 

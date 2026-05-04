@@ -18,6 +18,7 @@ import {
 } from '../bloc1/prefilter-gates';
 import {
   DEFAULT_TREND_FILTER_CONFIG,
+  SHADOW_TREND_FILTER_CONFIG,
   evaluateTrendFilter,
 } from '../bloc1/trend-filter';
 import {
@@ -224,6 +225,71 @@ describe('GainersBloc1 — trend filter', () => {
     const r = evaluateTrendFilter(baseEquity({ ema50Daily: 90, ema200Daily: 100 }), { enabled: false });
     expect(r.pass).toBe(true);
     expect(r.kind).toBe(TrendFilterKind.NONE);
+  });
+
+  // PR6.6.5 — Shadow tolérance EMA null
+  describe('PR6.6.5 — shadowSkipNullFields', () => {
+    it('Cas 1 : EMAs présents, shadowSkipNullFields=false → strict identique', () => {
+      const r = evaluateTrendFilter(
+        baseEquity({ ema50Daily: 100, ema200Daily: 90 }),
+        DEFAULT_TREND_FILTER_CONFIG,
+      );
+      expect(r.pass).toBe(true);
+      expect(r.kind).toBe(TrendFilterKind.EMA_GOLDEN_CROSS);
+    });
+
+    it('Cas 1bis : EMAs présents bear (50<200), shadowSkipNullFields=true → REJECT (skip seulement null)', () => {
+      const r = evaluateTrendFilter(
+        baseEquity({ ema50Daily: 90, ema200Daily: 100 }),
+        SHADOW_TREND_FILTER_CONFIG,
+      );
+      expect(r.pass).toBe(false);
+      expect(r.reason).toBe(CandidateRejectReason.TREND_FILTER_FAIL);
+    });
+
+    it('Cas 2 : EMAs null, shadowSkipNullFields=false → REJECT TREND_FILTER_FAIL (prod strict)', () => {
+      const r1 = evaluateTrendFilter(baseEquity({ ema50Daily: null }), DEFAULT_TREND_FILTER_CONFIG);
+      const r2 = evaluateTrendFilter(baseEquity({ ema200Daily: null }), DEFAULT_TREND_FILTER_CONFIG);
+      const r3 = evaluateTrendFilter(
+        baseEquity({ ema50Daily: null, ema200Daily: null }),
+        DEFAULT_TREND_FILTER_CONFIG,
+      );
+      expect(r1.pass).toBe(false);
+      expect(r1.reason).toBe(CandidateRejectReason.TREND_FILTER_FAIL);
+      expect(r2.pass).toBe(false);
+      expect(r3.pass).toBe(false);
+    });
+
+    it('Cas 3 : EMAs null, shadowSkipNullFields=true → PASS kind=NONE', () => {
+      const r1 = evaluateTrendFilter(
+        baseEquity({ ema50Daily: null }),
+        SHADOW_TREND_FILTER_CONFIG,
+      );
+      const r2 = evaluateTrendFilter(
+        baseEquity({ ema200Daily: null }),
+        SHADOW_TREND_FILTER_CONFIG,
+      );
+      const r3 = evaluateTrendFilter(
+        baseEquity({ ema50Daily: null, ema200Daily: null }),
+        SHADOW_TREND_FILTER_CONFIG,
+      );
+      expect(r1.pass).toBe(true);
+      expect(r1.kind).toBe(TrendFilterKind.NONE);
+      expect(r1.reason).toBeNull();
+      expect(r2.pass).toBe(true);
+      expect(r2.kind).toBe(TrendFilterKind.NONE);
+      expect(r3.pass).toBe(true);
+      expect(r3.kind).toBe(TrendFilterKind.NONE);
+    });
+
+    it('Régression prod : DEFAULT_TREND_FILTER_CONFIG.shadowSkipNullFields = false', () => {
+      expect(DEFAULT_TREND_FILTER_CONFIG.shadowSkipNullFields).toBe(false);
+    });
+
+    it('Shadow config : SHADOW_TREND_FILTER_CONFIG.shadowSkipNullFields = true', () => {
+      expect(SHADOW_TREND_FILTER_CONFIG.shadowSkipNullFields).toBe(true);
+      expect(SHADOW_TREND_FILTER_CONFIG.enabled).toBe(true);
+    });
   });
 });
 
