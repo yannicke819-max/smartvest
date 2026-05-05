@@ -17,7 +17,8 @@
  */
 
 import { useEffect, useState } from 'react';
-import { Settings2, Save, RotateCcw } from 'lucide-react';
+import Link from 'next/link';
+import { Settings2, Save, RotateCcw, BarChart3 } from 'lucide-react';
 import {
   useGainersConfig,
   useUpdateGainersConfig,
@@ -97,9 +98,18 @@ export function GainersConfigPanel({ portfolioId }: Props) {
 
   return (
     <div className="rounded-lg border border-orange-700/40 bg-orange-950/10 p-5 space-y-5">
-      <div className="flex items-center gap-2 text-orange-300">
-        <Settings2 className="w-4 h-4" />
-        <h3 className="text-sm font-semibold">Configuration scanner Gainers</h3>
+      <div className="flex items-center justify-between gap-2 text-orange-300">
+        <div className="flex items-center gap-2">
+          <Settings2 className="w-4 h-4" />
+          <h3 className="text-sm font-semibold">Configuration scanner Gainers</h3>
+        </div>
+        <Link
+          href={'/lisa/gainers/insights' as never}
+          className="inline-flex items-center gap-1 text-xs text-orange-300 hover:text-orange-200"
+        >
+          <BarChart3 className="w-3 h-3" />
+          Dashboard auto-learning
+        </Link>
       </div>
       <p className="text-xs text-zinc-400">
         Tous les paramètres sont lus par le scanner à chaque cycle. Aucune
@@ -316,6 +326,37 @@ export function GainersConfigPanel({ portfolioId }: Props) {
               value={num(cfg.gainers_min_net_profit_usd, 0.5)}
               onChange={(e) => set('gainers_min_net_profit_usd', Number(e.target.value))}
               className="h-8 w-full rounded-md border bg-background px-2 text-xs"
+            />
+          </Field>
+        </div>
+      </section>
+
+      {/* 7. Auto-learning (pWin ML gate) */}
+      <section className="space-y-3">
+        <div className="text-xs uppercase tracking-wider text-zinc-500 font-medium">
+          7. Auto-learning — Gate ML (pWin)
+        </div>
+        <p className="text-[11px] text-zinc-400">
+          Désactivé par défaut. Active uniquement après convergence du modèle
+          (≥ 30 trades fermés + AUC ≥ 0.55). Si modèle pas prêt, le gate est
+          automatiquement bypassé (fallback transparent).
+        </p>
+        <div className="grid grid-cols-2 gap-3">
+          <Toggle
+            label="Activer le gate pWin"
+            checked={cfg.gainers_p_win_gate_enabled === true}
+            onChange={(v) => set('gainers_p_win_gate_enabled', v)}
+          />
+          <Field label="Min pWin (probabilité win)" hint="[0..1] — default 0.50">
+            <input
+              type="number"
+              min={0}
+              max={1}
+              step={0.05}
+              value={num(cfg.gainers_min_p_win, 0.5)}
+              onChange={(e) => set('gainers_min_p_win', Number(e.target.value))}
+              className="h-8 w-full rounded-md border bg-background px-2 text-xs"
+              disabled={cfg.gainers_p_win_gate_enabled !== true}
             />
           </Field>
         </div>

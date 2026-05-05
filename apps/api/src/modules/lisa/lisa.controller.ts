@@ -399,6 +399,73 @@ export class LisaController {
     return this.persistenceProbability.trainAndPersist({ lookbackDays });
   }
 
+  /**
+   * PR #6 — User-facing read endpoint pour le dashboard auto-learning.
+   * Retourne les N dernières insights (drift, threshold_proposal, ml_refit, etc.)
+   * sur la fenêtre glissante. Pas de filtre par portfolio (insights globaux).
+   */
+  @Get('gainers/insights-recent')
+  async getGainersInsightsRecent(
+    @Headers() headers: Record<string, string>,
+    @Query('since_days') sinceDaysStr?: string,
+    @Query('limit') limitStr?: string,
+    @Query('type') type?: string,
+  ) {
+    extractUserId(headers);
+    const sinceDays = clampInt(sinceDaysStr, 1, 90, 30);
+    const limit = clampInt(limitStr, 1, 200, 50);
+    const sinceIso = new Date(Date.now() - sinceDays * 24 * 3600_000).toISOString();
+    let query = this.supabase
+      .getClient()
+      .from('gainers_insights_log')
+      .select('id, created_at, insight_type, source, severity, summary, payload, status')
+      .gte('created_at', sinceIso)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (type) query = query.eq('insight_type', type);
+    const { data, error } = await query;
+    if (error) {
+      return { count: 0, insights: [], error: error.message };
+    }
+    return { count: (data ?? []).length, insights: data ?? [] };
+  }
+
+  /**
+   * PR #6 — Historique des ajustements AutoTuner pour un portfolio user.
+   * Filtre obligatoire par portfolioId user-scoped.
+   */
+  @Get('gainers/auto-tuner-history/:portfolioId')
+  async getAutoTunerHistory(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+    @Query('limit') limitStr?: string,
+  ) {
+    const userId = extractUserId(headers);
+    // Vérifier ownership
+    const { data: portfolio, error: pErr } = await this.supabase.getClient()
+      .from('portfolios')
+      .select('id')
+      .eq('id', portfolioId)
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (pErr || !portfolio) {
+      return { count: 0, history: [] };
+    }
+    const limit = clampInt(limitStr, 1, 200, 50);
+    const { data, error } = await this.supabase
+      .getClient()
+      .from('gainers_threshold_history')
+      .select('*')
+      .eq('portfolio_id', portfolioId)
+      .order('applied_at', { ascending: false })
+      .limit(limit);
+    return {
+      count: (data ?? []).length,
+      history: data ?? [],
+      error: error?.message ?? null,
+    };
+  }
+
   private async resolveTopN(portfolioId: string, raw: string | undefined): Promise<number> {
     // 1. Query string
     if (raw) {

@@ -16,6 +16,7 @@ import { ModePresetsService } from './presets/mode-presets.service';
 import { GainersInsightsService } from './insights/gainers-insights.service';
 import { DriftDetectorService } from './automations/drift-detector.service';
 import { RejectedInsightsService } from './automations/rejected-insights.service';
+import { ThresholdAutoTunerService } from './automations/threshold-auto-tuner.service';
 
 /**
  * ADR-005 Gainers Algo V1 — Module NestJS découplé (ADR-006).
@@ -46,6 +47,10 @@ import { RejectedInsightsService } from './automations/rejected-insights.service
     DriftDetectorService,
     // PR6.8 RCFT — FP-rate par reject_reason × env_tag (input AutoTuner Phase C V2)
     RejectedInsightsService,
+    // PR #5 — AutoTuner Phase C : cron daily 03:00 UTC qui consomme FP-rate
+    // pour ajuster automatiquement les seuils gainers_min_persistence_score
+    // et gainers_min_path_efficiency. Ferme la boucle d'apprentissage.
+    ThresholdAutoTunerService,
   ],
   exports: [
     GainersBloc1Service,
@@ -62,6 +67,7 @@ import { RejectedInsightsService } from './automations/rejected-insights.service
     ModePresetsService,
     GainersInsightsService,
     RejectedInsightsService,
+    ThresholdAutoTunerService,
   ],
 })
 export class GainersModule implements OnModuleInit {

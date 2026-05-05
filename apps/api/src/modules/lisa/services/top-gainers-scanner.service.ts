@@ -30,6 +30,7 @@ import { LisaService } from './lisa.service';
 import { DecisionLogService } from './decision-log.service';
 import { BinanceMarketService } from './binance-market.service';
 import { MultiTimeframePersistenceService } from './multi-tf-persistence.service';
+import { PersistenceProbabilityService } from './persistence-probability.service';
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
 // PR6.3 — Shadow wiring (LisaModule import GainersModule pour résolution DI)
 import { GainersShadowRunService } from '../../gainers-scanner/shadow/shadow-run.service';
@@ -411,6 +412,13 @@ export class TopGainersScannerService implements OnModuleInit {
      * scorer réels avec SHADOW_BLOC1_CONFIG (tolère atr/persistence null).
      */
     private readonly bloc1: GainersBloc1Service,
+    /**
+     * PR #4 — PersistenceProbabilityService consume du modèle ML logistique
+     * (entraîné weekly par ProbabilityRefitCron). Gate `pWin >= threshold`
+     * activable par portfolio (cfg.gainers_p_win_gate_enabled, default false).
+     * Fallback automatique quand modèle pas prêt (sample < 30 OR auc < 0.55).
+     */
+    private readonly probability: PersistenceProbabilityService,
   ) {}
 
   /**
@@ -1246,7 +1254,7 @@ export class TopGainersScannerService implements OnModuleInit {
     const { data: cfgRow } = await this.supabase
       .getClient()
       .from('lisa_session_configs')
-      .select('capital_simulation, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes, gainers_universe_us, gainers_universe_eu, gainers_universe_asia, gainers_universe_crypto')
+      .select('capital_simulation, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes, gainers_universe_us, gainers_universe_eu, gainers_universe_asia, gainers_universe_crypto, gainers_p_win_gate_enabled, gainers_min_p_win')
       .eq('portfolio_id', portfolioId)
       .maybeSingle();
     const minScore = this.resolveMinPersistenceScore(
@@ -1296,6 +1304,13 @@ export class TopGainersScannerService implements OnModuleInit {
     const universeEu = cfgRow?.gainers_universe_eu !== false;
     const universeAsia = cfgRow?.gainers_universe_asia !== false;
     const universeCrypto = cfgRow?.gainers_universe_crypto !== false;
+    // PR #4 — pWin gate. Désactivé par défaut (gainers_p_win_gate_enabled=false).
+    // L'utilisateur active via UI quand le modèle a convergé (≥30 trades fermés
+    // + AUC ≥ 0.55). Sinon `probability.fallback=true` → bypass automatique.
+    const pWinGateEnabled = cfgRow?.gainers_p_win_gate_enabled === true;
+    const minPWin = cfgRow?.gainers_min_p_win != null
+      ? Math.max(0, Math.min(1, Number(cfgRow.gainers_min_p_win)))
+      : 0.50;
     const filteredTop = top.filter((c) => {
       if (c.assetClass === 'us_equity_large' || c.assetClass === 'us_equity_small_mid') return universeUs;
       if (c.assetClass === 'eu_equity') return universeEu;
@@ -1549,6 +1564,54 @@ export class TopGainersScannerService implements OnModuleInit {
         continue;
       }
 
+      // PR #4 — pWin gate (ML logistic regression P9). Activable par portfolio
+      // via cfg.gainers_p_win_gate_enabled. Features dérivées des metrics
+      // déjà calculés (persistenceCount + scoring composite).
+      // Bypass si modèle pas prêt (probability.fallback=true).
+      let pWinResult: { pWin: number; modelVersion: string; fallback: boolean; sampleSize: number; features: Record<string, number> } | null = null;
+      if (pWinGateEnabled) {
+        const closeToHigh = cand.high > 0 ? cand.close / cand.high : 0;
+        const volRatio = cand.avgVol50d && cand.avgVol50d > 0
+          ? (cand.volume ?? 0) / cand.avgVol50d
+          : 0;
+        const features: Record<string, number> = {
+          // Note: persistenceCount feature = integer count (positiveCount), pas le string "4/6".
+          persistenceCount: persistence?.positiveCount ?? 0,
+          volRatio,
+          rsi: 50, // Pas calculé live au scanner — fallback neutre. Future : enrichir.
+          closeToHigh,
+          changePct: cand.changePct,
+        };
+        const probability = await this.probability.estimateProbability(features)
+          .catch((e) => {
+            this.logger.warn(`[pWin] ${cand.symbol} estimate failed: ${String(e).slice(0, 80)}`);
+            return null;
+          });
+        if (probability) {
+          pWinResult = {
+            pWin: probability.pWin,
+            modelVersion: probability.modelVersion,
+            fallback: probability.fallback,
+            sampleSize: probability.sampleSize,
+            features,
+          };
+          if (probability.fallback) {
+            this.logger.log(
+              `[pWin] ${cand.symbol} fallback (sample=${probability.sampleSize}, model=${probability.modelVersion}) → gate bypassed`,
+            );
+          } else if (probability.pWin < minPWin) {
+            this.logger.log(
+              `[pWin] ${cand.symbol} pWin=${probability.pWin.toFixed(3)} < ${minPWin.toFixed(2)} (model=${probability.modelVersion}) → skip`,
+            );
+            continue;
+          } else {
+            this.logger.log(
+              `[pWin] ${cand.symbol} pWin=${probability.pWin.toFixed(3)} ≥ ${minPWin.toFixed(2)} (model=${probability.modelVersion}) → OPEN`,
+            );
+          }
+        }
+      }
+
       const insertedPosId = await this.openTopGainerPosition(
         userId,
         portfolioId,
@@ -1562,6 +1625,7 @@ export class TopGainersScannerService implements OnModuleInit {
           positionNotionalUsd,
           cashReservePct,
         },
+        pWinResult, // PR #4 — pWin metrics persistés via paper_trades
       ).catch((e) => {
         this.logger.warn(
           `[top-gainers] open ${cand.symbol} failed: ${String(e).slice(0, 120)}`,
@@ -1606,6 +1670,13 @@ export class TopGainersScannerService implements OnModuleInit {
       positionNotionalUsd: number;
       cashReservePct: number;
     },
+    // PR #4 — pWin metrics persistés dans paper_trades pour boucle apprentissage.
+    pWinMeta?: {
+      pWin: number;
+      modelVersion: string;
+      sampleSize: number;
+      features: Record<string, number>;
+    } | null,
   ): Promise<string | null> {
     const proposalId = randomUUID();
     const thesisId = randomUUID();
@@ -1691,10 +1762,10 @@ export class TopGainersScannerService implements OnModuleInit {
         `[top-gainers] ${cand.symbol} opened (${result.openedPositions.length} pos, score=${cand.score})`,
       );
 
-      // P8 — best-effort persist du snapshot persistance dans paper_trades
-      // (forward-compat avec P9 qui ajoutera features_at_entry / p_win).
+      // P8 + PR #4 — best-effort persist du snapshot persistance + pWin metrics
+      // dans paper_trades (alimente la boucle apprentissage P9 logistique).
       if (persistence) {
-        await this.persistPaperTrade(userId, portfolioId, cand, openedPos, persistence, effectiveTp, effectiveSl)
+        await this.persistPaperTrade(userId, portfolioId, cand, openedPos, persistence, effectiveTp, effectiveSl, pWinMeta ?? null)
           .catch((e) =>
             this.logger.debug(`[top-gainers] persistPaperTrade ${cand.symbol} failed: ${String(e).slice(0, 120)}`),
           );
@@ -1721,6 +1792,14 @@ export class TopGainersScannerService implements OnModuleInit {
     persistence: PersistenceResult,
     tpPct: number,
     slPct: number,
+    // PR #4 — pWin metrics persistés pour boucle apprentissage. Optionnel
+    // (null si gate désactivé OU modèle non prêt).
+    pWinMeta?: {
+      pWin: number;
+      modelVersion: string;
+      sampleSize: number;
+      features: Record<string, number>;
+    } | null,
   ): Promise<void> {
     const entryPrice = Number(openedPos.entryPrice ?? cand.close);
     const sizeUsd = Number(openedPos.entryNotionalUsd ?? 0);
@@ -1734,7 +1813,7 @@ export class TopGainersScannerService implements OnModuleInit {
       tf30m: persistence.tf30m,
       tf1h: persistence.tf1h,
     };
-    await this.supabase.getClient().from('paper_trades').insert({
+    const insertRow: Record<string, unknown> = {
       user_id: userId,
       portfolio_id: portfolioId,
       symbol: cand.symbol,
@@ -1750,7 +1829,14 @@ export class TopGainersScannerService implements OnModuleInit {
       persistence_score_at_entry: String(persistence.persistenceScore.toFixed(2)),
       persistence_count_at_entry: persistence.persistenceCount,
       tf_changes_at_entry: tfChanges,
-    });
+    };
+    // PR #4 — features + p_win + model_version persistés pour boucle apprentissage
+    if (pWinMeta) {
+      insertRow.features_at_entry = pWinMeta.features;
+      insertRow.p_win_at_entry = String(pWinMeta.pWin);
+      insertRow.model_version_at_entry = pWinMeta.modelVersion;
+    }
+    await this.supabase.getClient().from('paper_trades').insert(insertRow);
   }
 
   /**
