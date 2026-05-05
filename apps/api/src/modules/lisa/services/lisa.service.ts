@@ -279,6 +279,19 @@ export class LisaService {
       gainers_min_persistence_score: pick('gainers_min_persistence_score', 'gainersMinPersistenceScore', existing?.gainers_min_persistence_score ?? null),
       gainers_default_tp_pct: pick('gainers_default_tp_pct', 'gainersDefaultTpPct', existing?.gainers_default_tp_pct ?? 1.5),
       gainers_default_sl_pct: pick('gainers_default_sl_pct', 'gainersDefaultSlPct', existing?.gainers_default_sl_pct ?? 1.0),
+      // PR #3 — Migration 0115 full-config columns. Capacity, sizing, cooldown,
+      // univers toggles. Validation côté API ci-dessous (clamp + 400 lisible).
+      gainers_max_open_positions: pick('gainers_max_open_positions', 'gainersMaxOpenPositions', existing?.gainers_max_open_positions ?? 5),
+      gainers_max_per_cycle: pick('gainers_max_per_cycle', 'gainersMaxPerCycle', existing?.gainers_max_per_cycle ?? 3),
+      gainers_position_pct: pick('gainers_position_pct', 'gainersPositionPct', existing?.gainers_position_pct ?? 20.0),
+      gainers_cash_reserve_pct: pick('gainers_cash_reserve_pct', 'gainersCashReservePct', existing?.gainers_cash_reserve_pct ?? 10.0),
+      gainers_cooldown_minutes: pick('gainers_cooldown_minutes', 'gainersCooldownMinutes', existing?.gainers_cooldown_minutes ?? 30),
+      gainers_universe_us: pick('gainers_universe_us', 'gainersUniverseUs', existing?.gainers_universe_us ?? true),
+      gainers_universe_eu: pick('gainers_universe_eu', 'gainersUniverseEu', existing?.gainers_universe_eu ?? true),
+      gainers_universe_asia: pick('gainers_universe_asia', 'gainersUniverseAsia', existing?.gainers_universe_asia ?? true),
+      gainers_universe_crypto: pick('gainers_universe_crypto', 'gainersUniverseCrypto', existing?.gainers_universe_crypto ?? true),
+      gainers_fees_aware_buffer: pick('gainers_fees_aware_buffer', 'gainersFeesAwareBuffer', existing?.gainers_fees_aware_buffer ?? 2.0),
+      gainers_min_net_profit_usd: pick('gainers_min_net_profit_usd', 'gainersMinNetProfitUsd', existing?.gainers_min_net_profit_usd ?? 0.50),
     };
 
     // Validation des valeurs numériques pour renvoyer une 400 lisible plutôt
@@ -316,6 +329,46 @@ export class LisaService {
     };
     validateGainersPct('gainers_default_tp_pct', merged.gainers_default_tp_pct, 50);
     validateGainersPct('gainers_default_sl_pct', merged.gainers_default_sl_pct, 20);
+
+    // PR #3 — Migration 0115 validators (capacity / sizing / cooldown).
+    const validateInt = (key: string, value: unknown, min: number, max: number): void => {
+      if (value == null) return;
+      const n = typeof value === 'string' ? parseInt(value, 10) : Number(value);
+      if (!Number.isFinite(n) || !Number.isInteger(n)) {
+        throw new BadRequestException(`${key} : entier invalide.`);
+      }
+      if (n < min || n > max) {
+        throw new BadRequestException(`${key} : valeur ${n} hors plage [${min}, ${max}].`);
+      }
+    };
+    const validateNum = (key: string, value: unknown, min: number, max: number): void => {
+      if (value == null) return;
+      const n = typeof value === 'string' ? parseFloat(value) : Number(value);
+      if (!Number.isFinite(n)) {
+        throw new BadRequestException(`${key} : valeur numérique invalide.`);
+      }
+      if (n < min || n > max) {
+        throw new BadRequestException(`${key} : valeur ${n} hors plage [${min}, ${max}].`);
+      }
+    };
+    validateInt('gainers_max_open_positions', merged.gainers_max_open_positions, 1, 20);
+    validateInt('gainers_max_per_cycle', merged.gainers_max_per_cycle, 1, 10);
+    validateNum('gainers_position_pct', merged.gainers_position_pct, 1, 100);
+    validateNum('gainers_cash_reserve_pct', merged.gainers_cash_reserve_pct, 0, 50);
+    validateInt('gainers_cooldown_minutes', merged.gainers_cooldown_minutes, 0, 240);
+    validateNum('gainers_fees_aware_buffer', merged.gainers_fees_aware_buffer, 1.0, 5.0);
+    validateNum('gainers_min_net_profit_usd', merged.gainers_min_net_profit_usd, 0, 9999);
+    // Cohérence : positionPct × maxOpen + cashReserve ne doit pas dépasser 100%
+    // (sinon impossible de tenir le cash buffer en pratique). Warning soft, pas hard fail.
+    const totalAllocPct =
+      Number(merged.gainers_position_pct) * Number(merged.gainers_max_open_positions)
+      + Number(merged.gainers_cash_reserve_pct);
+    if (totalAllocPct > 200) {
+      // Hard fail uniquement au-delà du double : permet over-leverage modéré.
+      throw new BadRequestException(
+        `Configuration incohérente : position_pct (${merged.gainers_position_pct}%) × max_open (${merged.gainers_max_open_positions}) + cash_reserve (${merged.gainers_cash_reserve_pct}%) = ${totalAllocPct.toFixed(0)}% du capital. Réduire position_pct ou max_open_positions.`,
+      );
+    }
     // gainers_min_persistence_score est une fraction [0, 1] — null = utilise default.
     if (merged.gainers_min_persistence_score != null) {
       const n = typeof merged.gainers_min_persistence_score === 'string'
@@ -412,6 +465,34 @@ export class LisaService {
         ...mergedFallback
       } = merged;
       void _gc; void _gpe; void _gmp; void _gtp; void _gsl;
+      const retry = await this.supabase.getClient()
+        .from('lisa_session_configs')
+        .upsert(mergedFallback, { onConflict: 'portfolio_id' })
+        .select()
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
+
+    // PR #3 — fallback si migration 0115 pas encore appliquée
+    if (error && /gainers_max_open_positions|gainers_max_per_cycle|gainers_position_pct|gainers_cash_reserve_pct|gainers_cooldown_minutes|gainers_universe_|gainers_fees_aware_buffer|gainers_min_net_profit_usd/i.test(error.message)) {
+      this.logger.warn('Colonnes gainers_* (migration 0115) absentes — retry sans ces champs');
+      const {
+        gainers_max_open_positions: _mop,
+        gainers_max_per_cycle: _mpc,
+        gainers_position_pct: _ppc,
+        gainers_cash_reserve_pct: _crp,
+        gainers_cooldown_minutes: _cdm,
+        gainers_universe_us: _uus,
+        gainers_universe_eu: _ueu,
+        gainers_universe_asia: _ua,
+        gainers_universe_crypto: _uc,
+        gainers_fees_aware_buffer: _fab,
+        gainers_min_net_profit_usd: _mnp,
+        ...mergedFallback
+      } = merged;
+      void _mop; void _mpc; void _ppc; void _crp; void _cdm;
+      void _uus; void _ueu; void _ua; void _uc; void _fab; void _mnp;
       const retry = await this.supabase.getClient()
         .from('lisa_session_configs')
         .upsert(mergedFallback, { onConflict: 'portfolio_id' })

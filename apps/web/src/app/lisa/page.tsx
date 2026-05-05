@@ -30,6 +30,8 @@ import { DailyHarvestTracker } from '@/components/lisa/daily-harvest-tracker';
 import { DailyHarvestPanel } from '@/components/lisa/daily-harvest-panel';
 import { MacroModeSelector } from '@/components/lisa/macro-mode-selector';
 import { GainersStatusTile } from '@/components/lisa/gainers-status-tile';
+import { GainersConfigPanel } from '@/components/lisa/gainers-config-panel';
+import { useOperatingMode } from '@/hooks/use-operating-mode';
 import { AutopilotBudgetBadge } from '@/components/lisa/autopilot-budget-badge';
 import { LisaDecisionLog } from '@/components/lisa/decision-log';
 import { MechanicalAgentCard } from '@/components/lisa/mechanical-agent-card';
@@ -119,6 +121,9 @@ export default function LisaPage() {
   }, [saveStatus]);
   const generateProposal = useGenerateProposal(selectedPortfolioId ?? '');
   const proposalsQuery = useLisaProposals(selectedPortfolioId);
+  // PR #3 — current operating mode pour gater l'affichage du panel config Gainers.
+  const operatingModeQuery = useOperatingMode(selectedPortfolioId);
+  const currentMode = operatingModeQuery.data?.mode ?? null;
   const snapshotQuery = useLisaSnapshot(selectedPortfolioId);
   const killSwitch = useTriggerKillSwitch(selectedPortfolioId ?? '');
   const resetSim = useResetSimulation(selectedPortfolioId ?? '');
@@ -569,6 +574,12 @@ export default function LisaPage() {
 
       {/* P7 — Mini-tile temps réel (visible uniquement en mode Gainers) */}
       {selectedPortfolioId && <GainersStatusTile portfolioId={selectedPortfolioId} />}
+
+      {/* PR #3 — Configuration complète scanner Gainers (capacité, sizing,
+          univers, persistence, fees). Visible quand mode='gainers'. */}
+      {selectedPortfolioId && currentMode === 'gainers' && (
+        <GainersConfigPanel portfolioId={selectedPortfolioId} />
+      )}
 
       {/* Portfolio summary */}
       {selectedPortfolioId && (
