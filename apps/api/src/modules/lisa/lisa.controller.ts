@@ -212,7 +212,7 @@ export class LisaController {
     // Q1 — Scannés aujourd'hui (count + breakdown + 7j history)
     const { data: scannedTodayRows } = await supabase
       .from('gainers_v1_shadow_signals')
-      .select('asset_class')
+      .select('asset_class, exchange')
       .gte('created_at', startOfDayUtcIso);
     const scannedToday = (scannedTodayRows ?? []).length;
     const scannedByAssetClass = aggregateByClass(scannedTodayRows ?? []);
@@ -227,7 +227,7 @@ export class LisaController {
     // Q2 — Ouverts aujourd'hui via paper_trades (strategy='top_gainers_v1')
     const { data: openedTodayRows } = await supabase
       .from('paper_trades')
-      .select('asset_class')
+      .select('asset_class, exchange')
       .eq('portfolio_id', portfolioId)
       .eq('strategy', 'top_gainers_v1')
       .gte('opened_at', startOfDayUtcIso);
@@ -237,7 +237,7 @@ export class LisaController {
     // Q3 — Fermés aujourd'hui + somme PnL
     const { data: closedTodayPaperTrades } = await supabase
       .from('paper_trades')
-      .select('pnl_usd, asset_class')
+      .select('pnl_usd, asset_class, exchange')
       .eq('portfolio_id', portfolioId)
       .eq('strategy', 'top_gainers_v1')
       .eq('status', 'closed')
@@ -1095,20 +1095,43 @@ const MARKET_GROUPS: Record<string, string> = {
 };
 
 /**
- * PR Counters jour (Option B) — agrège par asset_class en 4 buckets UI :
- * us / eu / asia / crypto / other. Utilisé pour breakdown counters Gainers.
+ * PR Counters jour (Option B) — agrège par asset_class en 5 buckets UI :
+ * us / eu / asia / crypto / other.
+ *
+ * Hotfix breakdown : `gainers_v1_shadow_signals.asset_class` stocke souvent
+ * un générique 'equity' (sans préfixe us_equity/eu_equity/asia_equity). Sans
+ * fallback exchange, ces rows tomberaient toutes en 'other' → breakdown UI
+ * affichait uniquement "₿ 50" sur 1000 scans (cas user 05/05 14:30 UTC).
+ *
+ * Mapping exchange → bucket :
+ *   - US, NYSE, NASDAQ, BATS, OTCQB, OTCMKTS → us
+ *   - LSE, XETRA, PA, AS, AMS, MC, BME, MI, SW, BR → eu
+ *   - KO, KQ, T, HK, NSE, BSE, SHG, SHE, AU, AX, TO → asia
+ *   - BINANCE, CC, COINBASE → crypto
  */
-function aggregateByClass(rows: Array<{ asset_class: string | null }>): {
+const US_EXCHANGES = new Set(['US', 'NYSE', 'NASDAQ', 'BATS', 'OTCQB', 'OTCMKTS', 'OTC', 'NMFQS']);
+const EU_EXCHANGES = new Set(['LSE', 'XETRA', 'PA', 'AS', 'AMS', 'MC', 'BME', 'MI', 'SW', 'BR']);
+const ASIA_EXCHANGES = new Set(['KO', 'KQ', 'KS', 'KE', 'T', 'TSE', 'HK', 'NSE', 'BSE', 'SHG', 'SHE', 'SS', 'SZ', 'AU', 'AX', 'TO']);
+const CRYPTO_EXCHANGES = new Set(['BINANCE', 'CC', 'COINBASE']);
+
+function aggregateByClass(rows: Array<{ asset_class: string | null; exchange?: string | null }>): {
   us: number; eu: number; asia: number; crypto: number; other: number;
 } {
   const out = { us: 0, eu: 0, asia: 0, crypto: 0, other: 0 };
   for (const r of rows) {
     const ac = String(r.asset_class ?? '').toLowerCase();
-    if (ac.startsWith('us_equity')) out.us++;
-    else if (ac.startsWith('eu_equity')) out.eu++;
-    else if (ac.startsWith('asia_equity')) out.asia++;
-    else if (ac.startsWith('crypto')) out.crypto++;
-    else out.other++;
+    const ex = String(r.exchange ?? '').toUpperCase();
+    // Step 1 — try asset_class préfixe (préservé si bien typé)
+    if (ac.startsWith('us_equity')) { out.us++; continue; }
+    if (ac.startsWith('eu_equity')) { out.eu++; continue; }
+    if (ac.startsWith('asia_equity')) { out.asia++; continue; }
+    if (ac.startsWith('crypto')) { out.crypto++; continue; }
+    // Step 2 — fallback exchange (bug fix : asset_class générique 'equity')
+    if (CRYPTO_EXCHANGES.has(ex)) { out.crypto++; continue; }
+    if (US_EXCHANGES.has(ex)) { out.us++; continue; }
+    if (EU_EXCHANGES.has(ex)) { out.eu++; continue; }
+    if (ASIA_EXCHANGES.has(ex)) { out.asia++; continue; }
+    out.other++;
   }
   return out;
 }
