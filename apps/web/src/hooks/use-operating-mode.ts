@@ -204,6 +204,9 @@ export interface GainersConfigFields {
   gainers_universe_crypto: boolean | null;
   gainers_fees_aware_buffer: number | null;
   gainers_min_net_profit_usd: number | null;
+  // PR #4 — pWin ML gate (migration 0116)
+  gainers_p_win_gate_enabled: boolean | null;
+  gainers_min_p_win: number | null;
   // Capital simulé (lu/écrit via la même config session)
   capital_simulation: number | null;
 }
@@ -235,6 +238,8 @@ export function useGainersConfig(portfolioId: string | null) {
         gainers_universe_crypto: boolOrNull(raw?.gainers_universe_crypto),
         gainers_fees_aware_buffer: numOrNull(raw?.gainers_fees_aware_buffer),
         gainers_min_net_profit_usd: numOrNull(raw?.gainers_min_net_profit_usd),
+        gainers_p_win_gate_enabled: boolOrNull(raw?.gainers_p_win_gate_enabled),
+        gainers_min_p_win: numOrNull(raw?.gainers_min_p_win),
         capital_simulation: numOrNull(raw?.capital_simulation ?? raw?.capital_usd),
       } satisfies GainersConfigFields;
     },

@@ -292,6 +292,10 @@ export class LisaService {
       gainers_universe_crypto: pick('gainers_universe_crypto', 'gainersUniverseCrypto', existing?.gainers_universe_crypto ?? true),
       gainers_fees_aware_buffer: pick('gainers_fees_aware_buffer', 'gainersFeesAwareBuffer', existing?.gainers_fees_aware_buffer ?? 2.0),
       gainers_min_net_profit_usd: pick('gainers_min_net_profit_usd', 'gainersMinNetProfitUsd', existing?.gainers_min_net_profit_usd ?? 0.50),
+      // PR #4 — pWin gate (migration 0116). Désactivé par défaut, activable
+      // par utilisateur quand modèle ML a convergé (≥30 trades fermés + AUC ≥ 0.55).
+      gainers_p_win_gate_enabled: pick('gainers_p_win_gate_enabled', 'gainersPWinGateEnabled', existing?.gainers_p_win_gate_enabled ?? false),
+      gainers_min_p_win: pick('gainers_min_p_win', 'gainersMinPWin', existing?.gainers_min_p_win ?? 0.50),
     };
 
     // Validation des valeurs numériques pour renvoyer une 400 lisible plutôt
@@ -358,6 +362,7 @@ export class LisaService {
     validateInt('gainers_cooldown_minutes', merged.gainers_cooldown_minutes, 0, 240);
     validateNum('gainers_fees_aware_buffer', merged.gainers_fees_aware_buffer, 1.0, 5.0);
     validateNum('gainers_min_net_profit_usd', merged.gainers_min_net_profit_usd, 0, 9999);
+    validateNum('gainers_min_p_win', merged.gainers_min_p_win, 0, 1);
     // Cohérence : positionPct × maxOpen + cashReserve ne doit pas dépasser 100%
     // (sinon impossible de tenir le cash buffer en pratique). Warning soft, pas hard fail.
     const totalAllocPct =
@@ -465,6 +470,24 @@ export class LisaService {
         ...mergedFallback
       } = merged;
       void _gc; void _gpe; void _gmp; void _gtp; void _gsl;
+      const retry = await this.supabase.getClient()
+        .from('lisa_session_configs')
+        .upsert(mergedFallback, { onConflict: 'portfolio_id' })
+        .select()
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
+
+    // PR #4 — fallback si migration 0116 pas encore appliquée
+    if (error && /gainers_p_win_gate_enabled|gainers_min_p_win/i.test(error.message)) {
+      this.logger.warn('Colonnes pWin (migration 0116) absentes — retry sans ces champs');
+      const {
+        gainers_p_win_gate_enabled: _pwe,
+        gainers_min_p_win: _pmw,
+        ...mergedFallback
+      } = merged;
+      void _pwe; void _pmw;
       const retry = await this.supabase.getClient()
         .from('lisa_session_configs')
         .upsert(mergedFallback, { onConflict: 'portfolio_id' })

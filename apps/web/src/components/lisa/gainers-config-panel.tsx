@@ -321,6 +321,37 @@ export function GainersConfigPanel({ portfolioId }: Props) {
         </div>
       </section>
 
+      {/* 7. Auto-learning (pWin ML gate) */}
+      <section className="space-y-3">
+        <div className="text-xs uppercase tracking-wider text-zinc-500 font-medium">
+          7. Auto-learning — Gate ML (pWin)
+        </div>
+        <p className="text-[11px] text-zinc-400">
+          Désactivé par défaut. Active uniquement après convergence du modèle
+          (≥ 30 trades fermés + AUC ≥ 0.55). Si modèle pas prêt, le gate est
+          automatiquement bypassé (fallback transparent).
+        </p>
+        <div className="grid grid-cols-2 gap-3">
+          <Toggle
+            label="Activer le gate pWin"
+            checked={cfg.gainers_p_win_gate_enabled === true}
+            onChange={(v) => set('gainers_p_win_gate_enabled', v)}
+          />
+          <Field label="Min pWin (probabilité win)" hint="[0..1] — default 0.50">
+            <input
+              type="number"
+              min={0}
+              max={1}
+              step={0.05}
+              value={num(cfg.gainers_min_p_win, 0.5)}
+              onChange={(e) => set('gainers_min_p_win', Number(e.target.value))}
+              className="h-8 w-full rounded-md border bg-background px-2 text-xs"
+              disabled={cfg.gainers_p_win_gate_enabled !== true}
+            />
+          </Field>
+        </div>
+      </section>
+
       {/* Actions */}
       <div className="flex items-center gap-2 pt-2 border-t border-zinc-800">
         <button
