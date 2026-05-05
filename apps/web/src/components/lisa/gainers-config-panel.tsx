@@ -241,22 +241,22 @@ export function GainersConfigPanel({ portfolioId }: Props) {
         </div>
         <div className="grid grid-cols-2 gap-2">
           <Toggle
-            label="🇺🇸 US equities"
+            label="US equities (NYSE/NASDAQ)"
             checked={cfg.gainers_universe_us !== false}
             onChange={(v) => set('gainers_universe_us', v)}
           />
           <Toggle
-            label="🇪🇺 EU equities"
+            label="EU equities (LSE/XETRA/PA/AS/SW)"
             checked={cfg.gainers_universe_eu !== false}
             onChange={(v) => set('gainers_universe_eu', v)}
           />
           <Toggle
-            label="🌏 Asia equities"
+            label="Asia equities (TSE/HK/KO/KQ/NSE)"
             checked={cfg.gainers_universe_asia !== false}
             onChange={(v) => set('gainers_universe_asia', v)}
           />
           <Toggle
-            label="🪙 Crypto"
+            label="Crypto (Binance majors+alts)"
             checked={cfg.gainers_universe_crypto !== false}
             onChange={(v) => set('gainers_universe_crypto', v)}
           />
