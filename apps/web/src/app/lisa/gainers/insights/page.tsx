@@ -45,7 +45,7 @@ export default function GainersInsightsPage() {
       <div className="flex items-center gap-3">
         <Link
           href="/lisa"
-          className="text-zinc-400 hover:text-zinc-200 inline-flex items-center gap-1 text-sm"
+          className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-sm"
         >
           <ArrowLeft className="w-4 h-4" />
           Retour
@@ -53,7 +53,7 @@ export default function GainersInsightsPage() {
         <h1 className="text-2xl font-bold">Auto-learning · Gainers</h1>
       </div>
 
-      <p className="text-sm text-zinc-400">
+      <p className="text-sm text-muted-foreground">
         Visualisation de la boucle d&apos;apprentissage : modèle ML logistique
         (P9), détecteurs de drift, AutoTuner Phase C, et historique des
         ajustements appliqués.
@@ -61,7 +61,7 @@ export default function GainersInsightsPage() {
 
       {portfolios.length > 0 && (
         <div className="flex items-center gap-2 text-sm">
-          <span className="text-zinc-400">Portfolio :</span>
+          <span className="text-muted-foreground">Portfolio :</span>
           <select
             value={portfolioId ?? ''}
             onChange={(e) => setPortfolioId(e.target.value || null)}
@@ -80,7 +80,7 @@ export default function GainersInsightsPage() {
         title="Modèle ML — Probability of Win (logistic regression)"
       >
         {empiricalLaw.isLoading ? (
-          <p className="text-xs text-zinc-400">Chargement…</p>
+          <p className="text-xs text-muted-foreground">Chargement…</p>
         ) : empiricalLaw.data ? (
           <>
             <div className="grid grid-cols-4 gap-3 mb-4">
@@ -91,7 +91,7 @@ export default function GainersInsightsPage() {
             </div>
             {empiricalLaw.data.empiricalLaw.length > 0 && (
               <table className="w-full text-xs border-t">
-                <thead className="text-zinc-400">
+                <thead className="text-muted-foreground">
                   <tr>
                     <th className="text-left py-1">Bucket persistence</th>
                     <th className="text-right py-1">N</th>
@@ -102,12 +102,12 @@ export default function GainersInsightsPage() {
                 </thead>
                 <tbody>
                   {empiricalLaw.data.empiricalLaw.map((row, i) => (
-                    <tr key={i} className="border-t border-zinc-800">
+                    <tr key={i} className="border-t border-muted">
                       <td className="py-1 font-mono">{row.persistenceCount}</td>
                       <td className="py-1 text-right">{row.n}</td>
                       <td className="py-1 text-right">{row.pWinObserved != null ? (row.pWinObserved * 100).toFixed(1) + '%' : '—'}</td>
                       <td className="py-1 text-right">{row.avgPnlPct != null ? row.avgPnlPct.toFixed(2) : '—'}</td>
-                      <td className="py-1 text-right text-zinc-500">
+                      <td className="py-1 text-right text-muted-foreground">
                         {row.ciLow != null && row.ciHigh != null ? `[${(row.ciLow * 100).toFixed(0)}%, ${(row.ciHigh * 100).toFixed(0)}%]` : '—'}
                       </td>
                     </tr>
@@ -170,10 +170,10 @@ function Panel({
 
 function Metric({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
-    <div className="rounded-md bg-zinc-900/60 p-3 border border-zinc-800">
-      <div className="text-[10px] uppercase tracking-wider text-zinc-500">{label}</div>
+    <div className="rounded-md bg-muted/30 p-3 border">
+      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</div>
       <div className="text-lg font-mono">{value}</div>
-      {hint && <div className="text-[10px] text-zinc-400 mt-1">{hint}</div>}
+      {hint && <div className="text-[10px] text-muted-foreground mt-1">{hint}</div>}
     </div>
   );
 }
@@ -187,25 +187,25 @@ function InsightsList({
   loading: boolean;
   emptyMessage: string;
 }) {
-  if (loading) return <p className="text-xs text-zinc-400">Chargement…</p>;
-  if (insights.length === 0) return <p className="text-xs text-zinc-400">{emptyMessage}</p>;
+  if (loading) return <p className="text-xs text-muted-foreground">Chargement…</p>;
+  if (insights.length === 0) return <p className="text-xs text-muted-foreground">{emptyMessage}</p>;
   return (
     <ul className="space-y-2">
       {insights.map((row) => (
-        <li key={row.id} className="border-l-2 border-zinc-700 pl-3 py-1">
+        <li key={row.id} className="border-l-2 border-border pl-3 py-1">
           <div className="flex items-baseline gap-2">
             <span className={`text-[10px] uppercase font-medium ${
               row.severity === 'critical' ? 'text-red-400' :
               row.severity === 'high' ? 'text-orange-400' :
               row.severity === 'medium' ? 'text-yellow-400' :
-              'text-zinc-500'
+              'text-muted-foreground'
             }`}>
               {row.severity}
             </span>
-            <span className="text-[10px] text-zinc-500">{new Date(row.created_at).toLocaleString()}</span>
-            <span className="text-[10px] text-zinc-500">· {row.source}</span>
+            <span className="text-[10px] text-muted-foreground">{new Date(row.created_at).toLocaleString()}</span>
+            <span className="text-[10px] text-muted-foreground">· {row.source}</span>
           </div>
-          <div className="text-sm text-zinc-200 mt-0.5">{row.summary}</div>
+          <div className="text-sm text-foreground mt-0.5">{row.summary}</div>
         </li>
       ))}
     </ul>
@@ -219,10 +219,10 @@ function AutoTunerHistoryTable({
   rows: AutoTunerHistoryRow[];
   loading: boolean;
 }) {
-  if (loading) return <p className="text-xs text-zinc-400">Chargement…</p>;
+  if (loading) return <p className="text-xs text-muted-foreground">Chargement…</p>;
   if (rows.length === 0) {
     return (
-      <p className="text-xs text-zinc-400">
+      <p className="text-xs text-muted-foreground">
         Aucun ajustement appliqué pour ce portfolio. Active l&apos;AutoTuner dans
         la configuration Gainers (env=shadow par défaut, log only).
       </p>
@@ -230,7 +230,7 @@ function AutoTunerHistoryTable({
   }
   return (
     <table className="w-full text-xs">
-      <thead className="text-zinc-400">
+      <thead className="text-muted-foreground">
         <tr className="border-b">
           <th className="text-left py-1">Date</th>
           <th className="text-left py-1">Seuil</th>
@@ -244,8 +244,8 @@ function AutoTunerHistoryTable({
       </thead>
       <tbody>
         {rows.map((row) => (
-          <tr key={row.id} className="border-b border-zinc-800">
-            <td className="py-1 text-zinc-500">{new Date(row.applied_at).toLocaleDateString()}</td>
+          <tr key={row.id} className="border-b border-muted">
+            <td className="py-1 text-muted-foreground">{new Date(row.applied_at).toLocaleDateString()}</td>
             <td className="py-1 font-mono">{row.threshold_name.replace('gainers_', '')}</td>
             <td className="py-1 text-right">{Number(row.old_value).toFixed(3)}</td>
             <td className="py-1 text-right">
@@ -253,16 +253,16 @@ function AutoTunerHistoryTable({
                 {Number(row.new_value).toFixed(3)}
               </span>
             </td>
-            <td className="py-1 text-zinc-500">{row.reason}</td>
+            <td className="py-1 text-muted-foreground">{row.reason}</td>
             <td className="py-1 text-right">{row.sample_size}</td>
             <td className="py-1">
               <span className={`px-1.5 py-0.5 rounded text-[10px] ${
                 row.applied_to_env === 'prod' ? 'bg-red-900/30 text-red-300' :
                 row.applied_to_env === 'canary' ? 'bg-yellow-900/30 text-yellow-300' :
-                'bg-zinc-800 text-zinc-400'
+                'bg-muted text-muted-foreground'
               }`}>{row.applied_to_env}</span>
             </td>
-            <td className="py-1 text-zinc-500">{row.auto_or_manual}</td>
+            <td className="py-1 text-muted-foreground">{row.auto_or_manual}</td>
           </tr>
         ))}
       </tbody>

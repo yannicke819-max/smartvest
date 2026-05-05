@@ -50,7 +50,7 @@ export function GainersConfigPanel({ portfolioId }: Props) {
 
   if (isLoading || !data) {
     return (
-      <div className="rounded-lg border border-zinc-700 bg-zinc-900/50 p-4 text-sm text-zinc-400">
+      <div className="rounded-lg border bg-card p-4 text-sm text-muted-foreground">
         Chargement de la configuration…
       </div>
     );
@@ -111,7 +111,7 @@ export function GainersConfigPanel({ portfolioId }: Props) {
           Dashboard auto-learning
         </Link>
       </div>
-      <p className="text-xs text-zinc-400">
+      <p className="text-xs text-muted-foreground">
         Tous les paramètres sont lus par le scanner à chaque cycle. Aucune
         valeur hardcodée — modifie librement, sauvegarde et l&apos;effet est
         immédiat au cycle suivant.
@@ -119,7 +119,7 @@ export function GainersConfigPanel({ portfolioId }: Props) {
 
       {/* 1. Capital & sizing */}
       <section className="space-y-3">
-        <div className="text-xs uppercase tracking-wider text-zinc-500 font-medium">
+        <div className="text-xs uppercase tracking-wider text-foreground font-semibold">
           1. Capital &amp; sizing
         </div>
         <div className="grid grid-cols-2 gap-3">
@@ -187,7 +187,7 @@ export function GainersConfigPanel({ portfolioId }: Props) {
 
       {/* 2. TP / SL */}
       <section className="space-y-3">
-        <div className="text-xs uppercase tracking-wider text-zinc-500 font-medium">
+        <div className="text-xs uppercase tracking-wider text-foreground font-semibold">
           2. Take-profit / Stop-loss
         </div>
         <div className="grid grid-cols-2 gap-3">
@@ -218,7 +218,7 @@ export function GainersConfigPanel({ portfolioId }: Props) {
 
       {/* 3. Cooldown */}
       <section className="space-y-3">
-        <div className="text-xs uppercase tracking-wider text-zinc-500 font-medium">
+        <div className="text-xs uppercase tracking-wider text-foreground font-semibold">
           3. Cooldown re-entry
         </div>
         <Field label="Cooldown après close (min)" hint="[0..240] — refuse re-open même symbol/side avant ce délai">
@@ -236,7 +236,7 @@ export function GainersConfigPanel({ portfolioId }: Props) {
 
       {/* 4. Univers */}
       <section className="space-y-3">
-        <div className="text-xs uppercase tracking-wider text-zinc-500 font-medium">
+        <div className="text-xs uppercase tracking-wider text-foreground font-semibold">
           4. Univers de scan
         </div>
         <div className="grid grid-cols-2 gap-2">
@@ -265,7 +265,7 @@ export function GainersConfigPanel({ portfolioId }: Props) {
 
       {/* 5. Persistence + Path */}
       <section className="space-y-3">
-        <div className="text-xs uppercase tracking-wider text-zinc-500 font-medium">
+        <div className="text-xs uppercase tracking-wider text-foreground font-semibold">
           5. Persistence multi-TF &amp; Path quality
         </div>
         <div className="grid grid-cols-2 gap-3">
@@ -296,7 +296,7 @@ export function GainersConfigPanel({ portfolioId }: Props) {
 
       {/* 6. Fees & profit minimum */}
       <section className="space-y-3">
-        <div className="text-xs uppercase tracking-wider text-zinc-500 font-medium">
+        <div className="text-xs uppercase tracking-wider text-foreground font-semibold">
           6. Fees-aware &amp; profit minimum
         </div>
         <div className="grid grid-cols-2 gap-3">
@@ -333,10 +333,10 @@ export function GainersConfigPanel({ portfolioId }: Props) {
 
       {/* 7. Auto-learning (pWin ML gate) */}
       <section className="space-y-3">
-        <div className="text-xs uppercase tracking-wider text-zinc-500 font-medium">
+        <div className="text-xs uppercase tracking-wider text-foreground font-semibold">
           7. Auto-learning — Gate ML (pWin)
         </div>
-        <p className="text-[11px] text-zinc-400">
+        <p className="text-[11px] text-muted-foreground">
           Désactivé par défaut. Active uniquement après convergence du modèle
           (≥ 30 trades fermés + AUC ≥ 0.55). Si modèle pas prêt, le gate est
           automatiquement bypassé (fallback transparent).
@@ -377,7 +377,7 @@ export function GainersConfigPanel({ portfolioId }: Props) {
           type="button"
           onClick={handleReset}
           disabled={Object.keys(draft).length === 0}
-          className="flex items-center gap-2 px-3 py-2 rounded-md bg-zinc-800 hover:bg-zinc-700 disabled:opacity-30 text-zinc-300 text-sm"
+          className="flex items-center gap-2 px-3 py-2 rounded-md border bg-background hover:bg-accent disabled:opacity-30 text-foreground text-sm"
         >
           <RotateCcw className="w-4 h-4" />
           Annuler
@@ -385,7 +385,7 @@ export function GainersConfigPanel({ portfolioId }: Props) {
         {saved && <span className="text-xs text-emerald-400">✓ Sauvegardé</span>}
         {error && <span className="text-xs text-red-400">✗ {error}</span>}
         {Object.keys(draft).length > 0 && !saved && !error && (
-          <span className="text-xs text-zinc-500">
+          <span className="text-xs text-muted-foreground">
             {Object.keys(draft).length} modif(s) en attente
           </span>
         )}
@@ -405,9 +405,9 @@ function Field({
 }) {
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-xs text-zinc-300">{label}</span>
+      <span className="text-xs text-foreground font-medium">{label}</span>
       {children}
-      {hint && <span className="text-[10px] text-zinc-500">{hint}</span>}
+      {hint && <span className="text-[10px] text-muted-foreground">{hint}</span>}
     </label>
   );
 }
@@ -427,9 +427,9 @@ function Toggle({
         type="checkbox"
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
-        className="w-4 h-4 rounded border-zinc-600 bg-zinc-900 text-orange-500"
+        className="w-4 h-4 rounded border-input bg-background text-orange-500"
       />
-      <span className="text-sm text-zinc-200">{label}</span>
+      <span className="text-sm text-foreground">{label}</span>
     </label>
   );
 }
