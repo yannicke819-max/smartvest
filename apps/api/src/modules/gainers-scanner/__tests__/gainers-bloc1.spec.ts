@@ -361,15 +361,27 @@ describe('GainersBloc1 — composite scorer', () => {
       expect(s!).toBeLessThanOrEqual(1);
     });
 
-    it('Cas 5 : persistence ET atr null, shadowAllowPartialScore=true → score basé momentum only', () => {
+    it('Cas 5 : persistence ET atr null, shadowAllowPartialScore=true → missing-penalty (PR6.6.6.1)', () => {
       const s = computeCompositeScore(
         baseEquity({ persistenceScore: null, atrDailyRelative: null, changePct1m: 0.05 }),
         SHADOW_COMPOSITE_SCORER_CONFIG,
       );
       expect(s).not.toBeNull();
-      // changePct1m=0.05 / 0.10 ceiling = 0.5 momentum component
-      // Re-normalized weight = 0.3/0.3 = 1.0 → score = 0.5
-      expect(s!).toBeCloseTo(0.5);
+      // PR6.6.6.1 missing-penalty (PAS renormalize) :
+      // momentumComp = 0.05 / 0.10 = 0.5
+      // weightedSum = 0.3 × 0.5 = 0.15 (persistence + atr absents → max 0.3)
+      expect(s!).toBeCloseTo(0.15);
+    });
+
+    it('Cas 5bis : PR6.6.6.1 — changePct1m=20% (max momentum) + tous null → score plafonné à 0.3', () => {
+      const s = computeCompositeScore(
+        baseEquity({ persistenceScore: null, atrDailyRelative: null, changePct1m: 0.20 }),
+        SHADOW_COMPOSITE_SCORER_CONFIG,
+      );
+      // momentum clamp à 1.0 (changePct >= ceiling 0.10)
+      // weightedSum = 0.3 × 1.0 = 0.3 (max possible avec seul momentum)
+      // Sans renormalize → 0.3 (vs ancien 1.0 = artifact bilan smoke test)
+      expect(s).toBeCloseTo(0.3);
     });
 
     it('Cas 6 : Régression prod default — shadowAllowPartialScore=false', () => {
@@ -380,18 +392,40 @@ describe('GainersBloc1 — composite scorer', () => {
       expect(SHADOW_COMPOSITE_SCORER_CONFIG.shadowAllowPartialScore).toBe(true);
     });
 
-    it('Cas 8 : score partiel reflète proportionnellement les composants présents', () => {
+    it('Cas 8 : PR6.6.6.1 — score partiel reflète complétude (NO renormalize)', () => {
       // baseEquity : persistence=0.83, momentum=0.02 (changePct1m), atr=0.03
       // Strict score : 0.5*0.83 + 0.3*0.2 + 0.2*0.8 = 0.415 + 0.06 + 0.16 = 0.635
       const strict = computeCompositeScore(baseEquity(), DEFAULT_COMPOSITE_SCORER_CONFIG);
 
-      // Shadow partiel sans persistence : (0.3*0.2 + 0.2*0.8) / (0.3+0.2) = 0.22/0.5 = 0.44
+      // Shadow partiel sans persistence (missing-penalty PR6.6.6.1) :
+      // weightedSum = 0.3*0.2 + 0.2*0.8 = 0.06 + 0.16 = 0.22 (max = 0.3+0.2 = 0.5)
       const partial = computeCompositeScore(
         baseEquity({ persistenceScore: null }),
         SHADOW_COMPOSITE_SCORER_CONFIG,
       );
       expect(strict).toBeCloseTo(0.635);
-      expect(partial).toBeCloseTo(0.44);
+      expect(partial).toBeCloseTo(0.22);
+      // Ranking préservé : strict (0.635) > partial (0.22) ✅
+      expect(strict!).toBeGreaterThan(partial!);
+    });
+
+    it('Cas 9 : PR6.6.6.1 — ranking ordering full vs partial vs minimal', () => {
+      // 3 candidats avec changePct1m identique 0.05 mais features différentes
+      const full = computeCompositeScore(
+        baseEquity({ changePct1m: 0.05, persistenceScore: 0.8, atrDailyRelative: 0.05 }),
+        SHADOW_COMPOSITE_SCORER_CONFIG,
+      );
+      const partial = computeCompositeScore(
+        baseEquity({ changePct1m: 0.05, persistenceScore: 0.8, atrDailyRelative: null }),
+        SHADOW_COMPOSITE_SCORER_CONFIG,
+      );
+      const minimal = computeCompositeScore(
+        baseEquity({ changePct1m: 0.05, persistenceScore: null, atrDailyRelative: null }),
+        SHADOW_COMPOSITE_SCORER_CONFIG,
+      );
+      // Ranking attendu : full > partial > minimal
+      expect(full!).toBeGreaterThan(partial!);
+      expect(partial!).toBeGreaterThan(minimal!);
     });
   });
 });

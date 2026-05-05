@@ -69,12 +69,22 @@ const clamp01 = (x: number): number => Math.max(0, Math.min(1, x));
  *
  * Mode shadow PR6.6.6 (cfg.shadowAllowPartialScore=true) :
  *   - Calcule le score sur les composants disponibles uniquement
- *   - Re-normalise les poids (somme = 1.0) sur les composants présents
- *   - Si AUCUN composant n'est calculable (momentum est toujours dispo via
- *     changePct1m donc ce cas est rare) → fallback 0
+ *   - PR6.6.6.1 : missing-penalty (PAS renormalize) → score reflète
+ *     la complétude des données. Max possible :
+ *       - momentum only :          0.3 (= weightMomentum)
+ *       - momentum + atr :         0.5 (= weightMomentum + weightVolatilityInv)
+ *       - momentum + persistence : 0.8 (= weightMomentum + weightPersistence)
+ *       - tous présents :          1.0
+ *
+ *   - Avantage vs renormalize : ranking préservé (full > partial),
+ *     AutoTuner V2 trie par confidence, évite l'artifact "tous ACCEPT
+ *     shadow à 1.000" observé sur smoke test Q2 (changePct1m ≥ 10% +
+ *     persistence/atr null → renormalize donnait 1.0 systématique).
+ *
+ *   - Garde-fou implicite : un ACCEPT shadow avec score < 0.3 = bug
+ *     (momentum manquant impossible). Score 0.3 = momentum max only.
  *
  * Note : changePct1m (momentum) est TOUJOURS disponible (vient du screener).
- * Donc en mode shadow, on a au minimum momentum component → score non-null.
  */
 export function computeCompositeScore(
   raw: GainersCandidateRaw,
@@ -90,7 +100,7 @@ export function computeCompositeScore(
 
   const momentumComponent = clamp01(raw.changePct1m / cfg.momentumNormalizationCeiling);
 
-  // Mode strict : tous composants présents
+  // Mode strict ou shadow avec tous composants présents
   if (persistenceAvail && atrAvail) {
     const persistenceComponent = clamp01(raw.persistenceScore!);
     const volatilityInvComponent = 1 - clamp01(raw.atrDailyRelative! / cfg.volatilityClampMaxAtrRel);
@@ -101,29 +111,21 @@ export function computeCompositeScore(
     return clamp01(weighted);
   }
 
-  // Mode shadow partial : renormalize weights sur composants présents
+  // Mode shadow partial — PR6.6.6.1 missing-penalty (PAS renormalize)
   let weightedSum = 0;
-  let totalWeight = 0;
 
   // Momentum (toujours dispo via changePct1m)
   weightedSum += cfg.weightMomentum * momentumComponent;
-  totalWeight += cfg.weightMomentum;
 
   if (persistenceAvail) {
     const persistenceComponent = clamp01(raw.persistenceScore!);
     weightedSum += cfg.weightPersistence * persistenceComponent;
-    totalWeight += cfg.weightPersistence;
   }
 
   if (atrAvail) {
     const volatilityInvComponent = 1 - clamp01(raw.atrDailyRelative! / cfg.volatilityClampMaxAtrRel);
     weightedSum += cfg.weightVolatilityInv * volatilityInvComponent;
-    totalWeight += cfg.weightVolatilityInv;
   }
 
-  // Garde-fou : si totalWeight = 0 (impossible vu momentum), fallback 0
-  if (totalWeight === 0) return 0;
-
-  // Renormalize : score = weightedSum / totalWeight (équivalent ramener somme poids à 1.0)
-  return clamp01(weightedSum / totalWeight);
+  return clamp01(weightedSum);
 }
