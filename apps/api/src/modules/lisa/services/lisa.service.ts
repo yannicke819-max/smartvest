@@ -303,6 +303,8 @@ export class LisaService {
       // par utilisateur quand modèle ML a convergé (≥30 trades fermés + AUC ≥ 0.55).
       gainers_p_win_gate_enabled: pick('gainers_p_win_gate_enabled', 'gainersPWinGateEnabled', existing?.gainers_p_win_gate_enabled ?? false),
       gainers_min_p_win: pick('gainers_min_p_win', 'gainersMinPWin', existing?.gainers_min_p_win ?? 0.50),
+      // PR #243 — Adaptive Selectivity toggle (migration 0119). Opt-in default false.
+      gainers_adaptive_enabled: pick('gainers_adaptive_enabled', 'gainersAdaptiveEnabled', existing?.gainers_adaptive_enabled ?? false),
     };
 
     // Validation des valeurs numériques pour renvoyer une 400 lisible plutôt
@@ -477,6 +479,20 @@ export class LisaService {
         ...mergedFallback
       } = merged;
       void _gc; void _gpe; void _gmp; void _gtp; void _gsl;
+      const retry = await this.supabase.getClient()
+        .from('lisa_session_configs')
+        .upsert(mergedFallback, { onConflict: 'portfolio_id' })
+        .select()
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
+
+    // PR #243 — fallback si migration 0119 pas encore appliquée
+    if (error && /gainers_adaptive_enabled/i.test(error.message)) {
+      this.logger.warn('Colonne gainers_adaptive_enabled absente — retry sans');
+      const { gainers_adaptive_enabled: _ade, ...mergedFallback } = merged;
+      void _ade;
       const retry = await this.supabase.getClient()
         .from('lisa_session_configs')
         .upsert(mergedFallback, { onConflict: 'portfolio_id' })

@@ -17,6 +17,7 @@ import { GainersInsightsService } from './insights/gainers-insights.service';
 import { DriftDetectorService } from './automations/drift-detector.service';
 import { RejectedInsightsService } from './automations/rejected-insights.service';
 import { ThresholdAutoTunerService } from './automations/threshold-auto-tuner.service';
+import { GainersAdaptiveSelectivityService } from './automations/adaptive-selectivity.service';
 
 /**
  * ADR-005 Gainers Algo V1 — Module NestJS découplé (ADR-006).
@@ -51,6 +52,8 @@ import { ThresholdAutoTunerService } from './automations/threshold-auto-tuner.se
     // pour ajuster automatiquement les seuils gainers_min_persistence_score
     // et gainers_min_path_efficiency. Ferme la boucle d'apprentissage.
     ThresholdAutoTunerService,
+    // PR #243 — adaptive selectivity (cron 5min trajectory_status → adjustments)
+    GainersAdaptiveSelectivityService,
   ],
   exports: [
     GainersBloc1Service,
@@ -68,6 +71,8 @@ import { ThresholdAutoTunerService } from './automations/threshold-auto-tuner.se
     GainersInsightsService,
     RejectedInsightsService,
     ThresholdAutoTunerService,
+    // PR #243 — adaptive selectivity (cron 5min trajectory_status → adjustments)
+    GainersAdaptiveSelectivityService,
   ],
 })
 export class GainersModule implements OnModuleInit {

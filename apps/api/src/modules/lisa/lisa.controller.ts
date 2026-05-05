@@ -163,7 +163,7 @@ export class LisaController {
     // Read TP/SL and maxPositions from DB (single read, reused below).
     const { data: cfgRow } = await supabase
       .from('lisa_session_configs')
-      .select('gainers_default_tp_pct, gainers_default_sl_pct, max_open_positions')
+      .select('gainers_default_tp_pct, gainers_default_sl_pct, max_open_positions, gainers_adaptive_enabled, gainers_adaptive_active, gainers_trajectory_status, gainers_trajectory_status_at, gainers_realised_7d_pct, gainers_target_7d_pct')
       .eq('portfolio_id', portfolioId)
       .maybeSingle();
     const tpPct = cfgRow?.gainers_default_tp_pct != null
@@ -289,6 +289,16 @@ export class LisaController {
       openedByAssetClass,
       closedByAssetClass,
       scanned7d,
+      // PR #243 Adaptive Selectivity — exposition status pour bandeau UI
+      adaptiveEnabled: cfgRow?.gainers_adaptive_enabled === true,
+      adaptiveActive: cfgRow?.gainers_adaptive_active === true,
+      trajectoryStatus: (cfgRow?.gainers_trajectory_status as
+        | 'EN_AVANCE' | 'DANS_LE_PLAN' | 'EN_RETARD' | 'HORS_TRAJECTOIRE' | null) ?? null,
+      trajectoryStatusAt: cfgRow?.gainers_trajectory_status_at ?? null,
+      realised7dPct: cfgRow?.gainers_realised_7d_pct != null
+        ? Number(cfgRow.gainers_realised_7d_pct) : null,
+      target7dPct: cfgRow?.gainers_target_7d_pct != null
+        ? Number(cfgRow.gainers_target_7d_pct) : null,
     };
   }
 
