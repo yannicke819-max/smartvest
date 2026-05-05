@@ -196,6 +196,59 @@ export class LisaController {
       0,
     );
 
+    // PR Counters jour (Option B) — compteurs scanner activité.
+    // Cache implicite via le poll UI 30s (chaque GET hit fresh DB mais coût
+    // marginal vs 30s de service vie — 7 queries au pire).
+    //
+    // Sources :
+    //   - Scannés today : count gainers_v1_shadow_signals depuis 00:00 UTC
+    //   - Ouverts today : count paper_trades strategy='top_gainers_v1' opened_at >= today
+    //   - Fermés today  : count + sum pnl_usd où closed_at >= today
+    //   - Breakdown asset class : GROUP BY asset_class
+    //   - History 7j : GROUP BY date_trunc('day') pour sparkline scannés
+    const startOfDayUtcIso = startOfDayUtc.toISOString();
+    const sevenDaysAgoIso = new Date(Date.now() - 7 * 24 * 3600_000).toISOString();
+
+    // Q1 — Scannés aujourd'hui (count + breakdown + 7j history)
+    const { data: scannedTodayRows } = await supabase
+      .from('gainers_v1_shadow_signals')
+      .select('asset_class')
+      .gte('created_at', startOfDayUtcIso);
+    const scannedToday = (scannedTodayRows ?? []).length;
+    const scannedByAssetClass = aggregateByClass(scannedTodayRows ?? []);
+
+    const { data: scanned7dRows } = await supabase
+      .from('gainers_v1_shadow_signals')
+      .select('created_at')
+      .gte('created_at', sevenDaysAgoIso)
+      .order('created_at', { ascending: true });
+    const scanned7d = bucketByDay(scanned7dRows ?? [], 7);
+
+    // Q2 — Ouverts aujourd'hui via paper_trades (strategy='top_gainers_v1')
+    const { data: openedTodayRows } = await supabase
+      .from('paper_trades')
+      .select('asset_class')
+      .eq('portfolio_id', portfolioId)
+      .eq('strategy', 'top_gainers_v1')
+      .gte('opened_at', startOfDayUtcIso);
+    const openedToday = (openedTodayRows ?? []).length;
+    const openedByAssetClass = aggregateByClass(openedTodayRows ?? []);
+
+    // Q3 — Fermés aujourd'hui + somme PnL
+    const { data: closedTodayPaperTrades } = await supabase
+      .from('paper_trades')
+      .select('pnl_usd, asset_class')
+      .eq('portfolio_id', portfolioId)
+      .eq('strategy', 'top_gainers_v1')
+      .eq('status', 'closed')
+      .gte('closed_at', startOfDayUtcIso);
+    const closedTodayCount = (closedTodayPaperTrades ?? []).length;
+    const closedTodayPnlUsd = (closedTodayPaperTrades ?? []).reduce(
+      (acc, row) => acc + (parseFloat(String(row.pnl_usd ?? '0')) || 0),
+      0,
+    );
+    const closedByAssetClass = aggregateByClass(closedTodayPaperTrades ?? []);
+
     // Derniers candidats : top 3 du dernier tick (decision passed/opened, ordre score desc).
     const { data: lastLog } = await supabase
       .from('top_gainers_log')
@@ -227,6 +280,15 @@ export class LisaController {
       rrRatio,
       sessionPnlUsd,
       lastCandidates,
+      // PR Counters jour (Option B)
+      scannedToday,
+      openedToday,
+      closedToday: closedTodayCount,
+      closedTodayPnlUsd,
+      scannedByAssetClass,
+      openedByAssetClass,
+      closedByAssetClass,
+      scanned7d,
     };
   }
 
@@ -1021,6 +1083,46 @@ const MARKET_GROUPS: Record<string, string> = {
   BSE: 'asia',
   BINANCE: 'crypto',
 };
+
+/**
+ * PR Counters jour (Option B) — agrège par asset_class en 4 buckets UI :
+ * us / eu / asia / crypto / other. Utilisé pour breakdown counters Gainers.
+ */
+function aggregateByClass(rows: Array<{ asset_class: string | null }>): {
+  us: number; eu: number; asia: number; crypto: number; other: number;
+} {
+  const out = { us: 0, eu: 0, asia: 0, crypto: 0, other: 0 };
+  for (const r of rows) {
+    const ac = String(r.asset_class ?? '').toLowerCase();
+    if (ac.startsWith('us_equity')) out.us++;
+    else if (ac.startsWith('eu_equity')) out.eu++;
+    else if (ac.startsWith('asia_equity')) out.asia++;
+    else if (ac.startsWith('crypto')) out.crypto++;
+    else out.other++;
+  }
+  return out;
+}
+
+/**
+ * PR Counters jour — bucketize timestamps en N jours pour sparkline.
+ * Retourne un array [{ date: 'YYYY-MM-DD', count: N }] aligné UTC.
+ */
+function bucketByDay(rows: Array<{ created_at: string }>, daysWindow: number): Array<{
+  date: string; count: number;
+}> {
+  const buckets = new Map<string, number>();
+  // Pré-remplit avec 0 pour avoir tous les jours dans la window même sans data
+  for (let i = daysWindow - 1; i >= 0; i--) {
+    const d = new Date(Date.now() - i * 24 * 3600_000);
+    const key = d.toISOString().slice(0, 10);
+    buckets.set(key, 0);
+  }
+  for (const r of rows) {
+    const key = String(r.created_at).slice(0, 10);
+    if (buckets.has(key)) buckets.set(key, (buckets.get(key) ?? 0) + 1);
+  }
+  return Array.from(buckets.entries()).map(([date, count]) => ({ date, count }));
+}
 
 function classifyMarket(exchange: string | undefined | null): string {
   if (!exchange) return 'unknown';
