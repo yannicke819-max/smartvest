@@ -190,7 +190,28 @@ export interface GainersConfigFields {
   gainers_default_tp_pct: number | null;
   gainers_default_sl_pct: number | null;
   gainers_min_persistence_score: number | null;
+  gainers_min_path_efficiency: number | null;
+  gainers_cycle_minutes: number | null;
+  // PR #3 — full config (migration 0115)
+  gainers_max_open_positions: number | null;
+  gainers_max_per_cycle: number | null;
+  gainers_position_pct: number | null;
+  gainers_cash_reserve_pct: number | null;
+  gainers_cooldown_minutes: number | null;
+  gainers_universe_us: boolean | null;
+  gainers_universe_eu: boolean | null;
+  gainers_universe_asia: boolean | null;
+  gainers_universe_crypto: boolean | null;
+  gainers_fees_aware_buffer: number | null;
+  gainers_min_net_profit_usd: number | null;
+  // Capital simulé (lu/écrit via la même config session)
+  capital_simulation: number | null;
 }
+
+const numOrNull = (v: unknown): number | null =>
+  v != null && v !== '' ? Number(v) : null;
+const boolOrNull = (v: unknown): boolean | null =>
+  typeof v === 'boolean' ? v : null;
 
 export function useGainersConfig(portfolioId: string | null) {
   return useQuery({
@@ -198,14 +219,23 @@ export function useGainersConfig(portfolioId: string | null) {
     queryFn: async () => {
       const raw = await apiFetch<Record<string, unknown>>(`/lisa/config/${portfolioId}`);
       return {
-        gainers_default_tp_pct:
-          raw?.gainers_default_tp_pct != null ? Number(raw.gainers_default_tp_pct) : null,
-        gainers_default_sl_pct:
-          raw?.gainers_default_sl_pct != null ? Number(raw.gainers_default_sl_pct) : null,
-        gainers_min_persistence_score:
-          raw?.gainers_min_persistence_score != null
-            ? Number(raw.gainers_min_persistence_score)
-            : null,
+        gainers_default_tp_pct: numOrNull(raw?.gainers_default_tp_pct),
+        gainers_default_sl_pct: numOrNull(raw?.gainers_default_sl_pct),
+        gainers_min_persistence_score: numOrNull(raw?.gainers_min_persistence_score),
+        gainers_min_path_efficiency: numOrNull(raw?.gainers_min_path_efficiency),
+        gainers_cycle_minutes: numOrNull(raw?.gainers_cycle_minutes),
+        gainers_max_open_positions: numOrNull(raw?.gainers_max_open_positions),
+        gainers_max_per_cycle: numOrNull(raw?.gainers_max_per_cycle),
+        gainers_position_pct: numOrNull(raw?.gainers_position_pct),
+        gainers_cash_reserve_pct: numOrNull(raw?.gainers_cash_reserve_pct),
+        gainers_cooldown_minutes: numOrNull(raw?.gainers_cooldown_minutes),
+        gainers_universe_us: boolOrNull(raw?.gainers_universe_us),
+        gainers_universe_eu: boolOrNull(raw?.gainers_universe_eu),
+        gainers_universe_asia: boolOrNull(raw?.gainers_universe_asia),
+        gainers_universe_crypto: boolOrNull(raw?.gainers_universe_crypto),
+        gainers_fees_aware_buffer: numOrNull(raw?.gainers_fees_aware_buffer),
+        gainers_min_net_profit_usd: numOrNull(raw?.gainers_min_net_profit_usd),
+        capital_simulation: numOrNull(raw?.capital_simulation ?? raw?.capital_usd),
       } satisfies GainersConfigFields;
     },
     enabled: !!portfolioId,

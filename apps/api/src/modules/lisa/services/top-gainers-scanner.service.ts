@@ -1246,7 +1246,7 @@ export class TopGainersScannerService implements OnModuleInit {
     const { data: cfgRow } = await this.supabase
       .getClient()
       .from('lisa_session_configs')
-      .select('capital_simulation, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes')
+      .select('capital_simulation, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes, gainers_universe_us, gainers_universe_eu, gainers_universe_asia, gainers_universe_crypto')
       .eq('portfolio_id', portfolioId)
       .maybeSingle();
     const minScore = this.resolveMinPersistenceScore(
@@ -1289,6 +1289,26 @@ export class TopGainersScannerService implements OnModuleInit {
       : FALLBACK_COOLDOWN_MIN;
     const positionNotionalUsd = capitalUsd * (positionPct / 100);
 
+    // PR #3 — universe toggles per-portfolio. Filtre client-side : la cache
+    // globale fetchAllCandidates contient TOUTES les sources (US/EU/Asia/Crypto)
+    // mais l'utilisateur peut désactiver une zone via UI. Default = tout activé.
+    const universeUs = cfgRow?.gainers_universe_us !== false;
+    const universeEu = cfgRow?.gainers_universe_eu !== false;
+    const universeAsia = cfgRow?.gainers_universe_asia !== false;
+    const universeCrypto = cfgRow?.gainers_universe_crypto !== false;
+    const filteredTop = top.filter((c) => {
+      if (c.assetClass === 'us_equity_large' || c.assetClass === 'us_equity_small_mid') return universeUs;
+      if (c.assetClass === 'eu_equity') return universeEu;
+      if (c.assetClass === 'asia_equity') return universeAsia;
+      if (c.assetClass === 'crypto_major' || c.assetClass === 'crypto_alt') return universeCrypto;
+      return true; // fx/commodity etc — pas de toggle, accept par default
+    });
+    if (filteredTop.length < top.length) {
+      this.logger.debug(
+        `[top-gainers] ${portfolioId.slice(0, 8)}: universe filter ${top.length}→${filteredTop.length} (us=${universeUs} eu=${universeEu} asia=${universeAsia} crypto=${universeCrypto})`,
+      );
+    }
+
     // Garde-fou : count current open positions (utilise maxOpen depuis config)
     const { data: openPositions } = await this.supabase
       .getClient()
@@ -1304,8 +1324,9 @@ export class TopGainersScannerService implements OnModuleInit {
     }
 
     // P8 — Calcule la persistance multi-TF pour les top candidats (parallèle)
+    // PR #3 — utilise filteredTop (universe toggles per-portfolio)
     const persistenceMap = await this.mtfPersistence.analyzeBatch(
-      top.map((c) => ({
+      filteredTop.map((c) => ({
         symbol: c.symbol,
         exchange: c.exchange,
         currentPrice: c.close,
@@ -1359,7 +1380,7 @@ export class TopGainersScannerService implements OnModuleInit {
       this.logger.debug(`[top-gainers] cooldown query skipped: ${String(e).slice(0, 100)}`);
     }
 
-    for (const cand of top) {
+    for (const cand of filteredTop) {
       if (opened >= maxThisCycle) break;
       const baseSym = cand.symbol.replace(/USDT$|USDC$/, '').toUpperCase();
       if (openSymbols.has(cand.symbol.toUpperCase()) || openSymbols.has(baseSym)) continue;
