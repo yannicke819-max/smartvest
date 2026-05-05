@@ -27,6 +27,7 @@ import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { BinanceMarketService } from '../../lisa/services/binance-market.service';
 import { EodhdIntradayService } from '../../lisa/services/eodhd-intraday.service';
+import { ensureEodhdSuffix } from '../../lisa/services/eodhd-symbol.util';
 import { GainersInsightsService } from '../insights/gainers-insights.service';
 
 const SEED_LOOKBACK_HOURS = 96;
@@ -59,6 +60,8 @@ function gateBeforeReject(rejectReason: string | null, decision: string): string
 interface ShadowSignalSeed {
   id: string;
   symbol: string;
+  /** Hotfix EODHD bypass — exchange persisté pour ensureEodhdSuffix. */
+  exchange?: string | null;
   asset_class: string;
   decision: string;
   reject_reason: string | null;
@@ -69,6 +72,8 @@ interface ShadowSignalSeed {
 interface SignalForwardRow {
   id: string;
   symbol: string;
+  /** Hotfix EODHD bypass — exchange persisté pour ensureEodhdSuffix. */
+  exchange?: string | null;
   asset_class: string;
   decision: string;
   rejected_at: string;
@@ -148,7 +153,7 @@ export class SignalForwardTrackerService {
     const { data, error } = await this.supabase
       .getClient()
       .from('gainers_v1_shadow_signals')
-      .select('id, symbol, asset_class, decision, reject_reason, created_at, entry_price')
+      .select('id, symbol, exchange, asset_class, decision, reject_reason, created_at, entry_price')
       .gte('created_at', cutoffOld)
       .lte('created_at', cutoffMinAge)
       .limit(5000);
@@ -270,7 +275,7 @@ export class SignalForwardTrackerService {
     const { data, error } = await this.supabase
       .getClient()
       .from('gainers_signal_forward')
-      .select('id, symbol, asset_class, decision, rejected_at, price_at_signal, source')
+      .select('id, symbol, exchange, asset_class, decision, rejected_at, price_at_signal, source')
       .lte('rejected_at', cutoff)
       .is(priceCol as any, null)
       .limit(500);
@@ -284,7 +289,7 @@ export class SignalForwardTrackerService {
     for (const row of data as SignalForwardRow[]) {
       try {
         const targetTimeMs = new Date(row.rejected_at).getTime() + windowMs;
-        const forwardPrice = await this.fetchClosePriceAtTime(row.symbol, row.asset_class, targetTimeMs);
+        const forwardPrice = await this.fetchClosePriceAtTime(row.symbol, row.exchange ?? null, row.asset_class, targetTimeMs);
         if (forwardPrice === null || forwardPrice <= 0) continue;
 
         const ret = (forwardPrice - row.price_at_signal) / row.price_at_signal;
@@ -313,6 +318,7 @@ export class SignalForwardTrackerService {
    */
   private async fetchClosePriceAtTime(
     symbol: string,
+    exchange: string | null,
     assetClass: string,
     targetTimeMs: number,
   ): Promise<number | null> {
@@ -331,7 +337,10 @@ export class SignalForwardTrackerService {
       return match?.close ?? klines[klines.length - 1].close;
     }
     // Equity : fetch 1h candles, take the closest close to targetTime
-    const series = await this.eodhd.getCandles(symbol, '1h', 100);
+    // Hotfix EODHD bypass — applique suffix exchange (rows legacy peuvent
+    // avoir symbol RAW sans suffix → 404).
+    const eodhdTicker = ensureEodhdSuffix(symbol, exchange);
+    const series = await this.eodhd.getCandles(eodhdTicker, '1h', 100);
     if (!series || series.candles.length === 0) return null;
     // Trouver la candle avec timestamp le plus proche de targetTime
     let closest = series.candles[0];
