@@ -17,7 +17,8 @@
  */
 
 import { useEffect, useState } from 'react';
-import { Settings2, Save, RotateCcw } from 'lucide-react';
+import Link from 'next/link';
+import { Settings2, Save, RotateCcw, BarChart3 } from 'lucide-react';
 import {
   useGainersConfig,
   useUpdateGainersConfig,
@@ -97,9 +98,18 @@ export function GainersConfigPanel({ portfolioId }: Props) {
 
   return (
     <div className="rounded-lg border border-orange-700/40 bg-orange-950/10 p-5 space-y-5">
-      <div className="flex items-center gap-2 text-orange-300">
-        <Settings2 className="w-4 h-4" />
-        <h3 className="text-sm font-semibold">Configuration scanner Gainers</h3>
+      <div className="flex items-center justify-between gap-2 text-orange-300">
+        <div className="flex items-center gap-2">
+          <Settings2 className="w-4 h-4" />
+          <h3 className="text-sm font-semibold">Configuration scanner Gainers</h3>
+        </div>
+        <Link
+          href={'/lisa/gainers/insights' as never}
+          className="inline-flex items-center gap-1 text-xs text-orange-300 hover:text-orange-200"
+        >
+          <BarChart3 className="w-3 h-3" />
+          Dashboard auto-learning
+        </Link>
       </div>
       <p className="text-xs text-zinc-400">
         Tous les paramètres sont lus par le scanner à chaque cycle. Aucune

@@ -262,3 +262,84 @@ export function useUpdateGainersConfig(portfolioId: string | null) {
     },
   });
 }
+
+// PR #6 — Hooks pour le dashboard auto-learning
+export interface GainersInsightRow {
+  id: string;
+  created_at: string;
+  insight_type: string;
+  source: string;
+  severity: 'info' | 'low' | 'medium' | 'high' | 'critical';
+  summary: string;
+  payload: Record<string, unknown>;
+  status: 'open' | 'investigating' | 'actioned' | 'dismissed';
+}
+
+export function useGainersInsights(opts: { sinceDays?: number; limit?: number; type?: string } = {}) {
+  const params = new URLSearchParams();
+  if (opts.sinceDays != null) params.set('since_days', String(opts.sinceDays));
+  if (opts.limit != null) params.set('limit', String(opts.limit));
+  if (opts.type) params.set('type', opts.type);
+  return useQuery({
+    queryKey: ['gainers-insights', opts.sinceDays, opts.limit, opts.type],
+    queryFn: () => apiFetch<{ count: number; insights: GainersInsightRow[] }>(
+      `/lisa/gainers/insights-recent?${params.toString()}`,
+    ),
+    refetchInterval: 60_000,
+  });
+}
+
+export interface AutoTunerHistoryRow {
+  id: string;
+  portfolio_id: string;
+  threshold_name: string;
+  old_value: string;
+  new_value: string;
+  reason: string;
+  fp_rate_observed: string | null;
+  failure_rate_observed: string | null;
+  sample_size: number;
+  applied_to_env: 'shadow' | 'canary' | 'prod';
+  auto_or_manual: 'auto' | 'manual';
+  applied_at: string;
+}
+
+export function useAutoTunerHistory(portfolioId: string | null, limit = 50) {
+  return useQuery({
+    queryKey: ['auto-tuner-history', portfolioId, limit],
+    queryFn: () => apiFetch<{ count: number; history: AutoTunerHistoryRow[] }>(
+      `/lisa/gainers/auto-tuner-history/${portfolioId}?limit=${limit}`,
+    ),
+    enabled: !!portfolioId,
+    refetchInterval: 60_000,
+  });
+}
+
+export interface EmpiricalLawResponse {
+  trainedOn: number;
+  empiricalLaw: Array<{
+    persistenceCount: string;
+    n: number;
+    pWinObserved: number | null;
+    avgPnlPct: number | null;
+    ciLow: number | null;
+    ciHigh: number | null;
+  }>;
+  fittedCurve: string;
+  coefficients: Record<string, number> | null;
+  aucRoc: number | null;
+  accuracy: number | null;
+  modelVersion: string | null;
+  fallback: boolean;
+}
+
+export function usePersistenceEmpiricalLaw(opts: { lookbackDays?: number; minSample?: number } = {}) {
+  const params = new URLSearchParams();
+  params.set('lookback_days', String(opts.lookbackDays ?? 30));
+  params.set('min_sample', String(opts.minSample ?? 20));
+  return useQuery({
+    queryKey: ['persistence-empirical-law', opts.lookbackDays, opts.minSample],
+    queryFn: () => apiFetch<EmpiricalLawResponse>(`/lisa/persistence-empirical-law?${params.toString()}`),
+    refetchInterval: 5 * 60_000,
+  });
+}
