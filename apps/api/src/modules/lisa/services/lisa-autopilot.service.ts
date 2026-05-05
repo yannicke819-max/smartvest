@@ -314,6 +314,16 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
 
     for (const cfg of configs) {
       try {
+        // PR Gainers-autonomy — strategy_mode='gainers' désactive complètement
+        // la pipeline Lisa LLM pour ce portfolio. Le scanner Gainers tourne sur
+        // son propre cron et gère les ouvertures via TopGainersScannerService.
+        // Les fermetures (stops/TP/drawdown/news shock) restent gérées par le
+        // moteur mécanique sans Lisa LLM (cf. mechanical-trading.service.ts).
+        if ((cfg.strategy_mode as string | null) === 'gainers') {
+          this.logger.debug(`Portfolio ${String(cfg.portfolio_id)}: strategy_mode=gainers → Lisa LLM cycle skipped`);
+          continue;
+        }
+
         // P8-BR — auto-resume si en pause budget et coût retombé < 90%,
         // sinon skip ce cycle pour ce portfolio.
         const canRun = await this.maybeResumeOrSkip(cfg);

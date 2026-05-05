@@ -149,6 +149,12 @@ interface SessionConfig {
    *  la sensibilité des wake-up triggers (VIX/drawdown/position pnl)
    *  pour aligner sur l'horizon scalping. */
   capital_discipline_mode?: string;
+  /** PR Gainers-autonomy — 'investment' | 'harvest' | 'gainers'. En 'gainers' :
+   *  Step 0.5 wake-up Lisa, Step 1 closes Lisa et Step 3 opens Lisa sont skippés.
+   *  Le scanner Gainers gère seul les ouvertures (cron dédié). Les protections
+   *  capital (Step 0 drawdown, Step 0.6 news shock, Step 2 stops/TP/trailing)
+   *  restent actives universellement. */
+  strategy_mode?: string;
 }
 
 @Injectable()
@@ -385,8 +391,15 @@ export class MechanicalTradingService {
     // souffrance, VIX spike) et réveille Lisa pour ré-analyse contextuelle.
     // Non-bloquant : échec Lisa n'interrompt pas le cycle mécanique.
     // Budget 8 wake-ups/jour + cooldown 5min par trigger pour éviter le spam.
-    await this.triggerAgentLisaSyncIfNeeded(cfg, openPositions)
-      .catch((e) => this.logger.warn(`[P5.1] Agent sync eval failed: ${String(e).slice(0, 120)}`));
+    //
+    // PR Gainers-autonomy — skip en mode 'gainers' : Lisa LLM est totalement
+    // déconnectée. Les protections capital (Step 0 drawdown, Step 0.6 news shock,
+    // Step 2 stops/TP/trailing) suffisent pour ce mode déterministe.
+    const isGainersMode = (cfg.strategy_mode as string | null | undefined) === 'gainers';
+    if (!isGainersMode) {
+      await this.triggerAgentLisaSyncIfNeeded(cfg, openPositions)
+        .catch((e) => this.logger.warn(`[P5.1] Agent sync eval failed: ${String(e).slice(0, 120)}`));
+    }
 
     // Step 0.6 — Close réactif sur news contraires fraîches.
     // Ne réveille pas Lisa : ferme directement avant qu'un wake-up Lisa
@@ -396,7 +409,11 @@ export class MechanicalTradingService {
       .catch((e) => this.logger.warn(`[news-shock-close] eval failed: ${String(e).slice(0, 120)}`));
 
     // Step 1 — Explicit close requests from Lisa
-    if (directive) {
+    // PR Gainers-autonomy — en mode 'gainers' Lisa LLM ne tourne pas, donc
+    // aucune directive n'est générée. On skip explicitement par sécurité au
+    // cas où une directive obsolète traînerait en DB (ex: bascule investment
+    // → gainers). Les closes Gainers passent par Step 2 (stops/TP) uniquement.
+    if (directive && !isGainersMode) {
       for (const cond of directive.closeConditions) {
         if (cond.urgency !== 'immediate') continue;
         const pos = openPositions.find((p) => p.id === cond.positionId);
@@ -443,6 +460,15 @@ export class MechanicalTradingService {
     }
 
     // Step 3 — Open new positions (seulement si directive valide + trajectoire permet)
+    // PR Gainers-autonomy — en mode 'gainers' les ouvertures sont gérées
+    // exclusivement par TopGainersScannerService (cron dédié). Le mécanique
+    // ne doit JAMAIS ouvrir de positions Lisa-driven en parallèle.
+    if (isGainersMode) {
+      await this.writeDefensiveCycleSummary(portfolioId, currentPositions)
+        .catch((e) => this.logger.debug(`defensive summary failed: ${String(e).slice(0, 80)}`));
+      return;
+    }
+
     if (!directive || directive.validUntil <= new Date()) {
       if (directive) {
         this.logger.debug(`${portfolioId}: directive expirée — mode défensif uniquement`);
