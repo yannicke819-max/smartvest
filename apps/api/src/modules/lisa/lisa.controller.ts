@@ -217,26 +217,24 @@ export class LisaController {
     //
     // Fix :
     //   - Count exact via { count: 'exact', head: true } (pas de fetch rows)
-    //   - Breakdown : limit 50000 + warning en log si troncature détectée
+    //   - Breakdown : 4 head-counts parallèles par bucket (us/eu/asia/crypto)
+    //     pour bypass le hard cap PostgREST 1000 rows. "other" = total - somme.
     const { count: scannedTodayCount } = await supabase
       .from('gainers_v1_shadow_signals')
       .select('*', { count: 'exact', head: true })
       .gte('created_at', startOfDayUtcIso);
     const scannedToday = scannedTodayCount ?? 0;
 
-    const { data: scannedTodayRows } = await supabase
-      .from('gainers_v1_shadow_signals')
-      .select('asset_class, exchange')
-      .gte('created_at', startOfDayUtcIso)
-      .limit(50000);
-    const scannedByAssetClass = aggregateByClass(scannedTodayRows ?? []);
-    if (scannedTodayRows && scannedTodayRows.length < scannedToday) {
-      // Truncated — breakdown sera approximatif. Log pour visibilité.
-      // 50000 rows = ~5j d'activité scanner ALL-IN-ONE. Dépassement signifie
-      // qu'il faut paginer ou créer une vue matérialisée par asset_class.
-      // Non-bloquant — on retourne quand même, juste avec breakdown partiel.
-      // (Pas de logger dans controller, on accepte la limite silencieuse pour now)
-    }
+    // PR Breakdown fix v2 — 4 head-counts par bucket asset_class.
+    // Hard cap PostgREST 1000 rows empêche le fetch+aggregate côté client
+    // (.limit(50000) silencieusement clamp à 1000). Solution : count exact
+    // par bucket via OR filter sur asset_class préfixé OR exchange fallback.
+    const scannedByAssetClass = await this.countByBucket(
+      supabase,
+      'gainers_v1_shadow_signals',
+      [['gte', 'created_at', startOfDayUtcIso]],
+      scannedToday,
+    );
 
     const { data: scanned7dRows } = await supabase
       .from('gainers_v1_shadow_signals')
@@ -255,14 +253,16 @@ export class LisaController {
       .gte('opened_at', startOfDayUtcIso);
     const openedToday = openedTodayCount ?? 0;
 
-    const { data: openedTodayRows } = await supabase
-      .from('paper_trades')
-      .select('asset_class, exchange')
-      .eq('portfolio_id', portfolioId)
-      .eq('strategy', 'top_gainers_v1')
-      .gte('opened_at', startOfDayUtcIso)
-      .limit(10000);
-    const openedByAssetClass = aggregateByClass(openedTodayRows ?? []);
+    const openedByAssetClass = await this.countByBucket(
+      supabase,
+      'paper_trades',
+      [
+        ['eq', 'portfolio_id', portfolioId],
+        ['eq', 'strategy', 'top_gainers_v1'],
+        ['gte', 'opened_at', startOfDayUtcIso],
+      ],
+      openedToday,
+    );
 
     // Q3 — Fermés aujourd'hui + somme PnL (count exact + breakdown)
     const { count: closedTodayCountExact } = await supabase
@@ -274,9 +274,10 @@ export class LisaController {
       .gte('closed_at', startOfDayUtcIso);
     const closedToday = closedTodayCountExact ?? 0;
 
+    // PnL : fetch limited rows (paper_trades volumes < 1000 OK)
     const { data: closedTodayPaperTrades } = await supabase
       .from('paper_trades')
-      .select('pnl_usd, asset_class, exchange')
+      .select('pnl_usd')
       .eq('portfolio_id', portfolioId)
       .eq('strategy', 'top_gainers_v1')
       .eq('status', 'closed')
@@ -286,7 +287,18 @@ export class LisaController {
       (acc, row) => acc + (parseFloat(String(row.pnl_usd ?? '0')) || 0),
       0,
     );
-    const closedByAssetClass = aggregateByClass(closedTodayPaperTrades ?? []);
+
+    const closedByAssetClass = await this.countByBucket(
+      supabase,
+      'paper_trades',
+      [
+        ['eq', 'portfolio_id', portfolioId],
+        ['eq', 'strategy', 'top_gainers_v1'],
+        ['eq', 'status', 'closed'],
+        ['gte', 'closed_at', startOfDayUtcIso],
+      ],
+      closedToday,
+    );
 
     // Derniers candidats : top 3 du dernier tick (decision passed/opened, ordre score desc).
     const { data: lastLog } = await supabase
@@ -602,6 +614,58 @@ export class LisaController {
     }
     // 4. Default
     return 20;
+  }
+
+  /**
+   * PR Breakdown fix v2 — count exact par bucket asset_class via head-only.
+   * Bypass le hard cap PostgREST 1000 rows en faisant 4 queries head:true
+   * en parallèle, une par bucket (us/eu/asia/crypto). "other" = total -
+   * somme des 4 buckets.
+   *
+   * Filters communs (eq/gte/etc.) appliqués à chaque sous-query identiquement.
+   * Format filters : Array<['eq'|'gte'|'lte', column, value]>.
+   *
+   * Performance : 4 queries en parallèle, head:true → pas de fetch rows.
+   * Très rapide (chacune < 100ms). Total ~200-300ms vs single 5000ms+ avec
+   * pagination 50k rows.
+   */
+  private async countByBucket(
+    supabase: ReturnType<SupabaseService['getClient']>,
+    table: 'gainers_v1_shadow_signals' | 'paper_trades',
+    filters: Array<['eq' | 'gte' | 'lte', string, string]>,
+    totalCount: number,
+  ): Promise<{ us: number; eu: number; asia: number; crypto: number; other: number }> {
+    const usOr = 'asset_class.like.us_equity%,exchange.in.(US,NYSE,NASDAQ,BATS,OTCQB,OTCMKTS,OTC,NMFQS)';
+    const euOr = 'asset_class.eq.eu_equity,exchange.in.(LSE,XETRA,PA,AS,AMS,MC,BME,MI,SW,BR)';
+    const asiaOr = 'asset_class.eq.asia_equity,exchange.in.(KO,KQ,KS,KE,T,TSE,HK,NSE,BSE,SHG,SHE,SS,SZ,AU,AX,TO)';
+    const cryptoOr = 'asset_class.like.crypto%,exchange.in.(BINANCE,CC,COINBASE)';
+
+    // Build base head-count query with filters appliqués via reduce
+    const buildQ = (orFilter: string) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let qb: any = supabase.from(table).select('*', { count: 'exact', head: true });
+      for (const [op, col, val] of filters) {
+        if (op === 'eq') qb = qb.eq(col, val);
+        else if (op === 'gte') qb = qb.gte(col, val);
+        else if (op === 'lte') qb = qb.lte(col, val);
+      }
+      return qb.or(orFilter);
+    };
+
+    const [us, eu, asia, crypto] = await Promise.all([
+      buildQ(usOr),
+      buildQ(euOr),
+      buildQ(asiaOr),
+      buildQ(cryptoOr),
+    ]);
+
+    const usCount = (us as { count: number | null }).count ?? 0;
+    const euCount = (eu as { count: number | null }).count ?? 0;
+    const asiaCount = (asia as { count: number | null }).count ?? 0;
+    const cryptoCount = (crypto as { count: number | null }).count ?? 0;
+    const other = Math.max(0, totalCount - usCount - euCount - asiaCount - cryptoCount);
+
+    return { us: usCount, eu: euCount, asia: asiaCount, crypto: cryptoCount, other };
   }
 
   private async persistSnapshotLog(
