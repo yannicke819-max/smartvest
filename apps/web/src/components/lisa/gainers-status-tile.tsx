@@ -12,6 +12,7 @@ import {
   type CoverageSource,
   type PathQualityByTf,
   type PersistenceCandidate,
+  type GainersStatus,
 } from '@/hooks/use-operating-mode';
 
 /**
@@ -163,35 +164,41 @@ export function GainersStatusTile({ portfolioId }: { portfolioId: string }) {
 
       {data && (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-            <div className="space-y-1">
-              <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
-                Prochain scan
-              </p>
-              <p className="text-lg font-semibold tabular-nums">
-                {formatCountdown(countdown)}
-              </p>
-              <CycleSelector
-                portfolioId={portfolioId}
-                currentCycle={data.intervalMinutes}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* Bloc gauche — countdown + 2 metrics existantes */}
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+              <div className="space-y-1">
+                <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                  Prochain scan
+                </p>
+                <p className="text-lg font-semibold tabular-nums">
+                  {formatCountdown(countdown)}
+                </p>
+                <CycleSelector
+                  portfolioId={portfolioId}
+                  currentCycle={data.intervalMinutes}
+                />
+              </div>
+              <Stat
+                label="Positions ouvertes"
+                value={String(data.openPositions)}
+              />
+              <Stat
+                label="PnL session"
+                value={formatPnl(data.sessionPnlUsd)}
+                valueClass={
+                  data.sessionPnlUsd > 0
+                    ? 'text-emerald-600 dark:text-emerald-400'
+                    : data.sessionPnlUsd < 0
+                      ? 'text-red-600 dark:text-red-400'
+                      : 'text-muted-foreground'
+                }
+                hint="Réalisé · UTC"
               />
             </div>
-            <Stat
-              label="Positions ouvertes"
-              value={String(data.openPositions)}
-            />
-            <Stat
-              label="PnL session"
-              value={formatPnl(data.sessionPnlUsd)}
-              valueClass={
-                data.sessionPnlUsd > 0
-                  ? 'text-emerald-600 dark:text-emerald-400'
-                  : data.sessionPnlUsd < 0
-                    ? 'text-red-600 dark:text-red-400'
-                    : 'text-muted-foreground'
-              }
-              hint="Réalisé · UTC"
-            />
+
+            {/* Bloc droit — compteurs jour (Option B) avec sparkline + breakdown */}
+            <DailyCountersPanel data={data} countdown={countdown} />
           </div>
 
           <div className="space-y-1.5">
@@ -896,6 +903,144 @@ function PathLegend() {
       >
         · Score = persist/total
       </span>
+    </div>
+  );
+}
+
+/**
+ * PR Counters jour (Option B) — Bloc compteurs activité scanner sur la
+ * journée UTC en cours, refresh synchrone avec le poll useGainersStatus 30s.
+ *
+ * Affiche :
+ *   - 3 compteurs principaux (Scannés / Ouverts / Fermés + PnL fermé)
+ *   - Sparkline 7j (évolution scannés/jour)
+ *   - Breakdown 4 asset classes (US / EU / Asia / Crypto)
+ */
+function DailyCountersPanel({
+  data,
+  countdown,
+}: {
+  data: GainersStatus;
+  countdown: number;
+}) {
+  const refreshIn = countdown % 30 === 0 ? 30 : countdown % 30;
+  const closedPnlClass =
+    data.closedTodayPnlUsd > 0
+      ? 'text-emerald-600 dark:text-emerald-400'
+      : data.closedTodayPnlUsd < 0
+        ? 'text-red-600 dark:text-red-400'
+        : 'text-muted-foreground';
+
+  return (
+    <div className="rounded-md border bg-card/50 p-3 space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+          Aujourd&apos;hui · UTC
+        </p>
+        <p className="text-[10px] text-muted-foreground tabular-nums">
+          Refresh dans: {refreshIn}s
+        </p>
+      </div>
+
+      {/* 3 main counters */}
+      <div className="grid grid-cols-3 gap-2 text-center">
+        <CounterBox
+          icon="📡"
+          label="Scannés"
+          value={data.scannedToday}
+          hint={breakdownInline(data.scannedByAssetClass)}
+        />
+        <CounterBox
+          icon="✅"
+          label="Ouverts"
+          value={data.openedToday}
+          hint={breakdownInline(data.openedByAssetClass)}
+        />
+        <CounterBox
+          icon="💰"
+          label="Fermés"
+          value={data.closedToday}
+          hint={
+            data.closedToday > 0
+              ? formatPnl(data.closedTodayPnlUsd)
+              : breakdownInline(data.closedByAssetClass)
+          }
+          hintClass={data.closedToday > 0 ? closedPnlClass : ''}
+        />
+      </div>
+
+      {/* Sparkline 7j */}
+      <div className="space-y-1">
+        <p className="text-[10px] text-muted-foreground">
+          Activité scanner 7 derniers jours
+        </p>
+        <Sparkline7d data={data.scanned7d} />
+      </div>
+    </div>
+  );
+}
+
+function CounterBox({
+  icon,
+  label,
+  value,
+  hint,
+  hintClass,
+}: {
+  icon: string;
+  label: string;
+  value: number;
+  hint?: string;
+  hintClass?: string;
+}) {
+  return (
+    <div className="rounded border bg-background p-2 space-y-0.5">
+      <div className="text-base">{icon}</div>
+      <div className="text-[10px] uppercase text-muted-foreground tracking-wide">
+        {label}
+      </div>
+      <div className="text-base font-bold tabular-nums">{value}</div>
+      {hint && (
+        <div className={`text-[9px] ${hintClass ?? 'text-muted-foreground'}`}>
+          {hint}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function breakdownInline(b: GainersStatus['scannedByAssetClass']): string {
+  // Affiche uniquement les asset classes non-zéro pour économiser de l'espace
+  const parts: string[] = [];
+  if (b.us > 0) parts.push(`US ${b.us}`);
+  if (b.eu > 0) parts.push(`EU ${b.eu}`);
+  if (b.asia > 0) parts.push(`AS ${b.asia}`);
+  if (b.crypto > 0) parts.push(`₿ ${b.crypto}`);
+  return parts.length > 0 ? parts.join(' · ') : '—';
+}
+
+function Sparkline7d({ data }: { data: Array<{ date: string; count: number }> }) {
+  if (data.length === 0) return <p className="text-[10px] text-muted-foreground">—</p>;
+  const max = Math.max(1, ...data.map((d) => d.count));
+  return (
+    <div className="flex items-end gap-1 h-10">
+      {data.map((d) => {
+        const heightPct = (d.count / max) * 100;
+        const dayLabel = new Date(d.date).toLocaleDateString('fr-FR', { weekday: 'short' });
+        return (
+          <div
+            key={d.date}
+            className="flex-1 flex flex-col items-center gap-0.5"
+            title={`${d.date} : ${d.count} candidats`}
+          >
+            <div
+              className="w-full bg-orange-500/60 rounded-t-sm transition-all"
+              style={{ height: `${Math.max(heightPct, 2)}%` }}
+            />
+            <span className="text-[8px] text-muted-foreground">{dayLabel.slice(0, 1).toUpperCase()}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -40,6 +40,14 @@ export function useApplyOperatingMode(portfolioId: string | null) {
   });
 }
 
+export interface GainersAssetClassBreakdown {
+  us: number;
+  eu: number;
+  asia: number;
+  crypto: number;
+  other: number;
+}
+
 export interface GainersStatus {
   nextTickInSeconds: number;
   intervalMinutes: number;
@@ -51,6 +59,15 @@ export interface GainersStatus {
   rrRatio: number;
   sessionPnlUsd: number;
   lastCandidates: Array<{ symbol: string; changePct: number; score: number }>;
+  // PR Counters jour (Option B)
+  scannedToday: number;
+  openedToday: number;
+  closedToday: number;
+  closedTodayPnlUsd: number;
+  scannedByAssetClass: GainersAssetClassBreakdown;
+  openedByAssetClass: GainersAssetClassBreakdown;
+  closedByAssetClass: GainersAssetClassBreakdown;
+  scanned7d: Array<{ date: string; count: number }>;
 }
 
 export function useGainersStatus(portfolioId: string | null, enabled: boolean) {
