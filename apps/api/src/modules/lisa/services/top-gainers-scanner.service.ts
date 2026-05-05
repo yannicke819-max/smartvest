@@ -1254,7 +1254,7 @@ export class TopGainersScannerService implements OnModuleInit {
     const { data: cfgRow } = await this.supabase
       .getClient()
       .from('lisa_session_configs')
-      .select('capital_simulation, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes, gainers_universe_us, gainers_universe_eu, gainers_universe_asia, gainers_universe_crypto, gainers_p_win_gate_enabled, gainers_min_p_win')
+      .select('capital_usd, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes, gainers_universe_us, gainers_universe_eu, gainers_universe_asia, gainers_universe_crypto, gainers_p_win_gate_enabled, gainers_min_p_win')
       .eq('portfolio_id', portfolioId)
       .maybeSingle();
     const minScore = this.resolveMinPersistenceScore(
@@ -1277,8 +1277,12 @@ export class TopGainersScannerService implements OnModuleInit {
       : 1.0;
 
     // PR Hardcodes-fix — sizing & capacity dérivés de la config user
-    const capitalUsd = cfgRow?.capital_simulation != null
-      ? Math.max(100, Number(cfgRow.capital_simulation))
+    // PR Hotfix — la colonne DB est `capital_usd` (TEXT), pas `capital_simulation`.
+    // En PR #2 j'avais mis `capital_simulation` par erreur → scanner tombait
+    // toujours sur FALLBACK_CAPITAL_USD ($10k). Le UI hook a un fallback
+    // `capital_simulation ?? capital_usd` qui masquait le bug côté affichage.
+    const capitalUsd = cfgRow?.capital_usd != null
+      ? Math.max(100, Number(cfgRow.capital_usd))
       : FALLBACK_CAPITAL_USD;
     const maxOpen = cfgRow?.gainers_max_open_positions != null
       ? Math.max(1, Math.min(20, Number(cfgRow.gainers_max_open_positions)))
