@@ -68,6 +68,13 @@ export interface GainersStatus {
   openedByAssetClass: GainersAssetClassBreakdown;
   closedByAssetClass: GainersAssetClassBreakdown;
   scanned7d: Array<{ date: string; count: number }>;
+  // PR #243 Adaptive Selectivity
+  adaptiveEnabled: boolean;
+  adaptiveActive: boolean;
+  trajectoryStatus: 'EN_AVANCE' | 'DANS_LE_PLAN' | 'EN_RETARD' | 'HORS_TRAJECTOIRE' | null;
+  trajectoryStatusAt: string | null;
+  realised7dPct: number | null;
+  target7dPct: number | null;
 }
 
 export function useGainersStatus(portfolioId: string | null, enabled: boolean) {
@@ -226,6 +233,8 @@ export interface GainersConfigFields {
   gainers_min_p_win: number | null;
   // PR Autopilot toggle — état du cron scanner pour ce portfolio
   autopilot_enabled: boolean | null;
+  // PR #243 Adaptive Selectivity toggle (opt-in, default false)
+  gainers_adaptive_enabled: boolean | null;
   // Capital simulé (lu/écrit via la même config session)
   capital_simulation: number | null;
 }
@@ -260,6 +269,7 @@ export function useGainersConfig(portfolioId: string | null) {
         gainers_p_win_gate_enabled: boolOrNull(raw?.gainers_p_win_gate_enabled),
         gainers_min_p_win: numOrNull(raw?.gainers_min_p_win),
         autopilot_enabled: boolOrNull(raw?.autopilot_enabled),
+        gainers_adaptive_enabled: boolOrNull(raw?.gainers_adaptive_enabled),
         capital_simulation: numOrNull(raw?.capital_simulation ?? raw?.capital_usd),
       } satisfies GainersConfigFields;
     },

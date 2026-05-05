@@ -685,10 +685,16 @@ export class TopGainersScannerService implements OnModuleInit {
       return;
     }
 
-    const top = selectTopGainers(candidates, 3);
+    // PR Coverage filter — pool de 10 (au lieu de 3) pour buffer.
+    // Quand certains top candidats ont coverage=none (Asia .SHG/.SHE, US illiquides
+    // type EJPRF), le filtre coverage en aval (scanPortfolio) les exclut.
+    // Avec pool 10, il reste assez de backups pour que maxPerCycle (default 3)
+    // soit toujours saturé par des candidats avec data valide.
+    const TOP_POOL_SIZE = 10;
+    const top = selectTopGainers(candidates, TOP_POOL_SIZE);
     this.recordTopSelected(top.length);
     this.logger.log(
-      `[top-gainers] ${candidates.length} scanned → ${top.length} retained: ${top.map((t) => `${t.symbol}(${t.assetClass},${t.changePct.toFixed(1)}%,score=${t.score})`).join(', ')}`,
+      `[top-gainers] ${candidates.length} scanned → ${top.length} retained (pool ${TOP_POOL_SIZE}): ${top.slice(0, 5).map((t) => `${t.symbol}(${t.assetClass},${t.changePct.toFixed(1)}%,score=${t.score})`).join(', ')}${top.length > 5 ? '…' : ''}`,
     );
 
     // PR6.3 — Shadow run wiring : persiste chaque candidat scanné dans
@@ -1352,6 +1358,31 @@ export class TopGainersScannerService implements OnModuleInit {
       })),
     );
 
+    // PR Coverage filter — exclut les candidats coverage=none (toutes les TFs
+    // null = pas de data valide pour calculer persistence). Évite de remplir
+    // les slots top avec des tickers .SHG/.SHE/illiquides US qui échoueraient
+    // de toute façon au gate persistence en aval. Avec le pool TOP_POOL_SIZE=10,
+    // on garde au moins maxPerCycle candidats valides pour ouvrir.
+    const coverageValidTop: typeof filteredTop = [];
+    const coverageSkippedSymbols: string[] = [];
+    for (const c of filteredTop) {
+      const p = persistenceMap.get(c.symbol.toUpperCase());
+      if (!p || p.availableCount === 0 || Number.isNaN(p.persistenceScore)) {
+        // Préserve l'instrumentation P18e existante (compteur + skippedNoPersistence)
+        // pour les tests + log agrégé en fin de cycle.
+        this.skippedNoPersistenceCounter++;
+        coverageSkippedSymbols.push(c.symbol);
+        continue;
+      }
+      coverageValidTop.push(c);
+    }
+    if (coverageSkippedSymbols.length > 0) {
+      const sample = coverageSkippedSymbols.slice(0, 5).join(', ');
+      this.logger.log(
+        `[top-gainers] ${portfolioId.slice(0, 8)}: coverage filter ${filteredTop.length}→${coverageValidTop.length} (${coverageSkippedSymbols.length} skipped, sample: ${sample})`,
+      );
+    }
+
     // PR Hardcodes-fix — cap par cycle dérivé de cfg.gainers_max_per_cycle.
     // Permet à l'utilisateur d'ouvrir plusieurs candidats par cycle quand
     // plusieurs setups A+ sont détectés simultanément.
@@ -1359,7 +1390,9 @@ export class TopGainersScannerService implements OnModuleInit {
     let opened = 0;
     // P18e — accumule les skips pour log agrégé en fin de cycle (au lieu de
     // N lignes "no persistence data → skip" qui polluent les logs Fly).
-    const skippedNoPersistence: string[] = [];
+    // PR Coverage filter — inclut les skips déjà détectés en coverage filter
+    // pour cohérence des compteurs P18e + log "cycle skip-summary".
+    const skippedNoPersistence: string[] = [...coverageSkippedSymbols];
     // P19x.3 (29/04/2026) — Cooldown 30 min same symbol/side après close.
     //
     // User constat (29/04 02:00 UTC) : "Observé SLV 3× / LMT 3× / XLE 2× en
@@ -1399,7 +1432,7 @@ export class TopGainersScannerService implements OnModuleInit {
       this.logger.debug(`[top-gainers] cooldown query skipped: ${String(e).slice(0, 100)}`);
     }
 
-    for (const cand of filteredTop) {
+    for (const cand of coverageValidTop) {
       if (opened >= maxThisCycle) break;
       const baseSym = cand.symbol.replace(/USDT$|USDC$/, '').toUpperCase();
       if (openSymbols.has(cand.symbol.toUpperCase()) || openSymbols.has(baseSym)) continue;

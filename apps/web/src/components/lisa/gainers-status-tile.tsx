@@ -164,6 +164,10 @@ export function GainersStatusTile({ portfolioId }: { portfolioId: string }) {
 
       {data && (
         <>
+          {/* PR #243 — Bandeau trajectory status (visible uniquement si adaptive_enabled) */}
+          {data.adaptiveEnabled && (
+            <TrajectoryBandeau status={data} />
+          )}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {/* Bloc gauche — countdown + 2 metrics existantes */}
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
@@ -1041,6 +1045,92 @@ function Sparkline7d({ data }: { data: Array<{ date: string; count: number }> })
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * PR #243 — Bandeau trajectory_status pour Adaptive Selectivity.
+ *
+ * Affiche l'état courant + valeurs effectives :
+ *   🟢 DANS_LE_PLAN      : "Trajectoire conforme · réalisé/cible X%"
+ *   🟢 EN_AVANCE         : "En avance ✓ · réalisé X% / cible Y%"
+ *   🟡 EN_RETARD         : "Mode rattrapage actif · gates assouplis"
+ *   🚨 HORS_TRAJECTOIRE  : ROUGE CLIGNOTANT — "SCANNER OFF — réalisé négatif"
+ */
+function TrajectoryBandeau({ status }: { status: GainersStatus }) {
+  const { trajectoryStatus, adaptiveActive, realised7dPct, target7dPct } = status;
+  if (!trajectoryStatus) {
+    return (
+      <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+        ⏳ Adaptive Selectivity activé · trajectory en cours de calcul (cycle 5min)
+      </div>
+    );
+  }
+  const realisedStr = realised7dPct != null ? `${realised7dPct.toFixed(2)}%` : '—';
+  const targetStr = target7dPct != null ? `${target7dPct.toFixed(2)}%` : '—';
+  const ratioPct = (realised7dPct != null && target7dPct != null && target7dPct !== 0)
+    ? Math.round((realised7dPct / target7dPct) * 100)
+    : null;
+
+  if (trajectoryStatus === 'HORS_TRAJECTOIRE') {
+    return (
+      <div className="rounded-md border-2 border-red-600 bg-red-100 dark:bg-red-950/40 px-4 py-3 animate-pulse">
+        <div className="flex items-start gap-3">
+          <span className="text-2xl" aria-hidden>🚨</span>
+          <div className="flex-1">
+            <div className="text-sm font-bold text-red-700 dark:text-red-300">
+              SCANNER OFF — HORS TRAJECTOIRE
+            </div>
+            <div className="text-xs text-red-600 dark:text-red-400 mt-1">
+              Réalisé 7j {realisedStr} (négatif). Le scanner est suspendu pour
+              préserver le capital. Vérifie la stratégie avant relance manuelle
+              (toggle Autopilot).
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (trajectoryStatus === 'EN_RETARD') {
+    return (
+      <div className="rounded-md border-2 border-yellow-500 bg-yellow-50 dark:bg-yellow-950/30 px-4 py-3">
+        <div className="flex items-start gap-3">
+          <span className="text-xl" aria-hidden>🟡</span>
+          <div className="flex-1">
+            <div className="text-sm font-semibold text-yellow-800 dark:text-yellow-300">
+              {adaptiveActive ? 'Mode rattrapage ACTIF' : 'EN RETARD — adjustement en cours'}
+            </div>
+            <div className="text-xs text-yellow-700 dark:text-yellow-400 mt-1">
+              Réalisé 7j {realisedStr} / cible {targetStr}{ratioPct != null ? ` (${ratioPct}%)` : ''}.
+              {adaptiveActive
+                ? ' Gates assouplis automatiquement (persistence −0.05, path_eff −0.05, max_per_cycle +1, cooldown ÷2). Restore au retour DANS_LE_PLAN.'
+                : ' Le service va assouplir les gates au prochain cycle (5 min).'}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // DANS_LE_PLAN ou EN_AVANCE — bandeau vert sobre
+  const isAvance = trajectoryStatus === 'EN_AVANCE';
+  return (
+    <div className="rounded-md border border-emerald-500/60 bg-emerald-50 dark:bg-emerald-950/20 px-4 py-2">
+      <div className="flex items-center gap-2">
+        <span className="text-base" aria-hidden>🟢</span>
+        <div className="text-xs">
+          <span className="font-semibold text-emerald-700 dark:text-emerald-300">
+            {isAvance ? 'EN AVANCE ✓' : 'DANS LE PLAN'}
+          </span>
+          <span className="text-muted-foreground">
+            {' · '}Réalisé 7j {realisedStr} / cible {targetStr}
+            {ratioPct != null ? ` (${ratioPct}%)` : ''}
+            {' · '}Seuils user respectés
+          </span>
+        </div>
+      </div>
     </div>
   );
 }

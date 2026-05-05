@@ -423,6 +423,28 @@ export function GainersConfigPanel({ portfolioId }: Props) {
         </div>
       </section>
 
+      {/* 8. Adaptive Selectivity (PR #243) */}
+      <section className="space-y-3">
+        <div className="text-xs uppercase tracking-wider text-foreground font-semibold">
+          8. Adaptive Selectivity (auto-ajustement seuils)
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          Désactivé par défaut. Quand activé, un cron 5min lit le trajectory_status
+          (basé sur réalisé 7j vs cible) et ajuste automatiquement les gates :
+        </p>
+        <ul className="text-[11px] text-muted-foreground list-disc list-inside space-y-0.5">
+          <li><strong>EN_RETARD</strong> (&lt; 80% cible) : assouplit (persistence −0.05, path −0.05, max_per_cycle +1, cooldown ÷2)</li>
+          <li><strong>EN_AVANCE</strong> (&gt; 110% cible) : aucune modif (préserve ton cap)</li>
+          <li><strong>HORS_TRAJECTOIRE</strong> (réalisé négatif) : <span className="text-red-600 font-semibold">scanner OFF + alarme rouge</span></li>
+          <li><strong>DANS_LE_PLAN</strong> : restore tes valeurs originales (snapshot)</li>
+        </ul>
+        <Toggle
+          label="Activer l'Adaptive Selectivity"
+          checked={cfg.gainers_adaptive_enabled === true}
+          onChange={(v) => set('gainers_adaptive_enabled', v)}
+        />
+      </section>
+
       {/* Actions */}
       <div className="flex items-center gap-2 pt-2 border-t">
         <button
