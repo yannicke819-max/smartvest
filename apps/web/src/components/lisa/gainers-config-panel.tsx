@@ -67,16 +67,17 @@ export function GainersConfigPanel({ portfolioId }: Props) {
   };
 
   const handleSave = async () => {
-    // PR Autopilot toggle — Save force toujours autopilot=true. La désactivation
-    // se fait UNIQUEMENT via le bouton "Désactiver" du toggle (handleToggleAutopilot).
-    // Spec utilisateur : "il devra s'activer au moment de la sauvegarde des
-    // paramètres et reste désactivable manuellement."
-    const payload: EditableConfig = {
-      ...draft,
-      autopilot_enabled: true,
-    };
+    // PR Autopilot fix — Save ne force PLUS autopilot=true. Spec révisée :
+    // l'autopilot est contrôlé UNIQUEMENT par le toggle dédié au-dessus.
+    // Save sauvegarde les params modifiés sans toucher l'état autopilot
+    // (sauf si l'utilisateur a explicitement flippé le toggle dans la
+    // session draft).
+    //
+    // Comportement précédent (forçage true) provoquait le bug "F5 réactive
+    // autopilot" : un Save subséquent à un toggle-OFF écrasait l'état.
+    if (Object.keys(draft).length === 0) return;
     try {
-      await update.mutateAsync(payload);
+      await update.mutateAsync(draft);
       setDraft({});
       setSaved(true);
       setError(null);
@@ -429,10 +430,10 @@ export function GainersConfigPanel({ portfolioId }: Props) {
           onClick={handleSave}
           disabled={Object.keys(draft).length === 0 || update.isPending}
           className="flex items-center gap-2 px-4 py-2 rounded-md bg-orange-600 hover:bg-orange-500 disabled:bg-muted disabled:opacity-50 text-white text-sm font-medium"
-          title="Sauvegarde les paramètres et active l'autopilot"
+          title="Sauvegarde les paramètres modifiés (autopilot piloté séparément par le toggle ci-dessus)"
         >
           <Save className="w-4 h-4" />
-          {update.isPending ? 'Sauvegarde…' : 'Sauvegarder + activer'}
+          {update.isPending ? 'Sauvegarde…' : 'Sauvegarder'}
         </button>
         <button
           type="button"
