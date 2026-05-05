@@ -243,7 +243,14 @@ export class LisaService {
       user_id: userId,
       portfolio_id: portfolioId,
       profile: pick('profile', 'profile', existing?.profile ?? 'long_term_investor'),
-      capital_usd: pick('capital_usd', 'capitalUsd', existing?.capital_usd ?? '10000'),
+      // PR Hotfix — l'UI panneau Gainers envoie `capital_simulation` (alias
+      // historique). On accepte les 2 noms pour ne pas perdre les saves.
+      capital_usd: (() => {
+        if (Object.prototype.hasOwnProperty.call(config, 'capital_simulation')) {
+          return config.capital_simulation as string | number;
+        }
+        return pick('capital_usd', 'capitalUsd', existing?.capital_usd ?? '10000');
+      })(),
       base_currency: pick('base_currency', 'baseCurrency', existing?.base_currency ?? 'EUR'),
       risk_constraints: pick('risk_constraints', 'riskConstraints', existing?.risk_constraints ?? {}),
       include_asset_classes: pick('include_asset_classes', 'includeAssetClasses', existing?.include_asset_classes ?? null),

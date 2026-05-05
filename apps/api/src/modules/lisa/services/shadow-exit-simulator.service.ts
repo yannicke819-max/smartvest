@@ -24,6 +24,7 @@ import {
 import { PositionState, ExitReason } from '../../gainers-scanner/domain/gainers-enums';
 import { EodhdIntradayService } from './eodhd-intraday.service';
 import { BinanceMarketService } from './binance-market.service';
+import { ensureEodhdSuffix } from './eodhd-symbol.util';
 
 interface ShadowSignalRow {
   id: string;
@@ -201,7 +202,11 @@ export class ShadowExitSimulatorService {
       const candles = await this.binance.getKlines(binanceSymbol, '1m', count);
       return candles ? candles.map((c) => ({ close: c.close })) : null;
     }
-    const series = await this.eodhd.getCandles(row.symbol, '1m', count);
+    // Hotfix EODHD bypass — applique suffix exchange avant getCandles. Avant
+    // ce fix, des rows legacy (pré-PR #234) avec symbol RAW (ex: "005940",
+    // "NOCIL") tombaient en HTTP 404 silencieusement → coverage='none'.
+    const eodhdTicker = ensureEodhdSuffix(row.symbol, row.exchange);
+    const series = await this.eodhd.getCandles(eodhdTicker, '1m', count);
     return series ? series.candles.map((c) => ({ close: c.close })) : null;
   }
 

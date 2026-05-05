@@ -182,6 +182,17 @@ export class EodhdIntradayService {
     interval: '1m' | '5m' | '1h' = '5m',
     count = 20,
   ): Promise<CandleSeries | null> {
+    // Hotfix EODHD bypass — defense in depth : si un caller passe un symbol
+    // sans suffix exchange (ex: legacy row "005940" au lieu de "005940.KO"),
+    // logger un warn explicite plutôt que tomber en 404 silencieux. Default
+    // .US comme fallback raisonnable (same comportement historique). Le caller
+    // doit appliquer ensureEodhdSuffix() en amont pour les non-US.
+    if (!eodhdTicker.includes('.')) {
+      this.logger.warn(
+        `[eodhd] ${eodhdTicker} missing exchange suffix — defaulting to .US (caller should pass full eodhdTicker, e.g. SAMSUNG.KO)`,
+      );
+      eodhdTicker = `${eodhdTicker}.US`;
+    }
     // P19k — Normaliser le suffix avant cache key + URL pour cohérence.
     const normalized = this.normalizeForEodhdIntraday(eodhdTicker);
     const cacheKey = `${normalized}::${interval}`;
