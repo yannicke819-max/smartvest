@@ -185,10 +185,19 @@ const EU_FALLBACK_OPEN_UTC = '07:00';
 const EU_FALLBACK_CLOSE_UTC = '17:00';
 
 /**
- * P5-PIVOT-TOP-GAINERS v1 — Cap conservatif : 1 position/cycle.
- * Permet de valider end-to-end avant scaling à 3 (PR2).
+ * Fallback defaults quand `lisa_session_configs` n'a pas les colonnes
+ * gainers_* (migration 0115 pas encore appliquée OU portfolio sans config).
+ *
+ * Avant PR Hardcodes-fix : MAX_POSITIONS_PER_CYCLE_V1 et maxOpen étaient
+ * hardcodés ici. Désormais lus depuis cfg.gainers_max_per_cycle et
+ * cfg.gainers_max_open_positions, avec ces valeurs comme dernier recours.
  */
-const MAX_POSITIONS_PER_CYCLE_V1 = 1;
+const FALLBACK_MAX_PER_CYCLE = 3;
+const FALLBACK_MAX_OPEN = 5;
+const FALLBACK_POSITION_PCT = 20.0;
+const FALLBACK_CASH_RESERVE_PCT = 10.0;
+const FALLBACK_CAPITAL_USD = 10000;
+const FALLBACK_COOLDOWN_MIN = 30;
 
 const TOP_GAINERS_CRON_NAME = 'top-gainers-scanner';
 
@@ -1230,27 +1239,14 @@ export class TopGainersScannerService implements OnModuleInit {
       return; // skip cycle pour ce portfolio
     }
 
-    // Garde-fou : count current open positions
-    const { data: openPositions } = await this.supabase
-      .getClient()
-      .from('lisa_positions')
-      .select('symbol')
-      .eq('portfolio_id', portfolioId)
-      .eq('status', 'open');
-    const openSymbols = new Set((openPositions ?? []).map((p) => String(p.symbol).toUpperCase()));
-    const maxOpen = 3;
-    const slotsAvailable = Math.max(0, maxOpen - (openPositions?.length ?? 0));
-    if (slotsAvailable === 0) {
-      this.logger.log(`[top-gainers] ${portfolioId.slice(0, 8)}: no slots (${openPositions?.length}/3 open)`);
-      return;
-    }
-
-    // P8 + P19x.2 — Charge config gainers pour ce portfolio :
-    // min persistance + path efficiency + TP/SL defaults.
+    // PR Hardcodes-fix — Charge config complète gainers pour ce portfolio :
+    // min persistence + path efficiency + TP/SL + capital + sizing + cooldown.
+    // Migration 0115 expose toutes les colonnes gainers_*. Fallbacks définis
+    // au top du fichier (FALLBACK_*) si row absent ou colonne non encore migrée.
     const { data: cfgRow } = await this.supabase
       .getClient()
       .from('lisa_session_configs')
-      .select('gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct')
+      .select('capital_simulation, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes')
       .eq('portfolio_id', portfolioId)
       .maybeSingle();
     const minScore = this.resolveMinPersistenceScore(
@@ -1272,6 +1268,41 @@ export class TopGainersScannerService implements OnModuleInit {
       ? Math.max(0.1, Math.min(20, Number(cfgRow.gainers_default_sl_pct)))
       : 1.0;
 
+    // PR Hardcodes-fix — sizing & capacity dérivés de la config user
+    const capitalUsd = cfgRow?.capital_simulation != null
+      ? Math.max(100, Number(cfgRow.capital_simulation))
+      : FALLBACK_CAPITAL_USD;
+    const maxOpen = cfgRow?.gainers_max_open_positions != null
+      ? Math.max(1, Math.min(20, Number(cfgRow.gainers_max_open_positions)))
+      : FALLBACK_MAX_OPEN;
+    const maxPerCycle = cfgRow?.gainers_max_per_cycle != null
+      ? Math.max(1, Math.min(10, Number(cfgRow.gainers_max_per_cycle)))
+      : FALLBACK_MAX_PER_CYCLE;
+    const positionPct = cfgRow?.gainers_position_pct != null
+      ? Math.max(1, Math.min(100, Number(cfgRow.gainers_position_pct)))
+      : FALLBACK_POSITION_PCT;
+    const cashReservePct = cfgRow?.gainers_cash_reserve_pct != null
+      ? Math.max(0, Math.min(50, Number(cfgRow.gainers_cash_reserve_pct)))
+      : FALLBACK_CASH_RESERVE_PCT;
+    const cooldownMinutes = cfgRow?.gainers_cooldown_minutes != null
+      ? Math.max(0, Math.min(240, Number(cfgRow.gainers_cooldown_minutes)))
+      : FALLBACK_COOLDOWN_MIN;
+    const positionNotionalUsd = capitalUsd * (positionPct / 100);
+
+    // Garde-fou : count current open positions (utilise maxOpen depuis config)
+    const { data: openPositions } = await this.supabase
+      .getClient()
+      .from('lisa_positions')
+      .select('symbol')
+      .eq('portfolio_id', portfolioId)
+      .eq('status', 'open');
+    const openSymbols = new Set((openPositions ?? []).map((p) => String(p.symbol).toUpperCase()));
+    const slotsAvailable = Math.max(0, maxOpen - (openPositions?.length ?? 0));
+    if (slotsAvailable === 0) {
+      this.logger.log(`[top-gainers] ${portfolioId.slice(0, 8)}: no slots (${openPositions?.length}/${maxOpen} open)`);
+      return;
+    }
+
     // P8 — Calcule la persistance multi-TF pour les top candidats (parallèle)
     const persistenceMap = await this.mtfPersistence.analyzeBatch(
       top.map((c) => ({
@@ -1281,9 +1312,10 @@ export class TopGainersScannerService implements OnModuleInit {
       })),
     );
 
-    // Guard 3 v1 — cap conservatif : 1 position/cycle (test prudent avant
-    // bump à 3 dans v2). Permet de valider le pipeline end-to-end.
-    const maxThisCycle = Math.min(slotsAvailable, MAX_POSITIONS_PER_CYCLE_V1);
+    // PR Hardcodes-fix — cap par cycle dérivé de cfg.gainers_max_per_cycle.
+    // Permet à l'utilisateur d'ouvrir plusieurs candidats par cycle quand
+    // plusieurs setups A+ sont détectés simultanément.
+    const maxThisCycle = Math.min(slotsAvailable, maxPerCycle);
     let opened = 0;
     // P18e — accumule les skips pour log agrégé en fin de cycle (au lieu de
     // N lignes "no persistence data → skip" qui polluent les logs Fly).
@@ -1296,10 +1328,11 @@ export class TopGainersScannerService implements OnModuleInit {
     // top gainer et passe les gates → fees s'accumulent sans valeur ajoutée.
     //
     // Garde-fou : refuse toute open sur un (symbol, direction) si une
-    // position était fermée pour ce couple dans les 30 dernières minutes.
+    // position était fermée pour ce couple dans les N dernières minutes
+    // (cfg.gainers_cooldown_minutes, default 30, range [0, 240]).
     // Lookup unique par cycle : on charge tous les recent closes avant la
     // boucle puis on check en mémoire (évite N queries DB).
-    const cooldownMs = 30 * 60_000;
+    const cooldownMs = cooldownMinutes * 60_000;
     const cooldownSinceIso = new Date(Date.now() - cooldownMs).toISOString();
     // Failure-tolerant : si la query échoue (mock partiel en test, schema
     // out-of-sync, etc.), on passe le cooldown sans bloquer le pipeline.
@@ -1339,7 +1372,7 @@ export class TopGainersScannerService implements OnModuleInit {
       if (lastExitMs && Date.now() - lastExitMs < cooldownMs) {
         const elapsedMin = Math.floor((Date.now() - lastExitMs) / 60_000);
         this.logger.log(
-          `[top-gainers] ${cand.symbol} cooldown actif (fermé il y a ${elapsedMin} min < 30 min) → skip re-entry`,
+          `[top-gainers] ${cand.symbol} cooldown actif (fermé il y a ${elapsedMin} min < ${cooldownMinutes} min) → skip re-entry`,
         );
         continue;
       }
@@ -1500,7 +1533,14 @@ export class TopGainersScannerService implements OnModuleInit {
         portfolioId,
         cand,
         persistence,
-        { tpPct, slPct },
+        {
+          tpPct,
+          slPct,
+          capitalUsd,
+          positionPct,
+          positionNotionalUsd,
+          cashReservePct,
+        },
       ).catch((e) => {
         this.logger.warn(
           `[top-gainers] open ${cand.symbol} failed: ${String(e).slice(0, 120)}`,
@@ -1534,14 +1574,29 @@ export class TopGainersScannerService implements OnModuleInit {
     portfolioId: string,
     cand: TopGainerCandidate & { score: number; assetClass: TopGainerAssetClass },
     persistence?: PersistenceResult,
-    // P19x.2 — TP/SL config par portfolio (DB lisa_session_configs.gainers_default_*).
-    // Fallback aux nouveaux defaults P19x.2 spec : TP=1.5% / SL=1.0%.
-    overrides?: { tpPct: number; slPct: number },
+    // PR Hardcodes-fix — toute la sizing config arrive par overrides depuis
+    // scanPortfolio (qui a lu lisa_session_configs). Plus aucune valeur
+    // hardcodée — capital, notional, position pct, cash reserve, TP, SL.
+    overrides?: {
+      tpPct: number;
+      slPct: number;
+      capitalUsd: number;
+      positionPct: number;
+      positionNotionalUsd: number;
+      cashReservePct: number;
+    },
   ): Promise<string | null> {
     const proposalId = randomUUID();
     const thesisId = randomUUID();
     const effectiveTp = overrides?.tpPct ?? 1.5;
     const effectiveSl = overrides?.slPct ?? 1.0;
+    // Fallbacks identiques aux defaults DB migration 0115 si overrides absents
+    // (caller hors scanPortfolio = legacy / test).
+    const effectiveCapital = overrides?.capitalUsd ?? FALLBACK_CAPITAL_USD;
+    const effectivePositionPct = overrides?.positionPct ?? FALLBACK_POSITION_PCT;
+    const effectiveNotional = overrides?.positionNotionalUsd
+      ?? (effectiveCapital * (effectivePositionPct / 100));
+    const effectiveCashReserve = overrides?.cashReservePct ?? FALLBACK_CASH_RESERVE_PCT;
 
     // P18 — LLM thesis generation (inert when SCANNER_LLM_ROUTER_ENABLED=false)
     const llmThesis = await this.generateThesis(cand);
@@ -1569,15 +1624,19 @@ export class TopGainersScannerService implements OnModuleInit {
       ],
     };
     const allocations = [
-      { thesisId, pctCapital: 30, amountUsd: '3000.00' },
+      {
+        thesisId,
+        pctCapital: effectivePositionPct,
+        amountUsd: effectiveNotional.toFixed(2),
+      },
     ];
 
-    // INSERT pseudo-proposal
+    // INSERT pseudo-proposal — capital + cash reserve viennent de la config.
     const { error: insErr } = await this.supabase.getClient().from('lisa_proposals').insert({
       id: proposalId,
       portfolio_id: portfolioId,
       user_id: userId,
-      capital_usd: '10000.00',
+      capital_usd: effectiveCapital.toFixed(2),
       base_currency: 'USD',
       detected_regime: 'momentum_top_gainers',
       market_momentum: 'bullish_strong',
@@ -1586,7 +1645,7 @@ export class TopGainersScannerService implements OnModuleInit {
       avoided_pockets: [],
       theses: [thesis],
       allocations,
-      cash_reserve_pct: 70,
+      cash_reserve_pct: effectiveCashReserve,
       warnings: [],
       status: 'proposed',
       claude_cost_usd: 0,
