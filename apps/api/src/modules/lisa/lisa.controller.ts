@@ -321,6 +321,53 @@ export class LisaController {
         }));
     }
 
+    // PR #246 — MTD (Month-To-Date) gains pour la carte « Gains du mois ».
+    // Source : paper_trades fermés depuis le 1er du mois UTC, strategy gainers.
+    const startOfMonthUtc = new Date();
+    startOfMonthUtc.setUTCDate(1);
+    startOfMonthUtc.setUTCHours(0, 0, 0, 0);
+    const startOfMonthIso = startOfMonthUtc.toISOString();
+
+    const { count: closedMtdCount } = await supabase
+      .from('paper_trades')
+      .select('*', { count: 'exact', head: true })
+      .eq('portfolio_id', portfolioId)
+      .eq('strategy', 'top_gainers_v1')
+      .eq('status', 'closed')
+      .gte('closed_at', startOfMonthIso);
+    const closedMtd = closedMtdCount ?? 0;
+
+    const { data: closedMtdRows } = await supabase
+      .from('paper_trades')
+      .select('pnl_usd, closed_at')
+      .eq('portfolio_id', portfolioId)
+      .eq('strategy', 'top_gainers_v1')
+      .eq('status', 'closed')
+      .gte('closed_at', startOfMonthIso)
+      .limit(10000);
+    const closedMtdPnlUsd = (closedMtdRows ?? []).reduce(
+      (acc, row) => acc + (parseFloat(String(row.pnl_usd ?? '0')) || 0),
+      0,
+    );
+
+    // Best/worst day du mois (agrégation client par jour UTC).
+    const dailyPnlMap = new Map<string, number>();
+    for (const r of closedMtdRows ?? []) {
+      const day = String(r.closed_at).slice(0, 10); // YYYY-MM-DD
+      const pnl = parseFloat(String(r.pnl_usd ?? '0')) || 0;
+      dailyPnlMap.set(day, (dailyPnlMap.get(day) ?? 0) + pnl);
+    }
+    let bestDay: { date: string; pnl: number } | null = null;
+    let worstDay: { date: string; pnl: number } | null = null;
+    let winningDays = 0;
+    let losingDays = 0;
+    for (const [date, pnl] of dailyPnlMap.entries()) {
+      if (!bestDay || pnl > bestDay.pnl) bestDay = { date, pnl };
+      if (!worstDay || pnl < worstDay.pnl) worstDay = { date, pnl };
+      if (pnl > 0) winningDays++;
+      else if (pnl < 0) losingDays++;
+    }
+
     return {
       nextTickInSeconds,
       intervalMinutes,
@@ -350,6 +397,14 @@ export class LisaController {
         ? Number(cfgRow.gainers_realised_7d_pct) : null,
       target7dPct: cfgRow?.gainers_target_7d_pct != null
         ? Number(cfgRow.gainers_target_7d_pct) : null,
+      // PR #246 — Cartes Gains du jour / Gains du mois (mode-agnostique).
+      mtdPnlUsd: closedMtdPnlUsd,
+      mtdTradesCount: closedMtd,
+      mtdSessionsCount: dailyPnlMap.size,
+      mtdWinningDays: winningDays,
+      mtdLosingDays: losingDays,
+      mtdBestDay: bestDay,
+      mtdWorstDay: worstDay,
     };
   }
 

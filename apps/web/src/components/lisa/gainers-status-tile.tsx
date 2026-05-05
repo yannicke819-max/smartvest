@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Rocket, TrendingUp, TrendingDown, Settings2 } from 'lucide-react';
+import { Rocket, TrendingUp, TrendingDown, Settings2, Calendar, CalendarDays } from 'lucide-react';
 import {
   useGainersStatus,
   useGainersConfig,
@@ -203,6 +203,13 @@ export function GainersStatusTile({ portfolioId }: { portfolioId: string }) {
 
             {/* Bloc droit — compteurs jour (Option B) avec sparkline + breakdown */}
             <DailyCountersPanel data={data} countdown={countdown} />
+          </div>
+
+          {/* PR #246 — Cartes Gains du jour / Gains du mois (mode-agnostique).
+              Source : paper_trades closed strategy='top_gainers_v1'. */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <DailyGainsCard data={data} />
+            <MonthlyGainsCard data={data} />
           </div>
 
           <div className="space-y-1.5">
@@ -1152,6 +1159,126 @@ function TrajectoryBandeau({ status }: { status: GainersStatus }) {
             {ratioPct != null ? ` (${ratioPct}%)` : ''}
             {' · '}Seuils user respectés
           </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PR #246 — Cartes Gains du jour / Gains du mois (mode-agnostique).
+// Source : paper_trades closed pour la strategy gainers (mode 'gainers').
+// Restauration du widget que l'utilisateur avait dans le panneau Daily
+// Harvest (mode 'harvest'), désormais visible aussi en mode 'gainers'.
+// ═══════════════════════════════════════════════════════════════════
+
+function DailyGainsCard({ data }: { data: GainersStatus }) {
+  const total = data.closedTodayPnlUsd;
+  const isPositive = total >= 0;
+  const sign = isPositive ? '+' : '';
+  return (
+    <div className="rounded-lg border p-4 space-y-3 bg-emerald-50/50 dark:bg-emerald-950/20">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Calendar className="h-4 w-4 text-emerald-700 dark:text-emerald-300" />
+          <h3 className="text-sm font-medium">Gains du jour</h3>
+        </div>
+        <span className="text-[10px] text-muted-foreground">UTC</span>
+      </div>
+      <div className="space-y-1">
+        <div className={`text-2xl font-mono font-bold tabular-nums ${isPositive ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-600'}`}>
+          {sign}${total.toFixed(2)}
+        </div>
+        <div className="text-xs text-muted-foreground">
+          {data.closedToday} trade{data.closedToday > 1 ? 's' : ''} fermé{data.closedToday > 1 ? 's' : ''} aujourd&apos;hui
+        </div>
+      </div>
+      <div className="grid grid-cols-3 gap-2 pt-2 border-t border-current/10 text-xs">
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Ouverts</div>
+          <div className="font-mono font-medium">{data.openedToday}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Fermés</div>
+          <div className="font-mono font-medium">{data.closedToday}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Open</div>
+          <div className="font-mono font-medium">{data.openPositions}/{data.maxPositions}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MonthlyGainsCard({ data }: { data: GainersStatus }) {
+  const total = data.mtdPnlUsd ?? 0;
+  const isPositive = total >= 0;
+  const sign = isPositive ? '+' : '';
+  const monthLabel = new Date().toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+  const winRateMonth = data.mtdSessionsCount > 0
+    ? (data.mtdWinningDays / data.mtdSessionsCount) * 100
+    : 0;
+  return (
+    <div className="rounded-lg border p-4 space-y-3 bg-blue-50/50 dark:bg-blue-950/20">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <CalendarDays className="h-4 w-4 text-blue-700 dark:text-blue-300" />
+          <h3 className="text-sm font-medium">Gains du mois</h3>
+        </div>
+        <span className="text-xs text-muted-foreground capitalize">{monthLabel}</span>
+      </div>
+      <div className="space-y-1">
+        <div className={`text-2xl font-mono font-bold tabular-nums ${isPositive ? 'text-blue-700 dark:text-blue-300' : 'text-red-600'}`}>
+          {sign}${total.toFixed(2)}
+        </div>
+        <div className="text-xs text-muted-foreground">
+          {data.mtdSessionsCount} jour{data.mtdSessionsCount > 1 ? 's' : ''} actif{data.mtdSessionsCount > 1 ? 's' : ''} ·{' '}
+          {data.mtdWinningDays} +{' '}
+          {data.mtdLosingDays} -{' '}
+          {data.mtdSessionsCount > 0 && (
+            <span className="font-medium">{winRateMonth.toFixed(0)}% jours gagnants</span>
+          )}
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-2 pt-2 border-t border-current/10 text-xs">
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Meilleur jour</div>
+          <div className="font-mono font-medium text-emerald-700 dark:text-emerald-300">
+            {data.mtdBestDay && data.mtdBestDay.pnl > 0
+              ? `+$${data.mtdBestDay.pnl.toFixed(2)}`
+              : '—'}
+          </div>
+          {data.mtdBestDay && data.mtdBestDay.pnl > 0 && (
+            <div className="text-[10px] text-muted-foreground">
+              {new Date(data.mtdBestDay.date).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short' })}
+            </div>
+          )}
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Pire jour</div>
+          <div className="font-mono font-medium text-red-600">
+            {data.mtdWorstDay && data.mtdWorstDay.pnl < 0
+              ? `-$${Math.abs(data.mtdWorstDay.pnl).toFixed(2)}`
+              : '—'}
+          </div>
+          {data.mtdWorstDay && data.mtdWorstDay.pnl < 0 && (
+            <div className="text-[10px] text-muted-foreground">
+              {new Date(data.mtdWorstDay.date).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short' })}
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-2 pt-2 border-t border-current/10 text-xs">
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Trades MTD</div>
+          <div className="font-mono font-medium">{data.mtdTradesCount}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Win rate jours</div>
+          <div className="font-mono font-medium">
+            {data.mtdSessionsCount > 0 ? `${winRateMonth.toFixed(0)}%` : '—'}
+          </div>
         </div>
       </div>
     </div>

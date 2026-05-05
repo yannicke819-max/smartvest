@@ -685,37 +685,36 @@ export class TopGainersScannerService implements OnModuleInit {
       return;
     }
 
-    // PR Coverage filter — pool de 10 (au lieu de 3) pour buffer.
-    // Quand certains top candidats ont coverage=none (Asia .SHG/.SHE, US illiquides
-    // type EJPRF), le filtre coverage en aval (scanPortfolio) les exclut.
-    // Avec pool 10, il reste assez de backups pour que maxPerCycle (default 3)
-    // soit toujours saturé par des candidats avec data valide.
+    // PR #246 — Universe filter DÉPLACÉ dans scanPortfolio (avant selectTopGainers).
+    // Bug observé 04/05/2026 23:43 UTC : `selectTopGainers(candidates, 10)` global
+    // retournait les 10 meilleurs scores → souvent 100% Asia pendant la session
+    // asiatique. Puis le filtre universe per-portfolio (`top.filter(universeAsia)`)
+    // les éliminait tous → universe filter 10→0 → 0 trade ouvert.
+    // Fix : on conserve le selectTopGainers global UNIQUEMENT pour le shadow run
+    // et le persistLog (pipeline-agnostic, audit). Le scan par portfolio reçoit
+    // la liste COMPLÈTE des candidats et applique son propre filtre universe puis
+    // selectTopGainers sur la liste filtrée.
     const TOP_POOL_SIZE = 10;
-    const top = selectTopGainers(candidates, TOP_POOL_SIZE);
-    this.recordTopSelected(top.length);
+    const universalTop = selectTopGainers(candidates, TOP_POOL_SIZE);
+    this.recordTopSelected(universalTop.length);
     this.logger.log(
-      `[top-gainers] ${candidates.length} scanned → ${top.length} retained (pool ${TOP_POOL_SIZE}): ${top.slice(0, 5).map((t) => `${t.symbol}(${t.assetClass},${t.changePct.toFixed(1)}%,score=${t.score})`).join(', ')}${top.length > 5 ? '…' : ''}`,
+      `[top-gainers] ${candidates.length} scanned → ${universalTop.length} universal top (pool ${TOP_POOL_SIZE}): ${universalTop.slice(0, 5).map((t) => `${t.symbol}(${t.assetClass},${t.changePct.toFixed(1)}%,score=${t.score})`).join(', ')}${universalTop.length > 5 ? '…' : ''}`,
     );
 
-    // PR6.3 — Shadow run wiring : persiste chaque candidat scanné dans
-    // gainers_v1_shadow_signals quand GAINERS_V1_SHADOW=true.
-    // Première version : decision = ACCEPT pour les top-N retenus (legacy
-    // scoring), REJECT pour les autres avec reject_reason générique.
-    // PR6.4 swappera vers décision V1 pipeline complet (BLOC 1+2+3 enrichi).
-    await this.persistShadowSignalsBatch(candidates, top);
+    // PR6.3 — Shadow run wiring : pipeline-agnostic, utilise le top universal.
+    await this.persistShadowSignalsBatch(candidates, universalTop);
 
-    // Persist log entries pour les top retenus + filtered samples (audit)
-    await this.persistLog(candidates, top);
+    // Persist log entries pour les top universels (audit cross-portfolio)
+    await this.persistLog(candidates, universalTop);
 
-    if (top.length === 0) {
+    if (candidates.length === 0) {
       this.recordEarlyReturn('candidates_fetched_but_none_selected');
       return;
     }
 
-    // P18 — LLM re-ranking (inert when SCANNER_LLM_ROUTER_ENABLED=false)
-    const rankedTop = await this.rankCandidates(top);
-
     // P9-UX — Pour chaque portfolio, gate par per-portfolio cycle puis scan.
+    // PR #246 — On passe TOUS les candidats (universe filter + selectTopGainers
+    // appliqués per-portfolio dans scanPortfolio).
     const now = Date.now();
     for (const cfg of configs) {
       const portfolioId = cfg.portfolio_id as string;
@@ -727,7 +726,7 @@ export class TopGainersScannerService implements OnModuleInit {
           continue;
         }
         this.lastScanByPortfolio.set(portfolioId, now);
-        await this.scanPortfolio(cfg.user_id as string, portfolioId, rankedTop);
+        await this.scanPortfolio(cfg.user_id as string, portfolioId, candidates);
       } catch (e) {
         this.logger.warn(
           `[top-gainers] portfolio ${portfolioId.slice(0, 8)} failed: ${String(e).slice(0, 120)}`,
@@ -1245,7 +1244,7 @@ export class TopGainersScannerService implements OnModuleInit {
   private async scanPortfolio(
     userId: string,
     portfolioId: string,
-    top: Array<TopGainerCandidate & { score: number; assetClass: TopGainerAssetClass }>,
+    candidates: TopGainerCandidate[],
   ): Promise<void> {
     // P19x.4 — Watchdog expectancy : skip opens si E<0 sur 10 derniers trades.
     const expectancyNegative = await this.checkExpectancyWatchdog(portfolioId);
@@ -1307,9 +1306,13 @@ export class TopGainersScannerService implements OnModuleInit {
       : FALLBACK_COOLDOWN_MIN;
     const positionNotionalUsd = capitalUsd * (positionPct / 100);
 
-    // PR #3 — universe toggles per-portfolio. Filtre client-side : la cache
-    // globale fetchAllCandidates contient TOUTES les sources (US/EU/Asia/Crypto)
-    // mais l'utilisateur peut désactiver une zone via UI. Default = tout activé.
+    // PR #3 + PR #246 — universe toggles per-portfolio appliqués AVANT
+    // selectTopGainers. Bug pré-#246 : selectTopGainers global retournait top 10
+    // par score (souvent 100% Asia pendant la session asiatique) puis le filtre
+    // universe per-portfolio les éliminait tous → universe filter 10→0 → 0 trade.
+    // Fix : on filtre la liste COMPLÈTE des candidats par universe AVANT de
+    // sélectionner le top, garantissant que chaque portfolio reçoit les
+    // meilleurs candidats DANS SON univers configuré.
     const universeUs = cfgRow?.gainers_universe_us !== false;
     const universeEu = cfgRow?.gainers_universe_eu !== false;
     const universeAsia = cfgRow?.gainers_universe_asia !== false;
@@ -1321,18 +1324,34 @@ export class TopGainersScannerService implements OnModuleInit {
     const minPWin = cfgRow?.gainers_min_p_win != null
       ? Math.max(0, Math.min(1, Number(cfgRow.gainers_min_p_win)))
       : 0.50;
-    const filteredTop = top.filter((c) => {
-      if (c.assetClass === 'us_equity_large' || c.assetClass === 'us_equity_small_mid') return universeUs;
-      if (c.assetClass === 'eu_equity') return universeEu;
-      if (c.assetClass === 'asia_equity') return universeAsia;
-      if (c.assetClass === 'crypto_major' || c.assetClass === 'crypto_alt') return universeCrypto;
+
+    const filteredCandidates = candidates.filter((c) => {
+      // detectAssetClass est appliqué dans selectTopGainers ; on doit le faire
+      // ici aussi pour pouvoir filtrer la liste pré-selection.
+      const assetClass = detectAssetClass(c.symbol, c.exchange, c.marketCap);
+      if (assetClass === 'us_equity_large' || assetClass === 'us_equity_small_mid') return universeUs;
+      if (assetClass === 'eu_equity') return universeEu;
+      if (assetClass === 'asia_equity') return universeAsia;
+      if (assetClass === 'crypto_major' || assetClass === 'crypto_alt') return universeCrypto;
       return true; // fx/commodity etc — pas de toggle, accept par default
     });
-    if (filteredTop.length < top.length) {
-      this.logger.debug(
-        `[top-gainers] ${portfolioId.slice(0, 8)}: universe filter ${top.length}→${filteredTop.length} (us=${universeUs} eu=${universeEu} asia=${universeAsia} crypto=${universeCrypto})`,
+
+    // PR Coverage filter — pool de 10 (au lieu de 3) pour buffer.
+    // selectTopGainers per-portfolio sur la liste FILTRÉE par universe.
+    const TOP_POOL_SIZE_PER_PORTFOLIO = 10;
+    const top = selectTopGainers(filteredCandidates, TOP_POOL_SIZE_PER_PORTFOLIO);
+    if (top.length === 0) {
+      this.logger.log(
+        `[top-gainers] ${portfolioId.slice(0, 8)}: 0 candidate after universe filter (us=${universeUs} eu=${universeEu} asia=${universeAsia} crypto=${universeCrypto}, candidates=${candidates.length}, filtered=${filteredCandidates.length})`,
       );
+      return;
     }
+    this.logger.log(
+      `[top-gainers] ${portfolioId.slice(0, 8)}: ${candidates.length}→${filteredCandidates.length} after universe → top ${top.length} (us=${universeUs} eu=${universeEu} asia=${universeAsia} crypto=${universeCrypto})`,
+    );
+
+    // P18 — LLM re-ranking (inert when SCANNER_LLM_ROUTER_ENABLED=false)
+    const filteredTop = await this.rankCandidates(top);
 
     // Garde-fou : count current open positions (utilise maxOpen depuis config)
     const { data: openPositions } = await this.supabase
@@ -2009,6 +2028,11 @@ export class TopGainersScannerService implements OnModuleInit {
   ): Promise<void> {
     const topSet = new Set(top.map((t) => t.symbol));
     const rows: Record<string, unknown>[] = [];
+    // PR #246 — `top_gainers_log.volume` et `avg_vol_50d` sont déclarés BIGINT.
+    // Binance retourne ces valeurs en float (ex: 850934.06) → INSERT fail avec
+    // `invalid input syntax for type bigint: "850934.06"`. Math.round() avant.
+    const toBigint = (n: number | undefined | null): number =>
+      n == null || !Number.isFinite(n) ? 0 : Math.round(n);
     for (const t of top) {
       rows.push({
         symbol: t.symbol,
@@ -2017,8 +2041,8 @@ export class TopGainersScannerService implements OnModuleInit {
         close_price: String(t.close),
         high_price: String(t.high),
         change_pct: String(t.changePct),
-        volume: t.volume,
-        avg_vol_50d: t.avgVol50d,
+        volume: toBigint(t.volume),
+        avg_vol_50d: toBigint(t.avgVol50d),
         market_cap_usd: String(t.marketCap),
         score: String(t.score),
         decision: 'passed',
@@ -2035,8 +2059,8 @@ export class TopGainersScannerService implements OnModuleInit {
         close_price: String(c.close),
         high_price: String(c.high),
         change_pct: String(c.changePct),
-        volume: c.volume,
-        avg_vol_50d: c.avgVol50d,
+        volume: toBigint(c.volume),
+        avg_vol_50d: toBigint(c.avgVol50d),
         market_cap_usd: String(c.marketCap),
         score: '0',
         decision: 'filtered',
