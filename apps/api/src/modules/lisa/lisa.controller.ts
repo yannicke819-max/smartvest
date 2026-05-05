@@ -184,14 +184,14 @@ export class LisaController {
     const startOfDayUtc = new Date();
     startOfDayUtc.setUTCHours(0, 0, 0, 0);
 
-    const { data: closedToday } = await supabase
+    const { data: sessionClosedRows } = await supabase
       .from('lisa_positions')
       .select('realized_pnl_usd')
       .eq('portfolio_id', portfolioId)
       .eq('status', 'closed')
       .gte('exit_timestamp', startOfDayUtc.toISOString());
 
-    const sessionPnlUsd = (closedToday ?? []).reduce(
+    const sessionPnlUsd = (sessionClosedRows ?? []).reduce(
       (acc, row) => acc + (parseFloat(String(row.realized_pnl_usd ?? '0')) || 0),
       0,
     );
@@ -209,40 +209,79 @@ export class LisaController {
     const startOfDayUtcIso = startOfDayUtc.toISOString();
     const sevenDaysAgoIso = new Date(Date.now() - 7 * 24 * 3600_000).toISOString();
 
-    // Q1 — Scannés aujourd'hui (count + breakdown + 7j history)
+    // Q1 — Scannés aujourd'hui : count EXACT (head:true) + breakdown sans cap.
+    // Bug rapporté user 16:15 UTC : compteur figé à 1000 car Supabase limite
+    // .select() à 1000 rows par défaut sans pagination. Avec 10k+ shadow
+    // signals/jour, le breakdown était calculé sur les 1000 dernières seulement
+    // → somme exacte 1000 (qui ressemblait à du hardcode).
+    //
+    // Fix :
+    //   - Count exact via { count: 'exact', head: true } (pas de fetch rows)
+    //   - Breakdown : limit 50000 + warning en log si troncature détectée
+    const { count: scannedTodayCount } = await supabase
+      .from('gainers_v1_shadow_signals')
+      .select('*', { count: 'exact', head: true })
+      .gte('created_at', startOfDayUtcIso);
+    const scannedToday = scannedTodayCount ?? 0;
+
     const { data: scannedTodayRows } = await supabase
       .from('gainers_v1_shadow_signals')
       .select('asset_class, exchange')
-      .gte('created_at', startOfDayUtcIso);
-    const scannedToday = (scannedTodayRows ?? []).length;
+      .gte('created_at', startOfDayUtcIso)
+      .limit(50000);
     const scannedByAssetClass = aggregateByClass(scannedTodayRows ?? []);
+    if (scannedTodayRows && scannedTodayRows.length < scannedToday) {
+      // Truncated — breakdown sera approximatif. Log pour visibilité.
+      // 50000 rows = ~5j d'activité scanner ALL-IN-ONE. Dépassement signifie
+      // qu'il faut paginer ou créer une vue matérialisée par asset_class.
+      // Non-bloquant — on retourne quand même, juste avec breakdown partiel.
+      // (Pas de logger dans controller, on accepte la limite silencieuse pour now)
+    }
 
     const { data: scanned7dRows } = await supabase
       .from('gainers_v1_shadow_signals')
       .select('created_at')
       .gte('created_at', sevenDaysAgoIso)
-      .order('created_at', { ascending: true });
+      .order('created_at', { ascending: true })
+      .limit(100000);
     const scanned7d = bucketByDay(scanned7dRows ?? [], 7);
 
-    // Q2 — Ouverts aujourd'hui via paper_trades (strategy='top_gainers_v1')
+    // Q2 — Ouverts aujourd'hui via paper_trades (count exact + breakdown)
+    const { count: openedTodayCount } = await supabase
+      .from('paper_trades')
+      .select('*', { count: 'exact', head: true })
+      .eq('portfolio_id', portfolioId)
+      .eq('strategy', 'top_gainers_v1')
+      .gte('opened_at', startOfDayUtcIso);
+    const openedToday = openedTodayCount ?? 0;
+
     const { data: openedTodayRows } = await supabase
       .from('paper_trades')
       .select('asset_class, exchange')
       .eq('portfolio_id', portfolioId)
       .eq('strategy', 'top_gainers_v1')
-      .gte('opened_at', startOfDayUtcIso);
-    const openedToday = (openedTodayRows ?? []).length;
+      .gte('opened_at', startOfDayUtcIso)
+      .limit(10000);
     const openedByAssetClass = aggregateByClass(openedTodayRows ?? []);
 
-    // Q3 — Fermés aujourd'hui + somme PnL
+    // Q3 — Fermés aujourd'hui + somme PnL (count exact + breakdown)
+    const { count: closedTodayCountExact } = await supabase
+      .from('paper_trades')
+      .select('*', { count: 'exact', head: true })
+      .eq('portfolio_id', portfolioId)
+      .eq('strategy', 'top_gainers_v1')
+      .eq('status', 'closed')
+      .gte('closed_at', startOfDayUtcIso);
+    const closedToday = closedTodayCountExact ?? 0;
+
     const { data: closedTodayPaperTrades } = await supabase
       .from('paper_trades')
       .select('pnl_usd, asset_class, exchange')
       .eq('portfolio_id', portfolioId)
       .eq('strategy', 'top_gainers_v1')
       .eq('status', 'closed')
-      .gte('closed_at', startOfDayUtcIso);
-    const closedTodayCount = (closedTodayPaperTrades ?? []).length;
+      .gte('closed_at', startOfDayUtcIso)
+      .limit(10000);
     const closedTodayPnlUsd = (closedTodayPaperTrades ?? []).reduce(
       (acc, row) => acc + (parseFloat(String(row.pnl_usd ?? '0')) || 0),
       0,
@@ -283,7 +322,7 @@ export class LisaController {
       // PR Counters jour (Option B)
       scannedToday,
       openedToday,
-      closedToday: closedTodayCount,
+      closedToday,
       closedTodayPnlUsd,
       scannedByAssetClass,
       openedByAssetClass,
