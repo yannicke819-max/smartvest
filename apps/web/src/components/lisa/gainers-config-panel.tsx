@@ -67,13 +67,32 @@ export function GainersConfigPanel({ portfolioId }: Props) {
   };
 
   const handleSave = async () => {
-    if (Object.keys(draft).length === 0) return;
+    // PR Autopilot toggle — Save force toujours autopilot=true. La désactivation
+    // se fait UNIQUEMENT via le bouton "Désactiver" du toggle (handleToggleAutopilot).
+    // Spec utilisateur : "il devra s'activer au moment de la sauvegarde des
+    // paramètres et reste désactivable manuellement."
+    const payload: EditableConfig = {
+      ...draft,
+      autopilot_enabled: true,
+    };
     try {
-      await update.mutateAsync(draft);
+      await update.mutateAsync(payload);
       setDraft({});
       setSaved(true);
       setError(null);
       setTimeout(() => setSaved(false), 2500);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
+    }
+  };
+
+  // PR Autopilot toggle — flip immédiat (pas besoin de Save).
+  const handleToggleAutopilot = async () => {
+    const newState = !(cfg.autopilot_enabled === true);
+    try {
+      await update.mutateAsync({ autopilot_enabled: newState });
+      setError(null);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
@@ -116,6 +135,47 @@ export function GainersConfigPanel({ portfolioId }: Props) {
         valeur hardcodée — modifie librement, sauvegarde et l&apos;effet est
         immédiat au cycle suivant.
       </p>
+
+      {/* 0. Autopilot toggle (top-level, prioritaire) */}
+      <section
+        className={`rounded-md border-2 p-3 flex items-center justify-between gap-3 ${
+          cfg.autopilot_enabled === true
+            ? 'border-emerald-500/60 bg-emerald-500/5'
+            : 'border-red-500/60 bg-red-500/5'
+        }`}
+      >
+        <div className="flex items-center gap-3">
+          <div className={`text-2xl ${cfg.autopilot_enabled === true ? 'text-emerald-500' : 'text-red-500'}`}>
+            {cfg.autopilot_enabled === true ? '🟢' : '🔴'}
+          </div>
+          <div>
+            <div className="text-sm font-semibold text-foreground">
+              Autopilot {cfg.autopilot_enabled === true ? 'ACTIF' : 'DÉSACTIVÉ'}
+            </div>
+            <div className="text-[11px] text-muted-foreground">
+              {cfg.autopilot_enabled === true
+                ? 'Le scanner Gainers tourne sur ton portfolio à chaque cycle.'
+                : '⚠ Le scanner ne tourne PAS — aucune ouverture/fermeture automatique.'}
+            </div>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={handleToggleAutopilot}
+          disabled={update.isPending}
+          className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+            cfg.autopilot_enabled === true
+              ? 'bg-red-600 hover:bg-red-700 text-white'
+              : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+          } disabled:opacity-50`}
+        >
+          {update.isPending
+            ? '…'
+            : cfg.autopilot_enabled === true
+              ? 'Désactiver'
+              : 'Activer'}
+        </button>
+      </section>
 
       {/* 1. Capital & sizing */}
       <section className="space-y-3">
@@ -363,15 +423,16 @@ export function GainersConfigPanel({ portfolioId }: Props) {
       </section>
 
       {/* Actions */}
-      <div className="flex items-center gap-2 pt-2 border-t border-zinc-800">
+      <div className="flex items-center gap-2 pt-2 border-t">
         <button
           type="button"
           onClick={handleSave}
           disabled={Object.keys(draft).length === 0 || update.isPending}
-          className="flex items-center gap-2 px-4 py-2 rounded-md bg-orange-600 hover:bg-orange-500 disabled:bg-zinc-700 disabled:opacity-50 text-white text-sm font-medium"
+          className="flex items-center gap-2 px-4 py-2 rounded-md bg-orange-600 hover:bg-orange-500 disabled:bg-muted disabled:opacity-50 text-white text-sm font-medium"
+          title="Sauvegarde les paramètres et active l'autopilot"
         >
           <Save className="w-4 h-4" />
-          {update.isPending ? 'Sauvegarde…' : 'Sauvegarder'}
+          {update.isPending ? 'Sauvegarde…' : 'Sauvegarder + activer'}
         </button>
         <button
           type="button"
