@@ -1056,7 +1056,8 @@ function Sparkline7d({ data }: { data: Array<{ date: string; count: number }> })
  *   🟢 DANS_LE_PLAN      : "Trajectoire conforme · réalisé/cible X%"
  *   🟢 EN_AVANCE         : "En avance ✓ · réalisé X% / cible Y%"
  *   🟡 EN_RETARD         : "Mode rattrapage actif · gates assouplis"
- *   🚨 HORS_TRAJECTOIRE  : ROUGE CLIGNOTANT — "SCANNER OFF — réalisé négatif"
+ *   🚨 HORS_TRAJECTOIRE + scanner stoppé : alarme rouge sobre
+ *   🟠 HORS_TRAJECTOIRE mais scanner encore actif : warning orange (transition)
  */
 function TrajectoryBandeau({ status }: { status: GainersStatus }) {
   const { trajectoryStatus, adaptiveActive, realised7dPct, target7dPct } = status;
@@ -1073,21 +1074,43 @@ function TrajectoryBandeau({ status }: { status: GainersStatus }) {
     ? Math.round((realised7dPct / target7dPct) * 100)
     : null;
 
-  if (trajectoryStatus === 'HORS_TRAJECTOIRE') {
+  // Alarme rouge SOBRE — déclenchée uniquement si :
+  //   1. Trajectory HORS_TRAJECTOIRE (problème identifié)
+  //   2. ET autopilot effectivement désactivé (scanner réellement stoppé)
+  // Sans la condition #2, on est dans une transition (service va arrêter au
+  // prochain cycle 5min) → orange warning, pas rouge alarmiste.
+  const scannerActuallyStopped = !status.adaptiveEnabled || status.adaptiveActive === false;
+  const realScannerOff = trajectoryStatus === 'HORS_TRAJECTOIRE' && status.openPositions === 0;
+
+  if (trajectoryStatus === 'HORS_TRAJECTOIRE' && realScannerOff) {
+    // Vraie alarme — scanner stoppé, action requise
     return (
-      <div className="rounded-md border-2 border-red-600 bg-red-100 dark:bg-red-950/40 px-4 py-3 animate-pulse">
-        <div className="flex items-start gap-3">
-          <span className="text-2xl" aria-hidden>🚨</span>
-          <div className="flex-1">
-            <div className="text-sm font-bold text-red-700 dark:text-red-300">
-              SCANNER OFF — HORS TRAJECTOIRE
-            </div>
-            <div className="text-xs text-red-600 dark:text-red-400 mt-1">
-              Réalisé 7j {realisedStr} (négatif). Le scanner est suspendu pour
-              préserver le capital. Vérifie la stratégie avant relance manuelle
-              (toggle Autopilot).
-            </div>
+      <div className="rounded-md border-2 border-red-500 bg-red-50 dark:bg-red-950/30 px-3 py-2">
+        <div className="flex items-start gap-2">
+          <span className="text-base" aria-hidden>⚠️</span>
+          <div className="flex-1 text-xs">
+            <span className="font-semibold text-red-700 dark:text-red-300">
+              Scanner arrêté
+            </span>
+            <span className="text-red-600 dark:text-red-400">
+              {' · '}Trajectoire négative ({realisedStr}). Vérifie la stratégie avant relance.
+            </span>
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (trajectoryStatus === 'HORS_TRAJECTOIRE') {
+    // Transition — trajectoire négative détectée mais scanner pas encore arrêté
+    return (
+      <div className="rounded-md border border-orange-400 bg-orange-50 dark:bg-orange-950/20 px-3 py-2">
+        <div className="flex items-start gap-2 text-xs">
+          <span aria-hidden>🟠</span>
+          <span className="text-orange-700 dark:text-orange-300">
+            <strong>Trajectoire négative détectée</strong> · Réalisé 7j {realisedStr}.
+            Le service adaptive arrêtera le scanner au prochain cycle si non résolu.
+          </span>
         </div>
       </div>
     );
