@@ -22,6 +22,7 @@ import {
 } from './trend-filter';
 import {
   DEFAULT_COMPOSITE_SCORER_CONFIG,
+  SHADOW_COMPOSITE_SCORER_CONFIG,
   CompositeScorerConfig,
   computeCompositeScore,
 } from './composite-scorer';
@@ -39,14 +40,17 @@ export const DEFAULT_BLOC1_FULL_CONFIG: Bloc1FullConfig = {
 };
 
 /**
- * PR6.6.5 — Bloc1 full config pour shadow run.
- * Tolère null fields à la fois sur prefilter (PR6.4) et trend filter (PR6.6.5).
+ * PR6.6.5 + PR6.6.6 — Bloc1 full config pour shadow run.
+ * Tolère null fields sur prefilter (PR6.4), trend filter (PR6.6.5),
+ * et composite scorer best-effort partial (PR6.6.6 — composite_score
+ * calculé même avec persistence/atr null, renormalize weights sur
+ * composants présents).
  * Prod garde DEFAULT_BLOC1_FULL_CONFIG strict (ADR-005 §1bis lock).
  */
 export const SHADOW_BLOC1_FULL_CONFIG: Bloc1FullConfig = {
   prefilter: SHADOW_BLOC1_CONFIG,
   trendFilter: SHADOW_TREND_FILTER_CONFIG,
-  scorer: DEFAULT_COMPOSITE_SCORER_CONFIG,
+  scorer: SHADOW_COMPOSITE_SCORER_CONFIG,
 };
 
 @Injectable()
