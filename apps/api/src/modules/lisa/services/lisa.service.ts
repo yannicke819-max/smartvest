@@ -1964,7 +1964,33 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
           triggeredBy: 'user_manual',
         });
       } catch (e) {
-        this.logger.error(`Failed to open position for ${String(expression.symbol)}: ${String(e)}`);
+        // Migration 0118 — observabilité paper-broker silent failures.
+        // Avant ce fix, les exceptions thrown par paperBroker.openPosition
+        // (P20 fees-aware guard, fallback price, insufficient cash, etc.)
+        // étaient loggées au logger Nest mais JAMAIS persistées en DB.
+        // L'utilisateur voyait juste "0 position ouverte" sans cause racine.
+        // Désormais on persiste l'erreur exacte avec son contexte pour
+        // diagnostic en 1 query SQL.
+        const errMsg = e instanceof Error ? e.message : String(e);
+        const errClass = e instanceof Error ? e.constructor.name : 'unknown';
+        this.logger.error(`Failed to open position for ${String(expression.symbol)}: ${errMsg}`);
+        await this.logDecision(portfolioId, 'position_open_failed', {
+          summary: `Open ${String(expression.symbol)} failed: ${errMsg.slice(0, 200)}`,
+          rationale: errMsg.slice(0, 1500),
+          payload: {
+            proposal_id: proposalId,
+            thesis_id: alloc.thesisId,
+            symbol: expression.symbol,
+            asset_class: expression.assetClass,
+            venue: expression.venue,
+            capital_allocation_usd: alloc.amountUsd,
+            error_class: errClass,
+            error_message: errMsg.slice(0, 500),
+          },
+          triggeredBy: 'user_manual',
+        }).catch((logErr) =>
+          this.logger.warn(`Failed to log position_open_failed: ${String(logErr).slice(0, 100)}`),
+        );
       }
     }
 
