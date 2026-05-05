@@ -23,6 +23,7 @@ import {
 } from '../bloc1/trend-filter';
 import {
   DEFAULT_COMPOSITE_SCORER_CONFIG,
+  SHADOW_COMPOSITE_SCORER_CONFIG,
   computeCompositeScore,
 } from '../bloc1/composite-scorer';
 import { GainersBloc1Service } from '../bloc1/gainers-bloc1.service';
@@ -322,6 +323,76 @@ describe('GainersBloc1 — composite scorer', () => {
     const s = computeCompositeScore(baseEquity({ changePct1m: -0.05 }), DEFAULT_COMPOSITE_SCORER_CONFIG);
     expect(s).not.toBeNull();
     expect(s!).toBeGreaterThanOrEqual(0);
+  });
+
+  // PR6.6.6 — shadowAllowPartialScore : best-effort scoring with null fields
+  describe('PR6.6.6 — shadowAllowPartialScore', () => {
+    it('Cas 1 : tous fields présents, shadowAllowPartialScore=false → strict identique', () => {
+      const s = computeCompositeScore(baseEquity(), DEFAULT_COMPOSITE_SCORER_CONFIG);
+      const sShadow = computeCompositeScore(baseEquity(), SHADOW_COMPOSITE_SCORER_CONFIG);
+      expect(s).toBeCloseTo(sShadow!);
+    });
+
+    it('Cas 2 : persistence null, shadowAllowPartialScore=false → null (prod strict)', () => {
+      const s = computeCompositeScore(
+        baseEquity({ persistenceScore: null }),
+        DEFAULT_COMPOSITE_SCORER_CONFIG,
+      );
+      expect(s).toBeNull();
+    });
+
+    it('Cas 3 : persistence null, shadowAllowPartialScore=true → score partiel non-null', () => {
+      const s = computeCompositeScore(
+        baseEquity({ persistenceScore: null }),
+        SHADOW_COMPOSITE_SCORER_CONFIG,
+      );
+      expect(s).not.toBeNull();
+      expect(s!).toBeGreaterThanOrEqual(0);
+      expect(s!).toBeLessThanOrEqual(1);
+    });
+
+    it('Cas 4 : atr null, shadowAllowPartialScore=true → score partiel non-null', () => {
+      const s = computeCompositeScore(
+        baseEquity({ atrDailyRelative: null }),
+        SHADOW_COMPOSITE_SCORER_CONFIG,
+      );
+      expect(s).not.toBeNull();
+      expect(s!).toBeGreaterThanOrEqual(0);
+      expect(s!).toBeLessThanOrEqual(1);
+    });
+
+    it('Cas 5 : persistence ET atr null, shadowAllowPartialScore=true → score basé momentum only', () => {
+      const s = computeCompositeScore(
+        baseEquity({ persistenceScore: null, atrDailyRelative: null, changePct1m: 0.05 }),
+        SHADOW_COMPOSITE_SCORER_CONFIG,
+      );
+      expect(s).not.toBeNull();
+      // changePct1m=0.05 / 0.10 ceiling = 0.5 momentum component
+      // Re-normalized weight = 0.3/0.3 = 1.0 → score = 0.5
+      expect(s!).toBeCloseTo(0.5);
+    });
+
+    it('Cas 6 : Régression prod default — shadowAllowPartialScore=false', () => {
+      expect(DEFAULT_COMPOSITE_SCORER_CONFIG.shadowAllowPartialScore).toBe(false);
+    });
+
+    it('Cas 7 : Shadow config = true', () => {
+      expect(SHADOW_COMPOSITE_SCORER_CONFIG.shadowAllowPartialScore).toBe(true);
+    });
+
+    it('Cas 8 : score partiel reflète proportionnellement les composants présents', () => {
+      // baseEquity : persistence=0.83, momentum=0.02 (changePct1m), atr=0.03
+      // Strict score : 0.5*0.83 + 0.3*0.2 + 0.2*0.8 = 0.415 + 0.06 + 0.16 = 0.635
+      const strict = computeCompositeScore(baseEquity(), DEFAULT_COMPOSITE_SCORER_CONFIG);
+
+      // Shadow partiel sans persistence : (0.3*0.2 + 0.2*0.8) / (0.3+0.2) = 0.22/0.5 = 0.44
+      const partial = computeCompositeScore(
+        baseEquity({ persistenceScore: null }),
+        SHADOW_COMPOSITE_SCORER_CONFIG,
+      );
+      expect(strict).toBeCloseTo(0.635);
+      expect(partial).toBeCloseTo(0.44);
+    });
   });
 });
 
