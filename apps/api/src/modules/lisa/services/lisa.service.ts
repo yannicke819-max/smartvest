@@ -2361,7 +2361,8 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
   async fetchMacroIndicator(
     key: 'VIX' | 'DXY',
   ): Promise<{ value: number; source: 'eodhd' | 'fallback' }> {
-    const ticker = key === 'VIX' ? '^VIX.INDX' : 'DX-Y.NYB.FOREX';
+    // PR #234 (PR6.9) : tickers canoniques EODHD (drop deprecated formats)
+    const ticker = key === 'VIX' ? 'VIX.INDX' : 'DXY.INDX';
     const fallback = key === 'VIX' ? 18.5 : 102.3;
     const eodhKey = this.config.get<string>('EODHD_API_KEY');
 
@@ -2541,11 +2542,19 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     // Indices & volatility — pour VIX et DXY on veut la VALEUR de l'indice,
     // pas le prix d'un ETF proxy (VXX ≠ VIX spot, UUP ≈ 27 vs DXY ≈ 102).
     // Les ETFs d'actions (SPY, QQQ, DIA, IWM) restent OK comme proxy tradable.
+    //
+    // PR #234 (PR6.9) : VIX/DXY canoniques per CLAUDE.md §6 quater + vendor
+    // eodhd-claude-skills :
+    //   - VIX = `VIX.INDX` (sans caret, format pur EODHD)
+    //   - DXY = `DXY.INDX` puis fallback `USDX.INDX` (DX-Y.NYB.FOREX deprecated)
+    // Les anciens alias (`^VIX.INDX`, `DX-Y.NYB.FOREX`) sont conservés en
+    // entrée pour back-compat mais redirigés vers le nouveau ticker canonique.
     const indexMap: Record<string, string> = {
-      'VIX': '^VIX.INDX', 'VIX.US': '^VIX.INDX', 'VIX.INDX': '^VIX.INDX',
-      '^VIX': '^VIX.INDX', '^VIX.INDX': '^VIX.INDX',
-      'DXY': 'DX-Y.NYB.FOREX', 'DXY.US': 'DX-Y.NYB.FOREX', 'DX-Y.NYB': 'DX-Y.NYB.FOREX',
-      'DX-Y.NYB.FOREX': 'DX-Y.NYB.FOREX', '^DXY': 'DX-Y.NYB.FOREX',
+      'VIX': 'VIX.INDX', 'VIX.US': 'VIX.INDX', 'VIX.INDX': 'VIX.INDX',
+      '^VIX': 'VIX.INDX', '^VIX.INDX': 'VIX.INDX',
+      'DXY': 'DXY.INDX', 'DXY.US': 'DXY.INDX', 'DXY.INDX': 'DXY.INDX',
+      'DX-Y.NYB': 'DXY.INDX', 'DX-Y.NYB.FOREX': 'DXY.INDX', '^DXY': 'DXY.INDX',
+      'USDX': 'DXY.INDX', 'USDX.INDX': 'DXY.INDX',
       'SPX': 'SPY.US', '^SPX': 'SPY.US', 'SPX.INDX': 'SPY.US',
       'NDX': 'QQQ.US', '^NDX': 'QQQ.US', 'NDX.INDX': 'QQQ.US',
       'DJI': 'DIA.US', '^DJI': 'DIA.US',

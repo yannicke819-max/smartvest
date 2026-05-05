@@ -1040,9 +1040,34 @@ export class TopGainersScannerService implements OnModuleInit {
     }
   }
 
+  /**
+   * PR #234 (PR6.9) — Append exchange suffix to symbol if not already present.
+   * EODHD screener parfois retourne `r.code` SANS suffix (ex: `005930` au lieu
+   * de `005930.KO`), ce qui cause downstream HTTP 404 sur intraday/EOD endpoints
+   * qui exigent le format complet `CODE.EXCHANGE` (cf vendor/eodhd-claude-skills
+   * §symbol-format).
+   *
+   * Mapping exchange code → suffix :
+   *   US → .US, KO (KOSPI) → .KO, KQ (KOSDAQ) → .KQ
+   *   SHG (Shanghai) → .SHG, SHE (Shenzhen) → .SHE
+   *   NSE (India) → .NSE, BSE (India Bombay) → .BSE
+   *   T (Tokyo) → .TSE, HK (Hong Kong) → .HK, AU → .AU, TO (Toronto) → .TO
+   *
+   * Idempotent : si symbol contient déjà un dot, retourne tel quel.
+   */
+  private ensureExchangeSuffix(symbol: string, exchange: string): string {
+    if (symbol.includes('.')) return symbol;
+    const ex = exchange.toUpperCase();
+    // Mapping per CLAUDE.md §EODHD + vendor/eodhd-claude-skills/skills/eodhd-api/references/general/symbol-format.md
+    const suffix = ex === 'T' ? 'TSE' : ex; // T → TSE per EODHD
+    return `${symbol}.${suffix}`;
+  }
+
   private mapEodhdRow(r: EodhdScreenerRow, exchange: string): TopGainerCandidate | null {
-    const symbol = r.code;
-    if (!symbol) return null;
+    const rawCode = r.code;
+    if (!rawCode) return null;
+    // PR #234 : ensure suffix for downstream EODHD intraday/EOD fetches
+    const symbol = this.ensureExchangeSuffix(rawCode, exchange);
     // P18c — accepter les 2 conventions (filter form vs response form), la doc
     // EODHD ne documente pas explicitement le schéma de réponse du screener.
     const close = num(r.adjusted_close ?? r.last_price);

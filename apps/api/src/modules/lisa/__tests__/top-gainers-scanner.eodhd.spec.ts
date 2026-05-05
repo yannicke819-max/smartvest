@@ -232,6 +232,65 @@ describe('mapEodhdRow — accepts both filter-form and legacy field names', () =
     const row = { code: 'BAD', adjusted_close: 0, refund_1d_p: 5 } as any;
     expect((svc as any).mapEodhdRow(row, 'US')).toBeNull();
   });
+
+  // PR #234 (PR6.9) — ensureExchangeSuffix : append .{exchange} si manquant
+  describe('PR #234 — ensureExchangeSuffix (asia tickers HTTP 404 fix)', () => {
+    it('Korean KOSPI : 005930 → 005930.KO (suffix appended)', () => {
+      const svc = makeService();
+      const row = { code: '005930', adjusted_close: 70000, refund_1d_p: 5 } as any;
+      const result = (svc as any).mapEodhdRow(row, 'KO');
+      expect(result.symbol).toBe('005930.KO');
+    });
+
+    it('Korean KOSDAQ : 059120 → 059120.KQ', () => {
+      const svc = makeService();
+      const row = { code: '059120', adjusted_close: 50000, refund_1d_p: 4 } as any;
+      const result = (svc as any).mapEodhdRow(row, 'KQ');
+      expect(result.symbol).toBe('059120.KQ');
+    });
+
+    it('Chinese Shanghai : 600519 → 600519.SHG', () => {
+      const svc = makeService();
+      const row = { code: '600519', adjusted_close: 1500, refund_1d_p: 6 } as any;
+      const result = (svc as any).mapEodhdRow(row, 'SHG');
+      expect(result.symbol).toBe('600519.SHG');
+    });
+
+    it('Chinese Shenzhen : 000783 → 000783.SHE', () => {
+      const svc = makeService();
+      const row = { code: '000783', adjusted_close: 100, refund_1d_p: 5 } as any;
+      const result = (svc as any).mapEodhdRow(row, 'SHE');
+      expect(result.symbol).toBe('000783.SHE');
+    });
+
+    it('Indian NSE : NESCO → NESCO.NSE', () => {
+      const svc = makeService();
+      const row = { code: 'NESCO', adjusted_close: 800, refund_1d_p: 5 } as any;
+      const result = (svc as any).mapEodhdRow(row, 'NSE');
+      expect(result.symbol).toBe('NESCO.NSE');
+    });
+
+    it('Tokyo : 7203 → 7203.TSE (T → TSE remap)', () => {
+      const svc = makeService();
+      const row = { code: '7203', adjusted_close: 2500, refund_1d_p: 4 } as any;
+      const result = (svc as any).mapEodhdRow(row, 'T');
+      expect(result.symbol).toBe('7203.TSE');
+    });
+
+    it('Idempotent : si symbol contient déjà un dot, ne touche pas', () => {
+      const svc = makeService();
+      const row = { code: 'AAPL.US', adjusted_close: 200, refund_1d_p: 4 } as any;
+      const result = (svc as any).mapEodhdRow(row, 'US');
+      expect(result.symbol).toBe('AAPL.US'); // unchanged
+    });
+
+    it('US ticker brut → AAPL.US (regression : doit toujours marcher)', () => {
+      const svc = makeService();
+      const row = { code: 'AAPL', adjusted_close: 200, refund_1d_p: 4 } as any;
+      const result = (svc as any).mapEodhdRow(row, 'US');
+      expect(result.symbol).toBe('AAPL.US');
+    });
+  });
 });
 
 // ── P20a — Exchange code registry snapshot ─────────────────────────────────
