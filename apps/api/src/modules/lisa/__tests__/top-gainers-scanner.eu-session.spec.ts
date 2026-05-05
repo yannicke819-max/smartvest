@@ -260,7 +260,8 @@ describe('fetchAllCandidates — merge dedup', () => {
     const candidates = await svc.fetchAllCandidates(new Date('2026-04-29T10:00:00Z'));
 
     // AAPL@US should appear exactly once even though fetch returned it.
-    const aaplRows = candidates.filter((c) => c.symbol === 'AAPL' && c.exchange === 'US');
+    // PR #234 (PR6.9) : symbol = 'AAPL.US' (ensureExchangeSuffix appended .US)
+    const aaplRows = candidates.filter((c) => c.symbol === 'AAPL.US' && c.exchange === 'US');
     expect(aaplRows.length).toBe(1);
     expect(callCount).toBeGreaterThan(0);
   });
@@ -312,15 +313,16 @@ describe('fetchAllCandidates — merge dedup', () => {
     const candidates = await svc.fetchAllCandidates(new Date('2026-04-29T10:00:00Z'));
 
     const symbols = candidates.map((c) => c.symbol);
-    expect(symbols).toContain('NVDA');
+    // PR #234 (PR6.9) — ensureExchangeSuffix appended :
+    //   NVDA → NVDA.US, 7203 → 7203.TSE (T → TSE remap), AIR.PA déjà avec dot (idempotent)
+    expect(symbols).toContain('NVDA.US');
     expect(symbols).toContain('AIR.PA');
-    // P20a: screener returns bare code '7203', exchange 'T' (not 'TSE')
-    expect(symbols).toContain('7203');
+    expect(symbols).toContain('7203.TSE');
 
     // Verify each candidate gets the correct asset class via detectAssetClass
-    const nvda = candidates.find((c) => c.symbol === 'NVDA')!;
+    const nvda = candidates.find((c) => c.symbol === 'NVDA.US')!;
     const air = candidates.find((c) => c.symbol === 'AIR.PA')!;
-    const toyota = candidates.find((c) => c.symbol === '7203')!;
+    const toyota = candidates.find((c) => c.symbol === '7203.TSE')!;
     expect(detectAssetClass(nvda.symbol, nvda.exchange, nvda.marketCap)).toBe('us_equity_large');
     expect(detectAssetClass(air.symbol, air.exchange)).toBe('eu_equity');
     expect(detectAssetClass(toyota.symbol, toyota.exchange)).toBe('asia_equity');
