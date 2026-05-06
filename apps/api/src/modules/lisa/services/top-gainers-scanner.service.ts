@@ -1361,7 +1361,7 @@ export class TopGainersScannerService implements OnModuleInit {
     const { data: openPositions } = await this.supabase
       .getClient()
       .from('lisa_positions')
-      .select('symbol')
+      .select('symbol, entry_notional_usd')
       .eq('portfolio_id', portfolioId)
       .eq('status', 'open');
     const openSymbols = new Set((openPositions ?? []).map((p) => String(p.symbol).toUpperCase()));
@@ -1370,6 +1370,43 @@ export class TopGainersScannerService implements OnModuleInit {
       this.logger.log(`[top-gainers] ${portfolioId.slice(0, 8)}: no slots (${openPositions?.length}/${maxOpen} open)`);
       return;
     }
+
+    // PR #251 — GATE CAPITAL GLOBAL (anti over-exposure).
+    //
+    // Bug observé prod 06/05/2026 06:31 UTC : 3 positions × $4000 = $12k
+    // ouvertes sur capital $10k (+$1k cash reserve = $9k déployable).
+    // Le scanner respectait `maxOpen=5` mais ignorait totalement le sizing
+    // global → 120% du capital alloué, cash reserve violée.
+    //
+    // Fix : calcule deployedNotional = sum(entry_notional_usd) des positions
+    // open. Compare à availableCapital = capital × (1 - cashReserve/100).
+    // Avant chaque open, vérifie que (deployedNotional + positionNotional)
+    // <= availableCapital. Sinon skip + log.
+    //
+    // Rejet doux : le scanner ne crash pas, il s'arrête juste d'ouvrir
+    // ce cycle. Au prochain cycle, si une position ferme et libère du
+    // notional, l'ouverture sera permise.
+    const deployedNotional = (openPositions ?? []).reduce(
+      (sum, p) => sum + (parseFloat(String(p.entry_notional_usd ?? '0')) || 0),
+      0,
+    );
+    const availableCapital = capitalUsd * (1 - cashReservePct / 100);
+    const remainingBudget = availableCapital - deployedNotional;
+    if (remainingBudget < positionNotionalUsd) {
+      this.logger.log(
+        `[top-gainers] ${portfolioId.slice(0, 8)}: capital saturated — deployed=$${deployedNotional.toFixed(2)} ` +
+        `+ position=$${positionNotionalUsd.toFixed(2)} > available=$${availableCapital.toFixed(2)} ` +
+        `(capital=$${capitalUsd.toFixed(2)} cash_reserve=${cashReservePct}% remaining=$${remainingBudget.toFixed(2)}) → skip cycle`,
+      );
+      return;
+    }
+    // Plafond effectif d'ouvertures ce cycle : min(maxPerCycle config, slotsAvailable, budget-based slots)
+    const budgetBasedSlots = Math.floor(remainingBudget / positionNotionalUsd);
+    const effectiveMaxThisCycle = Math.max(0, Math.min(maxPerCycle, slotsAvailable, budgetBasedSlots));
+    this.logger.log(
+      `[top-gainers] ${portfolioId.slice(0, 8)}: capacity check — deployed=$${deployedNotional.toFixed(2)}/${availableCapital.toFixed(2)} ` +
+      `(${budgetBasedSlots} budget slots, ${slotsAvailable} pos slots, max-per-cycle=${maxPerCycle}) → up to ${effectiveMaxThisCycle} this cycle`,
+    );
 
     // P8 — Calcule la persistance multi-TF pour les top candidats (parallèle)
     // PR #3 — utilise filteredTop (universe toggles per-portfolio)
@@ -1407,10 +1444,12 @@ export class TopGainersScannerService implements OnModuleInit {
     }
 
     // PR Hardcodes-fix — cap par cycle dérivé de cfg.gainers_max_per_cycle.
-    // Permet à l'utilisateur d'ouvrir plusieurs candidats par cycle quand
-    // plusieurs setups A+ sont détectés simultanément.
-    const maxThisCycle = Math.min(slotsAvailable, maxPerCycle);
+    // PR #251 — désormais aussi cappé par le budget capital disponible
+    // (effectiveMaxThisCycle calculé ci-dessus).
+    const maxThisCycle = effectiveMaxThisCycle;
     let opened = 0;
+    // PR #251 — track running notional pour gater chaque open contre le budget
+    let runningDeployedNotional = deployedNotional;
     // P18e — accumule les skips pour log agrégé en fin de cycle (au lieu de
     // N lignes "no persistence data → skip" qui polluent les logs Fly).
     // PR Coverage filter — inclut les skips déjà détectés en coverage filter
@@ -1672,6 +1711,17 @@ export class TopGainersScannerService implements OnModuleInit {
         }
       }
 
+      // PR #251 — Gate budget par-candidat : refuse l'open si ajouter cette
+      // position dépasse le budget disponible. Évite d'ouvrir un 3e à $4k
+      // si capital=$10k cash=10% deployedNotional=$8k → reste $1k seulement.
+      if (runningDeployedNotional + positionNotionalUsd > availableCapital) {
+        this.logger.log(
+          `[top-gainers] ${cand.symbol}: budget cap reached — running=$${runningDeployedNotional.toFixed(2)} ` +
+          `+ position=$${positionNotionalUsd.toFixed(2)} > available=$${availableCapital.toFixed(2)} → skip rest of cycle`,
+        );
+        break;
+      }
+
       const insertedPosId = await this.openTopGainerPosition(
         userId,
         portfolioId,
@@ -1694,6 +1744,7 @@ export class TopGainersScannerService implements OnModuleInit {
       });
       if (insertedPosId) {
         opened++;
+        runningDeployedNotional += positionNotionalUsd;
         await this.markLogOpened(cand.symbol, portfolioId, insertedPosId).catch(() => null);
       }
     }
