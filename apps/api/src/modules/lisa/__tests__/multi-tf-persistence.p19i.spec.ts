@@ -34,7 +34,7 @@ beforeEach(() => {
 const mockConfig = { get: jest.fn().mockReturnValue(undefined) } as any;
 
 function makeService() {
-  return new MultiTimeframePersistenceService(mockBinance, mockEodhd, mockYahoo, mockCache, mockConfig);
+  return new MultiTimeframePersistenceService(mockBinance, mockEodhd, mockYahoo, mockCache, mockConfig, { getStatus: () => ({ throttle: { multitfPaused: false } }) } as any);
 }
 
 function fakeYahooCandles(n = 13) {

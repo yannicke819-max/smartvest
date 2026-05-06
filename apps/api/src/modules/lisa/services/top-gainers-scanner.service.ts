@@ -30,6 +30,7 @@ import { DecisionLogService } from './decision-log.service';
 import { BinanceMarketService } from './binance-market.service';
 import { MultiTimeframePersistenceService } from './multi-tf-persistence.service';
 import { PersistenceProbabilityService } from './persistence-probability.service';
+import { EodhdQuotaService } from './eodhd-quota.service';
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
 // PR6.3 — Shadow wiring (LisaModule import GainersModule pour résolution DI)
 import { GainersShadowRunService } from '../../gainers-scanner/shadow/shadow-run.service';
@@ -418,6 +419,13 @@ export class TopGainersScannerService implements OnModuleInit {
      * Fallback automatique quand modèle pas prêt (sample < 30 OR auc < 0.55).
      */
     private readonly probability: PersistenceProbabilityService,
+    /**
+     * PR #257 — Câblage quota auto-throttle EODHD. Le scanner skip son cycle
+     * quand le quota atteint 85% (`scannerPaused` flag). Évite l'épuisement
+     * total observé prod 06/05/2026 ~08:30 UTC où le cron 1 min consommait
+     * ~22k calls/h jusqu'à atteindre 100k/100k → blocage authoritative.
+     */
+    private readonly quotaService: EodhdQuotaService,
   ) {}
 
   /**
@@ -606,9 +614,24 @@ export class TopGainersScannerService implements OnModuleInit {
     // Pause le scanner cron + les calls EODHD screener associés. Permet d'éponger
     // une saturation quota sans toucher au code. Reset après 00:00 UTC = unset
     // ou false.
-    const scannerPaused = (this.config.get<string>('SCANNER_PAUSE') ?? 'false').toLowerCase() === 'true';
-    if (scannerPaused) {
-      this.logger.log('[top-gainers] SCANNER_PAUSE=true — cycle skipped');
+    const scannerPausedEnv = (this.config.get<string>('SCANNER_PAUSE') ?? 'false').toLowerCase() === 'true';
+
+    // PR #257 — Auto-throttle quota EODHD : pause scanner à 85% (cf
+    // THROTTLE_THRESHOLDS.scanner). Bug observé prod 06/05/2026 08:30 UTC
+    // où cron 1 min consommait ~22k calls/h → quota 100k/100k atteint en
+    // ~4.5h, blocage authoritative complet (positions ne pouvaient plus
+    // fermer faute de prix live).
+    //
+    // EodhdQuotaService.getStatus().throttle.scannerPaused devient true
+    // quand auth.apiRequests / dailyRateLimit >= 0.85. Revient à false
+    // automatiquement après reset minuit GMT (auth refresh 60s).
+    const quotaStatus = this.quotaService.getStatus();
+    const scannerPausedQuota = quotaStatus.throttle.scannerPaused;
+    if (scannerPausedEnv || scannerPausedQuota) {
+      const reason = scannerPausedEnv
+        ? 'env SCANNER_PAUSE=true'
+        : `auto-throttle quota=${(quotaStatus.authoritative.apiRequests / Math.max(1, quotaStatus.authoritative.dailyRateLimit) * 100).toFixed(1)}% ≥ 85%`;
+      this.logger.log(`[top-gainers] paused — ${reason} — cycle skipped`);
       this.recordEarlyReturn('scanner_paused');
       return;
     }
@@ -881,9 +904,13 @@ export class TopGainersScannerService implements OnModuleInit {
     // P19v — SCANNER_PAUSE émergency flag bloque aussi la fetch des candidats
     // (utilisée par UI poll /lisa/gainers-persistence-snapshot). Retourne le
     // cache existant ou [] si jamais peuplé.
-    const scannerPaused = (this.config.get<string>('SCANNER_PAUSE') ?? 'false').toLowerCase() === 'true';
-    if (scannerPaused) {
-      this.logger.debug('[top-gainers] SCANNER_PAUSE=true — fetchAllCandidates returns cache');
+    const scannerPausedEnv = (this.config.get<string>('SCANNER_PAUSE') ?? 'false').toLowerCase() === 'true';
+    // PR #257 — fetchAllCandidates skip aussi sur quota auto-throttle 85%
+    // pour économiser les 11 screener calls × N exchanges + tous les intraday
+    // calls qui suivraient.
+    const scannerPausedQuota = this.quotaService.getStatus().throttle.scannerPaused;
+    if (scannerPausedEnv || scannerPausedQuota) {
+      this.logger.debug(`[top-gainers] scanner paused (env=${scannerPausedEnv} quota=${scannerPausedQuota}) — fetchAllCandidates returns cache`);
       return this.allCandidatesCache?.candidates ?? [];
     }
 

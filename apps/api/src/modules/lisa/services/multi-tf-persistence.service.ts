@@ -27,6 +27,7 @@ import { BinanceMarketService } from './binance-market.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
 import { YahooIntradayService } from './yahoo-intraday.service';
 import { IntradayCacheService, CachedCandle } from './intraday-cache.service';
+import { EodhdQuotaService } from './eodhd-quota.service';
 
 interface Candidate {
   symbol: string;
@@ -115,6 +116,12 @@ export class MultiTimeframePersistenceService {
     private readonly yahoo: YahooIntradayService,
     private readonly intradayCache: IntradayCacheService,
     private readonly config: ConfigService,
+    /**
+     * PR #257 — EodhdQuotaService pour auto-throttle à 95% (intraday=5 calls
+     * × N candidats × multi-TF = grosse conso). Skip batch entier quand
+     * `multitfPaused` flag actif.
+     */
+    private readonly quotaService: EodhdQuotaService,
   ) {}
 
   /** P18e — Métriques cumulatives pour observability. */
@@ -167,9 +174,13 @@ export class MultiTimeframePersistenceService {
     // P19v (30/04/2026 09:00 UTC) — MULTITF_PAUSE émergency flag.
     // Pause les calls intraday EODHD (5 API calls/req multiplier) sans deploy.
     // `flyctl secrets set MULTITF_PAUSE=true` quand quota saturé.
-    const multitfPaused = (this.config.get<string>('MULTITF_PAUSE') ?? 'false').toLowerCase() === 'true';
-    if (multitfPaused) {
-      this.logger.debug('[multi-tf-persistence] MULTITF_PAUSE=true — return empty Map');
+    const multitfPausedEnv = (this.config.get<string>('MULTITF_PAUSE') ?? 'false').toLowerCase() === 'true';
+    // PR #257 — Auto-throttle quota EODHD à 95% (intraday=5 calls × N tickers
+    // × multi-TF = grosse conso). Évite l'épuisement total observé prod
+    // 06/05/2026 où le quota 100k était atteint en ~4.5h.
+    const multitfPausedQuota = this.quotaService.getStatus().throttle.multitfPaused;
+    if (multitfPausedEnv || multitfPausedQuota) {
+      this.logger.debug(`[multi-tf-persistence] paused (env=${multitfPausedEnv} quota=${multitfPausedQuota}) — return empty Map`);
       return out;
     }
 
