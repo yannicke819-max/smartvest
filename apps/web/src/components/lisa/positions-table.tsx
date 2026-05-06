@@ -30,8 +30,15 @@ function refineCloseLabel(
   exitReason: string | null | undefined,
 ): { label: string; color: string } {
   const base = STATUS_LABELS[status];
-  if (status !== 'closed_target' || !exitReason) return base;
+  if (!exitReason) return base;
   const r = exitReason.toLowerCase();
+
+  // PR #256 — Reactive SL early-cut (cut losses tôt sur RSI+MACD bearish)
+  if (status === 'closed_stop' && (r.includes('reactive sl') || r.includes('early-cut'))) {
+    return { label: 'Reactive SL', color: 'bg-orange-50 text-orange-700 border-orange-200' };
+  }
+
+  if (status !== 'closed_target') return base;
   if (r.includes('take-profit absolu') || r.includes('take_profit_absolu') || r.includes('matérialisation gain')) {
     return { label: 'TP absolu', color: 'bg-emerald-100 text-emerald-800 border-emerald-300' };
   }
