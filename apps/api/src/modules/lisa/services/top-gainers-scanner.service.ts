@@ -24,7 +24,6 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { CronJob } from 'cron';
 import { ConfigService } from '@nestjs/config';
-import { randomUUID } from 'crypto';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { LisaService } from './lisa.service';
 import { DecisionLogService } from './decision-log.service';
@@ -520,18 +519,23 @@ export class TopGainersScannerService implements OnModuleInit {
 
   /**
    * P5-PIVOT-TOP-GAINERS Guard 4 — Cron interval configurable via env
-   * `SCAN_INTERVAL_MINUTES` (default 15). Range valide 1-1440 min.
-   * Scheduling dynamique au boot : `fly secrets set SCAN_INTERVAL_MINUTES=5`
-   * + reboot machine → cron tourne toutes les 5 min.
+   * `SCAN_INTERVAL_MINUTES` (default **1** depuis PR #250). Range valide 1-1440 min.
+   * Scheduling dynamique au boot : `fly secrets set SCAN_INTERVAL_MINUTES=2`
+   * + reboot machine → cron tourne toutes les 2 min.
+   *
+   * Pourquoi default 1 (PR #250) : le scanner Gainers est déterministe
+   * (~250 ms / candidat). Latence ouverture devient quasi-instantanée.
+   * Coût ~63 EODHD calls / cycle × 1440 min = 90k/jour, dans le budget
+   * du plan ALL-IN-ONE (100k/jour). Plan plus large = augmenter via env.
    *
    * UI dynamique (changement live sans reboot) = deferred PR2.
    */
   onModuleInit(): void {
     const raw = this.config.get<string>('SCAN_INTERVAL_MINUTES');
-    const parsed = parseInt(String(raw ?? '15'), 10);
+    const parsed = parseInt(String(raw ?? '1'), 10);
     const validated = Number.isFinite(parsed)
       ? Math.max(1, Math.min(1440, parsed))
-      : 15;
+      : 1;
     if (parsed !== validated) {
       this.logger.warn(
         `[top-gainers] SCAN_INTERVAL_MINUTES=${raw} hors range [1,1440] → clamp à ${validated}`,
@@ -1704,8 +1708,10 @@ export class TopGainersScannerService implements OnModuleInit {
   }
 
   /**
-   * Crée une pseudo-proposal + thèse minimale, puis call paperBroker.openPosition.
-   * Le paperBroker existant exige (proposalId, thesisId) → on synthétise ces 2.
+   * PR #250 — Ouvre une position via paperBroker.openPositionDirect (path
+   * direct, bypass complet du pipeline LLM). Skip generateThesis (LLM call),
+   * skip INSERT lisa_proposals, skip approveProposal. Latence ~250 ms vs
+   * 2-3 sec via legacy. proposalId/thesisId NULL (migration 0120).
    *
    * P8 — Si `persistence` fourni, persiste les métriques multi-TF au moment
    * de l'open dans `paper_trades` (forward-compat avec P9).
@@ -1734,8 +1740,6 @@ export class TopGainersScannerService implements OnModuleInit {
       features: Record<string, number>;
     } | null,
   ): Promise<string | null> {
-    const proposalId = randomUUID();
-    const thesisId = randomUUID();
     const effectiveTp = overrides?.tpPct ?? 1.5;
     const effectiveSl = overrides?.slPct ?? 1.0;
     // Fallbacks identiques aux defaults DB migration 0115 si overrides absents
@@ -1744,94 +1748,96 @@ export class TopGainersScannerService implements OnModuleInit {
     const effectivePositionPct = overrides?.positionPct ?? FALLBACK_POSITION_PCT;
     const effectiveNotional = overrides?.positionNotionalUsd
       ?? (effectiveCapital * (effectivePositionPct / 100));
-    const effectiveCashReserve = overrides?.cashReservePct ?? FALLBACK_CASH_RESERVE_PCT;
 
-    // P18 — LLM thesis generation (inert when SCANNER_LLM_ROUTER_ENABLED=false)
-    const llmThesis = await this.generateThesis(cand);
-
-    // PR #249 — `thesis.riskReward` doit être présent : `lisa.service.ts`
-    // approveProposal lit `thesis.riskReward.adverseScenarioReturnPct` au
-    // moment d'ouvrir. Sans ce champ, TypeError "Cannot read properties of
-    // undefined" → 100% des opens .KO/.KQ/etc. crashent silencieusement.
-    // On peuple un riskReward minimal cohérent avec stopLossPct/takeProfitPct.
-    const thesis = {
-      id: thesisId,
-      summary: llmThesis.summary,
-      conviction: 0.7,
-      conviction_score: llmThesis.conviction_score,
-      category: llmThesis.category,
-      kind: 'momentum',
-      preferredExpressionIndex: 0,
-      riskReward: {
-        adverseScenarioReturnPct: -effectiveSl,
-        centralScenarioReturnPct: { mid: effectiveTp, low: effectiveTp * 0.5, high: effectiveTp * 1.5 },
-        horizonDays: 1,
-        riskRewardRatio: effectiveTp / Math.max(effectiveSl, 0.01),
-        convexitySources: [] as string[],
-      },
-      expressions: [
-        {
-          symbol: cand.symbol,
-          assetClass: cand.assetClass,
-          direction: 'long',
-          venue: cand.exchange ?? 'unknown',
-          // P19x.2 — Lit DB : default 1.5% TP / 1.0% SL (vs 3.0/1.5 pré-P19x.2).
-          // User spec (29/04 02:00 UTC) : lock profits earlier + tighter stops.
-          stopLossPct: effectiveSl,
-          takeProfitPct: effectiveTp,
-          horizonDays: 1,
-        },
-      ],
-    };
-    const allocations = [
-      {
-        thesisId,
-        pctCapital: effectivePositionPct,
-        amountUsd: effectiveNotional.toFixed(2),
-      },
-    ];
-
-    // INSERT pseudo-proposal — capital + cash reserve viennent de la config.
-    const { error: insErr } = await this.supabase.getClient().from('lisa_proposals').insert({
-      id: proposalId,
-      portfolio_id: portfolioId,
-      user_id: userId,
-      capital_usd: effectiveCapital.toFixed(2),
-      base_currency: 'USD',
-      detected_regime: 'momentum_top_gainers',
-      market_momentum: 'bullish_strong',
-      regime_summary: `TopGainer scanner candidate: ${cand.symbol} ${cand.assetClass}`,
-      favored_pockets: [],
-      avoided_pockets: [],
-      theses: [thesis],
-      allocations,
-      cash_reserve_pct: effectiveCashReserve,
-      warnings: [],
-      status: 'proposed',
-      claude_cost_usd: 0,
-      generated_at: new Date().toISOString(),
-      expires_at: new Date(Date.now() + 4 * 3600 * 1000).toISOString(),
-    });
-    if (insErr) {
-      this.logger.warn(`[top-gainers] insert pseudo-proposal failed: ${insErr.message}`);
-      return null;
-    }
-
-    // Call approveProposal (réutilise toute la logique cooldown / max_pos /
-    // cash buffer / fallback price guard / decision_log position_opened).
+    // PR #250 — DÉCOUPLAGE COMPLET du pipeline LLM Lisa.
+    //
+    // Avant #250 : generateThesis (LLM) → INSERT lisa_proposals → approveProposal
+    // → re-validations + paperBroker.openPosition. ~2-3 sec / candidat. Bug
+    // structurels (TypeError riskReward) + dépendance pipeline narrative.
+    //
+    // Après #250 : getLivePrice → paperBroker.openPositionDirect → INSERT
+    // lisa_positions. ~250 ms / candidat. Aucune dépendance pipeline LLM.
+    // proposalId/thesisId NULL (migration 0120 rend nullable).
+    //
+    // Garde-fous identiques (notional floor 10$, fees<notional, P20 fees-aware
+    // target guard) — implémentés dans openPositionDirect.
     try {
-      const result = await this.lisa.approveProposal(userId, proposalId);
-      if (result.openedPositions.length === 0) {
-        this.logger.log(`[top-gainers] ${cand.symbol}: approveProposal returned 0 (rejected by gates)`);
+      const quote = await this.lisa.getLivePrice(cand.symbol);
+      if (!quote || !quote.price) {
+        this.logger.warn(`[top-gainers] ${cand.symbol}: getLivePrice returned no price → skip`);
         return null;
       }
-      const openedPos = result.openedPositions[0];
+      // Sanity bound : si le prix live diverge > 30% du `cand.close` (snapshot scanner),
+      // on skip — soit fallback price soit corruption cache.
+      const livePriceNum = parseFloat(quote.price);
+      if (!Number.isFinite(livePriceNum) || livePriceNum <= 0) {
+        this.logger.warn(`[top-gainers] ${cand.symbol}: invalid live price ${quote.price} → skip`);
+        return null;
+      }
+      // Reject sur source fallback explicite (price corrupted)
+      if (typeof quote.source === 'string' && quote.source.startsWith('fallback')) {
+        this.logger.warn(`[top-gainers] ${cand.symbol}: fallback source ${quote.source} → skip`);
+        return null;
+      }
+      const candCloseNum = Number(cand.close);
+      if (Number.isFinite(candCloseNum) && candCloseNum > 0) {
+        const divergePct = Math.abs(livePriceNum - candCloseNum) / candCloseNum;
+        if (divergePct > 0.30) {
+          this.logger.warn(
+            `[top-gainers] ${cand.symbol}: live $${livePriceNum} diverges ${(divergePct * 100).toFixed(1)}% from cand.close $${candCloseNum} → skip (sanity bound)`,
+          );
+          return null;
+        }
+      }
+
+      // Compute stop/TP prices from pcts (long only par scanner)
+      const stopPrice = (livePriceNum * (1 - effectiveSl / 100)).toFixed(8);
+      const tpPrice = (livePriceNum * (1 + effectiveTp / 100)).toFixed(8);
+
+      const openedPos = await this.lisa.getPaperBroker().openPositionDirect({
+        portfolioId,
+        symbol: cand.symbol,
+        assetClass: cand.assetClass,
+        direction: 'long',
+        venue: cand.exchange ?? 'unknown',
+        capitalAllocationUsd: effectiveNotional.toFixed(2),
+        livePrice: livePriceNum.toFixed(8),
+        stopLossPrice: stopPrice,
+        takeProfitPrice: tpPrice,
+        horizonDays: 1,
+        source: 'scanner_top_gainers',
+      });
+
       this.logger.log(
-        `[top-gainers] ${cand.symbol} opened (${result.openedPositions.length} pos, score=${cand.score})`,
+        `[top-gainers] ${cand.symbol} opened DIRECT (entry=$${livePriceNum.toFixed(4)} qty=${openedPos.quantity} sl=${stopPrice} tp=${tpPrice} score=${cand.score})`,
       );
 
-      // P8 + PR #4 — best-effort persist du snapshot persistance + pWin metrics
-      // dans paper_trades (alimente la boucle apprentissage P9 logistique).
+      // Audit decision_log non-bloquant
+      await this.decisionLog.append({
+        portfolioId,
+        kind: 'position_opened',
+        summary: `[GAINERS_DIRECT] ${cand.symbol} opened — score=${cand.score} entry=$${livePriceNum.toFixed(4)}`,
+        rationale: `Scanner Gainers déterministe (PR #250) — bypass pipeline LLM. ` +
+          `tp=${effectiveTp}% sl=${effectiveSl}% notional=$${effectiveNotional.toFixed(2)} ` +
+          `capital=$${effectiveCapital.toFixed(2)} positionPct=${effectivePositionPct}%.`,
+        payload: {
+          symbol: cand.symbol,
+          asset_class: cand.assetClass,
+          exchange: cand.exchange,
+          score: cand.score,
+          change_pct: cand.changePct,
+          entry_price: livePriceNum,
+          stop_loss_price: parseFloat(stopPrice),
+          take_profit_price: parseFloat(tpPrice),
+          quantity: openedPos.quantity,
+          notional_usd: effectiveNotional.toFixed(2),
+          source: 'scanner_top_gainers_direct',
+          position_id: openedPos.id,
+        },
+        triggeredBy: 'autopilot_cron',
+      }).catch(() => { /* non-bloquant */ });
+
+      // P8 + PR #4 — best-effort persist paper_trades pour boucle apprentissage P9
       if (persistence) {
         await this.persistPaperTrade(userId, portfolioId, cand, openedPos, persistence, effectiveTp, effectiveSl, pWinMeta ?? null)
           .catch((e) =>
@@ -1841,7 +1847,25 @@ export class TopGainersScannerService implements OnModuleInit {
 
       return openedPos.id;
     } catch (e) {
-      this.logger.warn(`[top-gainers] approveProposal ${cand.symbol} failed: ${String(e).slice(0, 120)}`);
+      this.logger.warn(`[top-gainers] openPositionDirect ${cand.symbol} failed: ${String(e).slice(0, 200)}`);
+      // Audit échec (non-bloquant) — équivalent du `position_open_failed` legacy
+      await this.decisionLog.append({
+        portfolioId,
+        kind: 'position_open_failed',
+        summary: `[GAINERS_DIRECT] ${cand.symbol} open failed: ${String(e).slice(0, 100)}`,
+        rationale: 'Scanner Gainers direct path (PR #250). Reject ou exception sur openPositionDirect.',
+        payload: {
+          symbol: cand.symbol,
+          asset_class: cand.assetClass,
+          exchange: cand.exchange,
+          score: cand.score,
+          change_pct: cand.changePct,
+          error_message: String(e).slice(0, 300),
+          error_class: e instanceof Error ? e.constructor.name : 'unknown',
+          source: 'scanner_top_gainers_direct',
+        },
+        triggeredBy: 'autopilot_cron',
+      }).catch(() => { /* non-bloquant */ });
       return null;
     }
   }

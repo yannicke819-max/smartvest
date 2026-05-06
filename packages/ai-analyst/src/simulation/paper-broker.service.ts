@@ -16,6 +16,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type {
   ClosePositionCommand,
   OpenPositionCommand,
+  OpenPositionDirectCommand,
   PaperPosition,
   PortfolioSnapshot,
 } from './types';
@@ -322,6 +323,155 @@ export class PaperBrokerService {
       updated_at: position.updatedAt,
     });
     if (insErr) throw new Error(`Paper position insert failed: ${insErr.message}`);
+
+    return position;
+  }
+
+  /**
+   * PR #250 — Ouvre une position SANS passer par `lisa_proposals` ni `approveProposal`.
+   *
+   * Réservé au scanner Gainers déterministe : pas de thèse LLM, pas de
+   * validation proposal, pas de re-fetch. Toutes les données nécessaires
+   * arrivent inline via la commande. Latence ~250 ms vs 2-3 sec via le
+   * pipeline LLM legacy.
+   *
+   * Garde-fous :
+   *   - Notional floor 10 USD
+   *   - Fees > notional reject
+   *   - P20 fees-aware target guard (idem openPosition classique)
+   *   - Quantity > 0 finite
+   *
+   * INSERT lisa_positions avec proposal_id=NULL et thesis_id=NULL (migration
+   * 0120 rend ces colonnes nullable).
+   */
+  async openPositionDirect(cmd: OpenPositionDirectCommand): Promise<PaperPosition> {
+    const now = new Date().toISOString();
+    const livePrice = new Decimal(cmd.livePrice);
+    const notional = new Decimal(cmd.capitalAllocationUsd);
+    if (livePrice.isZero() || livePrice.isNegative()) {
+      throw new Error(`Invalid live price: ${cmd.livePrice}`);
+    }
+    if (notional.lt(10)) {
+      throw new Error(
+        `openPositionDirect rejected: notional ${notional.toFixed(2)} USD < 10 USD floor (insufficient sizing). symbol=${cmd.symbol}`,
+      );
+    }
+
+    const isLong = cmd.direction === 'long' || cmd.direction.startsWith('long_');
+
+    // Two-pass : qty tentative (no fee) → fee → qty finale.
+    const tentativeQty = notional.dividedBy(livePrice);
+    const entryFeeBreakdown = computeVenueFeeDetail(
+      tentativeQty,
+      livePrice,
+      cmd.assetClass,
+      cmd.venue,
+      'buy',
+    );
+    const estimatedCost = new Decimal(entryFeeBreakdown.total);
+    if (estimatedCost.gte(notional)) {
+      throw new Error(
+        `openPositionDirect rejected: entry fee ${estimatedCost.toFixed(2)} >= notional ${notional.toFixed(2)} (symbol=${cmd.symbol})`,
+      );
+    }
+
+    // P20 fees-aware target guard — identique à openPosition.
+    if (cmd.takeProfitPrice) {
+      const tpPrice = new Decimal(cmd.takeProfitPrice);
+      const exitSide: 'buy' | 'sell' = isLong ? 'sell' : 'buy';
+      const exitFeeBreakdown = computeVenueFeeDetail(
+        tentativeQty,
+        tpPrice,
+        cmd.assetClass,
+        cmd.venue,
+        exitSide,
+      );
+      const SLIPPAGE_BPS = 5;
+      const entryNotional = tentativeQty.mul(livePrice);
+      const exitNotional = tentativeQty.mul(tpPrice);
+      const entrySlippage = entryNotional.mul(SLIPPAGE_BPS).div(10000);
+      const exitSlippage = exitNotional.mul(SLIPPAGE_BPS).div(10000);
+      const roundTripFees = estimatedCost
+        .plus(new Decimal(exitFeeBreakdown.total))
+        .plus(entrySlippage)
+        .plus(exitSlippage);
+      const expectedGain = isLong
+        ? tpPrice.minus(livePrice).mul(tentativeQty)
+        : livePrice.minus(tpPrice).mul(tentativeQty);
+      const buffer = resolveFeesAwareBuffer();
+      const requiredGain = roundTripFees.mul(buffer);
+      if (expectedGain.lt(requiredGain)) {
+        throw new Error(
+          `openPositionDirect rejected by P20 fees-aware guard: expected_gain_at_TP=$${expectedGain.toFixed(2)} ` +
+          `< ${buffer.toFixed(2)} × round_trip_fees_with_slippage=$${requiredGain.toFixed(2)} ` +
+          `(entry=$${livePrice.toFixed(4)} TP=$${tpPrice.toFixed(4)} qty=${tentativeQty.toFixed(4)} ` +
+          `notional=$${notional.toFixed(2)} symbol=${cmd.symbol}).`,
+        );
+      }
+    }
+
+    // Notional net après coût → quantité finale
+    const notionalNet = notional.minus(estimatedCost);
+    const quantity = notionalNet.dividedBy(livePrice);
+    if (quantity.lte(0) || !quantity.isFinite()) {
+      throw new Error(
+        `openPositionDirect rejected: invalid quantity ${quantity.toString()} (notional=${notional.toFixed(2)} price=${livePrice.toFixed(4)})`,
+      );
+    }
+
+    const position: PaperPosition = {
+      id: randomUUID(),
+      portfolioId: cmd.portfolioId,
+      proposalId: null,
+      thesisId: null,
+      symbol: cmd.symbol,
+      assetClass: cmd.assetClass,
+      direction: cmd.direction,
+      venue: cmd.venue,
+      quantity: quantity.toFixed(10),
+      entryPrice: livePrice.toFixed(10),
+      entryTimestamp: now,
+      entryNotionalUsd: notional.toFixed(2),
+      status: 'open',
+      exitPrice: null,
+      exitTimestamp: null,
+      exitReason: null,
+      realizedPnlUsd: null,
+      realizedPnlPct: null,
+      stopLossPrice: cmd.stopLossPrice,
+      takeProfitPrice: cmd.takeProfitPrice,
+      horizonTargetDate: new Date(
+        Date.now() + cmd.horizonDays * 86_400_000,
+      ).toISOString(),
+      estimatedEntryCostUsd: estimatedCost.toFixed(2),
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const { error: insErr } = await this.supabase.from('lisa_positions').insert({
+      id: position.id,
+      portfolio_id: position.portfolioId,
+      proposal_id: null,
+      thesis_id: null,
+      symbol: position.symbol,
+      asset_class: position.assetClass,
+      direction: position.direction,
+      venue: position.venue,
+      quantity: position.quantity,
+      entry_price: position.entryPrice,
+      entry_timestamp: position.entryTimestamp,
+      entry_notional_usd: position.entryNotionalUsd,
+      status: position.status,
+      stop_loss_price: position.stopLossPrice,
+      take_profit_price: position.takeProfitPrice,
+      horizon_target_date: position.horizonTargetDate,
+      estimated_entry_cost_usd: position.estimatedEntryCostUsd,
+      fees_in_usd: position.estimatedEntryCostUsd,
+      venue_fee_detail: { entry: entryFeeBreakdown, source: cmd.source ?? 'direct' },
+      created_at: position.createdAt,
+      updated_at: position.updatedAt,
+    });
+    if (insErr) throw new Error(`openPositionDirect INSERT failed: ${insErr.message}`);
 
     return position;
   }
@@ -643,8 +793,8 @@ export class PaperBrokerService {
     return {
       id: row.id as string,
       portfolioId: row.portfolio_id as string,
-      proposalId: row.proposal_id as string,
-      thesisId: row.thesis_id as string,
+      proposalId: (row.proposal_id as string | null) ?? null,
+      thesisId: (row.thesis_id as string | null) ?? null,
       symbol: row.symbol as string,
       assetClass: row.asset_class as string,
       direction: row.direction as PaperPosition['direction'],

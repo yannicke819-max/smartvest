@@ -21,8 +21,10 @@ export type PaperPositionStatus = z.infer<typeof PaperPositionStatus>;
 export const PaperPosition = z.object({
   id: z.string().uuid(),
   portfolioId: z.string().uuid(),
-  proposalId: z.string().uuid(),
-  thesisId: z.string().uuid(),
+  // PR #250 — nullable (migration 0120) pour support scanner Gainers
+  // déterministe qui ouvre des positions sans proposal LLM.
+  proposalId: z.string().uuid().nullable(),
+  thesisId: z.string().uuid().nullable(),
 
   /** Expression concrète choisie (symbol, direction, venue) */
   symbol: z.string(),
@@ -113,6 +115,31 @@ export const OpenPositionCommand = z.object({
   horizonDays: z.number().int().positive(),
 });
 export type OpenPositionCommand = z.infer<typeof OpenPositionCommand>;
+
+/**
+ * PR #250 — Commande directe : ouvrir une position SANS dépendre de
+ * lisa_proposals (pipeline LLM). Utilisée par le scanner Gainers déterministe.
+ * Toutes les données nécessaires arrivent inline, pas de SELECT proposal.
+ *
+ * Les NULLs proposalId/thesisId sont permis depuis migration 0120.
+ */
+export const OpenPositionDirectCommand = z.object({
+  portfolioId: z.string().uuid(),
+  symbol: z.string(),
+  assetClass: z.string(),
+  direction: z.enum(['long', 'short', 'long_call', 'long_put']),
+  venue: z.string(),
+  capitalAllocationUsd: z.string(),
+  /** Prix live au moment de l'exécution */
+  livePrice: z.string(),
+  /** Niveaux stops/TPs */
+  stopLossPrice: z.string().nullable(),
+  takeProfitPrice: z.string().nullable(),
+  horizonDays: z.number().int().positive(),
+  /** Source identifiable pour audit (ex: "scanner_top_gainers") */
+  source: z.string().optional(),
+});
+export type OpenPositionDirectCommand = z.infer<typeof OpenPositionDirectCommand>;
 
 export const ClosePositionCommand = z.object({
   positionId: z.string().uuid(),

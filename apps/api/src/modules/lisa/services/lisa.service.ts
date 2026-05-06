@@ -2506,6 +2506,14 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
   }
 
   /**
+   * PR #250 — Expose paperBroker au scanner Gainers déterministe pour
+   * `openPositionDirect` (bypass pipeline LLM proposal/approveProposal).
+   */
+  getPaperBroker(): PaperBrokerService {
+    return this.paperBroker;
+  }
+
+  /**
    * Cross-validation oracle pour les indicateurs macro (VIX, DXY).
    *
    * Le brief mécanique appelle `getLivePrice` qui passe par `toEodhdTicker`

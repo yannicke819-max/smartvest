@@ -21,8 +21,23 @@ import { TopGainersScannerService } from '../services/top-gainers-scanner.servic
 
 const supabaseFromMock = jest.fn();
 const mockSupabase = { getClient: () => ({ from: supabaseFromMock }) } as any;
+
+// PR #250 — Scanner appelle désormais paperBroker.openPositionDirect via
+// lisa.getPaperBroker() (bypass approveProposal/pipeline LLM).
+const mockOpenPositionDirect = jest.fn().mockResolvedValue({
+  id: 'mock-pos-id',
+  portfolioId: 'mock',
+  symbol: 'MOCK',
+  quantity: '1',
+  entryPrice: '100',
+});
+const mockPaperBroker = { openPositionDirect: mockOpenPositionDirect } as any;
 const mockLisa = {
   approveProposal: jest.fn().mockResolvedValue({ openedPositions: [] }),
+  getPaperBroker: () => mockPaperBroker,
+  getLivePrice: jest.fn().mockResolvedValue({
+    symbol: 'MOCK', price: '100', asOf: new Date().toISOString(), source: 'eodhd',
+  }),
 } as any;
 const decisionLogAppend = jest.fn().mockResolvedValue(undefined);
 const mockDecisionLog = { append: decisionLogAppend } as any;
@@ -43,6 +58,8 @@ jest.spyOn(Logger.prototype, 'debug').mockImplementation(() => undefined);
 beforeEach(() => {
   decisionLogAppend.mockClear();
   mockLisa.approveProposal.mockClear();
+  mockOpenPositionDirect.mockClear();
+  mockLisa.getLivePrice.mockClear();
   logSpy.mockClear();
   supabaseFromMock.mockReset();
   mockMtf.analyzeBatch.mockReset();
@@ -166,7 +183,7 @@ describe('TopGainersScanner — P19β shadow-logging strict 6/6', () => {
     expect(persistenceSkipLogs.length).toBe(0);
 
     // approveProposal a été appelé (le pipeline a tenté d'ouvrir)
-    expect(mockLisa.approveProposal).toHaveBeenCalled();
+    expect(mockOpenPositionDirect).toHaveBeenCalled();
   });
 
   // ── Cas 2 — strict 6/6 + score=0.83 → gainer_shadow_566 + skip ────────────
@@ -200,7 +217,7 @@ describe('TopGainersScanner — P19β shadow-logging strict 6/6', () => {
     expect(shadow466.length).toBe(0);
 
     // approveProposal NON appelé : skip ouverture
-    expect(mockLisa.approveProposal).not.toHaveBeenCalled();
+    expect(mockOpenPositionDirect).not.toHaveBeenCalled();
   });
 
   // ── Cas 3 — strict 6/6 + score=0.6667 (4/6) → gainer_shadow_466 + skip ────
@@ -232,7 +249,7 @@ describe('TopGainersScanner — P19β shadow-logging strict 6/6', () => {
     expect(shadow566.length).toBe(0);
 
     // Skip ouverture
-    expect(mockLisa.approveProposal).not.toHaveBeenCalled();
+    expect(mockOpenPositionDirect).not.toHaveBeenCalled();
   });
 
   // ── Cas 4 — strict 6/6 + score=0.5 (3/6) → silent skip ─────────────────────
@@ -252,7 +269,7 @@ describe('TopGainersScanner — P19β shadow-logging strict 6/6', () => {
     expect(shadowCalls.length).toBe(0);
 
     // Skip ouverture
-    expect(mockLisa.approveProposal).not.toHaveBeenCalled();
+    expect(mockOpenPositionDirect).not.toHaveBeenCalled();
   });
 
   // ── Cas 5 — mode standard (minScore=0.67) : aucun shadow log même sur 5/6 ──
@@ -273,6 +290,6 @@ describe('TopGainersScanner — P19β shadow-logging strict 6/6', () => {
 
     // 5/6=0.8333 >= 0.67 → persistence gate passe → pipeline poursuit jusqu'à
     // approveProposal
-    expect(mockLisa.approveProposal).toHaveBeenCalled();
+    expect(mockOpenPositionDirect).toHaveBeenCalled();
   });
 });
