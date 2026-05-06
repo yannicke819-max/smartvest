@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Rocket, TrendingUp, TrendingDown, Settings2, Calendar, CalendarDays } from 'lucide-react';
+import { Rocket, TrendingUp, TrendingDown, Settings2, Calendar, CalendarDays, CalendarRange, Activity } from 'lucide-react';
 import {
   useGainersStatus,
   useGainersConfig,
@@ -9,6 +9,7 @@ import {
   useOperatingMode,
   usePersistenceSnapshot,
   useUpdateGainersCycle,
+  useEodhdQuota,
   type CoverageSource,
   type PathQualityByTf,
   type PersistenceCandidate,
@@ -207,10 +208,14 @@ export function GainersStatusTile({ portfolioId }: { portfolioId: string }) {
 
           {/* PR #246 — Cartes Gains du jour / Gains du mois (mode-agnostique).
               Source : paper_trades closed strategy='top_gainers_v1'. */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <DailyGainsCard data={data} />
             <MonthlyGainsCard data={data} />
+            <YearlyGainsCard data={data} />
           </div>
+
+          {/* PR #258 — Indicateur quota EODHD (auto-pause à 85% / 95%) */}
+          <EodhdQuotaIndicator />
 
           <div className="space-y-1.5">
             <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
@@ -1281,6 +1286,176 @@ function MonthlyGainsCard({ data }: { data: GainersStatus }) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PR #258 — Carte Gains annuels (YTD) — conserve les gains au-delà
+// de la fin de mois. Reset uniquement au 1er janvier UTC.
+// ═══════════════════════════════════════════════════════════════════
+
+function YearlyGainsCard({ data }: { data: GainersStatus }) {
+  const total = data.ytdPnlUsd ?? 0;
+  const isPositive = total >= 0;
+  const sign = isPositive ? '+' : '';
+  const yearLabel = new Date().getUTCFullYear();
+  const winRateMonths = data.ytdMonthsCount > 0
+    ? (data.ytdWinningMonths / data.ytdMonthsCount) * 100
+    : 0;
+  const formatMonthLabel = (m: string | undefined) => {
+    if (!m) return '—';
+    const [y, mm] = m.split('-');
+    const date = new Date(Number(y), Number(mm) - 1, 1);
+    return date.toLocaleDateString('fr-FR', { month: 'short', year: '2-digit' });
+  };
+  return (
+    <div className="rounded-lg border p-4 space-y-3 bg-violet-50/50 dark:bg-violet-950/20">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <CalendarRange className="h-4 w-4 text-violet-700 dark:text-violet-300" />
+          <h3 className="text-sm font-medium">Gains annuels</h3>
+        </div>
+        <span className="text-xs text-muted-foreground">{yearLabel}</span>
+      </div>
+      <div className="space-y-1">
+        <div className={`text-2xl font-mono font-bold tabular-nums ${isPositive ? 'text-violet-700 dark:text-violet-300' : 'text-red-600'}`}>
+          {sign}${total.toFixed(2)}
+        </div>
+        <div className="text-xs text-muted-foreground">
+          {data.ytdMonthsCount} mois actif{data.ytdMonthsCount > 1 ? 's' : ''} ·{' '}
+          {data.ytdWinningMonths} +{' '}
+          {data.ytdLosingMonths} -{' '}
+          {data.ytdMonthsCount > 0 && (
+            <span className="font-medium">{winRateMonths.toFixed(0)}% mois gagnants</span>
+          )}
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-2 pt-2 border-t border-current/10 text-xs">
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Meilleur mois</div>
+          <div className="font-mono font-medium text-emerald-700 dark:text-emerald-300">
+            {data.ytdBestMonth && data.ytdBestMonth.pnl > 0
+              ? `+$${data.ytdBestMonth.pnl.toFixed(2)}`
+              : '—'}
+          </div>
+          {data.ytdBestMonth && data.ytdBestMonth.pnl > 0 && (
+            <div className="text-[10px] text-muted-foreground">
+              {formatMonthLabel(data.ytdBestMonth.month)}
+            </div>
+          )}
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Pire mois</div>
+          <div className="font-mono font-medium text-red-600">
+            {data.ytdWorstMonth && data.ytdWorstMonth.pnl < 0
+              ? `-$${Math.abs(data.ytdWorstMonth.pnl).toFixed(2)}`
+              : '—'}
+          </div>
+          {data.ytdWorstMonth && data.ytdWorstMonth.pnl < 0 && (
+            <div className="text-[10px] text-muted-foreground">
+              {formatMonthLabel(data.ytdWorstMonth.month)}
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-2 pt-2 border-t border-current/10 text-xs">
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Trades YTD</div>
+          <div className="font-mono font-medium">{data.ytdTradesCount}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Win rate mois</div>
+          <div className="font-mono font-medium">
+            {data.ytdMonthsCount > 0 ? `${winRateMonths.toFixed(0)}%` : '—'}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PR #258 — Indicateur quota EODHD (auto-pause à 85% / 95%).
+// ═══════════════════════════════════════════════════════════════════
+
+function EodhdQuotaIndicator() {
+  const { data } = useEodhdQuota();
+  if (!data) {
+    return (
+      <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+        ⏳ Chargement quota EODHD…
+      </div>
+    );
+  }
+  const used = data.authoritative.apiRequests;
+  const limit = data.authoritative.dailyRateLimit;
+  const pct = limit > 0 ? (used / limit) * 100 : 0;
+
+  let color: string;
+  let bg: string;
+  let icon: string;
+  let label: string;
+  if (pct >= 100) {
+    color = 'text-red-700 dark:text-red-300';
+    bg = 'bg-red-50 dark:bg-red-950/30 border-red-300 dark:border-red-800';
+    icon = '🔴'; label = 'HARD BLOCK';
+  } else if (pct >= 99) {
+    color = 'text-red-600 dark:text-red-400';
+    bg = 'bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-900';
+    icon = '🔴'; label = 'Mode essentials only';
+  } else if (pct >= 95) {
+    color = 'text-orange-700 dark:text-orange-300';
+    bg = 'bg-orange-50 dark:bg-orange-950/20 border-orange-200 dark:border-orange-900';
+    icon = '🟠'; label = 'Multi-TF auto-pause';
+  } else if (pct >= 85) {
+    color = 'text-amber-700 dark:text-amber-300';
+    bg = 'bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-900';
+    icon = '🟡'; label = 'Scanner auto-pause';
+  } else if (pct >= 70) {
+    color = 'text-yellow-700 dark:text-yellow-300';
+    bg = 'bg-yellow-50 dark:bg-yellow-950/20 border-yellow-200 dark:border-yellow-900';
+    icon = '⚠️'; label = 'Warning';
+  } else {
+    color = 'text-emerald-700 dark:text-emerald-300';
+    bg = 'bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-900';
+    icon = '🟢'; label = 'Nominal';
+  }
+
+  return (
+    <div className={`rounded-md border px-3 py-2 ${bg}`}>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2">
+          <Activity className={`h-4 w-4 ${color}`} />
+          <span className={`text-xs font-medium ${color}`}>
+            {icon} EODHD quota: {used.toLocaleString()} / {limit.toLocaleString()} ({pct.toFixed(1)}%)
+          </span>
+          <span className="text-[10px] text-muted-foreground">· {label}</span>
+        </div>
+        <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+          {data.local.burnRatePerMin > 0 && (
+            <span>burn: {data.local.burnRatePerMin.toFixed(0)} calls/min</span>
+          )}
+          {data.etaExhaustionMinutes != null && data.etaExhaustionMinutes < 720 && (
+            <span className="text-orange-600 dark:text-orange-400">
+              · ETA exhaustion: {Math.floor(data.etaExhaustionMinutes / 60)}h{(data.etaExhaustionMinutes % 60).toFixed(0)}m
+            </span>
+          )}
+        </div>
+      </div>
+      <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+        <div
+          className={`h-full transition-all ${
+            pct >= 95 ? 'bg-red-500' : pct >= 85 ? 'bg-amber-500' : pct >= 70 ? 'bg-yellow-500' : 'bg-emerald-500'
+          }`}
+          style={{ width: `${Math.min(100, pct)}%` }}
+        />
+      </div>
+      {data.throttle.pauseReason && (
+        <div className={`mt-1.5 text-[10px] ${color}`}>
+          ⏸ {data.throttle.pauseReason}
+        </div>
+      )}
     </div>
   );
 }

@@ -19,6 +19,7 @@ import {
 import { TopGainersScannerService } from './services/top-gainers-scanner.service';
 import { MultiTimeframePersistenceService } from './services/multi-tf-persistence.service';
 import { PersistenceProbabilityService } from './services/persistence-probability.service';
+import { EodhdQuotaService } from './services/eodhd-quota.service';
 import { summarizeByTf, type PersistenceResult } from '@smartvest/ai-analyst';
 import type { DailyHarvestConfig, CapitalDisciplineMode } from './types/capital-discipline.types';
 
@@ -40,6 +41,7 @@ export class LisaController {
     private readonly topGainersScanner: TopGainersScannerService,
     private readonly mtfPersistence: MultiTimeframePersistenceService,
     private readonly persistenceProbability: PersistenceProbabilityService,
+    private readonly quotaService: EodhdQuotaService,
   ) {}
 
   // ─────────────────────────────────────────────────────────────────
@@ -381,6 +383,46 @@ export class LisaController {
       else if (pnl < 0) losingDays++;
     }
 
+    // PR #258 — YTD (Year-To-Date) gains pour carte « Gains annuels ».
+    // Reset uniquement au 1er janvier UTC. Conserve les gains mensuels au-delà
+    // de la fin de mois.
+    const startOfYearUtc = new Date();
+    startOfYearUtc.setUTCMonth(0, 1);
+    startOfYearUtc.setUTCHours(0, 0, 0, 0);
+    const startOfYearIso = startOfYearUtc.toISOString();
+
+    const { data: closedYtdRows } = await supabase
+      .from('lisa_positions')
+      .select('realized_pnl_usd, exit_timestamp')
+      .eq('portfolio_id', portfolioId)
+      .is('proposal_id', null)
+      .neq('status', 'open')
+      .gte('exit_timestamp', startOfYearIso)
+      .limit(50000);
+    const closedYtdPnlUsd = (closedYtdRows ?? []).reduce(
+      (acc, row) => acc + (parseFloat(String(row.realized_pnl_usd ?? '0')) || 0),
+      0,
+    );
+    const closedYtdCount = (closedYtdRows ?? []).length;
+
+    // Aggrège par mois pour stats YTD (best/worst month)
+    const monthlyPnlMap = new Map<string, number>();
+    for (const r of closedYtdRows ?? []) {
+      const month = String(r.exit_timestamp).slice(0, 7); // YYYY-MM
+      const pnl = parseFloat(String(r.realized_pnl_usd ?? '0')) || 0;
+      monthlyPnlMap.set(month, (monthlyPnlMap.get(month) ?? 0) + pnl);
+    }
+    let bestMonth: { month: string; pnl: number } | null = null;
+    let worstMonth: { month: string; pnl: number } | null = null;
+    let winningMonths = 0;
+    let losingMonths = 0;
+    for (const [month, pnl] of monthlyPnlMap.entries()) {
+      if (!bestMonth || pnl > bestMonth.pnl) bestMonth = { month, pnl };
+      if (!worstMonth || pnl < worstMonth.pnl) worstMonth = { month, pnl };
+      if (pnl > 0) winningMonths++;
+      else if (pnl < 0) losingMonths++;
+    }
+
     return {
       nextTickInSeconds,
       intervalMinutes,
@@ -418,7 +460,25 @@ export class LisaController {
       mtdLosingDays: losingDays,
       mtdBestDay: bestDay,
       mtdWorstDay: worstDay,
+      // PR #258 — Carte Gains annuels (YTD).
+      ytdPnlUsd: closedYtdPnlUsd,
+      ytdTradesCount: closedYtdCount,
+      ytdMonthsCount: monthlyPnlMap.size,
+      ytdWinningMonths: winningMonths,
+      ytdLosingMonths: losingMonths,
+      ytdBestMonth: bestMonth,
+      ytdWorstMonth: worstMonth,
     };
+  }
+
+  /**
+   * PR #258 — EODHD quota status pour UI badge.
+   * Retourne le quota courant + auto-throttle thresholds + ETA exhaustion.
+   */
+  @Get('eodhd-quota')
+  async getEodhdQuota(@Headers() headers: Record<string, string>) {
+    extractUserId(headers); // auth check
+    return this.quotaService.getStatus();
   }
 
   // ─────────────────────────────────────────────────────────────────

@@ -83,6 +83,47 @@ export interface GainersStatus {
   mtdLosingDays: number;
   mtdBestDay: { date: string; pnl: number } | null;
   mtdWorstDay: { date: string; pnl: number } | null;
+  // PR #258 — Carte Gains annuels (YTD).
+  ytdPnlUsd: number;
+  ytdTradesCount: number;
+  ytdMonthsCount: number;
+  ytdWinningMonths: number;
+  ytdLosingMonths: number;
+  ytdBestMonth: { month: string; pnl: number } | null;
+  ytdWorstMonth: { month: string; pnl: number } | null;
+}
+
+/**
+ * PR #258 — EODHD quota status pour UI badge.
+ */
+export interface EodhdQuotaStatus {
+  authoritative: {
+    apiRequests: number;
+    dailyRateLimit: number;
+    extraLimit: number;
+    asOf: string | null;
+  };
+  local: {
+    totalProjected: number;
+    perEndpoint: Record<string, number>;
+    burnRatePerMin: number;
+  };
+  throttle: {
+    scannerPaused: boolean;
+    multitfPaused: boolean;
+    essentialsOnly: boolean;
+    hardBlocked: boolean;
+    pauseReason: string | null;
+  };
+  etaExhaustionMinutes: number | null;
+}
+
+export function useEodhdQuota() {
+  return useQuery({
+    queryKey: ['eodhd-quota'],
+    queryFn: () => apiFetch<EodhdQuotaStatus>('/lisa/eodhd-quota'),
+    refetchInterval: 30_000,
+  });
 }
 
 export function useGainersStatus(portfolioId: string | null, enabled: boolean) {
