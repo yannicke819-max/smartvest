@@ -1794,8 +1794,20 @@ export class TopGainersScannerService implements OnModuleInit {
       // PR #261 — Capital Rotation Gate : si slots saturés AND rotation enabled,
       // tente de fermer une position stagnante pour libérer un slot.
       // Cap : 1 rotation max par cycle (rotated flag).
+      //
+      // PR #263 — High-grading mode (`GAINERS_HIGH_GRADING_ENABLED=true`) :
+      // permet la rotation MÊME quand slots libres. Logique :
+      //   - Setup A+ détecté (gates internes tryCapitalRotation)
+      //   - Stagnante existe (age ≥ seuil, pnl ±0.3%)
+      //   - Net EV ≥ $5
+      //   → Ferme stagnante + ouvre A+ (remplace pire position par meilleure)
+      // Plus agressif : churn de positions stagnantes en continu vers
+      // setups frais. Frais doublés (1 close + 1 open en plus) — d'où le EV
+      // gate strict.
       let rotated = false;
-      if (slotsAvailable === 0 && rotationEnabled && opened === 0) {
+      const highGradingEnabled = (process.env.GAINERS_HIGH_GRADING_ENABLED ?? 'false').toLowerCase() === 'true';
+      const shouldTryRotation = rotationEnabled && opened === 0 && (slotsAvailable === 0 || highGradingEnabled);
+      if (shouldTryRotation) {
         const rotation = await this.tryCapitalRotation(
           portfolioId,
           cand,
@@ -1804,7 +1816,7 @@ export class TopGainersScannerService implements OnModuleInit {
         );
         if (rotation.rotated) {
           rotated = true;
-          slotsAvailable = 1;
+          slotsAvailable += 1; // close stagnant frees 1 slot (correct sat=0→1, free→+1)
           // Mise à jour openSymbols pour ne pas re-skipper la même position
           if (rotation.closedPositionId) {
             // (la position fermée est désormais hors openSymbols pour les itérations suivantes)
@@ -1812,8 +1824,13 @@ export class TopGainersScannerService implements OnModuleInit {
           // Update budget : le close stagnant libère son notional
           // (approx : on ne re-fetch pas, on assume pas de delta net majeur)
         } else {
-          // Rotation impossible/non-rentable → on stoppe le loop (slots toujours 0)
-          break;
+          // Rotation pas faite. Si saturated (sans high-grading), on stoppe.
+          // En high-grading, on continue le flow normal (slot libre dispo).
+          if (slotsAvailable === 0) {
+            break;
+          }
+          // High-grading mode : la rotation a juste été tentée mais non-rentable.
+          // On laisse le scanner ouvrir normalement dans le slot libre.
         }
       }
 
