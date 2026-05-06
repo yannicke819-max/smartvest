@@ -126,6 +126,72 @@ export function useEodhdQuota() {
   });
 }
 
+/**
+ * PR #265 — Sauvegardes nommées de config gainers.
+ */
+export interface GainersConfigPreset {
+  id: string;
+  name: string;
+  settings: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export function useGainersConfigPresets(portfolioId: string | null) {
+  return useQuery({
+    queryKey: ['gainers-config-presets', portfolioId],
+    queryFn: () => apiFetch<{ presets: GainersConfigPreset[] }>(
+      `/lisa/gainers-config-presets/${portfolioId}`,
+    ),
+    enabled: !!portfolioId,
+  });
+}
+
+export function useSaveGainersConfigPreset(portfolioId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) =>
+      apiFetch<{ preset: GainersConfigPreset }>(
+        `/lisa/gainers-config-presets/${portfolioId}`,
+        { method: 'POST', body: JSON.stringify({ name }) },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['gainers-config-presets', portfolioId] });
+    },
+  });
+}
+
+export function useLoadGainersConfigPreset(portfolioId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) =>
+      apiFetch<{ ok: true; applied: Record<string, unknown> }>(
+        `/lisa/gainers-config-presets/${portfolioId}/load`,
+        { method: 'POST', body: JSON.stringify({ name }) },
+      ),
+    onSuccess: () => {
+      // Invalide la config pour rafraîchir l'UI panel après load
+      qc.invalidateQueries({ queryKey: ['gainers-config', portfolioId] });
+      qc.invalidateQueries({ queryKey: ['lisa-config', portfolioId] });
+      qc.invalidateQueries({ queryKey: ['gainers-status', portfolioId] });
+    },
+  });
+}
+
+export function useDeleteGainersConfigPreset(portfolioId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) =>
+      apiFetch<{ ok: true }>(
+        `/lisa/gainers-config-presets/${portfolioId}/delete`,
+        { method: 'POST', body: JSON.stringify({ name }) },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['gainers-config-presets', portfolioId] });
+    },
+  });
+}
+
 export function useGainersStatus(portfolioId: string | null, enabled: boolean) {
   return useQuery({
     queryKey: ['gainers-status', portfolioId],
