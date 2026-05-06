@@ -1938,6 +1938,40 @@ export class MechanicalTradingService {
       return;
     }
 
+    // ─── PR #256 — Reactive SL Early-Cut ──────────────────────────────────────
+    //
+    // Symétrique au Reactive TP : ferme une position en perte AVANT le SL
+    // formel quand RSI + MACD confirment la continuation baissière.
+    //
+    // Réduit avg_loss (-1% → -0.5% en moyenne), améliore l'expectancy.
+    // Toggle-able via env `GAINERS_REACTIVE_SL_ENABLED` (default true).
+    //
+    // Triple condition + age min pour éviter whipsaw sur du bruit Asia normal :
+    //   - LONG : pnl ≤ -0.5% + RSI14 < 30 (oversold confirmé) + MACD_hist < 0
+    //   - SHORT : pnl ≤ -0.5% + RSI14 > 70 + MACD_hist > 0
+    //   - age ≥ 3 min (vs 90-120s pour reactive TP — plus conservateur côté loss)
+    const reactiveSlEnabled = (process.env.GAINERS_REACTIVE_SL_ENABLED ?? 'true').toLowerCase() === 'true';
+    const REACTIVE_SL_MIN_AGE_MS = 180_000; // 3 min
+    if (
+      reactiveSlEnabled &&
+      ageMs >= REACTIVE_SL_MIN_AGE_MS &&
+      pnlPct <= -0.5 &&
+      ind.rsi14 != null &&
+      ind.macdHist != null
+    ) {
+      let reactiveSlReason: string | null = null;
+      if (isLong && ind.rsi14 < 30 && ind.macdHist < 0 && Math.abs(ind.macdHist) > 0.01) {
+        reactiveSlReason = `RSI14=${ind.rsi14.toFixed(1)} < 30 (oversold) + MACD_hist=${ind.macdHist.toFixed(3)} bearish + P&L=${pnlPct.toFixed(2)}% → Reactive SL early-cut LONG`;
+      } else if (!isLong && ind.rsi14 > 70 && ind.macdHist > 0 && Math.abs(ind.macdHist) > 0.01) {
+        reactiveSlReason = `RSI14=${ind.rsi14.toFixed(1)} > 70 (overbought) + MACD_hist=+${ind.macdHist.toFixed(3)} bullish + P&L=${pnlPct.toFixed(2)}% → Reactive SL early-cut SHORT`;
+      }
+      if (reactiveSlReason) {
+        await this.closePosition(pos.id, currentPrice.toString(), 'closed_stop',
+          `[MÉCANIQUE] Reactive SL early-cut ${pos.symbol} @ ${currentPrice.toFixed(4)} : ${reactiveSlReason}`);
+        return;
+      }
+    }
+
     // ─── a) Close anticipé sur signal de reversal ───────────────────────────
     let reactiveCloseReason: string | null = null;
 
