@@ -1458,7 +1458,11 @@ export class TopGainersScannerService implements OnModuleInit {
     );
     const availableCapital = capitalUsd * (1 - cashReservePct / 100);
     const remainingBudget = availableCapital - deployedNotional;
-    if (remainingBudget < positionNotionalUsd) {
+    // PR #264 — Bug observé prod 06/05 13:32 UTC : avec 5 positions × $2k = $10k
+    // (capital saturé), l'early-return ici empêche la rotation de fire (le
+    // close stagnant aurait pourtant libéré $2k de capital permettant
+    // l'ouverture du nouveau A+). Fix : skip seulement si rotation OFF.
+    if (remainingBudget < positionNotionalUsd && !rotationEnabled) {
       this.logger.log(
         `[top-gainers] ${portfolioId.slice(0, 8)}: capital saturated — deployed=$${deployedNotional.toFixed(2)} ` +
         `+ position=$${positionNotionalUsd.toFixed(2)} > available=$${availableCapital.toFixed(2)} ` +
@@ -1466,12 +1470,19 @@ export class TopGainersScannerService implements OnModuleInit {
       );
       return;
     }
+    if (remainingBudget < positionNotionalUsd && rotationEnabled) {
+      this.logger.log(
+        `[top-gainers] ${portfolioId.slice(0, 8)}: capital saturated ($${deployedNotional.toFixed(2)}/${availableCapital.toFixed(2)}) — checking rotation for A+ candidates`,
+      );
+    }
     // Plafond effectif d'ouvertures ce cycle : min(maxPerCycle config, slotsAvailable, budget-based slots)
     const budgetBasedSlots = Math.floor(remainingBudget / positionNotionalUsd);
     // PR #261 — Si rotation enabled + slots=0, donne 1 slot virtuel pour
     // permettre au loop d'évaluer un setup A+ et tenter la rotation.
+    // PR #264 — Idem pour budget-based slots (capital saturé)
     const slotsForLoop = (rotationEnabled && slotsAvailable === 0) ? 1 : slotsAvailable;
-    const effectiveMaxThisCycle = Math.max(0, Math.min(maxPerCycle, slotsForLoop, budgetBasedSlots));
+    const budgetForLoop = (rotationEnabled && budgetBasedSlots === 0) ? 1 : budgetBasedSlots;
+    const effectiveMaxThisCycle = Math.max(0, Math.min(maxPerCycle, slotsForLoop, budgetForLoop));
     this.logger.log(
       `[top-gainers] ${portfolioId.slice(0, 8)}: capacity check — deployed=$${deployedNotional.toFixed(2)}/${availableCapital.toFixed(2)} ` +
       `(${budgetBasedSlots} budget slots, ${slotsAvailable} pos slots, max-per-cycle=${maxPerCycle}) → up to ${effectiveMaxThisCycle} this cycle`,
@@ -1783,7 +1794,9 @@ export class TopGainersScannerService implements OnModuleInit {
       // PR #251 — Gate budget par-candidat : refuse l'open si ajouter cette
       // position dépasse le budget disponible. Évite d'ouvrir un 3e à $4k
       // si capital=$10k cash=10% deployedNotional=$8k → reste $1k seulement.
-      if (runningDeployedNotional + positionNotionalUsd > availableCapital) {
+      // PR #264 — Si rotation enabled, on ne break pas : la rotation peut
+      // libérer du capital en fermant une stagnante.
+      if (runningDeployedNotional + positionNotionalUsd > availableCapital && !rotationEnabled) {
         this.logger.log(
           `[top-gainers] ${cand.symbol}: budget cap reached — running=$${runningDeployedNotional.toFixed(2)} ` +
           `+ position=$${positionNotionalUsd.toFixed(2)} > available=$${availableCapital.toFixed(2)} → skip rest of cycle`,
@@ -1817,12 +1830,16 @@ export class TopGainersScannerService implements OnModuleInit {
         if (rotation.rotated) {
           rotated = true;
           slotsAvailable += 1; // close stagnant frees 1 slot (correct sat=0→1, free→+1)
+          // PR #264 — Update runningDeployedNotional : close stagnant libère
+          // ~positionNotionalUsd (approx, en pratique l'entry_notional réel
+          // peut différer si positionPct a changé entre l'open et maintenant).
+          // Sans cette MAJ, le gate budget par-candidat re-bloquerait l'open
+          // post-rotation alors que le capital est désormais libéré.
+          runningDeployedNotional = Math.max(0, runningDeployedNotional - positionNotionalUsd);
           // Mise à jour openSymbols pour ne pas re-skipper la même position
           if (rotation.closedPositionId) {
             // (la position fermée est désormais hors openSymbols pour les itérations suivantes)
           }
-          // Update budget : le close stagnant libère son notional
-          // (approx : on ne re-fetch pas, on assume pas de delta net majeur)
         } else {
           // Rotation pas faite. Si saturated (sans high-grading), on stoppe.
           // En high-grading, on continue le flow normal (slot libre dispo).
