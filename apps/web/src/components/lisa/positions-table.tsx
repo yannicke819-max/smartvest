@@ -14,6 +14,42 @@ const STATUS_LABELS: Record<LisaPosition['status'], { label: string; color: stri
   closed_expired: { label: 'Expirée', color: 'bg-slate-50 text-slate-500 border-slate-200' },
 };
 
+/**
+ * PR #253 — Affiner le label `closed_target` selon `exitReason`.
+ *
+ * Avant : tous les exits vers `closed_target` affichaient « TP hit » dans
+ * l'historique, qu'il s'agisse d'un vrai TP atteint (1.5%), d'un TP absolu
+ * (2.5%/4%) ou d'un reactive RSI/MACD lock-in (≥0.5% pnl). Confusion user
+ * qui voyait des "TP hit" à +0.68% au lieu des +1.5% configurés.
+ *
+ * Après : on parse `exitReason` pour distinguer 4 cas. Le statut DB reste
+ * `closed_target` (pas de migration), seul le label UI change.
+ */
+function refineCloseLabel(
+  status: LisaPosition['status'],
+  exitReason: string | null | undefined,
+): { label: string; color: string } {
+  const base = STATUS_LABELS[status];
+  if (status !== 'closed_target' || !exitReason) return base;
+  const r = exitReason.toLowerCase();
+  if (r.includes('take-profit absolu') || r.includes('take_profit_absolu') || r.includes('matérialisation gain')) {
+    return { label: 'TP absolu', color: 'bg-emerald-100 text-emerald-800 border-emerald-300' };
+  }
+  if (r.includes('take-profit atteint') || r.includes('target=')) {
+    return { label: 'TP atteint', color: 'bg-emerald-50 text-emerald-700 border-emerald-200' };
+  }
+  if (r.includes('exit réactif') || r.includes('reactive')) {
+    if (r.includes('rsi')) {
+      return { label: 'Reactive RSI', color: 'bg-cyan-50 text-cyan-700 border-cyan-200' };
+    }
+    if (r.includes('macd')) {
+      return { label: 'Reactive MACD', color: 'bg-indigo-50 text-indigo-700 border-indigo-200' };
+    }
+    return { label: 'Reactive', color: 'bg-violet-50 text-violet-700 border-violet-200' };
+  }
+  return base;
+}
+
 export function LisaPositionsTable({ portfolioId }: { portfolioId: string }) {
   // PR E — invalidation immédiate de la cache positions sur INSERT/UPDATE/DELETE
   // côté DB (le mécanique ouvre/ferme sans interaction UI).
@@ -119,8 +155,10 @@ const UNKNOWN_STATUS_CFG = {
 };
 
 function PositionRow({ pos }: { pos: LisaPosition }) {
-  const statusCfg =
-    (pos.status && STATUS_LABELS[pos.status]) ?? UNKNOWN_STATUS_CFG;
+  // PR #253 — affine le label closed_target via exitReason.
+  const statusCfg = pos.status
+    ? refineCloseLabel(pos.status, pos.exitReason)
+    : UNKNOWN_STATUS_CFG;
   const pnl = pos.realizedPnlUsd ? parseFloat(pos.realizedPnlUsd) : null;
   const pnlPct = pos.realizedPnlPct;
   const pnlColor = pnl === null ? '' : pnl >= 0 ? 'text-emerald-600' : 'text-red-500';
