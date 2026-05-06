@@ -1250,10 +1250,36 @@ export class TopGainersScannerService implements OnModuleInit {
     portfolioId: string,
     candidates: TopGainerCandidate[],
   ): Promise<void> {
-    // P19x.4 — Watchdog expectancy : skip opens si E<0 sur 10 derniers trades.
-    const expectancyNegative = await this.checkExpectancyWatchdog(portfolioId);
-    if (expectancyNegative) {
-      return; // skip cycle pour ce portfolio
+    // PR #255 — Watchdog expectancy DÉSACTIVÉ en mode gainers (déterministe).
+    //
+    // Le watchdog (P19x.4) skip tout le cycle si expectancy < 0 sur les
+    // 10 derniers trades fermés. Pensé à l'origine pour Lisa LLM avec thèses
+    // narratives variées. En mode gainers déterministe :
+    //   - Le scanner a déjà 5+ gates structurels (persistence, path, cooldown,
+    //     P20 fees-aware, capital) qui valident chaque setup avant ouverture
+    //   - Une cascade de fermetures techniques (ex: P4.1 pré-#254) peut
+    //     dégrader artificiellement l'expectancy → deadlock structurel
+    //     (le watchdog ne peut plus s'auto-corriger sans nouveaux trades,
+    //     mais il bloque ces nouveaux trades)
+    //   - Cas vu prod 06/05/2026 05:53 UTC : 5 closes P4.1 → expectancy
+    //     -$0.35 → watchdog skip permanent jusqu'à reset manuel
+    //
+    // Garde-fous structurels restants en mode gainers :
+    //   - SL individuel par position (default 1%)
+    //   - TP individuel par position (default 1.5-2%)
+    //   - P20 fees-aware target (rejette les setups où fees > buffer × gain)
+    //   - Capital exposure gate (max budget = capital × (1 - cashReserve))
+    //   - Persistence + path + cooldown gates
+    //
+    // Si jamais on veut le réactiver (ex: garde-fou strict en cas de
+    // strategy mal calibrée), on peut le re-câbler via env
+    // `GAINERS_EXPECTANCY_WATCHDOG_ENABLED=true`. Pour l'instant : off.
+    const watchdogEnabled = (this.config.get<string>('GAINERS_EXPECTANCY_WATCHDOG_ENABLED') ?? 'false').toLowerCase() === 'true';
+    if (watchdogEnabled) {
+      const expectancyNegative = await this.checkExpectancyWatchdog(portfolioId);
+      if (expectancyNegative) {
+        return; // skip cycle pour ce portfolio
+      }
     }
 
     // PR Hardcodes-fix — Charge config complète gainers pour ce portfolio :
