@@ -1753,7 +1753,7 @@ export class TopGainersScannerService implements OnModuleInit {
     //
     // Avant #250 : generateThesis (LLM) → INSERT lisa_proposals → approveProposal
     // → re-validations + paperBroker.openPosition. ~2-3 sec / candidat. Bug
-    // structurels (TypeError riskReward) + dépendance pipeline narrative.
+    // structurels (TypeError riskReward, fix #249) + dépendance pipeline narrative.
     //
     // Après #250 : getLivePrice → paperBroker.openPositionDirect → INSERT
     // lisa_positions. ~250 ms / candidat. Aucune dépendance pipeline LLM.
