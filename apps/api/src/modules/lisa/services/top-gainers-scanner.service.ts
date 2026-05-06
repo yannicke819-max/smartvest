@@ -1749,6 +1749,11 @@ export class TopGainersScannerService implements OnModuleInit {
     // P18 — LLM thesis generation (inert when SCANNER_LLM_ROUTER_ENABLED=false)
     const llmThesis = await this.generateThesis(cand);
 
+    // PR #249 — `thesis.riskReward` doit être présent : `lisa.service.ts`
+    // approveProposal lit `thesis.riskReward.adverseScenarioReturnPct` au
+    // moment d'ouvrir. Sans ce champ, TypeError "Cannot read properties of
+    // undefined" → 100% des opens .KO/.KQ/etc. crashent silencieusement.
+    // On peuple un riskReward minimal cohérent avec stopLossPct/takeProfitPct.
     const thesis = {
       id: thesisId,
       summary: llmThesis.summary,
@@ -1757,6 +1762,13 @@ export class TopGainersScannerService implements OnModuleInit {
       category: llmThesis.category,
       kind: 'momentum',
       preferredExpressionIndex: 0,
+      riskReward: {
+        adverseScenarioReturnPct: -effectiveSl,
+        centralScenarioReturnPct: { mid: effectiveTp, low: effectiveTp * 0.5, high: effectiveTp * 1.5 },
+        horizonDays: 1,
+        riskRewardRatio: effectiveTp / Math.max(effectiveSl, 0.01),
+        convexitySources: [] as string[],
+      },
       expressions: [
         {
           symbol: cand.symbol,
