@@ -307,6 +307,10 @@ export class LisaService {
       gainers_rotation_stagnant_min_age_min: pick('gainers_rotation_stagnant_min_age_min', 'gainersRotationStagnantMinAgeMin', existing?.gainers_rotation_stagnant_min_age_min ?? 90),
       // PR #243 — Adaptive Selectivity toggle (migration 0119). Opt-in default false.
       gainers_adaptive_enabled: pick('gainers_adaptive_enabled', 'gainersAdaptiveEnabled', existing?.gainers_adaptive_enabled ?? false),
+      // PR #266 — Session-aware filter + force-close before close (migration 0123).
+      gainers_session_filter_enabled: pick('gainers_session_filter_enabled', 'gainersSessionFilterEnabled', existing?.gainers_session_filter_enabled ?? true),
+      gainers_force_close_before_close_enabled: pick('gainers_force_close_before_close_enabled', 'gainersForceCloseBeforeCloseEnabled', existing?.gainers_force_close_before_close_enabled ?? false),
+      gainers_force_close_offset_min: pick('gainers_force_close_offset_min', 'gainersForceCloseOffsetMin', existing?.gainers_force_close_offset_min ?? 30),
     };
 
     // Validation des valeurs numériques pour renvoyer une 400 lisible plutôt
@@ -374,6 +378,8 @@ export class LisaService {
     validateNum('gainers_fees_aware_buffer', merged.gainers_fees_aware_buffer, 1.0, 5.0);
     validateNum('gainers_min_net_profit_usd', merged.gainers_min_net_profit_usd, 0, 9999);
     validateNum('gainers_min_p_win', merged.gainers_min_p_win, 0, 1);
+    // PR #266 — force-close offset 5..120 min
+    validateInt('gainers_force_close_offset_min', merged.gainers_force_close_offset_min, 5, 120);
     // Cohérence : positionPct × maxOpen + cashReserve ne doit pas dépasser 100%
     // (sinon impossible de tenir le cash buffer en pratique). Warning soft, pas hard fail.
     const totalAllocPct =
@@ -541,6 +547,25 @@ export class LisaService {
       } = merged;
       void _mop; void _mpc; void _ppc; void _crp; void _cdm;
       void _uus; void _ueu; void _ua; void _uc; void _fab; void _mnp;
+      const retry = await this.supabase.getClient()
+        .from('lisa_session_configs')
+        .upsert(mergedFallback, { onConflict: 'portfolio_id' })
+        .select()
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
+
+    // PR #266 — fallback si migration 0123 pas encore appliquée (session_filter / force_close)
+    if (error && /gainers_session_filter_enabled|gainers_force_close_before_close_enabled|gainers_force_close_offset_min/i.test(error.message)) {
+      this.logger.warn('Colonnes gainers_session_filter / gainers_force_close (migration 0123) absentes — retry sans ces champs');
+      const {
+        gainers_session_filter_enabled: _sfe,
+        gainers_force_close_before_close_enabled: _fcbce,
+        gainers_force_close_offset_min: _fcom,
+        ...mergedFallback
+      } = merged;
+      void _sfe; void _fcbce; void _fcom;
       const retry = await this.supabase.getClient()
         .from('lisa_session_configs')
         .upsert(mergedFallback, { onConflict: 'portfolio_id' })
