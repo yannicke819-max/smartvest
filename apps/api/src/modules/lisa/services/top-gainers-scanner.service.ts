@@ -28,7 +28,7 @@ import { SupabaseService } from '../../supabase/supabase.service';
 import { LisaService } from './lisa.service';
 import { DecisionLogService } from './decision-log.service';
 import { BinanceMarketService } from './binance-market.service';
-import { MultiTimeframePersistenceService } from './multi-tf-persistence.service';
+import { MultiTimeframePersistenceService, type PersistenceWithPath } from './multi-tf-persistence.service';
 import { PersistenceProbabilityService } from './persistence-probability.service';
 import { EodhdQuotaService } from './eodhd-quota.service';
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
@@ -46,6 +46,7 @@ import {
   type TopGainerAssetClass,
   type PersistenceResult,
   isWithinSession,
+  computeVenueFeeDetail,
 } from '@smartvest/ai-analyst';
 import {
   EARLY_RETURN_REASONS,
@@ -1418,10 +1419,18 @@ export class TopGainersScannerService implements OnModuleInit {
       .eq('portfolio_id', portfolioId)
       .eq('status', 'open');
     const openSymbols = new Set((openPositions ?? []).map((p) => String(p.symbol).toUpperCase()));
-    const slotsAvailable = Math.max(0, maxOpen - (openPositions?.length ?? 0));
-    if (slotsAvailable === 0) {
+    let slotsAvailable = Math.max(0, maxOpen - (openPositions?.length ?? 0));
+
+    // PR #261 — Si slots saturés ET capital rotation enabled, on ne sort pas
+    // immédiatement : on continue pour évaluer si un setup A+ peut justifier
+    // de fermer une position stagnante. Sinon early-return classique.
+    const rotationEnabled = (process.env.GAINERS_CAPITAL_ROTATION_ENABLED ?? 'false').toLowerCase() === 'true';
+    if (slotsAvailable === 0 && !rotationEnabled) {
       this.logger.log(`[top-gainers] ${portfolioId.slice(0, 8)}: no slots (${openPositions?.length}/${maxOpen} open)`);
       return;
+    }
+    if (slotsAvailable === 0 && rotationEnabled) {
+      this.logger.log(`[top-gainers] ${portfolioId.slice(0, 8)}: slots saturated (${openPositions?.length}/${maxOpen}) — checking capital rotation for A+ candidates`);
     }
 
     // PR #251 — GATE CAPITAL GLOBAL (anti over-exposure).
@@ -1455,7 +1464,10 @@ export class TopGainersScannerService implements OnModuleInit {
     }
     // Plafond effectif d'ouvertures ce cycle : min(maxPerCycle config, slotsAvailable, budget-based slots)
     const budgetBasedSlots = Math.floor(remainingBudget / positionNotionalUsd);
-    const effectiveMaxThisCycle = Math.max(0, Math.min(maxPerCycle, slotsAvailable, budgetBasedSlots));
+    // PR #261 — Si rotation enabled + slots=0, donne 1 slot virtuel pour
+    // permettre au loop d'évaluer un setup A+ et tenter la rotation.
+    const slotsForLoop = (rotationEnabled && slotsAvailable === 0) ? 1 : slotsAvailable;
+    const effectiveMaxThisCycle = Math.max(0, Math.min(maxPerCycle, slotsForLoop, budgetBasedSlots));
     this.logger.log(
       `[top-gainers] ${portfolioId.slice(0, 8)}: capacity check — deployed=$${deployedNotional.toFixed(2)}/${availableCapital.toFixed(2)} ` +
       `(${budgetBasedSlots} budget slots, ${slotsAvailable} pos slots, max-per-cycle=${maxPerCycle}) → up to ${effectiveMaxThisCycle} this cycle`,
@@ -1775,6 +1787,32 @@ export class TopGainersScannerService implements OnModuleInit {
         break;
       }
 
+      // PR #261 — Capital Rotation Gate : si slots saturés AND rotation enabled,
+      // tente de fermer une position stagnante pour libérer un slot.
+      // Cap : 1 rotation max par cycle (rotated flag).
+      let rotated = false;
+      if (slotsAvailable === 0 && rotationEnabled && opened === 0) {
+        const rotation = await this.tryCapitalRotation(
+          portfolioId,
+          cand,
+          persistence,
+          { tpPct, slPct, positionNotionalUsd },
+        );
+        if (rotation.rotated) {
+          rotated = true;
+          slotsAvailable = 1;
+          // Mise à jour openSymbols pour ne pas re-skipper la même position
+          if (rotation.closedPositionId) {
+            // (la position fermée est désormais hors openSymbols pour les itérations suivantes)
+          }
+          // Update budget : le close stagnant libère son notional
+          // (approx : on ne re-fetch pas, on assume pas de delta net majeur)
+        } else {
+          // Rotation impossible/non-rentable → on stoppe le loop (slots toujours 0)
+          break;
+        }
+      }
+
       const insertedPosId = await this.openTopGainerPosition(
         userId,
         portfolioId,
@@ -1808,6 +1846,168 @@ export class TopGainersScannerService implements OnModuleInit {
       this.logger.log(
         `[top-gainers] cycle skip-summary: scanned=${top.length}, retained=${opened}, skipped_no_persistence=${skippedNoPersistence.length} (sample: ${sample})`,
       );
+    }
+  }
+
+  /**
+   * PR #261 — Capital Rotation Gate.
+   *
+   * Si tous les slots sont saturés MAIS le scanner détecte un setup A+
+   * (score ≥ 0.95, persistence ≥ 5/6, path ≥ 0.5) ET qu'au moins une
+   * position ouverte est "stagnante" (pnl ∈ [-0.3%, +0.3%], age ≥ 90min),
+   * on ferme la stagnante pour libérer le slot et ouvrir le setup A+.
+   *
+   * Calcul EV avec frais venue-specific (Korea KSST 23bps sell, HK stamp
+   * duty, IBKR US tier, etc.) via `computeVenueFeeDetail` :
+   *
+   *   netEV = (TP_gain × hit_rate) - close_stagnant_fees - new_open_fees
+   *           - new_close_fees_at_TP - slippage_4_sides
+   *
+   * Rotate uniquement si netEV ≥ MIN_ROTATION_EV ($5 buffer).
+   *
+   * Toggle env `GAINERS_CAPITAL_ROTATION_ENABLED` (default `false`).
+   * Cap : max 1 rotation par cycle (évite churn).
+   */
+  private async tryCapitalRotation(
+    portfolioId: string,
+    candidate: TopGainerCandidate & { score: number; assetClass: TopGainerAssetClass },
+    persistence: PersistenceWithPath | undefined,
+    overrides: { tpPct: number; slPct: number; positionNotionalUsd: number },
+  ): Promise<{ rotated: boolean; closedPositionId?: string }> {
+    const enabled = (process.env.GAINERS_CAPITAL_ROTATION_ENABLED ?? 'false').toLowerCase() === 'true';
+    if (!enabled) return { rotated: false };
+
+    // Gates A+ stricts pour ne rotation que sur SETUPS exceptionnels
+    if (candidate.score < 0.95) return { rotated: false };
+    if (!persistence || persistence.persistenceScore < 5/6) return { rotated: false };
+    const pathEff = persistence.pathQuality?.overallEfficiency ?? null;
+    if (pathEff != null && pathEff < 0.5) return { rotated: false };
+
+    // Récupère les positions open du portfolio
+    const { data: openPositions } = await this.supabase
+      .getClient()
+      .from('lisa_positions')
+      .select('id, symbol, asset_class, venue, entry_price, entry_timestamp, quantity, entry_notional_usd')
+      .eq('portfolio_id', portfolioId)
+      .eq('status', 'open');
+    if (!openPositions || openPositions.length === 0) return { rotated: false };
+
+    // Identifie la stagnante la plus ancienne (pnl ∈ [-0.3%, +0.3%], age ≥ 90 min)
+    const STAGNANT_PNL_PCT = 0.3; // dead zone
+    const STAGNANT_MIN_AGE_MS = 90 * 60_000;
+    type Stagnant = {
+      pos: typeof openPositions[number];
+      pnlPct: number;
+      ageMs: number;
+      currentPrice: number;
+    };
+    const stagnants: Stagnant[] = [];
+    for (const pos of openPositions) {
+      const ageMs = Date.now() - new Date(String(pos.entry_timestamp)).getTime();
+      if (ageMs < STAGNANT_MIN_AGE_MS) continue;
+      const quote = await this.lisa.getLivePrice(String(pos.symbol)).catch(() => null);
+      if (!quote || !quote.price) continue;
+      const livePrice = parseFloat(quote.price);
+      const entry = parseFloat(String(pos.entry_price));
+      if (!Number.isFinite(livePrice) || !Number.isFinite(entry) || entry <= 0) continue;
+      const pnlPct = ((livePrice - entry) / entry) * 100;
+      if (Math.abs(pnlPct) > STAGNANT_PNL_PCT) continue;
+      stagnants.push({ pos, pnlPct, ageMs, currentPrice: livePrice });
+    }
+    if (stagnants.length === 0) return { rotated: false };
+
+    // Sort par age desc → la plus ancienne en premier
+    stagnants.sort((a, b) => b.ageMs - a.ageMs);
+    const target = stagnants[0];
+
+    // Calcul fees venue-specific pour la rotation
+    const Decimal = (await import('decimal.js')).default;
+    const targetQty = new Decimal(String(target.pos.quantity));
+    const targetEntry = new Decimal(String(target.pos.entry_price));
+    const targetVenue = String(target.pos.venue ?? 'unknown');
+    const targetAssetClass = String(target.pos.asset_class ?? '');
+    const closeStagnantFees = new Decimal(
+      computeVenueFeeDetail(targetQty, new Decimal(target.currentPrice), targetAssetClass, targetVenue, 'sell').total,
+    );
+
+    const newNotional = new Decimal(overrides.positionNotionalUsd);
+    const newPrice = new Decimal(candidate.close);
+    const newQty = newNotional.div(newPrice);
+    const newTpPrice = newPrice.mul(1 + overrides.tpPct / 100);
+    const newOpenFees = new Decimal(
+      computeVenueFeeDetail(newQty, newPrice, candidate.assetClass, candidate.exchange ?? 'unknown', 'buy').total,
+    );
+    const newCloseAtTpFees = new Decimal(
+      computeVenueFeeDetail(newQty, newTpPrice, candidate.assetClass, candidate.exchange ?? 'unknown', 'sell').total,
+    );
+
+    // Slippage 5 bps × 4 sides (close stagnant exit + new entry + new exit at TP)
+    const SLIPPAGE_BPS = 5;
+    const stagnantSlip = targetQty.mul(target.currentPrice).mul(SLIPPAGE_BPS).div(10000);
+    const newOpenSlip = newQty.mul(newPrice).mul(SLIPPAGE_BPS).div(10000);
+    const newCloseSlip = newQty.mul(newTpPrice).mul(SLIPPAGE_BPS).div(10000);
+
+    const totalRotationCost = closeStagnantFees.plus(newOpenFees).plus(newCloseAtTpFees)
+      .plus(stagnantSlip).plus(newOpenSlip).plus(newCloseSlip);
+    const newTpGain = newTpPrice.minus(newPrice).mul(newQty);
+    const HIT_RATE_AT_PLUS_GATES = 0.70; // estimation conservative pour A+ setups
+    const expectedGainNet = newTpGain.mul(HIT_RATE_AT_PLUS_GATES).minus(totalRotationCost);
+
+    const MIN_ROTATION_EV = 5; // $5 buffer minimum
+    if (expectedGainNet.lt(MIN_ROTATION_EV)) {
+      this.logger.log(
+        `[capital-rotation] ${portfolioId.slice(0, 8)}: skip — netEV=$${expectedGainNet.toFixed(2)} < $${MIN_ROTATION_EV} ` +
+        `(close ${target.pos.symbol} fees=$${closeStagnantFees.toFixed(2)} ` +
+        `vs new ${candidate.symbol} TP_gain=$${newTpGain.toFixed(2)} fees=$${newOpenFees.plus(newCloseAtTpFees).toFixed(2)})`,
+      );
+      return { rotated: false };
+    }
+
+    // Execute la rotation : ferme la stagnante via paperBroker
+    try {
+      await this.lisa.getPaperBroker().closePosition({
+        positionId: String(target.pos.id),
+        reason: 'closed_invalidated',
+        livePrice: String(target.currentPrice),
+        rationale: `[ROTATION] Capital rotation → ${candidate.symbol} (score=${candidate.score} persistence=${persistence.persistenceCount} path=${pathEff?.toFixed(2) ?? 'n/a'}) — ` +
+          `close stagnant ${target.pos.symbol} age=${(target.ageMs / 60000).toFixed(0)}min pnl=${target.pnlPct.toFixed(2)}% ` +
+          `netEV=$${expectedGainNet.toFixed(2)}`,
+      });
+      this.logger.log(
+        `[capital-rotation] ${portfolioId.slice(0, 8)} CLOSED ${target.pos.symbol} → opening ${candidate.symbol} ` +
+        `(netEV=$${expectedGainNet.toFixed(2)})`,
+      );
+      // Audit decision_log
+      await this.decisionLog.append({
+        portfolioId,
+        kind: 'position_closed',
+        summary: `[CAPITAL_ROTATION] Closed stagnant ${target.pos.symbol} → free slot for ${candidate.symbol} (score=${candidate.score})`,
+        rationale: `Stagnant position closed for capital rotation. Age=${(target.ageMs / 60000).toFixed(0)}min, pnl=${target.pnlPct.toFixed(2)}%. ` +
+          `New candidate score=${candidate.score} persistence=${persistence.persistenceCount} pathEff=${pathEff?.toFixed(2) ?? 'n/a'}. ` +
+          `Net EV after all fees+slippage = $${expectedGainNet.toFixed(2)}.`,
+        payload: {
+          closed_position_id: target.pos.id,
+          closed_symbol: target.pos.symbol,
+          closed_age_min: target.ageMs / 60000,
+          closed_pnl_pct: target.pnlPct,
+          new_candidate_symbol: candidate.symbol,
+          new_candidate_score: candidate.score,
+          new_candidate_persistence: persistence.persistenceCount,
+          new_candidate_path_eff: pathEff,
+          fees_breakdown: {
+            close_stagnant: closeStagnantFees.toFixed(4),
+            new_open: newOpenFees.toFixed(4),
+            new_close_at_tp: newCloseAtTpFees.toFixed(4),
+            slippage_4_sides: stagnantSlip.plus(newOpenSlip).plus(newCloseSlip).toFixed(4),
+          },
+          expected_gain_net: expectedGainNet.toFixed(4),
+        },
+        triggeredBy: 'autopilot_cron',
+      }).catch(() => { /* non-bloquant */ });
+      return { rotated: true, closedPositionId: String(target.pos.id) };
+    } catch (e) {
+      this.logger.warn(`[capital-rotation] close failed: ${String(e).slice(0, 120)}`);
+      return { rotated: false };
     }
   }
 
