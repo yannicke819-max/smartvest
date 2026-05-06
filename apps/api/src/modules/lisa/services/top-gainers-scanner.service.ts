@@ -1317,7 +1317,7 @@ export class TopGainersScannerService implements OnModuleInit {
     const { data: cfgRow } = await this.supabase
       .getClient()
       .from('lisa_session_configs')
-      .select('capital_usd, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes, gainers_universe_us, gainers_universe_eu, gainers_universe_asia, gainers_universe_crypto, gainers_p_win_gate_enabled, gainers_min_p_win')
+      .select('capital_usd, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes, gainers_universe_us, gainers_universe_eu, gainers_universe_asia, gainers_universe_crypto, gainers_p_win_gate_enabled, gainers_min_p_win, gainers_rotation_stagnant_min_age_min')
       .eq('portfolio_id', portfolioId)
       .maybeSingle();
     const minScore = this.resolveMinPersistenceScore(
@@ -1363,6 +1363,10 @@ export class TopGainersScannerService implements OnModuleInit {
       ? Math.max(0, Math.min(240, Number(cfgRow.gainers_cooldown_minutes)))
       : FALLBACK_COOLDOWN_MIN;
     const positionNotionalUsd = capitalUsd * (positionPct / 100);
+    // PR #262 — Capital rotation : seuil "stagnante" configurable user (15-480 min, default 90)
+    const rotationStagnantMinAgeMin = cfgRow?.gainers_rotation_stagnant_min_age_min != null
+      ? Math.max(15, Math.min(480, Number(cfgRow.gainers_rotation_stagnant_min_age_min)))
+      : 90;
 
     // PR #3 + PR #246 — universe toggles per-portfolio appliqués AVANT
     // selectTopGainers. Bug pré-#246 : selectTopGainers global retournait top 10
@@ -1796,7 +1800,7 @@ export class TopGainersScannerService implements OnModuleInit {
           portfolioId,
           cand,
           persistence,
-          { tpPct, slPct, positionNotionalUsd },
+          { tpPct, slPct, positionNotionalUsd, rotationStagnantMinAgeMin },
         );
         if (rotation.rotated) {
           rotated = true;
@@ -1872,7 +1876,7 @@ export class TopGainersScannerService implements OnModuleInit {
     portfolioId: string,
     candidate: TopGainerCandidate & { score: number; assetClass: TopGainerAssetClass },
     persistence: PersistenceWithPath | undefined,
-    overrides: { tpPct: number; slPct: number; positionNotionalUsd: number },
+    overrides: { tpPct: number; slPct: number; positionNotionalUsd: number; rotationStagnantMinAgeMin?: number },
   ): Promise<{ rotated: boolean; closedPositionId?: string }> {
     const enabled = (process.env.GAINERS_CAPITAL_ROTATION_ENABLED ?? 'false').toLowerCase() === 'true';
     if (!enabled) return { rotated: false };
@@ -1894,7 +1898,8 @@ export class TopGainersScannerService implements OnModuleInit {
 
     // Identifie la stagnante la plus ancienne (pnl ∈ [-0.3%, +0.3%], age ≥ 90 min)
     const STAGNANT_PNL_PCT = 0.3; // dead zone
-    const STAGNANT_MIN_AGE_MS = 90 * 60_000;
+    // PR #262 — Threshold "stagnante" configurable via UI (default 90 min, range 15-480)
+    const STAGNANT_MIN_AGE_MS = (overrides.rotationStagnantMinAgeMin ?? 90) * 60_000;
     type Stagnant = {
       pos: typeof openPositions[number];
       pnlPct: number;
