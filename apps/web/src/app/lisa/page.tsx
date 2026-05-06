@@ -305,12 +305,18 @@ export default function LisaPage() {
     };
 
     try {
+      // PR #248 — En mode gainers, on N'inclut PAS `autopilot_enabled` dans le
+      // payload. Le panel "Configuration scanner Gainers" est seul maître via
+      // useUpdateGainersConfig. Sans cette exclusion, un Save ici écrasait
+      // silencieusement le toggle ACTIF du panel Gainers à la valeur de la
+      // checkbox locale (souvent stale/false → scanner stoppé sans warning).
+      const isGainersMode = currentMode === 'gainers';
       await upsertConfig.mutateAsync({
         profile,
         capital_usd: capital,
         anti_consensus_strength: antiConsensus,
         enable_crypto: enableCrypto,
-        autopilot_enabled: autopilotEnabled,
+        ...(isGainersMode ? {} : { autopilot_enabled: autopilotEnabled }),
         autopilot_cycle_minutes: autopilotCycleMin,
         autopilot_auto_approve: autopilotAutoApprove,
         autopilot_aggressive: autopilotAggressive,
@@ -727,21 +733,45 @@ export default function LisaPage() {
         </div>
 
         <div className="border-t pt-3 space-y-2">
-          <label className="flex items-center gap-2 text-xs font-medium">
-            <input
-              type="checkbox"
-              checked={autopilotEnabled}
-              onChange={(e) => {
-                setAutopilotEnabled(e.target.checked);
-                if (!e.target.checked) {
-                  // Désactiver autopilot → coupe aussi auto-approve + agressive
-                  setAutopilotAutoApprove(false);
-                  setAutopilotAggressive(false);
-                }
-              }}
-            />
-            Autopilot (mode event-driven + filet de garantie)
-          </label>
+          {/* PR #248 — En mode gainers, le panel "Configuration scanner Gainers"
+              est l'UNIQUE source de vérité pour autopilot_enabled. Cette section
+              "event-driven + filet de garantie" est pensée pour le pipeline
+              Lisa LLM (modes investment/harvest) et ne s'applique pas au scanner
+              Gainers déterministe. Risque pré-#248 : un Save de la page
+              principale écrasait `autopilot_enabled` à la valeur de la checkbox
+              locale (souvent stale/false), coupant silencieusement le scanner
+              Gainers que l'utilisateur venait juste d'activer. */}
+          {currentMode === 'gainers' ? (
+            <div className="rounded-md border border-dashed border-orange-300 bg-orange-50/40 dark:bg-orange-950/10 p-3 space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="text-base">🚀</span>
+                <span className="text-xs font-medium">Mode gainers actif</span>
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                L&apos;autopilote, le cycle scanner et tous les paramètres
+                déterministes sont pilotés depuis le panel{' '}
+                <span className="font-medium">« Configuration scanner Gainers »</span>{' '}
+                ci-dessus. Le filet de garantie event-driven n&apos;est pas
+                utilisé en mode gainers (pipeline LLM bypassé).
+              </p>
+            </div>
+          ) : (
+            <>
+              <label className="flex items-center gap-2 text-xs font-medium">
+                <input
+                  type="checkbox"
+                  checked={autopilotEnabled}
+                  onChange={(e) => {
+                    setAutopilotEnabled(e.target.checked);
+                    if (!e.target.checked) {
+                      // Désactiver autopilot → coupe aussi auto-approve + agressive
+                      setAutopilotAutoApprove(false);
+                      setAutopilotAggressive(false);
+                    }
+                  }}
+                />
+                Autopilot (mode event-driven + filet de garantie)
+              </label>
           {autopilotEnabled && (
             <div className="pl-6 space-y-2">
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -867,6 +897,8 @@ export default function LisaPage() {
                 )}
               </div>
             </div>
+          )}
+            </>
           )}
         </div>
 
