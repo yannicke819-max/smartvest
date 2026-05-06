@@ -482,6 +482,111 @@ export class LisaController {
   }
 
   // ─────────────────────────────────────────────────────────────────
+  // PR #265 — Sauvegardes nommées de config gainers
+  // ─────────────────────────────────────────────────────────────────
+
+  /** Liste les presets sauvegardés pour un portfolio. */
+  @Get('gainers-config-presets/:portfolioId')
+  async listGainersConfigPresets(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    const userId = extractUserId(headers);
+    const { data, error } = await this.supabase.getClient()
+      .from('gainers_config_presets')
+      .select('id, name, settings, created_at, updated_at')
+      .eq('user_id', userId)
+      .eq('portfolio_id', portfolioId)
+      .order('updated_at', { ascending: false });
+    if (error) throw new BadRequestException(`List presets failed: ${error.message}`);
+    return { presets: data ?? [] };
+  }
+
+  /** Sauvegarde la config gainers courante sous un nom (upsert si nom existe). */
+  @Post('gainers-config-presets/:portfolioId')
+  async saveGainersConfigPreset(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+    @Body() body: { name: string },
+  ) {
+    const userId = extractUserId(headers);
+    const name = (body?.name ?? '').trim();
+    if (!name || name.length > 60) {
+      throw new BadRequestException('Preset name must be 1-60 chars');
+    }
+    // Snapshot des champs gainers_* depuis lisa_session_configs
+    const { data: cfg, error: cfgErr } = await this.supabase.getClient()
+      .from('lisa_session_configs')
+      .select('gainers_default_tp_pct, gainers_default_sl_pct, gainers_position_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_cash_reserve_pct, gainers_cooldown_minutes, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_universe_us, gainers_universe_eu, gainers_universe_asia, gainers_universe_crypto, gainers_p_win_gate_enabled, gainers_min_p_win, gainers_cycle_minutes, gainers_adaptive_enabled, gainers_rotation_stagnant_min_age_min, capital_usd')
+      .eq('portfolio_id', portfolioId)
+      .maybeSingle();
+    if (cfgErr || !cfg) {
+      throw new BadRequestException(`Config snapshot failed: ${cfgErr?.message ?? 'no config'}`);
+    }
+    const { data, error } = await this.supabase.getClient()
+      .from('gainers_config_presets')
+      .upsert({
+        user_id: userId,
+        portfolio_id: portfolioId,
+        name,
+        settings: cfg,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'portfolio_id,name' })
+      .select('id, name, settings, created_at, updated_at')
+      .single();
+    if (error) throw new BadRequestException(`Save preset failed: ${error.message}`);
+    return { preset: data };
+  }
+
+  /** Charge un preset et applique sa config sur le portfolio. */
+  @Post('gainers-config-presets/:portfolioId/load')
+  async loadGainersConfigPreset(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+    @Body() body: { name: string },
+  ) {
+    const userId = extractUserId(headers);
+    const name = (body?.name ?? '').trim();
+    if (!name) throw new BadRequestException('Preset name required');
+    const { data: preset, error: getErr } = await this.supabase.getClient()
+      .from('gainers_config_presets')
+      .select('settings')
+      .eq('user_id', userId)
+      .eq('portfolio_id', portfolioId)
+      .eq('name', name)
+      .maybeSingle();
+    if (getErr || !preset) {
+      throw new BadRequestException(`Preset "${name}" not found`);
+    }
+    const { error: updErr } = await this.supabase.getClient()
+      .from('lisa_session_configs')
+      .update(preset.settings)
+      .eq('portfolio_id', portfolioId);
+    if (updErr) throw new BadRequestException(`Apply preset failed: ${updErr.message}`);
+    return { ok: true, applied: preset.settings };
+  }
+
+  /** Supprime un preset par nom. */
+  @Post('gainers-config-presets/:portfolioId/delete')
+  async deleteGainersConfigPreset(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+    @Body() body: { name: string },
+  ) {
+    const userId = extractUserId(headers);
+    const name = (body?.name ?? '').trim();
+    if (!name) throw new BadRequestException('Preset name required');
+    const { error } = await this.supabase.getClient()
+      .from('gainers_config_presets')
+      .delete()
+      .eq('user_id', userId)
+      .eq('portfolio_id', portfolioId)
+      .eq('name', name);
+    if (error) throw new BadRequestException(`Delete preset failed: ${error.message}`);
+    return { ok: true };
+  }
+
+  // ─────────────────────────────────────────────────────────────────
   // P8-MULTI-TIMEFRAME-PERSISTENCE — snapshot endpoint
   // ─────────────────────────────────────────────────────────────────
 

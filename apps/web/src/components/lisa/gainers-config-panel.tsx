@@ -18,10 +18,14 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Settings2, Save, RotateCcw, BarChart3 } from 'lucide-react';
+import { Settings2, Save, RotateCcw, BarChart3, Bookmark, Trash2 } from 'lucide-react';
 import {
   useGainersConfig,
   useUpdateGainersConfig,
+  useGainersConfigPresets,
+  useSaveGainersConfigPreset,
+  useLoadGainersConfigPreset,
+  useDeleteGainersConfigPreset,
   type GainersConfigFields,
 } from '@/hooks/use-operating-mode';
 
@@ -177,6 +181,9 @@ export function GainersConfigPanel({ portfolioId }: Props) {
               : 'Activer'}
         </button>
       </section>
+
+      {/* PR #265 — Sauvegardes nommées de config */}
+      <PresetSection portfolioId={portfolioId} />
 
       {/* 1. Capital & sizing */}
       <section className="space-y-3">
@@ -538,3 +545,154 @@ function Toggle({
     </label>
   );
 }
+
+/**
+ * PR #265 — Section "Sauvegardes nommées" de config gainers.
+ * Permet save/load/delete des presets nommés (ex: "Conservateur", "Crypto only").
+ */
+function PresetSection({ portfolioId }: { portfolioId: string }) {
+  const [newName, setNewName] = useState('');
+  const [confirmLoad, setConfirmLoad] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const presetsQuery = useGainersConfigPresets(portfolioId);
+  const saveMut = useSaveGainersConfigPreset(portfolioId);
+  const loadMut = useLoadGainersConfigPreset(portfolioId);
+  const deleteMut = useDeleteGainersConfigPreset(portfolioId);
+
+  const presets = presetsQuery.data?.presets ?? [];
+
+  const handleSave = async () => {
+    const name = newName.trim();
+    if (!name) {
+      setError('Nom requis');
+      return;
+    }
+    try {
+      await saveMut.mutateAsync(name);
+      setNewName('');
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const handleLoad = async (name: string) => {
+    try {
+      await loadMut.mutateAsync(name);
+      setConfirmLoad(null);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const handleDelete = async (name: string) => {
+    if (!confirm(`Supprimer le preset "${name}" ?`)) return;
+    try {
+      await deleteMut.mutateAsync(name);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  return (
+    <section className="space-y-3 border-t border-orange-900/30 pt-4">
+      <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-foreground font-semibold">
+        <Bookmark className="w-3 h-3" />
+        Mes configs sauvegardées
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Sauvegarde l&apos;état complet (TP/SL, gates, univers, rotation, etc.) sous
+        un nom et recharge en 1 clic. Idéal pour tester différentes stratégies.
+      </p>
+
+      {/* Save current */}
+      <div className="flex items-center gap-2">
+        <input
+          type="text"
+          placeholder="Nom du preset (ex: Conservateur, Crypto only)"
+          value={newName}
+          onChange={(e) => setNewName(e.target.value)}
+          maxLength={60}
+          className="h-8 flex-1 rounded-md border bg-background px-2 text-xs"
+        />
+        <button
+          type="button"
+          onClick={handleSave}
+          disabled={saveMut.isPending || !newName.trim()}
+          className="px-3 py-1.5 rounded-md text-xs font-medium bg-orange-600 hover:bg-orange-700 text-white disabled:opacity-50 inline-flex items-center gap-1"
+        >
+          <Save className="w-3 h-3" />
+          {saveMut.isPending ? '…' : 'Sauvegarder'}
+        </button>
+      </div>
+
+      {/* List existing presets */}
+      {presets.length > 0 && (
+        <div className="space-y-1.5">
+          {presets.map((p) => (
+            <div
+              key={p.id}
+              className="flex items-center justify-between gap-2 rounded border bg-card/50 px-2 py-1.5 text-xs"
+            >
+              <div className="flex-1 min-w-0">
+                <span className="font-medium text-foreground">{p.name}</span>
+                <span className="ml-2 text-[10px] text-muted-foreground">
+                  · maj {new Date(p.updated_at).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                </span>
+              </div>
+              {confirmLoad === p.name ? (
+                <div className="flex items-center gap-1">
+                  <span className="text-[10px] text-amber-600">Écraser config courante ?</span>
+                  <button
+                    type="button"
+                    onClick={() => handleLoad(p.name)}
+                    disabled={loadMut.isPending}
+                    className="px-2 py-0.5 rounded text-[10px] bg-amber-600 hover:bg-amber-700 text-white disabled:opacity-50"
+                  >
+                    {loadMut.isPending ? '…' : 'OK'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmLoad(null)}
+                    className="px-2 py-0.5 rounded text-[10px] bg-slate-600 hover:bg-slate-700 text-white"
+                  >
+                    Annuler
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setConfirmLoad(p.name)}
+                    className="px-2 py-0.5 rounded text-[10px] bg-blue-600 hover:bg-blue-700 text-white"
+                  >
+                    Charger
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDelete(p.name)}
+                    disabled={deleteMut.isPending}
+                    className="px-1.5 py-0.5 rounded text-[10px] bg-red-600 hover:bg-red-700 text-white disabled:opacity-50"
+                    title="Supprimer"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {presets.length === 0 && !presetsQuery.isLoading && (
+        <p className="text-[10px] text-muted-foreground italic">
+          Aucun preset sauvegardé. Configure puis donne un nom pour le réutiliser plus tard.
+        </p>
+      )}
+      {error && (
+        <p className="text-[10px] text-red-500">{error}</p>
+      )}
+    </section>
+  );
+}
+
