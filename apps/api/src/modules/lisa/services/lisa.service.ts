@@ -1389,9 +1389,14 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       const expr = thesis.expressions[thesis.preferredExpressionIndex];
       if (!expr) return [];
 
-      const stopPct = Math.abs(thesis.riskReward.adverseScenarioReturnPct ?? 2);
-      const tpPct = thesis.riskReward.centralScenarioReturnPct?.mid ?? stopPct * 2;
-      const horizonDays = thesis.riskReward.horizonDays ?? 3;
+      // PR #249 — `thesis.riskReward` est undefined dans les thèses générées
+      // par le scanner top-gainers (qui ne peuple que stopLossPct/takeProfitPct
+      // sur l'expression, pas un objet riskReward complet). Sans `?.`, ouverture
+      // crashe `Cannot read properties of undefined (reading 'adverseScenarioReturnPct')`
+      // → 100% des candidats Asia/US crash silencieusement → 0 position ouverte.
+      const stopPct = Math.abs(thesis.riskReward?.adverseScenarioReturnPct ?? 2);
+      const tpPct = thesis.riskReward?.centralScenarioReturnPct?.mid ?? stopPct * 2;
+      const horizonDays = thesis.riskReward?.horizonDays ?? 3;
 
       const isOptionLong = expr.direction === 'long_call' || expr.direction === 'long_put';
       const direction: 'long' | 'short' = isOptionLong
@@ -1892,7 +1897,9 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
           });
           continue;
         }
-        const riskReward = thesis.riskReward as { horizonDays: number; adverseScenarioReturnPct?: number };
+        // PR #249 — Cast safe quand `thesis.riskReward` peut être undefined
+        // (cas scanner top-gainers, voir commentaire ligne ~1392).
+        const riskReward = thesis.riskReward as { horizonDays?: number; adverseScenarioReturnPct?: number } | undefined;
         const assetClass = String(expression.assetClass ?? '');
         const isCrypto = assetClass.startsWith('crypto_');
 
@@ -1900,7 +1907,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         // thèse si plus strict. Permet à la risk_monitor de fermer les perdantes.
         const direction = expression.direction as string;
         const livePx = new Decimal(quote.price);
-        const adversePct = Math.abs(riskReward.adverseScenarioReturnPct ?? -5);
+        const adversePct = Math.abs(riskReward?.adverseScenarioReturnPct ?? -5);
         // Aggressive mode = stop plus serré (-2% floor au lieu de -3%) pour
         // couper vite les perdantes et libérer du cash pour la prochaine idée.
         const floor = aggressive ? 2 : 3;
@@ -1944,7 +1951,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
           livePrice: quote.price,
           stopLossPrice,
           takeProfitPrice,
-          horizonDays: riskReward.horizonDays ?? 30,
+          horizonDays: riskReward?.horizonDays ?? 30,
         });
         opened.push(pos);
         openedSoFar++;
