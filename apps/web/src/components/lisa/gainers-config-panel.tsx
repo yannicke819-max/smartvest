@@ -350,6 +350,40 @@ export function GainersConfigPanel({ portfolioId }: Props) {
             onChange={(v) => set('gainers_universe_crypto', v)}
           />
         </div>
+        <Toggle
+          label="Filtre auto par horaires session"
+          hint="Skip US/EU/Asia hors plages UTC. Crypto toujours actif. Économie ~30-50% appels EODHD."
+          checked={cfg.gainers_session_filter_enabled !== false}
+          onChange={(v) => set('gainers_session_filter_enabled', v)}
+        />
+      </section>
+
+      {/* 4-bis. Force-close avant cloche */}
+      <section className="space-y-3">
+        <div className="text-xs uppercase tracking-wider text-foreground font-semibold">
+          4-bis. Force-close avant cloche
+        </div>
+        <Toggle
+          label="Fermer auto les positions avant fermeture du marché"
+          hint="Évite le gap risk overnight (US/EU/Asia). Crypto jamais affecté."
+          checked={cfg.gainers_force_close_before_close_enabled === true}
+          onChange={(v) => set('gainers_force_close_before_close_enabled', v)}
+        />
+        <Field
+          label="Délai avant cloche (min)"
+          hint="[5..120] — combien de minutes avant la fermeture déclencher le close. Default 30."
+        >
+          <input
+            type="number"
+            min={5}
+            max={120}
+            step={5}
+            disabled={cfg.gainers_force_close_before_close_enabled !== true}
+            value={num(cfg.gainers_force_close_offset_min, 30)}
+            onChange={(e) => set('gainers_force_close_offset_min', Number(e.target.value))}
+            className="h-8 w-full rounded-md border bg-background px-2 text-xs disabled:opacity-50"
+          />
+        </Field>
       </section>
 
       {/* 5. Persistence + Path */}
@@ -528,20 +562,25 @@ function Toggle({
   label,
   checked,
   onChange,
+  hint,
 }: {
   label: string;
   checked: boolean;
   onChange: (v: boolean) => void;
+  hint?: string;
 }) {
   return (
-    <label className="flex items-center gap-2 cursor-pointer">
+    <label className="flex items-start gap-2 cursor-pointer">
       <input
         type="checkbox"
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
-        className="w-4 h-4 rounded border-input bg-background text-orange-500"
+        className="mt-0.5 w-4 h-4 rounded border-input bg-background text-orange-500"
       />
-      <span className="text-sm text-foreground">{label}</span>
+      <div className="flex flex-col">
+        <span className="text-sm text-foreground">{label}</span>
+        {hint && <span className="text-[10px] text-muted-foreground">{hint}</span>}
+      </div>
     </label>
   );
 }

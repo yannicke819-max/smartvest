@@ -132,6 +132,61 @@ const EU_WATCHLIST_NAMES = ['cac40', 'dax40', 'ftse100'];
 const CRYPTO_PAIRS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT', 'DOTUSDT', 'LINKUSDT', 'MATICUSDT'];
 
 /**
+ * PR #266 — Horaires session UTC (approximatifs, ne tient pas compte du DST
+ * change exact). Utilisés pour :
+ *   - Filtrage automatique scan : skip un asset class quand bourse fermée.
+ *   - Force-close avant cloche : ferme positions à T-N min de close.
+ *
+ * Crypto = 24/7, jamais filtré ni force-fermé.
+ *
+ * Ref : ohlcv-cache/watchlist_universe (session_open_utc / session_close_utc)
+ * pour les bourses EU détaillées (CAC/DAX/FTSE). Ici on agrège par classe.
+ */
+type MarketSessionClass = 'us' | 'eu' | 'asia';
+const MARKET_SESSION_HOURS: Record<MarketSessionClass, { openUtcMin: number; closeUtcMin: number }> = {
+  // NYSE/NASDAQ : 14:30 - 21:00 UTC (été — hiver +1h, on accepte la dérive)
+  us:   { openUtcMin: 14 * 60 + 30, closeUtcMin: 21 * 60 },
+  // EU agrégé (LSE/Euronext/XETRA) : 08:00 - 16:30 UTC
+  eu:   { openUtcMin:  8 * 60,      closeUtcMin: 16 * 60 + 30 },
+  // Asia agrégé (TSE/HKEX/KRX/SSE/SZSE) : 00:00 - 08:00 UTC
+  asia: { openUtcMin:  0,           closeUtcMin:  8 * 60 },
+};
+
+/**
+ * Retourne true si le marché est ouvert maintenant (UTC).
+ * Lun-Ven uniquement pour US/EU/Asia. Crypto 24/7 → géré séparément.
+ */
+function isMarketOpen(cls: MarketSessionClass, now: Date = new Date()): boolean {
+  const day = now.getUTCDay(); // 0=Sun, 6=Sat
+  if (day === 0 || day === 6) return false;
+  const min = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const { openUtcMin, closeUtcMin } = MARKET_SESSION_HOURS[cls];
+  return min >= openUtcMin && min < closeUtcMin;
+}
+
+/**
+ * Retourne true si le marché ferme dans <= offsetMin minutes.
+ * Utilisé pour force-close. Renvoie false si déjà fermé ou pas encore ouvert.
+ */
+function isApproachingClose(cls: MarketSessionClass, offsetMin: number, now: Date = new Date()): boolean {
+  if (!isMarketOpen(cls, now)) return false;
+  const min = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const { closeUtcMin } = MARKET_SESSION_HOURS[cls];
+  return closeUtcMin - min <= offsetMin;
+}
+
+/**
+ * Mappe un asset_class lisa_positions / TopGainerAssetClass vers la session.
+ * crypto retourne null (jamais filtré ni force-close).
+ */
+function sessionClassFor(assetClass: string): MarketSessionClass | null {
+  if (assetClass === 'us_equity_large' || assetClass === 'us_equity_small_mid') return 'us';
+  if (assetClass === 'eu_equity') return 'eu';
+  if (assetClass === 'asia_equity') return 'asia';
+  return null;
+}
+
+/**
  * PR6.6.3 — Market cap approximatif pour les 10 Binance majors whitelistés.
  *
  * Binance ticker24hr ne renvoie pas market cap (OHLCV-only). Sans valeur réelle,
@@ -1317,7 +1372,7 @@ export class TopGainersScannerService implements OnModuleInit {
     const { data: cfgRow } = await this.supabase
       .getClient()
       .from('lisa_session_configs')
-      .select('capital_usd, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes, gainers_universe_us, gainers_universe_eu, gainers_universe_asia, gainers_universe_crypto, gainers_p_win_gate_enabled, gainers_min_p_win, gainers_rotation_stagnant_min_age_min')
+      .select('capital_usd, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes, gainers_universe_us, gainers_universe_eu, gainers_universe_asia, gainers_universe_crypto, gainers_p_win_gate_enabled, gainers_min_p_win, gainers_rotation_stagnant_min_age_min, gainers_session_filter_enabled, gainers_force_close_before_close_enabled, gainers_force_close_offset_min')
       .eq('portfolio_id', portfolioId)
       .maybeSingle();
     const minScore = this.resolveMinPersistenceScore(
@@ -1379,6 +1434,38 @@ export class TopGainersScannerService implements OnModuleInit {
     const universeEu = cfgRow?.gainers_universe_eu !== false;
     const universeAsia = cfgRow?.gainers_universe_asia !== false;
     const universeCrypto = cfgRow?.gainers_universe_crypto !== false;
+    // PR #266 — Session-aware filter : skip un asset class hors horaires bourse.
+    // Default true. Crypto jamais filtré (24/7). Économie EODHD ~30-50%.
+    const sessionFilterEnabled = cfgRow?.gainers_session_filter_enabled !== false;
+    const nowUtc = new Date();
+    const usOpen = !sessionFilterEnabled || isMarketOpen('us', nowUtc);
+    const euOpen = !sessionFilterEnabled || isMarketOpen('eu', nowUtc);
+    const asiaOpen = !sessionFilterEnabled || isMarketOpen('asia', nowUtc);
+    if (sessionFilterEnabled) {
+      const closedSessions: string[] = [];
+      if (universeUs && !usOpen) closedSessions.push('US');
+      if (universeEu && !euOpen) closedSessions.push('EU');
+      if (universeAsia && !asiaOpen) closedSessions.push('Asia');
+      if (closedSessions.length > 0) {
+        this.logger.log(
+          `[top-gainers] ${portfolioId.slice(0, 8)} session-filter: skip ${closedSessions.join('+')} (markets closed UTC=${nowUtc.toISOString().slice(11, 16)})`,
+        );
+      }
+    }
+
+    // PR #266 — Force-close avant cloche : ferme les positions sur un marché
+    // qui s'apprête à fermer (offset T-N min). Évite le gap risk overnight
+    // sur stratégie momentum intraday. Crypto jamais affecté. Tourne avant
+    // toute logique d'open pour libérer le capital pour les marchés encore
+    // actifs (ex: US ouvre 30min après EU close → capital EU close peut
+    // alimenter un setup US).
+    const forceCloseEnabled = cfgRow?.gainers_force_close_before_close_enabled === true;
+    const forceCloseOffsetMin = cfgRow?.gainers_force_close_offset_min != null
+      ? Math.max(5, Math.min(120, Number(cfgRow.gainers_force_close_offset_min)))
+      : 30;
+    if (forceCloseEnabled) {
+      await this.runForceCloseBeforeCloseTick(portfolioId, forceCloseOffsetMin, nowUtc);
+    }
     // PR #4 — pWin gate. Désactivé par défaut (gainers_p_win_gate_enabled=false).
     // L'utilisateur active via UI quand le modèle a convergé (≥30 trades fermés
     // + AUC ≥ 0.55). Sinon `probability.fallback=true` → bypass automatique.
@@ -1391,9 +1478,10 @@ export class TopGainersScannerService implements OnModuleInit {
       // detectAssetClass est appliqué dans selectTopGainers ; on doit le faire
       // ici aussi pour pouvoir filtrer la liste pré-selection.
       const assetClass = detectAssetClass(c.symbol, c.exchange, c.marketCap);
-      if (assetClass === 'us_equity_large' || assetClass === 'us_equity_small_mid') return universeUs;
-      if (assetClass === 'eu_equity') return universeEu;
-      if (assetClass === 'asia_equity') return universeAsia;
+      // PR #266 — combine universe toggle (volonté user) ET session ouverte.
+      if (assetClass === 'us_equity_large' || assetClass === 'us_equity_small_mid') return universeUs && usOpen;
+      if (assetClass === 'eu_equity') return universeEu && euOpen;
+      if (assetClass === 'asia_equity') return universeAsia && asiaOpen;
       if (assetClass === 'crypto_major' || assetClass === 'crypto_alt') return universeCrypto;
       return true; // fx/commodity etc — pas de toggle, accept par default
     });
@@ -2047,6 +2135,94 @@ export class TopGainersScannerService implements OnModuleInit {
     } catch (e) {
       this.logger.warn(`[capital-rotation] close failed: ${String(e).slice(0, 120)}`);
       return { rotated: false };
+    }
+  }
+
+  /**
+   * PR #266 — Force-close avant cloche : pour chaque position du portfolio
+   * dont la bourse ferme dans <= offsetMin minutes, déclenche un close
+   * via paperBroker.closePosition au prix live.
+   *
+   * Crypto exclu (24/7). Marchés US/EU/Asia uniquement. Audit decision_log
+   * `kind='position_closed'` payload `[FORCE_CLOSE_BEFORE_CLOSE]`.
+   *
+   * Contrat clé : ne touche **jamais** une position crypto, et ne se
+   * déclenche jamais hors horaires session (isApproachingClose vérifie
+   * que la bourse est encore ouverte mais proche de close).
+   */
+  private async runForceCloseBeforeCloseTick(
+    portfolioId: string,
+    offsetMin: number,
+    now: Date,
+  ): Promise<void> {
+    const { data: openPositions, error } = await this.supabase
+      .getClient()
+      .from('lisa_positions')
+      .select('id, symbol, asset_class, venue, entry_price, entry_timestamp, quantity')
+      .eq('portfolio_id', portfolioId)
+      .eq('status', 'open');
+    if (error || !openPositions || openPositions.length === 0) return;
+
+    for (const pos of openPositions) {
+      const assetClass = String(pos.asset_class ?? '');
+      const cls = sessionClassFor(assetClass);
+      if (cls === null) continue; // crypto / fx / commodity → skip
+      if (!isApproachingClose(cls, offsetMin, now)) continue;
+
+      const quote = await this.lisa.getLivePrice(String(pos.symbol)).catch(() => null);
+      if (!quote || !quote.price) {
+        this.logger.warn(
+          `[force-close] ${portfolioId.slice(0, 8)} ${pos.symbol}: no live price — skip (will retry next cycle)`,
+        );
+        continue;
+      }
+      const livePrice = parseFloat(quote.price);
+      if (!Number.isFinite(livePrice) || livePrice <= 0) continue;
+
+      const minutesToClose = MARKET_SESSION_HOURS[cls].closeUtcMin
+        - (now.getUTCHours() * 60 + now.getUTCMinutes());
+      const entry = parseFloat(String(pos.entry_price));
+      const pnlPct = Number.isFinite(entry) && entry > 0
+        ? ((livePrice - entry) / entry) * 100
+        : 0;
+
+      try {
+        await this.lisa.getPaperBroker().closePosition({
+          positionId: String(pos.id),
+          reason: 'closed_invalidated',
+          livePrice: String(livePrice),
+          rationale:
+            `[FORCE_CLOSE_BEFORE_CLOSE] ${cls.toUpperCase()} market closing in ${minutesToClose}min ` +
+            `(offset=${offsetMin}min) — pnl=${pnlPct.toFixed(2)}%`,
+        });
+        this.logger.log(
+          `[force-close] ${portfolioId.slice(0, 8)} CLOSED ${pos.symbol} (${cls}, T-${minutesToClose}min, pnl=${pnlPct.toFixed(2)}%)`,
+        );
+        await this.decisionLog.append({
+          portfolioId,
+          kind: 'position_closed',
+          summary: `[FORCE_CLOSE_BEFORE_CLOSE] ${pos.symbol} closed before ${cls.toUpperCase()} session close`,
+          rationale:
+            `Position ${pos.symbol} (${cls}) closed automatically — market closes in ${minutesToClose}min ` +
+            `(configured offset=${offsetMin}min). Avoids overnight gap risk on intraday momentum strategy. ` +
+            `pnl=${pnlPct.toFixed(2)}%.`,
+          payload: {
+            symbol: pos.symbol,
+            asset_class: assetClass,
+            session_class: cls,
+            offset_min: offsetMin,
+            minutes_to_close: minutesToClose,
+            pnl_pct: pnlPct,
+            live_price: livePrice,
+            entry_price: entry,
+          },
+          triggeredBy: 'autopilot_cron',
+        }).catch(() => { /* non-bloquant */ });
+      } catch (e) {
+        this.logger.warn(
+          `[force-close] ${portfolioId.slice(0, 8)} ${pos.symbol}: close failed — ${String(e).slice(0, 120)}`,
+        );
+      }
     }
   }
 
