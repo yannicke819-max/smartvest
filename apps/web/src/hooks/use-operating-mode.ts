@@ -75,6 +75,14 @@ export interface GainersStatus {
   trajectoryStatusAt: string | null;
   realised7dPct: number | null;
   target7dPct: number | null;
+  // PR #246 — Cartes Gains du jour / Gains du mois (mode-agnostique).
+  mtdPnlUsd: number;
+  mtdTradesCount: number;
+  mtdSessionsCount: number;
+  mtdWinningDays: number;
+  mtdLosingDays: number;
+  mtdBestDay: { date: string; pnl: number } | null;
+  mtdWorstDay: { date: string; pnl: number } | null;
 }
 
 export function useGainersStatus(portfolioId: string | null, enabled: boolean) {

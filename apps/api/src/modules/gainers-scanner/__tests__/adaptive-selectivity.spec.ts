@@ -182,15 +182,17 @@ describe('GainersAdaptiveSelectivityService.computeAdjustment', () => {
   });
 
   describe('HORS_TRAJECTOIRE', () => {
-    it('not active → kill_switch only (autopilot OFF)', () => {
+    // PR #247 — HORS_TRAJECTOIRE n'éteint plus l'autopilote autonomement.
+    // Le bandeau UI alerte ; l'utilisateur décide d'agir manuellement.
+    it('not active → kill_switch action emitted, autopilot NOT touched', () => {
       const svc = makeService();
       const decision = svc.computeAdjustment('HORS_TRAJECTOIRE', baseCtx);
       expect(decision.action).toBe('kill_switch');
-      expect(decision.next_autopilot_enabled).toBe(false);
+      expect(decision.next_autopilot_enabled).toBeUndefined();
       expect(decision.next_adaptive_active).toBe(false);
     });
 
-    it('active → kill_switch + restore from snapshot', () => {
+    it('active → kill_switch + restore from snapshot, autopilot NOT touched', () => {
       const svc = makeService();
       const ctx: AdaptiveContext = {
         ...baseCtx,
@@ -203,7 +205,7 @@ describe('GainersAdaptiveSelectivityService.computeAdjustment', () => {
       };
       const decision = svc.computeAdjustment('HORS_TRAJECTOIRE', ctx);
       expect(decision.action).toBe('kill_switch');
-      expect(decision.next_autopilot_enabled).toBe(false);
+      expect(decision.next_autopilot_enabled).toBeUndefined();
       expect(decision.next_persistence).toBe(0.67); // restored
       expect(decision.next_adaptive_active).toBe(false);
     });

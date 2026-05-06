@@ -159,10 +159,15 @@ describe('TopGainersScanner — cycle skip-summary log', () => {
     expect(svc.getSkippedNoPersistenceCounter()).toBe(5);
   });
 
-  it('truncates sample to first 5 symbols even if 50 are skipped', async () => {
+  it('truncates sample to first 5 symbols even if many are skipped', async () => {
     mockScanPortfolioSupabase();
     mockMtf.analyzeBatch.mockResolvedValue(new Map());
 
+    // PR #246 — scanPortfolio désormais reçoit la liste COMPLÈTE des candidats
+    // et applique selectTopGainers(filteredCandidates, 10) en interne.
+    // La taille effective traitée est donc cappée à TOP_POOL_SIZE_PER_PORTFOLIO=10.
+    // Le test garde son intention initiale (sample truncation à 5 symboles dans le log)
+    // en injectant 50 candidats dont seuls les 10 meilleurs scores seront skipped.
     const top = Array.from({ length: 50 }, (_, i) => makeCandidate(`T${i}`));
     const svc = makeService();
     await (svc as any).scanPortfolio('u', 'p', top);
@@ -172,8 +177,9 @@ describe('TopGainersScanner — cycle skip-summary log', () => {
     );
     expect(aggregate).toBeDefined();
     const msg = String(aggregate![0]);
-    expect(msg).toContain('skipped_no_persistence=50');
-    // Sample should contain first 5 (T0..T4) and not all 50
+    // Tous les candidats ont le même score (0.7) → selectTopGainers conserve les 10
+    // premiers selon ordre stable d'insertion → T0..T9 traités, T0..T4 dans le sample.
+    expect(msg).toContain('skipped_no_persistence=10');
     expect(msg).toMatch(/sample: T0, T1, T2, T3, T4/);
     expect(msg).not.toContain('T49');
   });

@@ -42,13 +42,24 @@ export class ClaudeProvider implements LlmProvider {
 
   async call(params: LlmCallParams): Promise<LlmCallResult> {
     const t0 = Date.now();
-    const res = await this.anthropic.messages.create({
-      model: this.model,
-      system: params.system,
-      messages: [{ role: 'user', content: params.user }],
-      temperature: params.temperature ?? 0.2,
-      max_tokens: params.maxTokens ?? 2048,
-    });
+    // PR #246 — Claude Opus 4.x déprécie `temperature` (renvoie HTTP 400
+    // « temperature ... not allowed »). On l'omet pour les modèles Opus, on
+    // le garde pour Sonnet/Haiku qui le supportent encore.
+    const isOpus = /opus/i.test(this.model);
+    const res = isOpus
+      ? await this.anthropic.messages.create({
+          model: this.model,
+          system: params.system,
+          messages: [{ role: 'user', content: params.user }],
+          max_tokens: params.maxTokens ?? 2048,
+        })
+      : await this.anthropic.messages.create({
+          model: this.model,
+          system: params.system,
+          messages: [{ role: 'user', content: params.user }],
+          temperature: params.temperature ?? 0.2,
+          max_tokens: params.maxTokens ?? 2048,
+        });
     const latencyMs = Date.now() - t0;
 
     const block = res.content?.[0];
