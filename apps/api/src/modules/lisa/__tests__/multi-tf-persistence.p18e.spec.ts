@@ -57,7 +57,7 @@ const mockIntradayCache = {
 const mockConfig = { get: jest.fn().mockReturnValue(undefined) } as any;
 
 function makeService(): MultiTimeframePersistenceService {
-  return new MultiTimeframePersistenceService(mockBinance, mockEodhd, mockYahoo, mockIntradayCache, mockConfig);
+  return new MultiTimeframePersistenceService(mockBinance, mockEodhd, mockYahoo, mockIntradayCache, mockConfig, { getStatus: () => ({ throttle: { multitfPaused: false } }) } as any);
 }
 
 // ── 1. Aggregated log — single line for N misses ─────────────────────────────

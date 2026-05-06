@@ -38,6 +38,7 @@ function makeService(): TopGainersScannerService {
   return new TopGainersScannerService(
     mockSupabase, mockLisa, mockDecisionLog, mockConfig, mockBinance, mockScheduler, mockMtf, mockLlmRouter, { isShadowEnabled: () => false } as any, { evaluate: () => ({ raw: {} as any, compositeScore: null, decision: "REJECT", rejectReason: null, spreadProxy: null, spreadProxySource: null, trendFilter: null, rvolIntraday: null }) } as any,
     { estimateProbability: async () => ({ pWin: 0.5, confidence: 0, sampleSize: 0, modelVersion: "none", fallback: true }) } as any,
+    { getStatus: () => ({ authoritative: { apiRequests: 0, dailyRateLimit: 100000, extraLimit: 0, asOf: null }, local: { totalProjected: 0, perEndpoint: {}, burnRatePerMin: 0 }, throttle: { scannerPaused: false, multitfPaused: false, essentialsOnly: false, hardBlocked: false, pauseReason: null }, etaExhaustionMinutes: null }) } as any,
   );
 }
 
@@ -321,6 +322,7 @@ describe('P20a — NON_EU_EXCHANGES registry correctness', () => {
     return new TopGainersScannerService(
       mockSupabase, mockLisa, mockDecisionLog, mockConfig, mockBinance, mockScheduler, mockMtf, mockLlmRouter, { isShadowEnabled: () => false } as any, { evaluate: () => ({ raw: {} as any, compositeScore: null, decision: "REJECT", rejectReason: null, spreadProxy: null, spreadProxySource: null, trendFilter: null, rvolIntraday: null }) } as any,
     { estimateProbability: async () => ({ pWin: 0.5, confidence: 0, sampleSize: 0, modelVersion: "none", fallback: true }) } as any,
+    { getStatus: () => ({ authoritative: { apiRequests: 0, dailyRateLimit: 100000, extraLimit: 0, asOf: null }, local: { totalProjected: 0, perEndpoint: {}, burnRatePerMin: 0 }, throttle: { scannerPaused: false, multitfPaused: false, essentialsOnly: false, hardBlocked: false, pauseReason: null }, etaExhaustionMinutes: null }) } as any,
     );
   }
 
@@ -353,6 +355,7 @@ describe('P20a — NON_EU_EXCHANGES registry correctness', () => {
     const svc = new TopGainersScannerService(
       supabaseMock, mockLisa, mockDecisionLog, mockConfig, mockBinance, mockScheduler, mockMtf, mockLlmRouter, { isShadowEnabled: () => false } as any, { evaluate: () => ({ raw: {} as any, compositeScore: null, decision: "REJECT", rejectReason: null, spreadProxy: null, spreadProxySource: null, trendFilter: null, rvolIntraday: null }) } as any,
     { estimateProbability: async () => ({ pWin: 0.5, confidence: 0, sampleSize: 0, modelVersion: "none", fallback: true }) } as any,
+    { getStatus: () => ({ authoritative: { apiRequests: 0, dailyRateLimit: 100000, extraLimit: 0, asOf: null }, local: { totalProjected: 0, perEndpoint: {}, burnRatePerMin: 0 }, throttle: { scannerPaused: false, multitfPaused: false, essentialsOnly: false, hardBlocked: false, pauseReason: null }, etaExhaustionMinutes: null }) } as any,
     );
     capturedUrls = [];
     // fetchAllCandidates without EU (EU sessions closed)
