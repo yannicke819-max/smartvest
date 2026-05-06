@@ -244,58 +244,70 @@ export class LisaController {
       .limit(100000);
     const scanned7d = bucketByDay(scanned7dRows ?? [], 7);
 
-    // Q2 — Ouverts aujourd'hui via paper_trades (count exact + breakdown)
+    // PR #252 — Q2/Q3 lisent désormais lisa_positions (source de vérité après PR #250).
+    //
+    // Pré-PR #250 : scanner Gainers passait par lisa_proposals/approveProposal/
+    // paper_trades. Endpoint lisait paper_trades pour "Gains du jour".
+    // Post-PR #250 : scanner ouvre directement dans lisa_positions, mais
+    // mechanical-trading ferme aussi via lisa_positions sans toucher paper_trades.
+    // Conséquence : compteur "Fermés" + "Gains du jour" stuck à 0 + $0.00
+    // alors qu'une position fermée TP rapportait +$23.20.
+    //
+    // Fix : query lisa_positions directement, marqueur Gainers Direct =
+    // proposal_id IS NULL (migration 0120 instaure cette convention).
+
+    // Q2 — Ouverts aujourd'hui (lisa_positions, proposal_id NULL = scanner direct)
     const { count: openedTodayCount } = await supabase
-      .from('paper_trades')
+      .from('lisa_positions')
       .select('*', { count: 'exact', head: true })
       .eq('portfolio_id', portfolioId)
-      .eq('strategy', 'top_gainers_v1')
-      .gte('opened_at', startOfDayUtcIso);
+      .is('proposal_id', null)
+      .gte('entry_timestamp', startOfDayUtcIso);
     const openedToday = openedTodayCount ?? 0;
 
     const openedByAssetClass = await this.countByBucket(
       supabase,
-      'paper_trades',
+      'lisa_positions',
       [
         ['eq', 'portfolio_id', portfolioId],
-        ['eq', 'strategy', 'top_gainers_v1'],
-        ['gte', 'opened_at', startOfDayUtcIso],
+        ['is', 'proposal_id', null],
+        ['gte', 'entry_timestamp', startOfDayUtcIso],
       ],
       openedToday,
     );
 
-    // Q3 — Fermés aujourd'hui + somme PnL (count exact + breakdown)
+    // Q3 — Fermés aujourd'hui (status closed + exit_timestamp >= today)
     const { count: closedTodayCountExact } = await supabase
-      .from('paper_trades')
+      .from('lisa_positions')
       .select('*', { count: 'exact', head: true })
       .eq('portfolio_id', portfolioId)
-      .eq('strategy', 'top_gainers_v1')
-      .eq('status', 'closed')
-      .gte('closed_at', startOfDayUtcIso);
+      .is('proposal_id', null)
+      .neq('status', 'open')
+      .gte('exit_timestamp', startOfDayUtcIso);
     const closedToday = closedTodayCountExact ?? 0;
 
-    // PnL : fetch limited rows (paper_trades volumes < 1000 OK)
-    const { data: closedTodayPaperTrades } = await supabase
-      .from('paper_trades')
-      .select('pnl_usd')
+    // PnL : somme realized_pnl_usd des positions fermées aujourd'hui
+    const { data: closedTodayPositions } = await supabase
+      .from('lisa_positions')
+      .select('realized_pnl_usd')
       .eq('portfolio_id', portfolioId)
-      .eq('strategy', 'top_gainers_v1')
-      .eq('status', 'closed')
-      .gte('closed_at', startOfDayUtcIso)
+      .is('proposal_id', null)
+      .neq('status', 'open')
+      .gte('exit_timestamp', startOfDayUtcIso)
       .limit(10000);
-    const closedTodayPnlUsd = (closedTodayPaperTrades ?? []).reduce(
-      (acc, row) => acc + (parseFloat(String(row.pnl_usd ?? '0')) || 0),
+    const closedTodayPnlUsd = (closedTodayPositions ?? []).reduce(
+      (acc, row) => acc + (parseFloat(String(row.realized_pnl_usd ?? '0')) || 0),
       0,
     );
 
     const closedByAssetClass = await this.countByBucket(
       supabase,
-      'paper_trades',
+      'lisa_positions',
       [
         ['eq', 'portfolio_id', portfolioId],
-        ['eq', 'strategy', 'top_gainers_v1'],
-        ['eq', 'status', 'closed'],
-        ['gte', 'closed_at', startOfDayUtcIso],
+        ['is', 'proposal_id', null],
+        ['neq', 'status', 'open'],
+        ['gte', 'exit_timestamp', startOfDayUtcIso],
       ],
       closedToday,
     );
@@ -321,40 +333,41 @@ export class LisaController {
         }));
     }
 
-    // PR #246 — MTD (Month-To-Date) gains pour la carte « Gains du mois ».
-    // Source : paper_trades fermés depuis le 1er du mois UTC, strategy gainers.
+    // PR #246 + PR #252 — MTD (Month-To-Date) gains pour la carte « Gains du mois ».
+    // Source : lisa_positions fermées depuis le 1er du mois UTC (proposal_id NULL
+    // = scanner Gainers Direct, post-PR #250).
     const startOfMonthUtc = new Date();
     startOfMonthUtc.setUTCDate(1);
     startOfMonthUtc.setUTCHours(0, 0, 0, 0);
     const startOfMonthIso = startOfMonthUtc.toISOString();
 
     const { count: closedMtdCount } = await supabase
-      .from('paper_trades')
+      .from('lisa_positions')
       .select('*', { count: 'exact', head: true })
       .eq('portfolio_id', portfolioId)
-      .eq('strategy', 'top_gainers_v1')
-      .eq('status', 'closed')
-      .gte('closed_at', startOfMonthIso);
+      .is('proposal_id', null)
+      .neq('status', 'open')
+      .gte('exit_timestamp', startOfMonthIso);
     const closedMtd = closedMtdCount ?? 0;
 
     const { data: closedMtdRows } = await supabase
-      .from('paper_trades')
-      .select('pnl_usd, closed_at')
+      .from('lisa_positions')
+      .select('realized_pnl_usd, exit_timestamp')
       .eq('portfolio_id', portfolioId)
-      .eq('strategy', 'top_gainers_v1')
-      .eq('status', 'closed')
-      .gte('closed_at', startOfMonthIso)
+      .is('proposal_id', null)
+      .neq('status', 'open')
+      .gte('exit_timestamp', startOfMonthIso)
       .limit(10000);
     const closedMtdPnlUsd = (closedMtdRows ?? []).reduce(
-      (acc, row) => acc + (parseFloat(String(row.pnl_usd ?? '0')) || 0),
+      (acc, row) => acc + (parseFloat(String(row.realized_pnl_usd ?? '0')) || 0),
       0,
     );
 
     // Best/worst day du mois (agrégation client par jour UTC).
     const dailyPnlMap = new Map<string, number>();
     for (const r of closedMtdRows ?? []) {
-      const day = String(r.closed_at).slice(0, 10); // YYYY-MM-DD
-      const pnl = parseFloat(String(r.pnl_usd ?? '0')) || 0;
+      const day = String(r.exit_timestamp).slice(0, 10); // YYYY-MM-DD
+      const pnl = parseFloat(String(r.realized_pnl_usd ?? '0')) || 0;
       dailyPnlMap.set(day, (dailyPnlMap.get(day) ?? 0) + pnl);
     }
     let bestDay: { date: string; pnl: number } | null = null;
@@ -686,14 +699,18 @@ export class LisaController {
    */
   private async countByBucket(
     supabase: ReturnType<SupabaseService['getClient']>,
-    table: 'gainers_v1_shadow_signals' | 'paper_trades',
-    filters: Array<['eq' | 'gte' | 'lte', string, string]>,
+    table: 'gainers_v1_shadow_signals' | 'paper_trades' | 'lisa_positions',
+    filters: Array<['eq' | 'gte' | 'lte' | 'neq' | 'is', string, string | null]>,
     totalCount: number,
   ): Promise<{ us: number; eu: number; asia: number; crypto: number; other: number }> {
-    const usOr = 'asset_class.like.us_equity%,exchange.in.(US,NYSE,NASDAQ,BATS,OTCQB,OTCMKTS,OTC,NMFQS)';
-    const euOr = 'asset_class.eq.eu_equity,exchange.in.(LSE,XETRA,PA,AS,AMS,MC,BME,MI,SW,BR)';
-    const asiaOr = 'asset_class.eq.asia_equity,exchange.in.(KO,KQ,KS,KE,T,TSE,HK,NSE,BSE,SHG,SHE,SS,SZ,AU,AX,TO)';
-    const cryptoOr = 'asset_class.like.crypto%,exchange.in.(BINANCE,CC,COINBASE)';
+    // PR #252 — `lisa_positions` utilise `venue` au lieu de `exchange`. On adapte
+    // l'OR filter selon la table pour matcher le bon nom de colonne. Les valeurs
+    // sont identiques (mêmes codes exchange/venue).
+    const exchangeCol = table === 'lisa_positions' ? 'venue' : 'exchange';
+    const usOr = `asset_class.like.us_equity%,${exchangeCol}.in.(US,NYSE,NASDAQ,BATS,OTCQB,OTCMKTS,OTC,NMFQS)`;
+    const euOr = `asset_class.eq.eu_equity,${exchangeCol}.in.(LSE,XETRA,PA,AS,AMS,MC,BME,MI,SW,BR)`;
+    const asiaOr = `asset_class.eq.asia_equity,${exchangeCol}.in.(KO,KQ,KS,KE,T,TSE,HK,NSE,BSE,SHG,SHE,SS,SZ,AU,AX,TO)`;
+    const cryptoOr = `asset_class.like.crypto%,${exchangeCol}.in.(BINANCE,CC,COINBASE)`;
 
     // Build base head-count query with filters appliqués via reduce
     const buildQ = (orFilter: string) => {
@@ -703,6 +720,8 @@ export class LisaController {
         if (op === 'eq') qb = qb.eq(col, val);
         else if (op === 'gte') qb = qb.gte(col, val);
         else if (op === 'lte') qb = qb.lte(col, val);
+        else if (op === 'neq') qb = qb.neq(col, val);
+        else if (op === 'is') qb = qb.is(col, val); // val=null → IS NULL
       }
       return qb.or(orFilter);
     };
