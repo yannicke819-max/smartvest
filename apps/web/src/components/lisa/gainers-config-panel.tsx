@@ -295,6 +295,27 @@ export function GainersConfigPanel({ portfolioId }: Props) {
         </Field>
       </section>
 
+      {/* PR #262 — Capital Rotation tempo */}
+      <section className="space-y-3">
+        <div className="text-xs uppercase tracking-wider text-foreground font-semibold">
+          3 bis. Capital rotation (toggle env GAINERS_CAPITAL_ROTATION_ENABLED)
+        </div>
+        <Field
+          label="Délai stagnante avant rotation (min)"
+          hint="[15..480] — durée minimale d'une position dans la dead zone (±0.3% pnl) avant qu'elle soit candidate à rotation. Default 90 min. Plus bas = plus réactif (whipsaw risk), plus haut = plus patient."
+        >
+          <input
+            type="number"
+            min={15}
+            max={480}
+            step={5}
+            value={num(cfg.gainers_rotation_stagnant_min_age_min, 90)}
+            onChange={(e) => set('gainers_rotation_stagnant_min_age_min', Number(e.target.value))}
+            className="input"
+          />
+        </Field>
+      </section>
+
       {/* 4. Univers */}
       <section className="space-y-3">
         <div className="text-xs uppercase tracking-wider text-foreground font-semibold">

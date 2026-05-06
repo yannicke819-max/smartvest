@@ -280,6 +280,7 @@ export interface GainersConfigFields {
   // PR #4 — pWin ML gate (migration 0116)
   gainers_p_win_gate_enabled: boolean | null;
   gainers_min_p_win: number | null;
+  gainers_rotation_stagnant_min_age_min: number | null;
   // PR Autopilot toggle — état du cron scanner pour ce portfolio
   autopilot_enabled: boolean | null;
   // PR #243 Adaptive Selectivity toggle (opt-in, default false)
@@ -317,6 +318,7 @@ export function useGainersConfig(portfolioId: string | null) {
         gainers_min_net_profit_usd: numOrNull(raw?.gainers_min_net_profit_usd),
         gainers_p_win_gate_enabled: boolOrNull(raw?.gainers_p_win_gate_enabled),
         gainers_min_p_win: numOrNull(raw?.gainers_min_p_win),
+        gainers_rotation_stagnant_min_age_min: numOrNull(raw?.gainers_rotation_stagnant_min_age_min),
         autopilot_enabled: boolOrNull(raw?.autopilot_enabled),
         gainers_adaptive_enabled: boolOrNull(raw?.gainers_adaptive_enabled),
         capital_simulation: numOrNull(raw?.capital_simulation ?? raw?.capital_usd),

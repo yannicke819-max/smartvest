@@ -303,6 +303,8 @@ export class LisaService {
       // par utilisateur quand modèle ML a convergé (≥30 trades fermés + AUC ≥ 0.55).
       gainers_p_win_gate_enabled: pick('gainers_p_win_gate_enabled', 'gainersPWinGateEnabled', existing?.gainers_p_win_gate_enabled ?? false),
       gainers_min_p_win: pick('gainers_min_p_win', 'gainersMinPWin', existing?.gainers_min_p_win ?? 0.50),
+      // PR #262 — Capital rotation : seuil "stagnante" (15-480 min, default 90)
+      gainers_rotation_stagnant_min_age_min: pick('gainers_rotation_stagnant_min_age_min', 'gainersRotationStagnantMinAgeMin', existing?.gainers_rotation_stagnant_min_age_min ?? 90),
       // PR #243 — Adaptive Selectivity toggle (migration 0119). Opt-in default false.
       gainers_adaptive_enabled: pick('gainers_adaptive_enabled', 'gainersAdaptiveEnabled', existing?.gainers_adaptive_enabled ?? false),
     };
