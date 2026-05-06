@@ -1540,6 +1540,23 @@ export class MechanicalTradingService {
     cfg: SessionConfig,
     openPositions: OpenPosition[],
   ): Promise<'ok' | 'weakest_closed_block_opens' | 'kill_switch_triggered'> {
+    // PR #254 — Skip P4.1 en mode gainers déterministe.
+    //
+    // Le P4.1 a été conçu pour le pipeline Lisa LLM avec stops larges
+    // (3-5%) et ouvertures lentes. En mode gainers, chaque position a son
+    // propre SL serré (default 1%) appliqué par le scanner ; un guard
+    // portfolio à 0.5% de drawdown ferme prématurément des positions
+    // saines en cascade (5 closes en quelques minutes observé prod 06/05/2026
+    // sur portfolio Korea TP=2%/SL=1%).
+    //
+    // Le SL individuel par position garde la protection capital sans tuer
+    // les setups dans leur fenêtre normale de jeu (~30-60 min Asia).
+    // Le `expectancy watchdog` (skip cycle si E<0 sur 10 derniers trades)
+    // reste actif comme circuit-breaker structurel.
+    if ((cfg.strategy_mode as string | null | undefined) === 'gainers') {
+      return 'ok';
+    }
+
     const client = this.supabase.getClient();
     const portfolioId = cfg.portfolio_id;
 
