@@ -162,7 +162,15 @@ export class GainersAdaptiveSelectivityService {
    *   - DANS_LE_PLAN + active      → restore user values from snapshot
    *   - DANS_LE_PLAN + not active  → no_op
    *   - EN_RETARD                  → adjust (snapshot d'abord si first transition)
-   *   - HORS_TRAJECTOIRE           → kill_switch (autopilot=false)
+   *   - HORS_TRAJECTOIRE           → alarm UI uniquement (autopilot reste user-decided)
+   *
+   * PR #247 — La règle CLAUDE.md (P8-BR) impose `autopilot_enabled n'est plus
+   * jamais flippé` automatiquement. Le bandeau rouge UI suffit pour alerter
+   * l'utilisateur ; il décide de stopper ou pas. Avant #247, HORS_TRAJECTOIRE
+   * forçait `autopilot_enabled=false` → autopilote tué silencieusement à
+   * chaque cycle 5min dès que realisedPct 7j passait sous -0.5%, ce qui
+   * créait des trous de 6h+ sans aucune action côté user (et empêchait la
+   * récupération naturelle puisque le scanner était stoppé).
    */
   computeAdjustment(status: TrajectoryStatus, ctx: AdaptiveContext): AdaptiveDecision {
     if (status === 'EN_AVANCE') {
@@ -172,9 +180,11 @@ export class GainersAdaptiveSelectivityService {
     if (status === 'HORS_TRAJECTOIRE') {
       return {
         action: 'kill_switch',
-        reason: 'HORS_TRAJECTOIRE — autopilot disabled, alarm UI',
-        next_autopilot_enabled: false,
-        // Restore snapshot si on était EN_RETARD avant
+        reason: 'HORS_TRAJECTOIRE — alarm UI only, autopilot reste user-decided (PR #247)',
+        // PR #247 — Volontairement pas de `next_autopilot_enabled: false`.
+        // Le bandeau rouge UI alerte ; l'utilisateur décide d'agir.
+        // Restore snapshot si on était EN_RETARD avant (rend les seuils user
+        // intacts pour la décision manuelle de l'utilisateur).
         ...(ctx.adaptive_active ? this.buildRestorePartial(ctx) : {}),
         next_adaptive_active: false,
       };
