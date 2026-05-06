@@ -1466,6 +1466,21 @@ export class TopGainersScannerService implements OnModuleInit {
     if (forceCloseEnabled) {
       await this.runForceCloseBeforeCloseTick(portfolioId, forceCloseOffsetMin, nowUtc);
     }
+
+    // PR #267 — Orphan close rétroactif. Détecte les positions ouvertes sur
+    // un marché qui est fermé MAINTENANT et dont aucun prix live n'est
+    // disponible (source 'fallback*' ou null). Ces positions ne peuvent plus
+    // bouger (pas de TP/SL/rotation possible), elles bloquent du capital.
+    // Close à entry_price (pnl=0) pour libérer le slot.
+    //
+    // Complémentaire à #266 force-close-before-close (proactif). Ici on
+    // ramasse les zombies déjà bloquées (cas observé 06/05/2026 où 4 positions
+    // Asia ouvertes pendant les heures EU restaient gelées toute la journée).
+    //
+    // Toujours actif en mode gainers (pas de toggle UI — c'est un garde-fou
+    // structurel, pas une stratégie). Crypto exclu (24/7).
+    await this.runOrphanCloseTick(portfolioId, nowUtc);
+
     // PR #4 — pWin gate. Désactivé par défaut (gainers_p_win_gate_enabled=false).
     // L'utilisateur active via UI quand le modèle a convergé (≥30 trades fermés
     // + AUC ≥ 0.55). Sinon `probability.fallback=true` → bypass automatique.
@@ -2221,6 +2236,87 @@ export class TopGainersScannerService implements OnModuleInit {
       } catch (e) {
         this.logger.warn(
           `[force-close] ${portfolioId.slice(0, 8)} ${pos.symbol}: close failed — ${String(e).slice(0, 120)}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * PR #267 — Orphan close rétroactif. Ferme les positions zombies dont :
+   *   - Le marché est actuellement fermé (US/EU/Asia, pas crypto)
+   *   - L'âge de la position est ≥ ORPHAN_MIN_AGE_MIN (15 min, anti-race)
+   *   - Aucun prix live disponible (quote nul OU source = fallback*)
+   *
+   * Close à `entry_price` → pnl=0, libère juste le capital. Audit
+   * `decision_log` payload `[ORPHAN_CLOSE]`.
+   *
+   * Toujours actif en mode gainers — c'est un garde-fou structurel, pas
+   * une stratégie configurable. Bug observé 06/05/2026 : 4 positions Asia
+   * (300209.SHE, 300214.SHE, 001500.KO, 089010.KQ) ouvertes pendant les
+   * heures EU/US (15h41-16h11 UTC), Asia fermée depuis 06h30-08h00 UTC →
+   * gelées 7-9h sans possibilité de TP/SL/rotation, capital saturé 100%.
+   */
+  private async runOrphanCloseTick(portfolioId: string, now: Date): Promise<void> {
+    const ORPHAN_MIN_AGE_MIN = 15;
+
+    const { data: openPositions, error } = await this.supabase
+      .getClient()
+      .from('lisa_positions')
+      .select('id, symbol, asset_class, entry_price, entry_timestamp')
+      .eq('portfolio_id', portfolioId)
+      .eq('status', 'open');
+    if (error || !openPositions || openPositions.length === 0) return;
+
+    for (const pos of openPositions) {
+      const cls = sessionClassFor(String(pos.asset_class ?? ''));
+      if (cls === null) continue; // crypto/fx/commodity → skip
+      if (isMarketOpen(cls, now)) continue; // marché ouvert → pas orphan
+
+      const ageMs = now.getTime() - new Date(String(pos.entry_timestamp)).getTime();
+      const ageMin = ageMs / 60_000;
+      if (ageMin < ORPHAN_MIN_AGE_MIN) continue; // anti-race close-puis-rouvert
+
+      const quote = await this.lisa.getLivePrice(String(pos.symbol)).catch(() => null);
+      const source = quote?.source ?? '';
+      const hasLivePrice = !!(quote && quote.price && !source.startsWith('fallback'));
+      if (hasLivePrice) continue; // live price disponible → pas orphan
+
+      const entry = parseFloat(String(pos.entry_price));
+      if (!Number.isFinite(entry) || entry <= 0) continue;
+
+      try {
+        await this.lisa.getPaperBroker().closePosition({
+          positionId: String(pos.id),
+          reason: 'closed_invalidated',
+          livePrice: String(entry),
+          rationale:
+            `[ORPHAN_CLOSE] ${cls.toUpperCase()} market closed + no live quote (source=${source || 'null'}) — ` +
+            `position frozen ${ageMin.toFixed(0)}min, freeing capital at entry_price (pnl=0)`,
+        });
+        this.logger.log(
+          `[orphan-close] ${portfolioId.slice(0, 8)} CLOSED ${pos.symbol} (${cls}, age=${ageMin.toFixed(0)}min, source=${source || 'null'})`,
+        );
+        await this.decisionLog.append({
+          portfolioId,
+          kind: 'position_closed',
+          summary: `[ORPHAN_CLOSE] ${pos.symbol} freed — ${cls.toUpperCase()} market closed, no live price`,
+          rationale:
+            `Position ${pos.symbol} (${cls}) freed via orphan-close: market closed and no live quote available ` +
+            `(source=${source || 'null'}). Position was open ${ageMin.toFixed(0)}min, blocking capital with no possibility ` +
+            `of TP/SL/rotation until market reopens. Closed at entry_price (pnl=0) to free slot.`,
+          payload: {
+            symbol: pos.symbol,
+            asset_class: pos.asset_class,
+            session_class: cls,
+            age_min: ageMin,
+            quote_source: source || null,
+            entry_price: entry,
+          },
+          triggeredBy: 'autopilot_cron',
+        }).catch(() => { /* non-bloquant */ });
+      } catch (e) {
+        this.logger.warn(
+          `[orphan-close] ${portfolioId.slice(0, 8)} ${pos.symbol}: close failed — ${String(e).slice(0, 120)}`,
         );
       }
     }
