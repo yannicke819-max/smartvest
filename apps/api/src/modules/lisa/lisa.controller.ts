@@ -496,6 +496,13 @@ export class LisaController {
    * Cache 30s côté MultiTimeframePersistenceService → safe à appeler depuis
    * un poll UI.
    */
+  // PR #259 — Cache response-level snapshot 5 min pour réduire la conso EODHD.
+  // L'UI poll toutes les 60s mais 95% des requêtes successives sont identiques
+  // (mêmes top tickers). Cache la réponse complète plutôt que de re-fetcher
+  // mtfPersistence à chaque poll. TTL 5 min aligné avec le cycle scanner DB.
+  private snapshotCache = new Map<string, { response: unknown; asOf: number }>();
+  private static readonly SNAPSHOT_CACHE_TTL_MS = 5 * 60_000;
+
   @Get('gainers-persistence-snapshot/:portfolioId')
   async getGainersPersistenceSnapshot(
     @Headers() headers: Record<string, string>,
@@ -504,6 +511,13 @@ export class LisaController {
     @Query('markets') marketsRaw?: string,
   ) {
     extractUserId(headers);
+
+    // PR #259 — Cache lookup per-portfolio + topN + markets key
+    const cacheKey = `${portfolioId}:${topNRaw ?? 'default'}:${marketsRaw ?? 'all'}`;
+    const cached = this.snapshotCache.get(cacheKey);
+    if (cached && Date.now() - cached.asOf < LisaController.SNAPSHOT_CACHE_TTL_MS) {
+      return cached.response;
+    }
 
     const topN = await this.resolveTopN(portfolioId, topNRaw);
     const allowedMarkets = parseMarkets(marketsRaw);
@@ -575,13 +589,16 @@ export class LisaController {
     // Best-effort log dans gainers_persistence_log (audit historique 7j).
     void this.persistSnapshotLog(topN, allowedMarkets, candidatesOut, summary).catch(() => null);
 
-    return {
+    const response = {
       capturedAt: new Date().toISOString(),
       topN,
       marketsScanned: allowedMarkets ? Array.from(allowedMarkets) : ['all'],
       candidates: candidatesOut,
       summary,
     };
+    // PR #259 — Cache response 5 min
+    this.snapshotCache.set(cacheKey, { response, asOf: Date.now() });
+    return response;
   }
 
   // ─────────────────────────────────────────────────────────────────

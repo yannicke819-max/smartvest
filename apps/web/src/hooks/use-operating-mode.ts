@@ -230,7 +230,12 @@ export function usePersistenceSnapshot(
         `/lisa/gainers-persistence-snapshot/${portfolioId}?${qs.toString()}`,
       ),
     enabled: !!portfolioId && enabled,
-    refetchInterval: 60_000,
+    // PR #259 — Réduit poll de 60s à 5min (aligné backend cache TTL).
+    // Visibility-aware : pause poll quand l'onglet est en arrière-plan
+    // (refetchIntervalInBackground=false par default). Reduces conso EODHD
+    // de ~90% sur cette source.
+    refetchInterval: 5 * 60_000,
+    refetchIntervalInBackground: false,
   });
 }
 

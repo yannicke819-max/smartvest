@@ -115,14 +115,14 @@ function CoverageBadge({ cause }: { cause: ReturnType<typeof inferCoverageCause>
   );
 }
 
-const CYCLE_OPTIONS = [1, 5, 10, 15, 20, 30, 45, 60];
+const CYCLE_OPTIONS = [1, 2, 3, 5, 10, 15, 20, 30, 45, 60];
 
 /**
  * P7-MODE-GAINERS-BADGE — Mini-tile sous le badge GAINERS actif.
  * P9-UX : selector de cycle + slider topN dynamique + path quality badge.
  *
  * Affiche en temps réel (poll 30s) :
- *   - Selector "Fréquence scan" (1, 5, 10, 15, 20, 30, 45, 60 min) → DB write
+ *   - Selector "Fréquence scan" (1, 2, 3, 5, 10, 15, 20, 30, 45, 60 min) → DB write
  *   - Countdown vers prochain scan (mm:ss) basé sur cycle DB
  *   - Positions ouvertes / max
  *   - PnL session UTC (vert si >0, rouge si <0)
@@ -471,7 +471,7 @@ function GainersConfigForm({ portfolioId }: { portfolioId: string }) {
 
 /**
  * P9-UX — Selector "Fréquence scan" (replace "Cycle X min" hardcoded).
- * 8 valeurs préconfigurées : 1, 5, 10, 15, 20, 30, 45, 60. POST DB
+ * 10 valeurs préconfigurées : 1, 2, 3, 5, 10, 15, 20, 30, 45, 60. POST DB
  * lisa_session_configs.gainers_cycle_minutes via useUpdateGainersCycle.
  *
  * Toast d'avertissement si user choisit 1 min (coût API ×15 vs 15 min).
