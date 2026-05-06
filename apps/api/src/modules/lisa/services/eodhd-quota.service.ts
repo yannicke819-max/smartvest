@@ -20,6 +20,7 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Cron } from '@nestjs/schedule';
 
 /** Catégorie d'endpoint EODHD avec coût en API calls. */
 export type EodhdEndpoint =
@@ -120,6 +121,23 @@ export class EodhdQuotaService {
   };
 
   constructor(private readonly config: ConfigService) {}
+
+  /**
+   * PR #260 — Cron 30s pour reconcile authoritative depuis /api/user.
+   * Sans ce cron, `refreshAuth()` n'est jamais appelée automatiquement et
+   * `auth.apiRequests` reste à 0 perpétuellement → UI quota indicator stuck
+   * à "0 / 100k" même quand on consomme 100k+ calls/jour.
+   *
+   * Le call /api/user lui-même est gratuit (0 calls comptés). Refresh 30s
+   * suffit pour la latence d'auto-throttle (85% threshold).
+   *
+   * `refreshAuth()` a son propre throttle interne (60s) — on appelle 30s
+   * pour double-buffering en cas de tick raté.
+   */
+  @Cron('*/30 * * * * *', { timeZone: 'UTC' })
+  async reconcileAuthCron(): Promise<void> {
+    await this.refreshAuth();
+  }
 
   /** Coût en API calls pour un endpoint donné (avec multi-ticker support). */
   static costOf(endpoint: EodhdEndpoint, tickerCount = 1): number {
