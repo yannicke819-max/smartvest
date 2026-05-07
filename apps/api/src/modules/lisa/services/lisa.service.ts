@@ -402,9 +402,9 @@ export class LisaService {
     if (merged.gainers_asia_strictness_boost != null) {
       validateNum('gainers_asia_strictness_boost', merged.gainers_asia_strictness_boost, 0, 0.50);
     }
-    // PR #276 — rotation min score 0.5..1.0
+    // PR #276/#277 — rotation min score 0..1.0 (0 = OFF, gate désactivé)
     if (merged.gainers_rotation_min_score != null) {
-      validateNum('gainers_rotation_min_score', merged.gainers_rotation_min_score, 0.5, 1.0);
+      validateNum('gainers_rotation_min_score', merged.gainers_rotation_min_score, 0, 1.0);
     }
     // Cohérence : positionPct × maxOpen + cashReserve ne doit pas dépasser 100%
     // (sinon impossible de tenir le cash buffer en pratique). Warning soft, pas hard fail.

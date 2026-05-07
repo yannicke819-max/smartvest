@@ -2119,9 +2119,10 @@ export class TopGainersScannerService implements OnModuleInit {
     // invoqué — la responsabilité d'enabled est en amont.
 
     // Gates A+ stricts pour ne rotation que sur SETUPS exceptionnels.
-    // PR #276 — score min configurable via UI (default 0.85, was 0.95 hardcoded).
+    // PR #276/#277 — score min configurable via UI (default 0.85, was 0.95 hardcoded).
+    // Si minScore <= 0 (UI "OFF") → skip le gate (rotation possible peu importe le score).
     const minScore = overrides.rotationMinScore ?? 0.85;
-    if (candidate.score < minScore) return { rotated: false };
+    if (minScore > 0 && candidate.score < minScore) return { rotated: false };
     if (!persistence || persistence.persistenceScore < 5/6) return { rotated: false };
     const pathEff = persistence.pathQuality?.overallEfficiency ?? null;
     // PR #269 — seuil pathEff rotation configurable. null/undefined → désactive le gate.

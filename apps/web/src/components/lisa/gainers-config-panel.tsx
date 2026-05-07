@@ -324,14 +324,14 @@ export function GainersConfigPanel({ portfolioId }: Props) {
           onChange={(v) => set('gainers_high_grading_enabled', v)}
         />
 
-        {/* PR #276 — Min score rotation configurable */}
+        {/* PR #276/#277 — Min score rotation configurable, OFF = gate désactivé */}
         <Field
           label="Min score candidat A+ (rotation)"
-          hint="[0.5..1.0] — seuil score minimum du nouveau candidat pour autoriser une rotation. Default 0.85 (était 0.95 hardcoded). Plus bas = plus de rotations, plus haut = uniquement setups exceptionnels."
+          hint="[0..1.0] — seuil score minimum du nouveau candidat pour autoriser une rotation. Default 0.85 (était 0.95 hardcoded). 0 = OFF (gate désactivé, les autres gates persistence/path/EV s'appliquent toujours). Plus bas = plus de rotations possibles."
         >
           <input
             type="number"
-            min={0.5}
+            min={0}
             max={1.0}
             step={0.05}
             value={num(cfg.gainers_rotation_min_score, 0.85)}
@@ -339,7 +339,7 @@ export function GainersConfigPanel({ portfolioId }: Props) {
             className="input"
           />
           <div className="mt-2 flex flex-wrap gap-1.5">
-            {[0.65, 0.75, 0.85, 0.95].map((preset) => {
+            {[0, 0.50, 0.65, 0.75, 0.85, 0.95].map((preset) => {
               const isActive = num(cfg.gainers_rotation_min_score, 0.85) === preset;
               return (
                 <button
@@ -352,7 +352,7 @@ export function GainersConfigPanel({ portfolioId }: Props) {
                       : 'rounded-md border border-input bg-background px-2 py-0.5 text-xs text-muted-foreground hover:border-foreground hover:text-foreground'
                   }
                 >
-                  {preset.toFixed(2)}
+                  {preset === 0 ? 'OFF' : preset.toFixed(2)}
                 </button>
               );
             })}
