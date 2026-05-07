@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { BrokersController } from './brokers.controller';
 import { LiveTradingWizardController } from './live-trading-wizard.controller';
 import { LiveTradingWizardService } from './services/live-trading-wizard.service';
+import { SandboxValidationService } from './services/sandbox-validation.service';
 import { BrokersService } from './services/brokers.service';
 import { BrokerSyncService } from './services/broker-sync.service';
 import { BrokersAuditService } from './services/brokers-audit.service';
@@ -28,6 +29,7 @@ import { FeatureFlagsModule } from '../feature-flags/feature-flags.module';
     RealCostCalibratorService,
     LiveFeatureFlagsService,
     LiveTradingWizardService,
+    SandboxValidationService,
   ],
   exports: [
     BrokersService,
