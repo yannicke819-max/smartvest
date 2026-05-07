@@ -423,6 +423,8 @@ export interface GainersConfigFields {
   gainers_capital_rotation_enabled: boolean | null;
   gainers_high_grading_enabled: boolean | null;
   gainers_rotation_min_score: number | null;
+  // PR #278 — Top pool size configurable (migration 0133)
+  gainers_top_pool_size: number | null;
   // PR #270/#271 — Post-SL cooldown + Asia strictness boost (migrations 0126/0127)
   gainers_post_sl_cooldown_min: number | null;
   gainers_asia_strictness_boost: number | null;
@@ -472,6 +474,7 @@ export function useGainersConfig(portfolioId: string | null) {
         gainers_capital_rotation_enabled: boolOrNull(raw?.gainers_capital_rotation_enabled),
         gainers_high_grading_enabled: boolOrNull(raw?.gainers_high_grading_enabled),
         gainers_rotation_min_score: numOrNull(raw?.gainers_rotation_min_score),
+        gainers_top_pool_size: numOrNull(raw?.gainers_top_pool_size),
         gainers_post_sl_cooldown_min: numOrNull(raw?.gainers_post_sl_cooldown_min),
         gainers_asia_strictness_boost: numOrNull(raw?.gainers_asia_strictness_boost),
         gainers_session_filter_enabled: boolOrNull(raw?.gainers_session_filter_enabled),

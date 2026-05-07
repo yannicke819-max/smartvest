@@ -590,6 +590,41 @@ export function GainersConfigPanel({ portfolioId }: Props) {
             />
           </Field>
         </div>
+
+        {/* PR #278 — Top pool size configurable */}
+        <Field
+          label="Taille pool top scanner"
+          hint="[5..50] — combien de candidats globaux passent à l'évaluation (gates persistence/path/score). Default 10. Plus haut = inclut plus de candidats EU/Swiss sous-rankés par les Asia top scoring (mais coûte plus de calls EODHD persistence)."
+        >
+          <input
+            type="number"
+            min={5}
+            max={50}
+            step={1}
+            value={num(cfg.gainers_top_pool_size, 10)}
+            onChange={(e) => set('gainers_top_pool_size', Number(e.target.value))}
+            className="h-8 w-full rounded-md border bg-background px-2 text-xs"
+          />
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {[10, 15, 20, 30, 50].map((preset) => {
+              const isActive = num(cfg.gainers_top_pool_size, 10) === preset;
+              return (
+                <button
+                  key={preset}
+                  type="button"
+                  onClick={() => set('gainers_top_pool_size', preset)}
+                  className={
+                    isActive
+                      ? 'rounded-md border border-orange-500 bg-orange-500/10 px-2 py-0.5 text-xs font-medium text-orange-500'
+                      : 'rounded-md border border-input bg-background px-2 py-0.5 text-xs text-muted-foreground hover:border-foreground hover:text-foreground'
+                  }
+                >
+                  Top {preset}
+                </button>
+              );
+            })}
+          </div>
+        </Field>
       </section>
 
       {/* 6. Fees & profit minimum */}

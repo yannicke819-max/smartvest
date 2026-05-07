@@ -1377,7 +1377,7 @@ export class TopGainersScannerService implements OnModuleInit {
     const { data: cfgRow } = await this.supabase
       .getClient()
       .from('lisa_session_configs')
-      .select('capital_usd, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes, gainers_universe_us, gainers_universe_eu, gainers_universe_asia, gainers_universe_crypto, gainers_p_win_gate_enabled, gainers_min_p_win, gainers_rotation_stagnant_min_age_min, gainers_rotation_min_path_efficiency, gainers_session_filter_enabled, gainers_force_close_before_close_enabled, gainers_force_close_offset_min, gainers_post_sl_cooldown_min, gainers_asia_strictness_boost, gainers_capital_rotation_enabled, gainers_high_grading_enabled, gainers_rotation_min_score')
+      .select('capital_usd, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes, gainers_universe_us, gainers_universe_eu, gainers_universe_asia, gainers_universe_crypto, gainers_p_win_gate_enabled, gainers_min_p_win, gainers_rotation_stagnant_min_age_min, gainers_rotation_min_path_efficiency, gainers_session_filter_enabled, gainers_force_close_before_close_enabled, gainers_force_close_offset_min, gainers_post_sl_cooldown_min, gainers_asia_strictness_boost, gainers_capital_rotation_enabled, gainers_high_grading_enabled, gainers_rotation_min_score, gainers_top_pool_size')
       .eq('portfolio_id', portfolioId)
       .maybeSingle();
     const minScore = this.resolveMinPersistenceScore(
@@ -1545,7 +1545,10 @@ export class TopGainersScannerService implements OnModuleInit {
 
     // PR Coverage filter — pool de 10 (au lieu de 3) pour buffer.
     // selectTopGainers per-portfolio sur la liste FILTRÉE par universe.
-    const TOP_POOL_SIZE_PER_PORTFOLIO = 10;
+    // PR #278 — Top pool size configurable via UI (default 10, range 5..50)
+    const TOP_POOL_SIZE_PER_PORTFOLIO = cfgRow?.gainers_top_pool_size != null
+      ? Math.max(5, Math.min(50, Number(cfgRow.gainers_top_pool_size)))
+      : 10;
     const top = selectTopGainers(filteredCandidates, TOP_POOL_SIZE_PER_PORTFOLIO);
     if (top.length === 0) {
       this.logger.log(
