@@ -127,6 +127,71 @@ export function useEodhdQuota() {
 }
 
 /**
+ * PR #268 — Trading analytics + scaling readiness.
+ */
+export interface ScalingCriterion {
+  name: string;
+  label: string;
+  value: number | null;
+  target: number;
+  unit: string;
+  status: 'PASS' | 'FAIL' | 'INSUFFICIENT_DATA';
+  advice: string;
+}
+
+export interface TradingStatsResponse {
+  period_days: number;
+  metrics: {
+    total_pnl: number;
+    avg_daily_pnl: number;
+    win_rate_pct: number;
+    win_rate_7day_rolling: number;
+    trades_count_total: number;
+    trades_tp_sl_only: number;
+    profitable_days: number;
+    losing_days: number;
+    flat_days: number;
+    total_days: number;
+    pnl_stddev: number;
+    pnl_volatility_ratio: number;
+    best_day: number;
+    worst_day: number;
+    expectancy_per_trade: number;
+    avg_win_usd: number;
+    avg_loss_usd: number;
+  };
+  scaling_criteria: ScalingCriterion[];
+  verdict: 'READY' | 'CAUTION' | 'NOT_READY' | 'INSUFFICIENT_DATA';
+  by_asset_class: Array<{
+    asset_class: string;
+    wins: number;
+    losses: number;
+    win_rate_pct: number | null;
+    pnl_usd: number;
+    trades_count: number;
+  }>;
+  daily_series: Array<{
+    date: string;
+    pnl_usd: number;
+    wins: number;
+    losses: number;
+  }>;
+  as_of: string;
+}
+
+export function useTradingStats(portfolioId: string | null, days = 30) {
+  return useQuery({
+    queryKey: ['trading-stats', portfolioId, days],
+    queryFn: () => apiFetch<TradingStatsResponse>(
+      `/lisa/analytics/trading-stats/${portfolioId}?days=${days}`,
+    ),
+    enabled: !!portfolioId,
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
+  });
+}
+
+/**
  * PR #265 — Sauvegardes nommées de config gainers.
  */
 export interface GainersConfigPreset {

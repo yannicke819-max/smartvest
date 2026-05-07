@@ -17,6 +17,7 @@ import {
   type OperatingMode,
 } from './services/operating-mode.service';
 import { TopGainersScannerService } from './services/top-gainers-scanner.service';
+import { TradingStatsService } from './services/trading-stats.service';
 import { MultiTimeframePersistenceService } from './services/multi-tf-persistence.service';
 import { PersistenceProbabilityService } from './services/persistence-probability.service';
 import { EodhdQuotaService } from './services/eodhd-quota.service';
@@ -42,6 +43,7 @@ export class LisaController {
     private readonly mtfPersistence: MultiTimeframePersistenceService,
     private readonly persistenceProbability: PersistenceProbabilityService,
     private readonly quotaService: EodhdQuotaService,
+    private readonly tradingStats: TradingStatsService,
   ) {}
 
   // ─────────────────────────────────────────────────────────────────
@@ -479,6 +481,32 @@ export class LisaController {
   async getEodhdQuota(@Headers() headers: Record<string, string>) {
     extractUserId(headers); // auth check
     return this.quotaService.getStatus();
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // PR #268 — Trading analytics + scaling readiness
+  // ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Calcule 5 critères de scaling readiness sur N jours :
+   *   1. profitable_ratio  ≥ 80%
+   *   2. avg_daily_pnl     ≥ $50
+   *   3. pnl_volatility    ≤ 1.0 (stddev/mean)
+   *   4. worst_day         ≥ -$50
+   *   5. win_rate_7day     ≥ 65%
+   *
+   * Verdict : READY / CAUTION / NOT_READY / INSUFFICIENT_DATA.
+   * Cache 60s.
+   */
+  @Get('analytics/trading-stats/:portfolioId')
+  async getTradingStats(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+    @Query('days') daysRaw?: string,
+  ) {
+    extractUserId(headers);
+    const days = daysRaw != null ? parseInt(daysRaw, 10) : 30;
+    return this.tradingStats.getStats(portfolioId, Number.isFinite(days) ? days : 30);
   }
 
   // ─────────────────────────────────────────────────────────────────
