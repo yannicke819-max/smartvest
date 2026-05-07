@@ -309,17 +309,36 @@ export function GainersConfigPanel({ portfolioId }: Props) {
         </div>
         <Field
           label="Délai stagnante avant rotation (min)"
-          hint="[15..480] — durée minimale d'une position dans la dead zone (±0.3% pnl) avant qu'elle soit candidate à rotation. Default 90 min. Plus bas = plus réactif (whipsaw risk), plus haut = plus patient."
+          hint="[3..480] — durée minimale d'une position dans la dead zone (±0.3% pnl) avant qu'elle soit candidate à rotation. Default 90 min. Plus bas = plus réactif (whipsaw risk), plus haut = plus patient. Les seuils 3/5/10 sont pour scalping ultra-rapide."
         >
           <input
             type="number"
-            min={15}
+            min={3}
             max={480}
-            step={5}
+            step={1}
             value={num(cfg.gainers_rotation_stagnant_min_age_min, 90)}
             onChange={(e) => set('gainers_rotation_stagnant_min_age_min', Number(e.target.value))}
             className="input"
           />
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {[3, 5, 10, 15, 30, 60, 90, 180].map((preset) => {
+              const isActive = num(cfg.gainers_rotation_stagnant_min_age_min, 90) === preset;
+              return (
+                <button
+                  key={preset}
+                  type="button"
+                  onClick={() => set('gainers_rotation_stagnant_min_age_min', preset)}
+                  className={
+                    isActive
+                      ? 'rounded-md border border-orange-500 bg-orange-500/10 px-2 py-0.5 text-xs font-medium text-orange-500'
+                      : 'rounded-md border border-input bg-background px-2 py-0.5 text-xs text-muted-foreground hover:border-foreground hover:text-foreground'
+                  }
+                >
+                  {preset} min
+                </button>
+              );
+            })}
+          </div>
         </Field>
       </section>
 
