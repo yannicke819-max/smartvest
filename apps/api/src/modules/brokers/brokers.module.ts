@@ -7,6 +7,7 @@ import { CredentialsVaultService } from './services/credentials-vault.service';
 import { IbkrSessionKeepAliveService } from './services/ibkr-session-keepalive.service';
 import { PreExecutionGuardService } from './services/pre-execution-guard.service';
 import { BrokerReconciliationService } from './services/broker-reconciliation.service';
+import { RealCostCalibratorService } from './services/real-cost-calibrator.service';
 import { SupabaseModule } from '../supabase/supabase.module';
 import { FeatureFlagsModule } from '../feature-flags/feature-flags.module';
 
@@ -21,6 +22,7 @@ import { FeatureFlagsModule } from '../feature-flags/feature-flags.module';
     IbkrSessionKeepAliveService,
     PreExecutionGuardService,
     BrokerReconciliationService,
+    RealCostCalibratorService,
   ],
   exports: [BrokersService, BrokerSyncService, CredentialsVaultService, PreExecutionGuardService],
 })
