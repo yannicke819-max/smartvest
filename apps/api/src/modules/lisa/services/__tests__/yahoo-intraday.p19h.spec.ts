@@ -4,7 +4,7 @@
  * Comportement attendu :
  *  - 1er crash provider (5xx/429/403/timeout/parse) → open circuit + 1 WARN
  *  - Pendant cooldown : getCandles return null silently (no fetch, no log spam)
- *  - Backoff exponentiel : 60s → 120s → 240s → cap 300s
+ *  - Backoff exponentiel : 60s → 120s → 240s → 480s → ... cap 1800s (30min, PR #268)
  *  - Reset auto sur succès d'une probe après cooldown
  *  - 404 ticker non-trouvé → NE TRIP PAS le breaker (provider OK, ticker KO)
  *  - chart.error API → idem (symbol not found)
@@ -150,7 +150,7 @@ describe('YahooIntradayService — P19h circuit breaker', () => {
     expect(warnSpy.mock.calls.length).toBe(0); // no spam
   });
 
-  it('exponential backoff : 60s → 120s → 240s → cap 300s', async () => {
+  it('exponential backoff : 60s → 120s → 240s → 480s (cap 1800s/30min)', async () => {
     jest.useFakeTimers();
     mockHttp(503);
     const svc = new YahooIntradayService();
@@ -171,11 +171,11 @@ describe('YahooIntradayService — P19h circuit breaker', () => {
     await svc.getCandles('AAPL.US', '5m');
     expect(warnSpy.mock.calls.find((c) => String(c[0]).includes('240s'))).toBeDefined();
 
-    // Advance past cooldown 3, failure 4 → would be 480s but capped at 300s
+    // Advance past cooldown 3, failure 4 → 480s (cap 1800s/30min raised in PR #268)
     jest.advanceTimersByTime(241_000);
     warnSpy.mockClear();
     await svc.getCandles('AAPL.US', '5m');
-    expect(warnSpy.mock.calls.find((c) => String(c[0]).includes('300s'))).toBeDefined();
+    expect(warnSpy.mock.calls.find((c) => String(c[0]).includes('480s'))).toBeDefined();
   });
 
   it('reset on success after cooldown: probe succeeds → circuit closes + LOG line', async () => {
