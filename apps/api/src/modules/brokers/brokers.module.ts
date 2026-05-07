@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import { BrokersController } from './brokers.controller';
+import { LiveTradingWizardController } from './live-trading-wizard.controller';
+import { LiveTradingWizardService } from './services/live-trading-wizard.service';
 import { BrokersService } from './services/brokers.service';
 import { BrokerSyncService } from './services/broker-sync.service';
 import { BrokersAuditService } from './services/brokers-audit.service';
@@ -14,7 +16,7 @@ import { FeatureFlagsModule } from '../feature-flags/feature-flags.module';
 
 @Module({
   imports: [SupabaseModule, FeatureFlagsModule],
-  controllers: [BrokersController],
+  controllers: [BrokersController, LiveTradingWizardController],
   providers: [
     BrokersService,
     BrokerSyncService,
@@ -25,6 +27,7 @@ import { FeatureFlagsModule } from '../feature-flags/feature-flags.module';
     BrokerReconciliationService,
     RealCostCalibratorService,
     LiveFeatureFlagsService,
+    LiveTradingWizardService,
   ],
   exports: [
     BrokersService,
