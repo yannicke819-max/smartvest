@@ -1377,7 +1377,7 @@ export class TopGainersScannerService implements OnModuleInit {
     const { data: cfgRow } = await this.supabase
       .getClient()
       .from('lisa_session_configs')
-      .select('capital_usd, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes, gainers_universe_us, gainers_universe_eu, gainers_universe_asia, gainers_universe_crypto, gainers_p_win_gate_enabled, gainers_min_p_win, gainers_rotation_stagnant_min_age_min, gainers_session_filter_enabled, gainers_force_close_before_close_enabled, gainers_force_close_offset_min')
+      .select('capital_usd, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes, gainers_universe_us, gainers_universe_eu, gainers_universe_asia, gainers_universe_crypto, gainers_p_win_gate_enabled, gainers_min_p_win, gainers_rotation_stagnant_min_age_min, gainers_rotation_min_path_efficiency, gainers_session_filter_enabled, gainers_force_close_before_close_enabled, gainers_force_close_offset_min')
       .eq('portfolio_id', portfolioId)
       .maybeSingle();
     const minScore = this.resolveMinPersistenceScore(
@@ -1427,6 +1427,10 @@ export class TopGainersScannerService implements OnModuleInit {
     const rotationStagnantMinAgeMin = cfgRow?.gainers_rotation_stagnant_min_age_min != null
       ? Math.max(3, Math.min(480, Number(cfgRow.gainers_rotation_stagnant_min_age_min)))
       : 90;
+    // PR #269 — seuil pathEff rotation configurable. null = désactive le gate. Default 0.5.
+    const rotationMinPathEfficiency = cfgRow?.gainers_rotation_min_path_efficiency != null
+      ? Math.max(0, Math.min(1, Number(cfgRow.gainers_rotation_min_path_efficiency)))
+      : 0.5;
 
     // PR #3 + PR #246 — universe toggles per-portfolio appliqués AVANT
     // selectTopGainers. Bug pré-#246 : selectTopGainers global retournait top 10
@@ -1933,7 +1937,7 @@ export class TopGainersScannerService implements OnModuleInit {
           portfolioId,
           cand,
           persistence,
-          { tpPct, slPct, positionNotionalUsd, rotationStagnantMinAgeMin },
+          { tpPct, slPct, positionNotionalUsd, rotationStagnantMinAgeMin, rotationMinPathEfficiency },
         );
         if (rotation.rotated) {
           rotated = true;
@@ -2018,7 +2022,13 @@ export class TopGainersScannerService implements OnModuleInit {
     portfolioId: string,
     candidate: TopGainerCandidate & { score: number; assetClass: TopGainerAssetClass },
     persistence: PersistenceWithPath | undefined,
-    overrides: { tpPct: number; slPct: number; positionNotionalUsd: number; rotationStagnantMinAgeMin?: number },
+    overrides: {
+      tpPct: number;
+      slPct: number;
+      positionNotionalUsd: number;
+      rotationStagnantMinAgeMin?: number;
+      rotationMinPathEfficiency?: number | null;
+    },
   ): Promise<{ rotated: boolean; closedPositionId?: string }> {
     const enabled = (process.env.GAINERS_CAPITAL_ROTATION_ENABLED ?? 'false').toLowerCase() === 'true';
     if (!enabled) return { rotated: false };
@@ -2027,7 +2037,12 @@ export class TopGainersScannerService implements OnModuleInit {
     if (candidate.score < 0.95) return { rotated: false };
     if (!persistence || persistence.persistenceScore < 5/6) return { rotated: false };
     const pathEff = persistence.pathQuality?.overallEfficiency ?? null;
-    if (pathEff != null && pathEff < 0.5) return { rotated: false };
+    // PR #269 — seuil pathEff rotation configurable. null/undefined → désactive le gate.
+    // Default 0.5 (legacy hardcoded value).
+    const rotationMinPathEff = overrides.rotationMinPathEfficiency;
+    if (rotationMinPathEff != null && pathEff != null && pathEff < rotationMinPathEff) {
+      return { rotated: false };
+    }
 
     // Récupère les positions open du portfolio
     const { data: openPositions } = await this.supabase
