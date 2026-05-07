@@ -28,16 +28,43 @@ import {
   type TradeOutcome,
 } from '@smartvest/ai-analyst';
 import { SupabaseService } from '../../supabase/supabase.service';
+import {
+  shadowRowToTrainingExample,
+  type ShadowRowForTraining,
+} from './gainers-shadow-features';
 
 const MIN_SAMPLE_SIZE = 30;
 const MIN_AUC_FOR_ACCEPTANCE = 0.55;
-const FEATURE_NAMES = [
+
+// Real-data features (paper_trades + shadow accept rows) — utilisées au scanner
+// au moment de l'inference. Ces 5 sont les "primary features".
+const REAL_FEATURE_NAMES = [
   'persistenceCount',
   'volRatio',
   'rsi',
   'closeToHigh',
   'changePct',
 ];
+
+// PR #281 — Shadow training set augmentation. Lopez de Prado (Advances in
+// Financial ML, ch.4 sample weighting) : plutôt que hardcoder un poids
+// `shadow_weight=0.5`, on laisse le modèle apprendre où le biais simulator
+// vs real s'applique via une feature dédiée + interaction terms par gate.
+//
+// `is_simulated` = 1 pour rows shadow (sim_results JSONB), 0 pour paper_trades.
+// `is_sim_x_<gate>` = 1 si is_simulated=1 ET decision=<gate>, sinon 0. Capture
+// la spécificité du biais par gate (e.g., simulator peut être fiable sur
+// path_eff mais biaisé sur cooldown). Sans ces interaction terms on n'extrait
+// que ~30% de la valeur de la feature is_simulated.
+const SIM_FEATURE_NAMES = [
+  'is_simulated',
+  'is_sim_x_reject_path_eff',
+  'is_sim_x_reject_persistence',
+  'is_sim_x_reject_cooldown',
+  'is_sim_x_reject_no_tf_data',
+];
+
+const FEATURE_NAMES = [...REAL_FEATURE_NAMES, ...SIM_FEATURE_NAMES];
 
 export interface ProbabilityEstimate {
   pWin: number;
@@ -120,23 +147,40 @@ export class PersistenceProbabilityService {
    * Idempotent : appelable manuellement (button "Refit" UI) OU via cron
    * Sunday 02:00 UTC (à wirer dans une future itération).
    */
-  async trainAndPersist(opts: { lookbackDays: number } = { lookbackDays: 30 }): Promise<{
+  async trainAndPersist(opts: {
+    lookbackDays: number;
+    /**
+     * PR #281 — Si true, merge `gainers_user_shadow_signals` (decision != 'accept',
+     * grille `baseline_60m`) au training set. Élargit ~10-50× le sample. Les
+     * features `is_simulated` + interaction terms permettent au modèle d'apprendre
+     * le biais simulator vs real par gate.
+     */
+    includeShadow?: boolean;
+  } = { lookbackDays: 30 }): Promise<{
     persisted: boolean;
     version: string | null;
     sampleSize: number;
+    realCount: number;
+    shadowCount: number;
     aucRoc: number;
     accuracy: number;
     reason?: string;
   }> {
-    const trades = await this.fetchTrainingData(opts.lookbackDays);
+    const realTrades = await this.fetchTrainingData(opts.lookbackDays);
+    const shadowTrades = opts.includeShadow
+      ? await this.fetchShadowTrainingData(opts.lookbackDays)
+      : [];
+    const trades = [...realTrades, ...shadowTrades];
     if (trades.length < MIN_SAMPLE_SIZE) {
       this.logger.warn(
-        `[probability:fit] sample_size=${trades.length} < ${MIN_SAMPLE_SIZE} → skip fit`,
+        `[probability:fit] sample_size=${trades.length} (real=${realTrades.length} shadow=${shadowTrades.length}) < ${MIN_SAMPLE_SIZE} → skip fit`,
       );
       return {
         persisted: false,
         version: null,
         sampleSize: trades.length,
+        realCount: realTrades.length,
+        shadowCount: shadowTrades.length,
         aucRoc: 0,
         accuracy: 0,
         reason: 'insufficient_sample',
@@ -164,6 +208,8 @@ export class PersistenceProbabilityService {
         persisted: false,
         version: null,
         sampleSize: trades.length,
+        realCount: realTrades.length,
+        shadowCount: shadowTrades.length,
         aucRoc: auc,
         accuracy,
         reason: 'auc_too_low',
@@ -190,6 +236,8 @@ export class PersistenceProbabilityService {
         persisted: false,
         version: null,
         sampleSize: trades.length,
+        realCount: realTrades.length,
+        shadowCount: shadowTrades.length,
         aucRoc: auc,
         accuracy,
         reason: error.message,
@@ -200,9 +248,17 @@ export class PersistenceProbabilityService {
     this.cachedAt = 0;
 
     this.logger.log(
-      `[probability:fit] persisted version=${version} n=${trades.length} auc=${auc.toFixed(3)} acc=${accuracy.toFixed(3)}`,
+      `[probability:fit] persisted version=${version} n=${trades.length} (real=${realTrades.length} shadow=${shadowTrades.length}) auc=${auc.toFixed(3)} acc=${accuracy.toFixed(3)}`,
     );
-    return { persisted: true, version, sampleSize: trades.length, aucRoc: auc, accuracy };
+    return {
+      persisted: true,
+      version,
+      sampleSize: trades.length,
+      realCount: realTrades.length,
+      shadowCount: shadowTrades.length,
+      aucRoc: auc,
+      accuracy,
+    };
   }
 
   // ───────────────────────────────────────────────────────────────────
@@ -294,5 +350,49 @@ export class PersistenceProbabilityService {
         features,
       };
     });
+  }
+
+  /**
+   * PR #281 — Fetch shadow training data depuis `gainers_user_shadow_signals`.
+   *
+   * Filtres :
+   *   - `decision != 'accept'` : on garde uniquement les rejets (les ACCEPT
+   *     shadow doublonnent avec paper_trades qui suivent les vrais opens)
+   *   - `sim_results` non null : la simulation a tourné
+   *   - grille `baseline_60m` : matche exactement la config live TP 2%/SL 0.9%
+   *     × 60min. Les autres grilles (alt15, 30m) ne sont pas représentatives
+   *     du comportement réel du portfolio user.
+   *
+   * Conversion :
+   *   - `outcomeLabel = sim_pnl_pct > 0 ? 1 : 0` (TP_HIT = 1, SL_HIT = 0,
+   *     TIME_LIMIT = sign de pnl_pct)
+   *   - `is_simulated = 1`
+   *   - `is_sim_x_<gate>` = 1 selon `decision`, 0 sinon (one-hot interaction)
+   *
+   * Lopez de Prado (Advances in Financial ML, ch.4) : interaction terms
+   * permettent au modèle d'apprendre que le biais simulator varie par gate.
+   * Sans ça on n'extrait que ~30% de la valeur de `is_simulated`.
+   */
+  private async fetchShadowTrainingData(
+    lookbackDays: number,
+  ): Promise<Array<TradeOutcome & { features: Record<string, number> }>> {
+    const fromDate = new Date(Date.now() - lookbackDays * 86400_000).toISOString();
+    const { data, error } = await this.supabase.getClient()
+      .from('gainers_user_shadow_signals')
+      .select('decision, persistence_count, persistence_score, path_eff, change_pct_1m, sim_results')
+      .neq('decision', 'accept')
+      .not('sim_results', 'is', null)
+      .gte('created_at', fromDate);
+    if (error) {
+      this.logger.warn(`[probability:fetch] shadow read failed: ${error.message}`);
+      return [];
+    }
+    const rows = (data ?? []) as ShadowRowForTraining[];
+    const outcomes: Array<TradeOutcome & { features: Record<string, number> }> = [];
+    for (const row of rows) {
+      const ex = shadowRowToTrainingExample(row, FEATURE_NAMES);
+      if (ex) outcomes.push(ex);
+    }
+    return outcomes;
   }
 }
