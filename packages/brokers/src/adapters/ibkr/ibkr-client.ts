@@ -31,11 +31,14 @@
 import type {
   IbkrAccountId,
   IbkrAccountSummary,
+  IbkrLedgerEntry,
   IbkrOrderRequest,
   IbkrOrderResponse,
   IbkrOrderStatusResponse,
+  IbkrPositionRaw,
   IbkrSearchContract,
   IbkrSessionToken,
+  IbkrTradeRaw,
 } from './ibkr-types';
 
 export interface IbkrClientConfig {
@@ -212,7 +215,54 @@ export class IbkrClient {
   }
 
   /**
-   * Ping session validation (used by keep-alive cron — Phase B.2).
+   * Phase B.2 — Liste les positions du compte. IBKR pagine par page de 30
+   * positions max via index `pageNum`. On boucle jusqu'à array vide.
+   */
+  async getPositions(acctId?: IbkrAccountId): Promise<IbkrPositionRaw[]> {
+    const id = acctId ?? this.accountId;
+    const all: IbkrPositionRaw[] = [];
+    let page = 0;
+    const MAX_PAGES = 50; // sanity bound 1500 positions max
+    while (page < MAX_PAGES) {
+      const batch = await this.request<IbkrPositionRaw[]>(
+        'GET',
+        `/portfolio/${encodeURIComponent(id)}/positions/${page}`,
+      );
+      if (!Array.isArray(batch) || batch.length === 0) break;
+      all.push(...batch);
+      if (batch.length < 30) break;
+      page += 1;
+    }
+    return all;
+  }
+
+  /**
+   * Phase B.2 — Ledger (cash) per currency. Retourne un objet keyed by
+   * currency code. On filtre les entrées à zero balance.
+   */
+  async getLedger(acctId?: IbkrAccountId): Promise<Record<string, IbkrLedgerEntry>> {
+    const id = acctId ?? this.accountId;
+    return this.request<Record<string, IbkrLedgerEntry>>(
+      'GET',
+      `/portfolio/${encodeURIComponent(id)}/ledger`,
+    );
+  }
+
+  /**
+   * Phase B.2 — Trades exécutés. IBKR retourne les 7 derniers jours par
+   * défaut, max 50 trades. Use-case principal : reconciliation +
+   * actual_commission tracking.
+   */
+  async getTrades(): Promise<IbkrTradeRaw[]> {
+    const res = await this.request<IbkrTradeRaw[]>(
+      'GET',
+      `/iserver/account/trades`,
+    );
+    return Array.isArray(res) ? res : [];
+  }
+
+  /**
+   * Ping session validation (used by keep-alive cron — Phase B.4).
    * Returns true if session is still valid.
    */
   async validateSession(): Promise<boolean> {
