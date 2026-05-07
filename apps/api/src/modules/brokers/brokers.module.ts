@@ -6,6 +6,7 @@ import { BrokersAuditService } from './services/brokers-audit.service';
 import { CredentialsVaultService } from './services/credentials-vault.service';
 import { IbkrSessionKeepAliveService } from './services/ibkr-session-keepalive.service';
 import { PreExecutionGuardService } from './services/pre-execution-guard.service';
+import { BrokerReconciliationService } from './services/broker-reconciliation.service';
 import { SupabaseModule } from '../supabase/supabase.module';
 import { FeatureFlagsModule } from '../feature-flags/feature-flags.module';
 
@@ -19,6 +20,7 @@ import { FeatureFlagsModule } from '../feature-flags/feature-flags.module';
     CredentialsVaultService,
     IbkrSessionKeepAliveService,
     PreExecutionGuardService,
+    BrokerReconciliationService,
   ],
   exports: [BrokersService, BrokerSyncService, CredentialsVaultService, PreExecutionGuardService],
 })
