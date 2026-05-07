@@ -792,14 +792,17 @@ export class LisaController {
   @HttpCode(200)
   async refitPersistenceModel(
     @Headers() headers: Record<string, string>,
-    @Body() body: { lookback_days?: number },
+    @Body() body: { lookback_days?: number; include_shadow?: boolean },
   ) {
     extractUserId(headers);
     const lookbackDays = clampInt(
       body?.lookback_days != null ? String(body.lookback_days) : undefined,
       1, 365, 30,
     );
-    return this.persistenceProbability.trainAndPersist({ lookbackDays });
+    // PR #281 — opt-in shadow data merge. Default false pour back-compat
+    // (les anciens callers ne reçoivent que les paper_trades).
+    const includeShadow = body?.include_shadow === true;
+    return this.persistenceProbability.trainAndPersist({ lookbackDays, includeShadow });
   }
 
   /**
