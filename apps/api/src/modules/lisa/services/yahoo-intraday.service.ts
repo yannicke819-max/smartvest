@@ -87,11 +87,18 @@ const YAHOO_USER_AGENT =
  *
  * Override env optionnels :
  *  - YAHOO_CIRCUIT_BASE_COOLDOWN_MS (default 60_000 = 60s)
- *  - YAHOO_CIRCUIT_MAX_COOLDOWN_MS  (default 300_000 = 5min)
+ *  - YAHOO_CIRCUIT_MAX_COOLDOWN_MS  (default 1_800_000 = 30min)
  *  - YAHOO_CIRCUIT_DISABLE          (default false — set 'true' pour désactiver)
+ *
+ * PR #268 — Bump max cooldown 5min → 30min. Constat prod 07/05/2026 :
+ * Yahoo block prolongé (consecutive_failures=414+) → cooldown clampé 5min →
+ * 6 retry/heure × ~6 symboles = ~36 calls Yahoo wasted/heure quand le provider
+ * est durablement en erreur. À 30 min → ~12 calls wasted/heure (×3 réduction).
+ * En cas de back online ponctuel, le probe se fait toujours après 30 min, on
+ * récupère le service automatiquement sans intervention.
  */
 const DEFAULT_BASE_COOLDOWN_MS = 60_000;       // 60s
-const DEFAULT_MAX_COOLDOWN_MS = 300_000;       // 5 min
+const DEFAULT_MAX_COOLDOWN_MS = 1_800_000;     // 30 min
 
 @Injectable()
 export class YahooIntradayService {

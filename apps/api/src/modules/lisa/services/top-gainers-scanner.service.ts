@@ -126,7 +126,12 @@ const EU_EXCHANGES = ['LSE', 'XETRA', 'PA', 'SW', 'MI', 'MC', 'BME', 'AS', 'AMS'
 //   SZ  → SHE  (Shenzhen Stock Exchange, suffix .SHE  — SZ = Yahoo Finance convention)
 //   TSE → T    (Tokyo Stock Exchange,    suffix .T     — TSE était le MIC, pas le code EODHD)
 // Ref : vendor/eodhd-claude-skills/.../exchanges-list.md + symbol-format.md
-const NON_EU_EXCHANGES = ['US', 'T', 'HK', 'AU', 'KO', 'KQ', 'TO', 'NSE', 'BSE', 'SHG', 'SHE'];
+// PR #268 — NSE/BSE retirés. Plan EODHD ALL-IN-ONE ne couvre pas l'Inde →
+// chaque appel sur ces exchanges renvoie 404 + retry tick-data + 404 + cache miss.
+// Constat 07/05/2026 : ~25 tickers NSE 404 par cycle scanner (~75-100 calls
+// EODHD perdus/cycle + 6-8 secondes de latence supplémentaires). Si le plan
+// est upgradé un jour pour inclure NSE/BSE, réajouter 'NSE', 'BSE' à cette liste.
+const NON_EU_EXCHANGES = ['US', 'T', 'HK', 'AU', 'KO', 'KQ', 'TO', 'SHG', 'SHE'];
 /** Watchlists EU dont la session_open_utc / session_close_utc gate l'EODHD scan. */
 const EU_WATCHLIST_NAMES = ['cac40', 'dax40', 'ftse100'];
 const CRYPTO_PAIRS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT', 'DOTUSDT', 'LINKUSDT', 'MATICUSDT'];
