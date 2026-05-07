@@ -317,6 +317,8 @@ export class LisaService {
       gainers_capital_rotation_enabled: pick('gainers_capital_rotation_enabled', 'gainersCapitalRotationEnabled', existing?.gainers_capital_rotation_enabled ?? null),
       gainers_high_grading_enabled: pick('gainers_high_grading_enabled', 'gainersHighGradingEnabled', existing?.gainers_high_grading_enabled ?? null),
       gainers_rotation_min_score: pick('gainers_rotation_min_score', 'gainersRotationMinScore', existing?.gainers_rotation_min_score ?? 0.85),
+      // PR #278 — Top pool size configurable (migration 0133)
+      gainers_top_pool_size: pick('gainers_top_pool_size', 'gainersTopPoolSize', existing?.gainers_top_pool_size ?? 10),
       // PR #266 — Session-aware filter + force-close before close (migration 0123).
       gainers_session_filter_enabled: pick('gainers_session_filter_enabled', 'gainersSessionFilterEnabled', existing?.gainers_session_filter_enabled ?? true),
       gainers_force_close_before_close_enabled: pick('gainers_force_close_before_close_enabled', 'gainersForceCloseBeforeCloseEnabled', existing?.gainers_force_close_before_close_enabled ?? false),
@@ -406,6 +408,8 @@ export class LisaService {
     if (merged.gainers_rotation_min_score != null) {
       validateNum('gainers_rotation_min_score', merged.gainers_rotation_min_score, 0, 1.0);
     }
+    // PR #278 — top pool size 5..50
+    validateInt('gainers_top_pool_size', merged.gainers_top_pool_size, 5, 50);
     // Cohérence : positionPct × maxOpen + cashReserve ne doit pas dépasser 100%
     // (sinon impossible de tenir le cash buffer en pratique). Warning soft, pas hard fail.
     const totalAllocPct =
@@ -606,6 +610,20 @@ export class LisaService {
       this.logger.warn('Colonne gainers_rotation_min_path_efficiency (migration 0125) absente — retry sans ce champ');
       const { gainers_rotation_min_path_efficiency: _rmpe, ...mergedFallback } = merged;
       void _rmpe;
+      const retry = await this.supabase.getClient()
+        .from('lisa_session_configs')
+        .upsert(mergedFallback, { onConflict: 'portfolio_id' })
+        .select()
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
+
+    // PR #278 — fallback si migration 0133 pas appliquée
+    if (error && /gainers_top_pool_size/i.test(error.message)) {
+      this.logger.warn('Colonne gainers_top_pool_size (migration 0133) absente — retry sans ce champ');
+      const { gainers_top_pool_size: _tps, ...mergedFallback } = merged;
+      void _tps;
       const retry = await this.supabase.getClient()
         .from('lisa_session_configs')
         .upsert(mergedFallback, { onConflict: 'portfolio_id' })
