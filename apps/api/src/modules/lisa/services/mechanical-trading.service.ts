@@ -1788,6 +1788,24 @@ export class MechanicalTradingService {
     return isHyperActive ? 2.5 : 4;
   }
 
+  private async getMinNetProfitGate(portfolioId: string, notional: Decimal): Promise<Decimal> {
+    const fallback = Decimal.max(new Decimal(2), notional.mul(0.005));
+    try {
+      const { data: cfg } = await this.supabase.getClient()
+        .from('lisa_session_configs')
+        .select('strategy_mode, gainers_min_net_profit_usd')
+        .eq('portfolio_id', portfolioId)
+        .maybeSingle();
+
+      if (cfg?.strategy_mode !== 'gainers') return fallback;
+      const ui = cfg.gainers_min_net_profit_usd;
+      if (typeof ui === 'number' && Number.isFinite(ui) && ui >= 0) {
+        return new Decimal(ui);
+      }
+    } catch { /* fall through to default */ }
+    return fallback;
+  }
+
   /**
    * Détecte si une quote a été retournée via le fallback hardcoded
    * (au lieu d'une vraie source live). Toute source commençant par "fallback"
@@ -2261,9 +2279,14 @@ export class MechanicalTradingService {
     // Pourquoi seulement closed_target : closed_stop matérialise une perte
     // par design (protection drawdown) ; closed_invalidated refund les fees.
     if (reason === 'closed_target') {
-      const minNetProfit = Decimal.max(
-        new Decimal(2),
-        notional.mul(0.005),  // 0.5% du notional
+      // PR #279 (07/05/2026) — Honorer `gainers_min_net_profit_usd` (UI section 6)
+      // en mode gainers. Avant : gate hardcoded `max($2, 0.5% × notional)` =
+      // $5 pour notional $1000, ce qui bloquait indéfiniment des TP réactifs
+      // RSI à +0.5% (net ~$4.10). La valeur UI était silencieusement ignorée.
+      // Fallback hardcoded préservé pour le flow LLM (strategy_mode != gainers).
+      const minNetProfit = await this.getMinNetProfitGate(
+        pos.portfolio_id as string,
+        notional,
       );
       if (realizedPnl.lt(minNetProfit)) {
         this.logger.warn(
