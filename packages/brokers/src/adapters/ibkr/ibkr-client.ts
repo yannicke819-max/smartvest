@@ -262,6 +262,25 @@ export class IbkrClient {
   }
 
   /**
+   * Phase B.3 — Fills d'un ordre spécifique. IBKR ne fournit pas
+   * d'endpoint dédié `/orders/{id}/fills`, on filtre /iserver/account/trades
+   * par order_id. Pour des ordres market splittés, retourne plusieurs fills.
+   *
+   * Note : trades endpoint ne retourne que les 7 derniers jours. Pour des
+   * ordres plus anciens (rare en scalping intraday), getFills retournera []
+   * et le caller devra utiliser getOrderStatus pour les data agrégées.
+   */
+  async getFillsByOrderId(orderId: string): Promise<IbkrTradeRaw[]> {
+    const trades = await this.getTrades();
+    const numericId = Number(orderId);
+    return trades.filter((t) => {
+      if (Number.isFinite(numericId) && t.order_id === numericId) return true;
+      if (t.order_ref === orderId) return true;
+      return false;
+    });
+  }
+
+  /**
    * Ping session validation (used by keep-alive cron — Phase B.4).
    * Returns true if session is still valid.
    */

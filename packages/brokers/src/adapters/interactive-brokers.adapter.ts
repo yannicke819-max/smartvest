@@ -4,7 +4,7 @@ import type {
 } from '@smartvest/domain';
 import { PROVIDER_CAPABILITIES } from '@smartvest/domain';
 import {
-  IBrokerAdapter, NotSupportedError, AdapterStubError,
+  IBrokerAdapter, AdapterStubError,
   PlaceOrderDraft, PlaceOrderResult, TestConnectionResult,
   CancelOrderResult, BrokerOrderState, BrokerFill, BrokerAccountBalance,
 } from './broker-adapter.interface';
@@ -301,10 +301,29 @@ export class InteractiveBrokersAdapter implements IBrokerAdapter {
     };
   }
 
-  async getFills(_externalOrderId: string): Promise<BrokerFill[]> {
-    throw new NotSupportedError(
-      'IBKR getFills activé en Phase B.3 (executions endpoint + WebSocket).',
-    );
+  async getFills(externalOrderId: string): Promise<BrokerFill[]> {
+    if (!this.client) {
+      throw new Error('IBKRAdapter: call connect() before getFills()');
+    }
+    const trades = await this.client.getFillsByOrderId(externalOrderId);
+    return trades.map((t): BrokerFill => {
+      const sideRaw = String(t.side).toUpperCase();
+      const side: 'buy' | 'sell' = sideRaw === 'B' || sideRaw === 'BUY' ? 'buy' : 'sell';
+      const filledAt = t.trade_time_r
+        ? new Date(t.trade_time_r)
+        : new Date(t.trade_time);
+      return {
+        externalOrderId,
+        externalFillId: t.execution_id,
+        symbol: t.symbol,
+        side,
+        quantity: String(Math.abs(t.size)),
+        price: String(t.price),
+        commissionUsd: t.commission != null ? String(t.commission) : '0',
+        filledAt,
+        rawResponse: t,
+      };
+    });
   }
 
   async getAccountBalance(accountIdExternal: string): Promise<BrokerAccountBalance> {
