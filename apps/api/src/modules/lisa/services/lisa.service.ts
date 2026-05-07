@@ -313,6 +313,10 @@ export class LisaService {
       gainers_asia_strictness_boost: pick('gainers_asia_strictness_boost', 'gainersAsiaStrictnessBoost', existing?.gainers_asia_strictness_boost ?? 0.10),
       // PR #243 — Adaptive Selectivity toggle (migration 0119). Opt-in default false.
       gainers_adaptive_enabled: pick('gainers_adaptive_enabled', 'gainersAdaptiveEnabled', existing?.gainers_adaptive_enabled ?? false),
+      // PR #276 — DB-backed toggles rotation + high-grading + min_score (migration 0131)
+      gainers_capital_rotation_enabled: pick('gainers_capital_rotation_enabled', 'gainersCapitalRotationEnabled', existing?.gainers_capital_rotation_enabled ?? null),
+      gainers_high_grading_enabled: pick('gainers_high_grading_enabled', 'gainersHighGradingEnabled', existing?.gainers_high_grading_enabled ?? null),
+      gainers_rotation_min_score: pick('gainers_rotation_min_score', 'gainersRotationMinScore', existing?.gainers_rotation_min_score ?? 0.85),
       // PR #266 — Session-aware filter + force-close before close (migration 0123).
       gainers_session_filter_enabled: pick('gainers_session_filter_enabled', 'gainersSessionFilterEnabled', existing?.gainers_session_filter_enabled ?? true),
       gainers_force_close_before_close_enabled: pick('gainers_force_close_before_close_enabled', 'gainersForceCloseBeforeCloseEnabled', existing?.gainers_force_close_before_close_enabled ?? false),
@@ -397,6 +401,10 @@ export class LisaService {
     // PR #271 — asia strictness boost 0..0.50
     if (merged.gainers_asia_strictness_boost != null) {
       validateNum('gainers_asia_strictness_boost', merged.gainers_asia_strictness_boost, 0, 0.50);
+    }
+    // PR #276 — rotation min score 0.5..1.0
+    if (merged.gainers_rotation_min_score != null) {
+      validateNum('gainers_rotation_min_score', merged.gainers_rotation_min_score, 0.5, 1.0);
     }
     // Cohérence : positionPct × maxOpen + cashReserve ne doit pas dépasser 100%
     // (sinon impossible de tenir le cash buffer en pratique). Warning soft, pas hard fail.
@@ -598,6 +606,25 @@ export class LisaService {
       this.logger.warn('Colonne gainers_rotation_min_path_efficiency (migration 0125) absente — retry sans ce champ');
       const { gainers_rotation_min_path_efficiency: _rmpe, ...mergedFallback } = merged;
       void _rmpe;
+      const retry = await this.supabase.getClient()
+        .from('lisa_session_configs')
+        .upsert(mergedFallback, { onConflict: 'portfolio_id' })
+        .select()
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
+
+    // PR #276 — fallback si migration 0131 pas appliquée
+    if (error && /gainers_capital_rotation_enabled|gainers_high_grading_enabled|gainers_rotation_min_score/i.test(error.message)) {
+      this.logger.warn('Colonnes gainers_capital_rotation_enabled / gainers_high_grading_enabled / gainers_rotation_min_score (migration 0131) absentes — retry sans ces champs');
+      const {
+        gainers_capital_rotation_enabled: _cre,
+        gainers_high_grading_enabled: _hge,
+        gainers_rotation_min_score: _rms,
+        ...mergedFallback
+      } = merged;
+      void _cre; void _hge; void _rms;
       const retry = await this.supabase.getClient()
         .from('lisa_session_configs')
         .upsert(mergedFallback, { onConflict: 'portfolio_id' })
