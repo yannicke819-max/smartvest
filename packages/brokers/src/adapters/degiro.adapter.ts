@@ -6,6 +6,7 @@ import { PROVIDER_CAPABILITIES } from '@smartvest/domain';
 import {
   IBrokerAdapter, NotSupportedError,
   PlaceOrderDraft, PlaceOrderResult, TestConnectionResult,
+  CancelOrderResult, BrokerOrderState, BrokerFill, BrokerAccountBalance,
 } from './broker-adapter.interface';
 
 /**
@@ -59,5 +60,18 @@ export class DegiroAdapter implements IBrokerAdapter {
 
   async placeOrder(_draft: PlaceOrderDraft): Promise<PlaceOrderResult> {
     throw new NotSupportedError('DeGiro placeOrder indisponible — pas d\'API officielle.');
+  }
+
+  async cancelOrder(_externalOrderId: string): Promise<CancelOrderResult> {
+    throw new NotSupportedError('DeGiro cancelOrder indisponible — pas d\'API officielle.');
+  }
+  async getOrderStatus(_externalOrderId: string): Promise<BrokerOrderState> {
+    throw new NotSupportedError('DeGiro getOrderStatus indisponible — pas d\'API officielle.');
+  }
+  async getFills(_externalOrderId: string): Promise<BrokerFill[]> {
+    throw new NotSupportedError('DeGiro getFills indisponible — pas d\'API officielle.');
+  }
+  async getAccountBalance(_accountIdExternal: string): Promise<BrokerAccountBalance> {
+    throw new NotSupportedError('DeGiro getAccountBalance indisponible — pas d\'API officielle.');
   }
 }

@@ -6,6 +6,7 @@ import { PROVIDER_CAPABILITIES } from '@smartvest/domain';
 import {
   IBrokerAdapter, NotSupportedError, AdapterStubError,
   PlaceOrderDraft, PlaceOrderResult, TestConnectionResult,
+  CancelOrderResult, BrokerOrderState, BrokerFill, BrokerAccountBalance,
 } from './broker-adapter.interface';
 
 /**
@@ -64,5 +65,19 @@ export class InteractiveBrokersAdapter implements IBrokerAdapter {
 
   async placeOrder(_draft: PlaceOrderDraft): Promise<PlaceOrderResult> {
     throw new NotSupportedError('IB placeOrder désactivé — requiert BROKER_EXECUTION_ENABLED + mandat valide');
+  }
+
+  // ── Phase A LIVE — défauts NotSupportedError (impl complète Phase B) ──
+  async cancelOrder(_externalOrderId: string): Promise<CancelOrderResult> {
+    throw new NotSupportedError('IBKR cancelOrder pas encore implémenté (Phase B).');
+  }
+  async getOrderStatus(_externalOrderId: string): Promise<BrokerOrderState> {
+    throw new NotSupportedError('IBKR getOrderStatus pas encore implémenté (Phase B).');
+  }
+  async getFills(_externalOrderId: string): Promise<BrokerFill[]> {
+    throw new NotSupportedError('IBKR getFills pas encore implémenté (Phase B).');
+  }
+  async getAccountBalance(_accountIdExternal: string): Promise<BrokerAccountBalance> {
+    throw new NotSupportedError('IBKR getAccountBalance pas encore implémenté (Phase B).');
   }
 }

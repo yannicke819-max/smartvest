@@ -111,6 +111,11 @@ export class FeatureFlagsService {
         this.config.get('FEATURE_BROKER_ADAPTER_BINANCE_ENABLED'),
         DEFAULT_FLAGS.BROKER_ADAPTER_BINANCE_ENABLED,
       ),
+      // Phase A LIVE — reconciliation cron (off par défaut)
+      BROKER_RECONCILIATION_ENABLED: this.parseBool(
+        this.config.get('FEATURE_BROKER_RECONCILIATION_ENABLED'),
+        DEFAULT_FLAGS.BROKER_RECONCILIATION_ENABLED,
+      ),
     };
   }
 
