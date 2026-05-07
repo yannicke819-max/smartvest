@@ -1423,9 +1423,9 @@ export class TopGainersScannerService implements OnModuleInit {
       ? Math.max(0, Math.min(240, Number(cfgRow.gainers_cooldown_minutes)))
       : FALLBACK_COOLDOWN_MIN;
     const positionNotionalUsd = capitalUsd * (positionPct / 100);
-    // PR #262 — Capital rotation : seuil "stagnante" configurable user (15-480 min, default 90)
+    // PR #262/#268 — Capital rotation : seuil "stagnante" configurable user (3-480 min, default 90)
     const rotationStagnantMinAgeMin = cfgRow?.gainers_rotation_stagnant_min_age_min != null
-      ? Math.max(15, Math.min(480, Number(cfgRow.gainers_rotation_stagnant_min_age_min)))
+      ? Math.max(3, Math.min(480, Number(cfgRow.gainers_rotation_stagnant_min_age_min)))
       : 90;
 
     // PR #3 + PR #246 — universe toggles per-portfolio appliqués AVANT

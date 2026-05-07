@@ -380,6 +380,8 @@ export class LisaService {
     validateNum('gainers_min_p_win', merged.gainers_min_p_win, 0, 1);
     // PR #266 — force-close offset 5..120 min
     validateInt('gainers_force_close_offset_min', merged.gainers_force_close_offset_min, 5, 120);
+    // PR #268 — rotation stagnant min age 3..480 min (relâché de 15..480)
+    validateInt('gainers_rotation_stagnant_min_age_min', merged.gainers_rotation_stagnant_min_age_min, 3, 480);
     // Cohérence : positionPct × maxOpen + cashReserve ne doit pas dépasser 100%
     // (sinon impossible de tenir le cash buffer en pratique). Warning soft, pas hard fail.
     const totalAllocPct =
