@@ -63,6 +63,10 @@ export class SimulatedBrokerAdapter implements BrokerAdapter {
 export * from './adapters/broker-adapter.interface';
 export * from './adapters/manual.adapter';
 export * from './adapters/interactive-brokers.adapter';
+// Phase B.1 — IBKR Client Portal Web API internals
+export * from './adapters/ibkr/ibkr-client';
+export * from './adapters/ibkr/ibkr-symbol-mapper';
+export * from './adapters/ibkr/ibkr-types';
 export * from './adapters/saxo.adapter';
 export * from './adapters/degiro.adapter';
 export * from './adapters/trading212.adapter';

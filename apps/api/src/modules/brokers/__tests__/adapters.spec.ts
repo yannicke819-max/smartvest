@@ -44,7 +44,8 @@ describe('ManualAdapter', () => {
 });
 
 describe('InteractiveBrokersAdapter (stub)', () => {
-  const a = new InteractiveBrokersAdapter();
+  // executionEnabled=false → adapter inert, méthodes return unsupported
+  const a = new InteractiveBrokersAdapter(false);
   it('connect accepts valid IB credentials', async () => {
     await expect(
       a.connect({ provider: 'INTERACTIVE_BROKERS', accountId: 'U1234567', sessionToken: 'tok' }),
@@ -55,10 +56,12 @@ describe('InteractiveBrokersAdapter (stub)', () => {
     await expect(a.fetchCash()).rejects.toThrow(AdapterStubError);
     await expect(a.fetchTransactions()).rejects.toThrow(AdapterStubError);
   });
-  it('placeOrder throws NotSupportedError', async () => {
-    await expect(
-      a.placeOrder({ accountIdExternal: 'x', instrumentRef: 'y', side: 'buy', orderType: 'market', quantity: '1' }),
-    ).rejects.toThrow(NotSupportedError);
+  it('placeOrder returns unsupported when executionEnabled=false (Phase B.1)', async () => {
+    const r = await a.placeOrder({
+      accountIdExternal: 'x', instrumentRef: 'y', side: 'buy', orderType: 'market', quantity: '1',
+    });
+    expect(r.status).toBe('unsupported');
+    expect(r.externalOrderId).toBeNull();
   });
 });
 
