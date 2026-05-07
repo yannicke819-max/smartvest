@@ -1490,6 +1490,24 @@ export class TopGainersScannerService implements OnModuleInit {
       await this.runForceCloseBeforeCloseTick(portfolioId, forceCloseOffsetMin, nowUtc);
     }
 
+    // PR #272 — Si force-close est ON et que la session est en T-N min de
+    // sa fermeture, on bloque aussi les NEW opens sur cet asset_class. Sans
+    // ça, le scanner réouvre immédiatement le même ticker qu'on vient de
+    // force-fermer (cas observé 07/05/2026 09:42 — 000783.SHE force-fermée
+    // puis réouverte 10 secondes plus tard sur le même cycle).
+    const usApproachingClose = forceCloseEnabled && isApproachingClose('us', forceCloseOffsetMin, nowUtc);
+    const euApproachingClose = forceCloseEnabled && isApproachingClose('eu', forceCloseOffsetMin, nowUtc);
+    const asiaApproachingClose = forceCloseEnabled && isApproachingClose('asia', forceCloseOffsetMin, nowUtc);
+    if (usApproachingClose || euApproachingClose || asiaApproachingClose) {
+      const blocked: string[] = [];
+      if (usApproachingClose) blocked.push('US');
+      if (euApproachingClose) blocked.push('EU');
+      if (asiaApproachingClose) blocked.push('Asia');
+      this.logger.log(
+        `[top-gainers] ${portfolioId.slice(0, 8)} approaching-close: skip NEW opens on ${blocked.join('+')} (T-${forceCloseOffsetMin}min, force-close ON)`,
+      );
+    }
+
     // PR #267 — Orphan close rétroactif. Détecte les positions ouvertes sur
     // un marché qui est fermé MAINTENANT et dont aucun prix live n'est
     // disponible (source 'fallback*' ou null). Ces positions ne peuvent plus
@@ -1517,9 +1535,10 @@ export class TopGainersScannerService implements OnModuleInit {
       // ici aussi pour pouvoir filtrer la liste pré-selection.
       const assetClass = detectAssetClass(c.symbol, c.exchange, c.marketCap);
       // PR #266 — combine universe toggle (volonté user) ET session ouverte.
-      if (assetClass === 'us_equity_large' || assetClass === 'us_equity_small_mid') return universeUs && usOpen;
-      if (assetClass === 'eu_equity') return universeEu && euOpen;
-      if (assetClass === 'asia_equity') return universeAsia && asiaOpen;
+      // PR #272 — exclut aussi si session en T-N min de close (force-close ON).
+      if (assetClass === 'us_equity_large' || assetClass === 'us_equity_small_mid') return universeUs && usOpen && !usApproachingClose;
+      if (assetClass === 'eu_equity') return universeEu && euOpen && !euApproachingClose;
+      if (assetClass === 'asia_equity') return universeAsia && asiaOpen && !asiaApproachingClose;
       if (assetClass === 'crypto_major' || assetClass === 'crypto_alt') return universeCrypto;
       return true; // fx/commodity etc — pas de toggle, accept par default
     });
