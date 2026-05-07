@@ -29,6 +29,10 @@ import type {
   PlaceOrderDraft,
   PlaceOrderResult,
   TestConnectionResult,
+  CancelOrderResult,
+  BrokerOrderState,
+  BrokerFill,
+  BrokerAccountBalance,
 } from './broker-adapter.interface';
 import { NotSupportedError } from './broker-adapter.interface';
 
@@ -207,6 +211,20 @@ export class BinanceAdapter implements IBrokerAdapter {
         message: String(e),
       };
     }
+  }
+
+  // ── Phase A LIVE — défauts NotSupportedError (impl complète Phase C) ──
+  async cancelOrder(_externalOrderId: string): Promise<CancelOrderResult> {
+    throw new NotSupportedError('Binance cancelOrder pas encore implémenté (Phase C).');
+  }
+  async getOrderStatus(_externalOrderId: string): Promise<BrokerOrderState> {
+    throw new NotSupportedError('Binance getOrderStatus pas encore implémenté (Phase C).');
+  }
+  async getFills(_externalOrderId: string): Promise<BrokerFill[]> {
+    throw new NotSupportedError('Binance getFills pas encore implémenté (Phase C).');
+  }
+  async getAccountBalance(_accountIdExternal: string): Promise<BrokerAccountBalance> {
+    throw new NotSupportedError('Binance getAccountBalance pas encore implémenté (Phase C).');
   }
 
   // ── Internal signing helpers ────────────────────────────────────────────────

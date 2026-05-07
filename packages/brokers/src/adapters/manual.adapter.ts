@@ -6,6 +6,7 @@ import { PROVIDER_CAPABILITIES } from '@smartvest/domain';
 import {
   IBrokerAdapter, NotSupportedError,
   PlaceOrderDraft, PlaceOrderResult, TestConnectionResult,
+  CancelOrderResult, BrokerOrderState, BrokerFill, BrokerAccountBalance,
 } from './broker-adapter.interface';
 
 /**
@@ -37,5 +38,19 @@ export class ManualAdapter implements IBrokerAdapter {
 
   async placeOrder(_draft: PlaceOrderDraft): Promise<PlaceOrderResult> {
     throw new NotSupportedError('ManualAdapter ne supporte aucune exécution — utilisez /imports pour saisir vos transactions.');
+  }
+
+  // ── Phase A LIVE — défauts NotSupportedError pour adapter manuel ──────
+  async cancelOrder(_externalOrderId: string): Promise<CancelOrderResult> {
+    throw new NotSupportedError('ManualAdapter ne supporte pas cancelOrder.');
+  }
+  async getOrderStatus(_externalOrderId: string): Promise<BrokerOrderState> {
+    throw new NotSupportedError('ManualAdapter ne supporte pas getOrderStatus.');
+  }
+  async getFills(_externalOrderId: string): Promise<BrokerFill[]> {
+    throw new NotSupportedError('ManualAdapter ne supporte pas getFills.');
+  }
+  async getAccountBalance(_accountIdExternal: string): Promise<BrokerAccountBalance> {
+    throw new NotSupportedError('ManualAdapter ne supporte pas getAccountBalance.');
   }
 }

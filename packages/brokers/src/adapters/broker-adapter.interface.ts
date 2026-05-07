@@ -29,6 +29,66 @@ export interface PlaceOrderResult {
   message: string;
 }
 
+/**
+ * Phase A LIVE — Status d'un ordre côté broker, mappé vers le schéma
+ * broker_orders.status. `unknown` est utilisé quand le broker ne renvoie
+ * pas l'ordre (ex: après cancel + purge côté broker).
+ */
+export type BrokerOrderStatus =
+  | 'submitted'
+  | 'accepted'
+  | 'partial_fill'
+  | 'filled'
+  | 'rejected'
+  | 'canceled'
+  | 'expired'
+  | 'unknown';
+
+export interface BrokerOrderState {
+  externalOrderId: string;
+  status: BrokerOrderStatus;
+  filledQuantity: string;
+  avgFillPrice: string | null;
+  commissionUsd: string | null;
+  rejectReason?: string | null;
+  rawResponse?: unknown;
+}
+
+/**
+ * Phase A LIVE — Un fill individuel (un ordre peut avoir 1 ou plusieurs
+ * fills, surtout sur ordres market split sur plusieurs venues).
+ */
+export interface BrokerFill {
+  externalOrderId: string;
+  externalFillId: string;
+  symbol: string;
+  side: 'buy' | 'sell';
+  quantity: string;
+  price: string;
+  commissionUsd: string;
+  filledAt: Date;
+  rawResponse?: unknown;
+}
+
+/**
+ * Phase A LIVE — Snapshot du compte broker (cash + buying power).
+ * Multi-currency : balances per devise. usdEquivalent calculé via FX live
+ * côté caller, pas l'adapter.
+ */
+export interface BrokerAccountBalance {
+  accountIdExternal: string;
+  cashByCurrency: Array<{ currency: string; amount: string }>;
+  buyingPowerUsd: string | null;
+  totalEquityUsd: string | null;
+  asOf: Date;
+}
+
+export interface CancelOrderResult {
+  externalOrderId: string;
+  status: 'canceled' | 'unsupported' | 'not_found' | 'already_filled';
+  message: string;
+}
+
 export interface TestConnectionResult {
   ok: boolean;
   latencyMs: number | null;
@@ -43,6 +103,10 @@ export interface TestConnectionResult {
  *
  * Implementations NEVER store credentials themselves — the orchestrator
  * pulls credentials from the Vault and passes them in at construction time.
+ *
+ * Phase A LIVE — méthodes ajoutées : cancelOrder, getOrderStatus, getFills,
+ * getAccountBalance. Defaults: throw NotSupportedError sur tous les adapters
+ * existants jusqu'à ce qu'une PR ultérieure les implémente per-broker.
  */
 export interface IBrokerAdapter {
   readonly provider: BrokerProvider;
@@ -63,6 +127,30 @@ export interface IBrokerAdapter {
    * flags (BROKER_EXECUTION_ENABLED + adapter flag + AUTONOMOUS_GUARDED + mandate).
    */
   placeOrder(draft: PlaceOrderDraft): Promise<PlaceOrderResult>;
+
+  /**
+   * Phase A LIVE — Cancel an order by externalOrderId. Default: throw
+   * NotSupportedError jusqu'à implémentation per-adapter.
+   */
+  cancelOrder(externalOrderId: string): Promise<CancelOrderResult>;
+
+  /**
+   * Phase A LIVE — Get current status of an order. Used for reconciliation
+   * + post-fill commission tracking. Default: throw NotSupportedError.
+   */
+  getOrderStatus(externalOrderId: string): Promise<BrokerOrderState>;
+
+  /**
+   * Phase A LIVE — Get fills (executions) for an order. May return multiple
+   * fills for split market orders. Default: throw NotSupportedError.
+   */
+  getFills(externalOrderId: string): Promise<BrokerFill[]>;
+
+  /**
+   * Phase A LIVE — Snapshot balance + buying power. Used pre-trade to verify
+   * suffisant cash + post-trade pour reconciliation. Default: throw NotSupportedError.
+   */
+  getAccountBalance(accountIdExternal: string): Promise<BrokerAccountBalance>;
 }
 
 export class NotSupportedError extends Error {

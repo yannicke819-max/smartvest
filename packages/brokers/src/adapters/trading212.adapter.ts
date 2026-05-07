@@ -6,6 +6,7 @@ import { PROVIDER_CAPABILITIES } from '@smartvest/domain';
 import {
   IBrokerAdapter, NotSupportedError, AdapterStubError,
   PlaceOrderDraft, PlaceOrderResult, TestConnectionResult,
+  CancelOrderResult, BrokerOrderState, BrokerFill, BrokerAccountBalance,
 } from './broker-adapter.interface';
 
 /**
@@ -57,5 +58,18 @@ export class Trading212Adapter implements IBrokerAdapter {
 
   async placeOrder(_draft: PlaceOrderDraft): Promise<PlaceOrderResult> {
     throw new NotSupportedError('T212 placeOrder désactivé — requiert BROKER_EXECUTION_ENABLED + mandat valide');
+  }
+
+  async cancelOrder(_externalOrderId: string): Promise<CancelOrderResult> {
+    throw new NotSupportedError('T212 cancelOrder pas encore implémenté.');
+  }
+  async getOrderStatus(_externalOrderId: string): Promise<BrokerOrderState> {
+    throw new NotSupportedError('T212 getOrderStatus pas encore implémenté.');
+  }
+  async getFills(_externalOrderId: string): Promise<BrokerFill[]> {
+    throw new NotSupportedError('T212 getFills pas encore implémenté.');
+  }
+  async getAccountBalance(_accountIdExternal: string): Promise<BrokerAccountBalance> {
+    throw new NotSupportedError('T212 getAccountBalance pas encore implémenté.');
   }
 }
