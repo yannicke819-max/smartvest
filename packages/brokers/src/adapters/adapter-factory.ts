@@ -41,7 +41,7 @@ export function createBrokerAdapter(
       if (!flags.BROKER_ADAPTER_IB_ENABLED) {
         throw new NotSupportedError('Adapter IB désactivé (BROKER_ADAPTER_IB_ENABLED=false)');
       }
-      return new InteractiveBrokersAdapter();
+      return new InteractiveBrokersAdapter(flags.BROKER_EXECUTION_ENABLED);
     case 'SAXO':
       if (!flags.BROKER_ADAPTER_SAXO_ENABLED) {
         throw new NotSupportedError('Adapter Saxo désactivé');
