@@ -1,5 +1,8 @@
 import { Module } from '@nestjs/common';
 import { BrokersController } from './brokers.controller';
+import { LiveTradingWizardController } from './live-trading-wizard.controller';
+import { LiveTradingWizardService } from './services/live-trading-wizard.service';
+import { SandboxValidationService } from './services/sandbox-validation.service';
 import { BrokersService } from './services/brokers.service';
 import { BrokerSyncService } from './services/broker-sync.service';
 import { BrokersAuditService } from './services/brokers-audit.service';
@@ -8,12 +11,13 @@ import { IbkrSessionKeepAliveService } from './services/ibkr-session-keepalive.s
 import { PreExecutionGuardService } from './services/pre-execution-guard.service';
 import { BrokerReconciliationService } from './services/broker-reconciliation.service';
 import { RealCostCalibratorService } from './services/real-cost-calibrator.service';
+import { LiveFeatureFlagsService } from './services/live-feature-flags.service';
 import { SupabaseModule } from '../supabase/supabase.module';
 import { FeatureFlagsModule } from '../feature-flags/feature-flags.module';
 
 @Module({
   imports: [SupabaseModule, FeatureFlagsModule],
-  controllers: [BrokersController],
+  controllers: [BrokersController, LiveTradingWizardController],
   providers: [
     BrokersService,
     BrokerSyncService,
@@ -23,7 +27,16 @@ import { FeatureFlagsModule } from '../feature-flags/feature-flags.module';
     PreExecutionGuardService,
     BrokerReconciliationService,
     RealCostCalibratorService,
+    LiveFeatureFlagsService,
+    LiveTradingWizardService,
+    SandboxValidationService,
   ],
-  exports: [BrokersService, BrokerSyncService, CredentialsVaultService, PreExecutionGuardService],
+  exports: [
+    BrokersService,
+    BrokerSyncService,
+    CredentialsVaultService,
+    PreExecutionGuardService,
+    LiveFeatureFlagsService,
+  ],
 })
 export class BrokersModule {}

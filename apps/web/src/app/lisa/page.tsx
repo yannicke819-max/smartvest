@@ -33,6 +33,7 @@ import { GainersStatusTile } from '@/components/lisa/gainers-status-tile';
 import { GainersConfigPanel } from '@/components/lisa/gainers-config-panel';
 import { ScalingReadinessPanel } from '@/components/lisa/scaling-readiness-panel';
 import { LiveTradingStatusPanel } from '@/components/lisa/live-trading-status-panel';
+import { LiveTradingWizard } from '@/components/lisa/live-trading-wizard';
 import { useOperatingMode } from '@/hooks/use-operating-mode';
 import { AutopilotBudgetBadge } from '@/components/lisa/autopilot-budget-badge';
 import { LisaDecisionLog } from '@/components/lisa/decision-log';
@@ -579,6 +580,9 @@ export default function LisaPage() {
 
       {/* Phase G LIVE — Status panel (auto-shown si LIVE flags activés) */}
       <LiveTradingStatusPanel />
+
+      {/* PR Wizard.3 — Installer LIVE Trading 6 steps (visible quand portfolio sélectionné) */}
+      {selectedPortfolioId && <LiveTradingWizard portfolioId={selectedPortfolioId} />}
 
       {/* P7 — Mode opératoire 3-way (Investment / Harvest / Gainers) */}
       {selectedPortfolioId && <MacroModeSelector portfolioId={selectedPortfolioId} />}
