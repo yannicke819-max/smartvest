@@ -19,6 +19,7 @@ import {
 import { TopGainersScannerService } from './services/top-gainers-scanner.service';
 import { TradingStatsService } from './services/trading-stats.service';
 import { GainersUserShadowService } from './services/gainers-user-shadow.service';
+import { GainersAutoRelaxService } from './services/gainers-auto-relax.service';
 import { MultiTimeframePersistenceService } from './services/multi-tf-persistence.service';
 import { PersistenceProbabilityService } from './services/persistence-probability.service';
 import { EodhdQuotaService } from './services/eodhd-quota.service';
@@ -46,6 +47,7 @@ export class LisaController {
     private readonly quotaService: EodhdQuotaService,
     private readonly tradingStats: TradingStatsService,
     private readonly gainersUserShadow: GainersUserShadowService,
+    private readonly gainersAutoRelax: GainersAutoRelaxService,
   ) {}
 
   // ─────────────────────────────────────────────────────────────────
@@ -826,6 +828,36 @@ export class LisaController {
     extractUserId(headers);
     const days = Math.max(1, Math.min(30, Number(daysRaw) || 7));
     return this.gainersUserShadow.getRegretSummary(portfolioId, days);
+  }
+
+  /**
+   * PR #282 — Liste les proposals adaptive auto-relax pending.
+   * Mode propose : applied=false, le user clique pour appliquer.
+   * Mode auto : applied=true (auto-cron), affichage audit-only.
+   */
+  @Get('gainers-adaptive-proposals/:portfolioId')
+  async listGainersAdaptiveProposals(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+    @Query('limit') limitRaw?: string,
+  ) {
+    extractUserId(headers);
+    const limit = Math.max(1, Math.min(200, Number(limitRaw) || 50));
+    return this.gainersAutoRelax.listPendingProposals(portfolioId, limit);
+  }
+
+  /**
+   * PR #282 — Applique manuellement une proposal pending (mode propose).
+   * UPDATE config DB + flag applied=true. Audit dans applied_by.
+   */
+  @Post('gainers-adaptive-proposals/:proposalId/apply')
+  @HttpCode(200)
+  async applyGainersAdaptiveProposal(
+    @Headers() headers: Record<string, string>,
+    @Param('proposalId') proposalId: string,
+  ) {
+    const userId = extractUserId(headers);
+    return this.gainersAutoRelax.applyProposal(proposalId, userId);
   }
 
   /**
