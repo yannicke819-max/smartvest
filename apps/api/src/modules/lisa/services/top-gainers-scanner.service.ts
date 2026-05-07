@@ -31,6 +31,7 @@ import { BinanceMarketService } from './binance-market.service';
 import { MultiTimeframePersistenceService, type PersistenceWithPath } from './multi-tf-persistence.service';
 import { PersistenceProbabilityService } from './persistence-probability.service';
 import { EodhdQuotaService } from './eodhd-quota.service';
+import { GainersUserShadowService, type ShadowDecision } from './gainers-user-shadow.service';
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
 // PR6.3 — Shadow wiring (LisaModule import GainersModule pour résolution DI)
 import { GainersShadowRunService } from '../../gainers-scanner/shadow/shadow-run.service';
@@ -487,6 +488,13 @@ export class TopGainersScannerService implements OnModuleInit {
      * ~22k calls/h jusqu'à atteindre 100k/100k → blocage authoritative.
      */
     private readonly quotaService: EodhdQuotaService,
+    /**
+     * PR #280 — GainersUserShadowService capte chaque décision de gate
+     * (accept / reject_*) avec snapshot config. simulatePending() walk-forward
+     * 5m candles pour TP 2%/SL 0.9% + grille alt 1.5%/0.6% sur fenêtres
+     * 30m + 60m. Régret cost calculable via /lisa/gainers-shadow-regret.
+     */
+    private readonly userShadow: GainersUserShadowService,
   ) {}
 
   /**
@@ -794,6 +802,13 @@ export class TopGainersScannerService implements OnModuleInit {
 
     // Persist log entries pour les top universels (audit cross-portfolio)
     await this.persistLog(candidates, universalTop);
+
+    // PR #280 — User shadow simulator : worker in-line. Pick rows ≥ 60min old
+    // sans simulation, walk-forward 5m candles, fill sim_results JSONB.
+    // Cap 50 rows/cycle. Non-bloquant (catch).
+    void this.userShadow.simulatePending().catch((e) => {
+      this.logger.warn(`[user-shadow] simulatePending failed: ${String(e).slice(0, 100)}`);
+    });
 
     if (candidates.length === 0) {
       this.recordEarlyReturn('candidates_fetched_but_none_selected');
@@ -1749,6 +1764,36 @@ export class TopGainersScannerService implements OnModuleInit {
     }
     const postSlCooldownMs = postSlCooldownMin * 60_000;
 
+    // PR #280 — Shadow user-pipeline : capte chaque décision (accept / reject_*)
+    // pour mesurer le regret cost via /lisa/gainers-shadow-regret. Fire-and-forget.
+    const recordShadowDecision = (
+      candInner: typeof coverageValidTop[number],
+      decision: ShadowDecision,
+      pers: PersistenceWithPath | undefined,
+    ) => {
+      void this.userShadow.recordDecision({
+        portfolioId,
+        symbol: candInner.symbol,
+        assetClass: String(candInner.assetClass),
+        isAsia: candInner.assetClass === 'asia_equity',
+        changePct1m: candInner.changePct,
+        score: pers?.persistenceScore ?? null,
+        pathEff: pers?.pathQuality?.overallEfficiency ?? null,
+        persistenceScore: pers?.persistenceScore ?? null,
+        persistenceCount: pers?.persistenceCount ?? null,
+        entryPrice: candInner.close,
+        notionalUsd: positionNotionalUsd,
+        decision,
+        cfg: {
+          minPathEff: minPathEff,
+          minPersistence: minScore,
+          asiaBoost: asiaStrictnessBoost,
+          tpPct,
+          slPct,
+        },
+      }).catch(() => { /* swallow — non-bloquant */ });
+    };
+
     for (const cand of coverageValidTop) {
       if (opened >= maxThisCycle) break;
       const baseSym = cand.symbol.replace(/USDT$|USDC$/, '').toUpperCase();
@@ -1764,6 +1809,7 @@ export class TopGainersScannerService implements OnModuleInit {
         this.logger.log(
           `[top-gainers] ${cand.symbol} cooldown actif (fermé il y a ${elapsedMin} min < ${cooldownMinutes} min) → skip re-entry`,
         );
+        recordShadowDecision(cand, 'reject_cooldown', undefined);
         continue;
       }
 
@@ -1777,6 +1823,7 @@ export class TopGainersScannerService implements OnModuleInit {
           this.logger.log(
             `[top-gainers] ${cand.symbol} POST_SL_COOLDOWN actif (SL il y a ${elapsedMin} min < ${postSlCooldownMin} min) → skip`,
           );
+          recordShadowDecision(cand, 'reject_post_sl_cooldown', undefined);
           continue;
         }
       }
@@ -1788,6 +1835,7 @@ export class TopGainersScannerService implements OnModuleInit {
           this.logger.log(
             `[top-gainers] ${cand.symbol} no TF data → skip (gate persistence)`,
           );
+          recordShadowDecision(cand, 'reject_no_tf_data', persistence);
           continue;
         }
 
@@ -1896,6 +1944,7 @@ export class TopGainersScannerService implements OnModuleInit {
           this.logger.log(
             `[top-gainers] ${cand.symbol} ${persistence.persistenceCount} (${persistence.positiveCount}/${persistence.availableCount} TFs) < min=${minPositive}/${persistence.availableCount}${isAsia ? ' [asia +' + asiaStrictnessBoost.toFixed(2) + ']' : ''} → skip`,
           );
+          recordShadowDecision(cand, 'reject_persistence', persistence);
           continue;
         }
         // P9-UX ADDENDUM — Path quality gate (skip pump-and-dump qui passent persistence)
@@ -1908,11 +1957,13 @@ export class TopGainersScannerService implements OnModuleInit {
           this.logger.log(
             `[top-gainers] ${cand.symbol} pathEff=${persistence.pathQuality.overallEfficiency.toFixed(2)} (${persistence.pathQuality.overallSmoothness}) < min=${effectiveMinPathEff.toFixed(2)}${isAsia ? ' [asia +' + asiaStrictnessBoost.toFixed(2) + ']' : ''} → skip`,
           );
+          recordShadowDecision(cand, 'reject_path_eff', persistence);
           continue;
         }
         this.logger.log(
           `[top-gainers] ${cand.symbol} persistence=${persistence.persistenceCount} score=${persistence.persistenceScore.toFixed(2)} pathEff=${persistence.pathQuality?.overallEfficiency?.toFixed(2) ?? 'n/a'} (${persistence.pathQuality?.overallSmoothness ?? 'n/a'}) → OPEN`,
         );
+        recordShadowDecision(cand, 'accept', persistence);
       } else {
         // P18e — Skip silencieux ; aggregé dans le log de fin de cycle.
         // Si la donnée TF est indispo (provider down) on n'ouvre pas — gate
