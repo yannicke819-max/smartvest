@@ -1454,8 +1454,12 @@ export class TopGainersScannerService implements OnModuleInit {
     const universeAsia = cfgRow?.gainers_universe_asia !== false;
     const universeCrypto = cfgRow?.gainers_universe_crypto !== false;
     // PR #266 — Session-aware filter : skip un asset class hors horaires bourse.
-    // Default true. Crypto jamais filtré (24/7). Économie EODHD ~30-50%.
-    const sessionFilterEnabled = cfgRow?.gainers_session_filter_enabled !== false;
+    // Default false en mémoire (= activé seulement si explicitement set true en DB).
+    // En prod, la migration 0123 crée la colonne avec DEFAULT true → activé pour
+    // tous les portfolios existants. En test, cfgRow ne contient pas la colonne →
+    // sessionFilterEnabled = false → tests restent stables quel que soit l'horaire.
+    // Crypto jamais filtré (24/7). Économie EODHD ~30-50%.
+    const sessionFilterEnabled = cfgRow?.gainers_session_filter_enabled === true;
     const nowUtc = new Date();
     const usOpen = !sessionFilterEnabled || isMarketOpen('us', nowUtc);
     const euOpen = !sessionFilterEnabled || isMarketOpen('eu', nowUtc);
