@@ -4,7 +4,7 @@ import type {
 } from '@smartvest/domain';
 import { PROVIDER_CAPABILITIES } from '@smartvest/domain';
 import {
-  IBrokerAdapter, NotSupportedError, AdapterStubError,
+  IBrokerAdapter, AdapterStubError,
   PlaceOrderDraft, PlaceOrderResult, TestConnectionResult,
   CancelOrderResult, BrokerOrderState, BrokerFill, BrokerAccountBalance,
 } from './broker-adapter.interface';
@@ -94,18 +94,109 @@ export class InteractiveBrokersAdapter implements IBrokerAdapter {
     }
   }
 
-  // ── Phase B.2 stubs (read methods — needed for sync) ──────────────────
+  // ── Phase B.2 — read methods (positions / cash / transactions) ────────
 
   async fetchPositions(): Promise<SyncedPosition[]> {
-    throw new AdapterStubError('INTERACTIVE_BROKERS', 'fetchPositions activé en Phase B.2');
+    if (!this.client) {
+      throw new AdapterStubError('INTERACTIVE_BROKERS', 'connect() requis avant fetchPositions');
+    }
+    const acctId = this.client.getAccountId();
+    const raw = await this.client.getPositions(acctId);
+    return raw
+      .filter((p) => p.position !== 0) // skip closed positions
+      .map((p) => {
+        const synced: SyncedPosition = {
+          accountIdExternal: acctId,
+          // SmartVest format: TICKER (sans suffix EODHD pour cohérence avec
+          // le reste du code qui utilise IbkrConid via le mapper inverse)
+          instrumentRef: p.ticker ?? p.contractDesc,
+          quantity: String(p.position),
+          avgCost: p.avgCost != null ? String(p.avgCost) : null,
+          currency: p.currency,
+          meta: {
+            conid: p.conid,
+            asset_class: p.assetClass,
+            mkt_value: p.mktValue ?? null,
+            mkt_price: p.mktPrice ?? null,
+            unrealized_pnl: p.unrealizedPnl ?? null,
+            realized_pnl: p.realizedPnl ?? null,
+          },
+        };
+        return synced;
+      });
   }
 
   async fetchCash(): Promise<SyncedCashBalance[]> {
-    throw new AdapterStubError('INTERACTIVE_BROKERS', 'fetchCash activé en Phase B.2');
+    if (!this.client) {
+      throw new AdapterStubError('INTERACTIVE_BROKERS', 'connect() requis avant fetchCash');
+    }
+    const acctId = this.client.getAccountId();
+    const ledger = await this.client.getLedger(acctId);
+    const out: SyncedCashBalance[] = [];
+    for (const [currency, entry] of Object.entries(ledger)) {
+      // IBKR retourne aussi un "BASE" key qui est l'agrégat — on le skip
+      // pour ne pas dédupliquer (la consommation aval re-aggrège via FX)
+      if (currency === 'BASE') continue;
+      if (entry.cashbalance === 0) continue;
+      out.push({
+        accountIdExternal: acctId,
+        currency: entry.currency || currency,
+        amount: String(entry.cashbalance),
+      });
+    }
+    return out;
   }
 
-  async fetchTransactions(_since?: Date): Promise<SyncedTransaction[]> {
-    throw new AdapterStubError('INTERACTIVE_BROKERS', 'fetchTransactions activé en Phase B.2');
+  async fetchTransactions(since?: Date): Promise<SyncedTransaction[]> {
+    if (!this.client) {
+      throw new AdapterStubError('INTERACTIVE_BROKERS', 'connect() requis avant fetchTransactions');
+    }
+    const acctId = this.client.getAccountId();
+    const raw = await this.client.getTrades();
+    const sinceMs = since ? since.getTime() : 0;
+
+    return raw
+      .filter((t) => {
+        // Filter par date si since fourni
+        if (sinceMs === 0) return true;
+        const tradeMs = t.trade_time_r ?? new Date(t.trade_time).getTime();
+        return Number.isFinite(tradeMs) && tradeMs >= sinceMs;
+      })
+      .map((t): SyncedTransaction => {
+        // IBKR side : 'B' / 'S' / 'BUY' / 'SELL' selon endpoint
+        const sideRaw = String(t.side).toUpperCase();
+        const side: SyncedTransaction['side'] =
+          sideRaw === 'B' || sideRaw === 'BUY' ? 'buy'
+          : sideRaw === 'S' || sideRaw === 'SELL' ? 'sell'
+          : 'other';
+
+        const tradeIso = t.trade_time_r
+          ? new Date(t.trade_time_r).toISOString()
+          : new Date(t.trade_time).toISOString();
+
+        const totalAmount = t.net_amount != null
+          ? String(t.net_amount)
+          : String(Math.abs(t.size) * t.price);
+
+        return {
+          accountIdExternal: t.account ?? acctId,
+          externalId: t.execution_id,
+          tradeDate: tradeIso,
+          side,
+          instrumentRef: t.symbol,
+          quantity: String(Math.abs(t.size)),
+          unitPrice: String(t.price),
+          totalAmount,
+          currency: t.currency ?? 'USD',
+          meta: {
+            conid: t.conid,
+            order_id: t.order_id ?? null,
+            commission: t.commission ?? null,
+            commission_currency: t.commission_currency ?? null,
+            asset_class: t.asset_class ?? null,
+          },
+        };
+      });
   }
 
   // ── Phase B.1 — live execution methods ────────────────────────────────
@@ -210,10 +301,29 @@ export class InteractiveBrokersAdapter implements IBrokerAdapter {
     };
   }
 
-  async getFills(_externalOrderId: string): Promise<BrokerFill[]> {
-    throw new NotSupportedError(
-      'IBKR getFills activé en Phase B.3 (executions endpoint + WebSocket).',
-    );
+  async getFills(externalOrderId: string): Promise<BrokerFill[]> {
+    if (!this.client) {
+      throw new Error('IBKRAdapter: call connect() before getFills()');
+    }
+    const trades = await this.client.getFillsByOrderId(externalOrderId);
+    return trades.map((t): BrokerFill => {
+      const sideRaw = String(t.side).toUpperCase();
+      const side: 'buy' | 'sell' = sideRaw === 'B' || sideRaw === 'BUY' ? 'buy' : 'sell';
+      const filledAt = t.trade_time_r
+        ? new Date(t.trade_time_r)
+        : new Date(t.trade_time);
+      return {
+        externalOrderId,
+        externalFillId: t.execution_id,
+        symbol: t.symbol,
+        side,
+        quantity: String(Math.abs(t.size)),
+        price: String(t.price),
+        commissionUsd: t.commission != null ? String(t.commission) : '0',
+        filledAt,
+        rawResponse: t,
+      };
+    });
   }
 
   async getAccountBalance(accountIdExternal: string): Promise<BrokerAccountBalance> {

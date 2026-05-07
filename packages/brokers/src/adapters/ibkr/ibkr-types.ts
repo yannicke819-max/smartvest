@@ -130,6 +130,83 @@ export interface IbkrAccountSummary {
 }
 
 /**
+ * Phase B.2 — Position individuelle retournée par /portfolio/{id}/positions/0.
+ * Plus de champs disponibles côté IBKR mais on ne mappe que ceux utilisés.
+ */
+export interface IbkrPositionRaw {
+  acctId: string;
+  conid: number;
+  contractDesc: string;
+  ticker?: string;
+  /** Position size (peut être négative pour short) */
+  position: number;
+  /** Average cost */
+  avgCost: number;
+  /** Currency */
+  currency: string;
+  /** Asset class : STK, OPT, FUT, FOP, BOND, CASH, etc. */
+  assetClass: string;
+  /** Market value */
+  mktValue?: number;
+  mktPrice?: number;
+  /** Unrealized PnL */
+  unrealizedPnl?: number;
+  realizedPnl?: number;
+  /** Optional: latest trade price */
+  lastTradeDate?: string;
+}
+
+/**
+ * Phase B.2 — Ledger entry per currency.
+ * GET /portfolio/{accountId}/ledger retourne un objet keyed by currency code.
+ */
+export interface IbkrLedgerEntry {
+  /** Cash balance dans cette devise */
+  cashbalance: number;
+  /** Currency code (ex: USD, EUR, JPY) */
+  currency: string;
+  /** Net liquidation value en cette devise */
+  netliquidationvalue?: number;
+  /** Stock market value */
+  stockmarketvalue?: number;
+  /** Settled cash */
+  settledcash?: number;
+  timestamp?: number;
+}
+
+/**
+ * Phase B.2 — Trade individuel retourné par /iserver/account/trades.
+ * Ces sont des fills exécutés (différents des orders).
+ */
+export interface IbkrTradeRaw {
+  execution_id: string;
+  order_ref?: string;
+  /** Order ID parent */
+  order_id?: number;
+  symbol: string;
+  conid: number;
+  side: 'B' | 'S' | 'BUY' | 'SELL';
+  /** Quantity exécutée (signed: + buy, - sell) */
+  size: number;
+  price: number;
+  /** Trade time ISO 8601 */
+  trade_time: string;
+  trade_time_r?: number;  // unix ms
+  /** Currency */
+  currency?: string;
+  /** Commission charged on this fill */
+  commission?: number;
+  /** Commission currency (USD, EUR, etc.) */
+  commission_currency?: string;
+  /** Account this trade belongs to */
+  account?: string;
+  /** Asset class */
+  asset_class?: string;
+  /** Net amount (qty × price ± fees) */
+  net_amount?: number;
+}
+
+/**
  * Map IBKR raw status → SmartVest BrokerOrderStatus union.
  */
 export function mapIbkrStatusToBrokerStatus(

@@ -51,10 +51,12 @@ describe('InteractiveBrokersAdapter (stub)', () => {
       a.connect({ provider: 'INTERACTIVE_BROKERS', accountId: 'U1234567', sessionToken: 'tok' }),
     ).resolves.toBeUndefined();
   });
-  it('live fetches throw AdapterStubError', async () => {
-    await expect(a.fetchPositions()).rejects.toThrow(AdapterStubError);
-    await expect(a.fetchCash()).rejects.toThrow(AdapterStubError);
-    await expect(a.fetchTransactions()).rejects.toThrow(AdapterStubError);
+  it('live fetches throw AdapterStubError when not connected', async () => {
+    // Adapter SANS connect → client null → AdapterStubError attendu
+    const fresh = new InteractiveBrokersAdapter(false);
+    await expect(fresh.fetchPositions()).rejects.toThrow(AdapterStubError);
+    await expect(fresh.fetchCash()).rejects.toThrow(AdapterStubError);
+    await expect(fresh.fetchTransactions()).rejects.toThrow(AdapterStubError);
   });
   it('placeOrder returns unsupported when executionEnabled=false (Phase B.1)', async () => {
     const r = await a.placeOrder({
