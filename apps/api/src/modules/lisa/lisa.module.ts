@@ -46,6 +46,7 @@ import { ReboundMonitorService } from './services/rebound-monitor.service';
 import { ReboundScannerService } from './services/rebound-scanner.service';
 import { OhlcvCacheService } from './services/ohlcv-cache.service';
 import { TopGainersScannerService } from './services/top-gainers-scanner.service';
+import { GainersUserShadowService } from './services/gainers-user-shadow.service';
 import { ShadowExitSimulatorService } from './services/shadow-exit-simulator.service';
 import { OperatingModeService } from './services/operating-mode.service';
 import { MultiTimeframePersistenceService } from './services/multi-tf-persistence.service';
@@ -111,6 +112,8 @@ import { SignalForwardTrackerService } from '../gainers-scanner/automations/sign
     OhlcvCacheService,
     // P5-PIVOT-TOP-GAINERS — scanner momentum cross-asset (gated par STRATEGY_MODE=top_gainers)
     TopGainersScannerService,
+    // PR #280 — Shadow user-pipeline (regret cost via /lisa/gainers-shadow-regret)
+    GainersUserShadowService,
     // PR6.5 — Worker exit-simulator : replay BLOC 4 state machine sur shadow signals ACCEPT
     ShadowExitSimulatorService,
     // P7-MODE-GAINERS-BADGE — toggle 3-modes opératoires (UI badge → DB strategy_mode)

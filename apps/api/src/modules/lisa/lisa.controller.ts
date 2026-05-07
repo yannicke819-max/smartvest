@@ -18,6 +18,7 @@ import {
 } from './services/operating-mode.service';
 import { TopGainersScannerService } from './services/top-gainers-scanner.service';
 import { TradingStatsService } from './services/trading-stats.service';
+import { GainersUserShadowService } from './services/gainers-user-shadow.service';
 import { MultiTimeframePersistenceService } from './services/multi-tf-persistence.service';
 import { PersistenceProbabilityService } from './services/persistence-probability.service';
 import { EodhdQuotaService } from './services/eodhd-quota.service';
@@ -44,6 +45,7 @@ export class LisaController {
     private readonly persistenceProbability: PersistenceProbabilityService,
     private readonly quotaService: EodhdQuotaService,
     private readonly tradingStats: TradingStatsService,
+    private readonly gainersUserShadow: GainersUserShadowService,
   ) {}
 
   // ─────────────────────────────────────────────────────────────────
@@ -798,6 +800,29 @@ export class LisaController {
       1, 365, 30,
     );
     return this.persistenceProbability.trainAndPersist({ lookbackDays });
+  }
+
+  /**
+   * PR #280 — Regret cost summary par gate × grille TP/SL.
+   *
+   * Aggrège les rows `gainers_user_shadow_signals` par decision (accept,
+   * reject_path_eff, reject_persistence, reject_cooldown, ...) × grille
+   * (baseline_30m, baseline_60m, alt15_30m, alt15_60m), calcule bootstrap
+   * CI 95% sur sim_pnl_pct, et donne un verdict GATE_TOO_STRICT /
+   * GATE_HEALTHY / INCONCLUSIVE / INSUFFICIENT_DATA (n < 100).
+   *
+   * cumulative_regret_usd : positif = on rate de l'argent en moyenne sur
+   * ce gate ; négatif = le gate sauve de l'argent sur ces rejets.
+   */
+  @Get('gainers-shadow-regret/:portfolioId')
+  async getGainersShadowRegret(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+    @Query('days') daysRaw?: string,
+  ) {
+    extractUserId(headers);
+    const days = Math.max(1, Math.min(30, Number(daysRaw) || 7));
+    return this.gainersUserShadow.getRegretSummary(portfolioId, days);
   }
 
   /**
