@@ -17,21 +17,20 @@ import { useQuery } from '@tanstack/react-query';
 import { ShieldAlert, ShieldCheck, AlertTriangle, Power, Pause } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
 
-interface LiveTradingStatus {
-  flags: {
-    BROKER_EXECUTION_ENABLED: boolean;
-    DELEGATION_AUTONOMOUS_GUARDED: boolean;
-    AUTONOMY_KILL_SWITCH: boolean;
-    BROKER_RECONCILIATION_ENABLED: boolean;
-    BROKER_ADAPTER_IB_ENABLED: boolean;
-    BROKER_ADAPTER_BINANCE_ENABLED: boolean;
-  };
+interface LiveTradingFlags {
+  BROKER_EXECUTION_ENABLED: boolean;
+  DELEGATION_AUTONOMOUS_GUARDED: boolean;
+  AUTONOMY_KILL_SWITCH: boolean;
+  BROKER_RECONCILIATION_ENABLED: boolean;
+  BROKER_ADAPTER_IB_ENABLED: boolean;
+  BROKER_ADAPTER_BINANCE_ENABLED: boolean;
+  [key: string]: boolean;
 }
 
 function useLiveTradingStatus() {
   return useQuery({
     queryKey: ['live-trading-status'],
-    queryFn: () => apiFetch<LiveTradingStatus>('/feature-flags'),
+    queryFn: () => apiFetch<LiveTradingFlags>('/feature-flags'),
     refetchInterval: 30_000,
     refetchIntervalInBackground: false,
   });
@@ -44,7 +43,7 @@ export function LiveTradingStatusPanel() {
     return null; // Pas d'affichage pendant le load (évite flicker)
   }
 
-  const flags = data.flags;
+  const flags = data;
   const liveActive = flags.BROKER_EXECUTION_ENABLED && flags.DELEGATION_AUTONOMOUS_GUARDED;
   const killSwitch = flags.AUTONOMY_KILL_SWITCH;
 
