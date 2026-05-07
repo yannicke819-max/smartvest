@@ -302,11 +302,62 @@ export function GainersConfigPanel({ portfolioId }: Props) {
         </Field>
       </section>
 
-      {/* PR #262 — Capital Rotation tempo */}
+      {/* PR #262 / #276 — Capital Rotation */}
       <section className="space-y-3">
         <div className="text-xs uppercase tracking-wider text-foreground font-semibold">
-          3 bis. Capital rotation (toggle env GAINERS_CAPITAL_ROTATION_ENABLED)
+          3 bis. Capital rotation
         </div>
+
+        {/* PR #276 — Toggle DB Capital Rotation */}
+        <Toggle
+          label="Activer Capital Rotation"
+          hint="Quand capital saturé, ferme la position la plus stagnante pour libérer un slot et ouvrir un candidat A+. Default OFF (= utilise env Fly)."
+          checked={cfg.gainers_capital_rotation_enabled === true}
+          onChange={(v) => set('gainers_capital_rotation_enabled', v)}
+        />
+
+        {/* PR #276 — Toggle High-grading mode */}
+        <Toggle
+          label="High-grading mode (rotation sans saturation)"
+          hint="Permet la rotation MÊME si tu n'es pas saturé. Maximise la qualité du portfolio mais augmente le churn (fees). Default OFF."
+          checked={cfg.gainers_high_grading_enabled === true}
+          onChange={(v) => set('gainers_high_grading_enabled', v)}
+        />
+
+        {/* PR #276 — Min score rotation configurable */}
+        <Field
+          label="Min score candidat A+ (rotation)"
+          hint="[0.5..1.0] — seuil score minimum du nouveau candidat pour autoriser une rotation. Default 0.85 (était 0.95 hardcoded). Plus bas = plus de rotations, plus haut = uniquement setups exceptionnels."
+        >
+          <input
+            type="number"
+            min={0.5}
+            max={1.0}
+            step={0.05}
+            value={num(cfg.gainers_rotation_min_score, 0.85)}
+            onChange={(e) => set('gainers_rotation_min_score', Number(e.target.value))}
+            className="input"
+          />
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {[0.65, 0.75, 0.85, 0.95].map((preset) => {
+              const isActive = num(cfg.gainers_rotation_min_score, 0.85) === preset;
+              return (
+                <button
+                  key={preset}
+                  type="button"
+                  onClick={() => set('gainers_rotation_min_score', preset)}
+                  className={
+                    isActive
+                      ? 'rounded-md border border-orange-500 bg-orange-500/10 px-2 py-0.5 text-xs font-medium text-orange-500'
+                      : 'rounded-md border border-input bg-background px-2 py-0.5 text-xs text-muted-foreground hover:border-foreground hover:text-foreground'
+                  }
+                >
+                  {preset.toFixed(2)}
+                </button>
+              );
+            })}
+          </div>
+        </Field>
         <Field
           label="Délai stagnante avant rotation (min)"
           hint="[3..480] — durée minimale d'une position dans la dead zone (±0.3% pnl) avant qu'elle soit candidate à rotation. Default 90 min. Plus bas = plus réactif (whipsaw risk), plus haut = plus patient. Les seuils 3/5/10 sont pour scalping ultra-rapide."

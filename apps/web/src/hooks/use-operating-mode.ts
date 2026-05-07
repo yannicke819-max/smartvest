@@ -419,6 +419,10 @@ export interface GainersConfigFields {
   gainers_rotation_stagnant_min_age_min: number | null;
   // PR #269 — Rotation pathEff gate configurable (migration 0125)
   gainers_rotation_min_path_efficiency: number | null;
+  // PR #276 — DB-backed toggles rotation + high-grading + min score (migration 0131)
+  gainers_capital_rotation_enabled: boolean | null;
+  gainers_high_grading_enabled: boolean | null;
+  gainers_rotation_min_score: number | null;
   // PR #270/#271 — Post-SL cooldown + Asia strictness boost (migrations 0126/0127)
   gainers_post_sl_cooldown_min: number | null;
   gainers_asia_strictness_boost: number | null;
@@ -465,6 +469,9 @@ export function useGainersConfig(portfolioId: string | null) {
         gainers_min_p_win: numOrNull(raw?.gainers_min_p_win),
         gainers_rotation_stagnant_min_age_min: numOrNull(raw?.gainers_rotation_stagnant_min_age_min),
         gainers_rotation_min_path_efficiency: numOrNull(raw?.gainers_rotation_min_path_efficiency),
+        gainers_capital_rotation_enabled: boolOrNull(raw?.gainers_capital_rotation_enabled),
+        gainers_high_grading_enabled: boolOrNull(raw?.gainers_high_grading_enabled),
+        gainers_rotation_min_score: numOrNull(raw?.gainers_rotation_min_score),
         gainers_post_sl_cooldown_min: numOrNull(raw?.gainers_post_sl_cooldown_min),
         gainers_asia_strictness_boost: numOrNull(raw?.gainers_asia_strictness_boost),
         gainers_session_filter_enabled: boolOrNull(raw?.gainers_session_filter_enabled),

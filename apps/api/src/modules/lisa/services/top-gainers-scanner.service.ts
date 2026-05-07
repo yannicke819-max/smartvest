@@ -1377,7 +1377,7 @@ export class TopGainersScannerService implements OnModuleInit {
     const { data: cfgRow } = await this.supabase
       .getClient()
       .from('lisa_session_configs')
-      .select('capital_usd, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes, gainers_universe_us, gainers_universe_eu, gainers_universe_asia, gainers_universe_crypto, gainers_p_win_gate_enabled, gainers_min_p_win, gainers_rotation_stagnant_min_age_min, gainers_rotation_min_path_efficiency, gainers_session_filter_enabled, gainers_force_close_before_close_enabled, gainers_force_close_offset_min, gainers_post_sl_cooldown_min, gainers_asia_strictness_boost')
+      .select('capital_usd, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes, gainers_universe_us, gainers_universe_eu, gainers_universe_asia, gainers_universe_crypto, gainers_p_win_gate_enabled, gainers_min_p_win, gainers_rotation_stagnant_min_age_min, gainers_rotation_min_path_efficiency, gainers_session_filter_enabled, gainers_force_close_before_close_enabled, gainers_force_close_offset_min, gainers_post_sl_cooldown_min, gainers_asia_strictness_boost, gainers_capital_rotation_enabled, gainers_high_grading_enabled, gainers_rotation_min_score')
       .eq('portfolio_id', portfolioId)
       .maybeSingle();
     const minScore = this.resolveMinPersistenceScore(
@@ -1573,7 +1573,17 @@ export class TopGainersScannerService implements OnModuleInit {
     // PR #261 — Si slots saturés ET capital rotation enabled, on ne sort pas
     // immédiatement : on continue pour évaluer si un setup A+ peut justifier
     // de fermer une position stagnante. Sinon early-return classique.
-    const rotationEnabled = (process.env.GAINERS_CAPITAL_ROTATION_ENABLED ?? 'false').toLowerCase() === 'true';
+    // PR #276 — Lecture toggle DB d'abord (UI), fallback env (back-compat).
+    // DB true/false override env. DB null → fallback env.
+    const dbRotation = cfgRow?.gainers_capital_rotation_enabled;
+    const envRotation = (process.env.GAINERS_CAPITAL_ROTATION_ENABLED ?? 'false').toLowerCase() === 'true';
+    const rotationEnabled = dbRotation === true ? true : dbRotation === false ? false : envRotation;
+    const dbHighGrading = cfgRow?.gainers_high_grading_enabled;
+    const envHighGrading = (process.env.GAINERS_HIGH_GRADING_ENABLED ?? 'false').toLowerCase() === 'true';
+    const highGradingEnabledCfg = dbHighGrading === true ? true : dbHighGrading === false ? false : envHighGrading;
+    const rotationMinScore = cfgRow?.gainers_rotation_min_score != null
+      ? Math.max(0.5, Math.min(1.0, Number(cfgRow.gainers_rotation_min_score)))
+      : 0.85;
     if (slotsAvailable === 0 && !rotationEnabled) {
       this.logger.log(`[top-gainers] ${portfolioId.slice(0, 8)}: no slots (${openPositions?.length}/${maxOpen} open)`);
       return;
@@ -2004,14 +2014,13 @@ export class TopGainersScannerService implements OnModuleInit {
       // setups frais. Frais doublés (1 close + 1 open en plus) — d'où le EV
       // gate strict.
       let rotated = false;
-      const highGradingEnabled = (process.env.GAINERS_HIGH_GRADING_ENABLED ?? 'false').toLowerCase() === 'true';
-      const shouldTryRotation = rotationEnabled && opened === 0 && (slotsAvailable === 0 || highGradingEnabled);
+      const shouldTryRotation = rotationEnabled && opened === 0 && (slotsAvailable === 0 || highGradingEnabledCfg);
       if (shouldTryRotation) {
         const rotation = await this.tryCapitalRotation(
           portfolioId,
           cand,
           persistence,
-          { tpPct, slPct, positionNotionalUsd, rotationStagnantMinAgeMin, rotationMinPathEfficiency },
+          { tpPct, slPct, positionNotionalUsd, rotationStagnantMinAgeMin, rotationMinPathEfficiency, rotationMinScore },
         );
         if (rotation.rotated) {
           rotated = true;
@@ -2102,13 +2111,17 @@ export class TopGainersScannerService implements OnModuleInit {
       positionNotionalUsd: number;
       rotationStagnantMinAgeMin?: number;
       rotationMinPathEfficiency?: number | null;
+      rotationMinScore?: number;
     },
   ): Promise<{ rotated: boolean; closedPositionId?: string }> {
-    const enabled = (process.env.GAINERS_CAPITAL_ROTATION_ENABLED ?? 'false').toLowerCase() === 'true';
-    if (!enabled) return { rotated: false };
+    // PR #276 — gate `enabled` est désormais checké en amont par le caller
+    // (qui combine DB + env override). Ici on accepte le call si on a été
+    // invoqué — la responsabilité d'enabled est en amont.
 
-    // Gates A+ stricts pour ne rotation que sur SETUPS exceptionnels
-    if (candidate.score < 0.95) return { rotated: false };
+    // Gates A+ stricts pour ne rotation que sur SETUPS exceptionnels.
+    // PR #276 — score min configurable via UI (default 0.85, was 0.95 hardcoded).
+    const minScore = overrides.rotationMinScore ?? 0.85;
+    if (candidate.score < minScore) return { rotated: false };
     if (!persistence || persistence.persistenceScore < 5/6) return { rotated: false };
     const pathEff = persistence.pathQuality?.overallEfficiency ?? null;
     // PR #269 — seuil pathEff rotation configurable. null/undefined → désactive le gate.
