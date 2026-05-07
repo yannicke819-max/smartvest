@@ -305,6 +305,8 @@ export class LisaService {
       gainers_min_p_win: pick('gainers_min_p_win', 'gainersMinPWin', existing?.gainers_min_p_win ?? 0.50),
       // PR #262 — Capital rotation : seuil "stagnante" (15-480 min, default 90)
       gainers_rotation_stagnant_min_age_min: pick('gainers_rotation_stagnant_min_age_min', 'gainersRotationStagnantMinAgeMin', existing?.gainers_rotation_stagnant_min_age_min ?? 90),
+      // PR #269 — Capital rotation : seuil pathEff candidat A+ (0..1 ou null pour désactiver, default 0.5)
+      gainers_rotation_min_path_efficiency: pick('gainers_rotation_min_path_efficiency', 'gainersRotationMinPathEfficiency', existing?.gainers_rotation_min_path_efficiency ?? 0.5),
       // PR #243 — Adaptive Selectivity toggle (migration 0119). Opt-in default false.
       gainers_adaptive_enabled: pick('gainers_adaptive_enabled', 'gainersAdaptiveEnabled', existing?.gainers_adaptive_enabled ?? false),
       // PR #266 — Session-aware filter + force-close before close (migration 0123).
@@ -382,6 +384,10 @@ export class LisaService {
     validateInt('gainers_force_close_offset_min', merged.gainers_force_close_offset_min, 5, 120);
     // PR #268 — rotation stagnant min age 3..480 min (relâché de 15..480)
     validateInt('gainers_rotation_stagnant_min_age_min', merged.gainers_rotation_stagnant_min_age_min, 3, 480);
+    // PR #269 — rotation min path efficiency 0..1 (null désactive le gate)
+    if (merged.gainers_rotation_min_path_efficiency != null) {
+      validateNum('gainers_rotation_min_path_efficiency', merged.gainers_rotation_min_path_efficiency, 0, 1);
+    }
     // Cohérence : positionPct × maxOpen + cashReserve ne doit pas dépasser 100%
     // (sinon impossible de tenir le cash buffer en pratique). Warning soft, pas hard fail.
     const totalAllocPct =
@@ -568,6 +574,20 @@ export class LisaService {
         ...mergedFallback
       } = merged;
       void _sfe; void _fcbce; void _fcom;
+      const retry = await this.supabase.getClient()
+        .from('lisa_session_configs')
+        .upsert(mergedFallback, { onConflict: 'portfolio_id' })
+        .select()
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
+
+    // PR #269 — fallback si migration 0125 pas encore appliquée (rotation_min_path_efficiency)
+    if (error && /gainers_rotation_min_path_efficiency/i.test(error.message)) {
+      this.logger.warn('Colonne gainers_rotation_min_path_efficiency (migration 0125) absente — retry sans ce champ');
+      const { gainers_rotation_min_path_efficiency: _rmpe, ...mergedFallback } = merged;
+      void _rmpe;
       const retry = await this.supabase.getClient()
         .from('lisa_session_configs')
         .upsert(mergedFallback, { onConflict: 'portfolio_id' })

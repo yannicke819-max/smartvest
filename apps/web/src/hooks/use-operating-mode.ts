@@ -352,6 +352,8 @@ export interface GainersConfigFields {
   gainers_p_win_gate_enabled: boolean | null;
   gainers_min_p_win: number | null;
   gainers_rotation_stagnant_min_age_min: number | null;
+  // PR #269 — Rotation pathEff gate configurable (migration 0125)
+  gainers_rotation_min_path_efficiency: number | null;
   // PR #266 — Session-aware filter + force-close before close (migration 0123)
   gainers_session_filter_enabled: boolean | null;
   gainers_force_close_before_close_enabled: boolean | null;
@@ -394,6 +396,7 @@ export function useGainersConfig(portfolioId: string | null) {
         gainers_p_win_gate_enabled: boolOrNull(raw?.gainers_p_win_gate_enabled),
         gainers_min_p_win: numOrNull(raw?.gainers_min_p_win),
         gainers_rotation_stagnant_min_age_min: numOrNull(raw?.gainers_rotation_stagnant_min_age_min),
+        gainers_rotation_min_path_efficiency: numOrNull(raw?.gainers_rotation_min_path_efficiency),
         gainers_session_filter_enabled: boolOrNull(raw?.gainers_session_filter_enabled),
         gainers_force_close_before_close_enabled: boolOrNull(raw?.gainers_force_close_before_close_enabled),
         gainers_force_close_offset_min: numOrNull(raw?.gainers_force_close_offset_min),

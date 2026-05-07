@@ -340,6 +340,41 @@ export function GainersConfigPanel({ portfolioId }: Props) {
             })}
           </div>
         </Field>
+
+        {/* PR #269 — pathEff rotation gate configurable */}
+        <Field
+          label="Min path efficiency du candidat A+ (rotation)"
+          hint="[0..1] — qualité minimum du path du candidat pour autoriser la rotation. Distinct du Min path eff global (s'applique aux opens). Default 0.5 (strict). Baisse à 0.4 pour autoriser plus de rotations en mode Asia choppy. Mets 0 pour désactiver le gate."
+        >
+          <input
+            type="number"
+            min={0}
+            max={1}
+            step={0.05}
+            value={num(cfg.gainers_rotation_min_path_efficiency, 0.5)}
+            onChange={(e) => set('gainers_rotation_min_path_efficiency', Number(e.target.value))}
+            className="input"
+          />
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {[0, 0.3, 0.4, 0.5, 0.6, 0.7].map((preset) => {
+              const isActive = num(cfg.gainers_rotation_min_path_efficiency, 0.5) === preset;
+              return (
+                <button
+                  key={preset}
+                  type="button"
+                  onClick={() => set('gainers_rotation_min_path_efficiency', preset)}
+                  className={
+                    isActive
+                      ? 'rounded-md border border-orange-500 bg-orange-500/10 px-2 py-0.5 text-xs font-medium text-orange-500'
+                      : 'rounded-md border border-input bg-background px-2 py-0.5 text-xs text-muted-foreground hover:border-foreground hover:text-foreground'
+                  }
+                >
+                  {preset === 0 ? 'OFF' : preset.toFixed(2)}
+                </button>
+              );
+            })}
+          </div>
+        </Field>
       </section>
 
       {/* 4. Univers */}
