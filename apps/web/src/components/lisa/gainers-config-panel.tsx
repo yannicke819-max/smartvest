@@ -375,6 +375,76 @@ export function GainersConfigPanel({ portfolioId }: Props) {
             })}
           </div>
         </Field>
+
+        {/* PR #270 — Post-SL cooldown par symbole */}
+        <Field
+          label="Cooldown après SL hit (min)"
+          hint="[0..1440] — ban additionnel d'un symbole après un closed_stop. Évite le pattern SL → mini-rebond → re-open → SL again sur les downtrends. Distinct du cooldown global (qui s'applique à tout outcome TP/SL). Default 60 min. Mets OFF pour désactiver."
+        >
+          <input
+            type="number"
+            min={0}
+            max={1440}
+            step={5}
+            value={num(cfg.gainers_post_sl_cooldown_min, 60)}
+            onChange={(e) => set('gainers_post_sl_cooldown_min', Number(e.target.value))}
+            className="input"
+          />
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {[0, 15, 30, 60, 120, 240].map((preset) => {
+              const isActive = num(cfg.gainers_post_sl_cooldown_min, 60) === preset;
+              return (
+                <button
+                  key={preset}
+                  type="button"
+                  onClick={() => set('gainers_post_sl_cooldown_min', preset)}
+                  className={
+                    isActive
+                      ? 'rounded-md border border-orange-500 bg-orange-500/10 px-2 py-0.5 text-xs font-medium text-orange-500'
+                      : 'rounded-md border border-input bg-background px-2 py-0.5 text-xs text-muted-foreground hover:border-foreground hover:text-foreground'
+                  }
+                >
+                  {preset === 0 ? 'OFF' : `${preset} min`}
+                </button>
+              );
+            })}
+          </div>
+        </Field>
+
+        {/* PR #271 — Asia strictness boost */}
+        <Field
+          label="Boost strictness Asia (path + persistence)"
+          hint="[0..0.50] — booste les seuils min_path_efficiency et min_persistence pour les candidats asia_equity uniquement (compense la choppy nature des small-caps Asia). Ex: si tes seuils base sont 0.40 et 0.50, un boost de +0.10 les transforme en 0.50 et 0.60 sur Asia. Default +0.10. Mets 0 pour traiter Asia comme US/EU."
+        >
+          <input
+            type="number"
+            min={0}
+            max={0.50}
+            step={0.05}
+            value={num(cfg.gainers_asia_strictness_boost, 0.10)}
+            onChange={(e) => set('gainers_asia_strictness_boost', Number(e.target.value))}
+            className="input"
+          />
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {[0, 0.05, 0.10, 0.15, 0.20, 0.30].map((preset) => {
+              const isActive = num(cfg.gainers_asia_strictness_boost, 0.10) === preset;
+              return (
+                <button
+                  key={preset}
+                  type="button"
+                  onClick={() => set('gainers_asia_strictness_boost', preset)}
+                  className={
+                    isActive
+                      ? 'rounded-md border border-orange-500 bg-orange-500/10 px-2 py-0.5 text-xs font-medium text-orange-500'
+                      : 'rounded-md border border-input bg-background px-2 py-0.5 text-xs text-muted-foreground hover:border-foreground hover:text-foreground'
+                  }
+                >
+                  {preset === 0 ? 'OFF' : `+${preset.toFixed(2)}`}
+                </button>
+              );
+            })}
+          </div>
+        </Field>
       </section>
 
       {/* 4. Univers */}

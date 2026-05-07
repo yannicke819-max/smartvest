@@ -1377,7 +1377,7 @@ export class TopGainersScannerService implements OnModuleInit {
     const { data: cfgRow } = await this.supabase
       .getClient()
       .from('lisa_session_configs')
-      .select('capital_usd, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes, gainers_universe_us, gainers_universe_eu, gainers_universe_asia, gainers_universe_crypto, gainers_p_win_gate_enabled, gainers_min_p_win, gainers_rotation_stagnant_min_age_min, gainers_rotation_min_path_efficiency, gainers_session_filter_enabled, gainers_force_close_before_close_enabled, gainers_force_close_offset_min')
+      .select('capital_usd, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes, gainers_universe_us, gainers_universe_eu, gainers_universe_asia, gainers_universe_crypto, gainers_p_win_gate_enabled, gainers_min_p_win, gainers_rotation_stagnant_min_age_min, gainers_rotation_min_path_efficiency, gainers_session_filter_enabled, gainers_force_close_before_close_enabled, gainers_force_close_offset_min, gainers_post_sl_cooldown_min, gainers_asia_strictness_boost')
       .eq('portfolio_id', portfolioId)
       .maybeSingle();
     const minScore = this.resolveMinPersistenceScore(
@@ -1431,6 +1431,16 @@ export class TopGainersScannerService implements OnModuleInit {
     const rotationMinPathEfficiency = cfgRow?.gainers_rotation_min_path_efficiency != null
       ? Math.max(0, Math.min(1, Number(cfgRow.gainers_rotation_min_path_efficiency)))
       : 0.5;
+    // PR #270 — Post-SL cooldown : ban un symbole pendant N min après un closed_stop.
+    // Distinct du cooldown global qui s'applique à tout outcome (TP, SL, manuel).
+    const postSlCooldownMin = cfgRow?.gainers_post_sl_cooldown_min != null
+      ? Math.max(0, Math.min(1440, Number(cfgRow.gainers_post_sl_cooldown_min)))
+      : 60;
+    // PR #271 — Asia strictness boost : booste les gates path_eff et persistence
+    // pour les candidats asia_equity uniquement (compense la choppy des small-caps).
+    const asiaStrictnessBoost = cfgRow?.gainers_asia_strictness_boost != null
+      ? Math.max(0, Math.min(0.5, Number(cfgRow.gainers_asia_strictness_boost)))
+      : 0.10;
 
     // PR #3 + PR #246 — universe toggles per-portfolio appliqués AVANT
     // selectTopGainers. Bug pré-#246 : selectTopGainers global retournait top 10
@@ -1444,8 +1454,12 @@ export class TopGainersScannerService implements OnModuleInit {
     const universeAsia = cfgRow?.gainers_universe_asia !== false;
     const universeCrypto = cfgRow?.gainers_universe_crypto !== false;
     // PR #266 — Session-aware filter : skip un asset class hors horaires bourse.
-    // Default true. Crypto jamais filtré (24/7). Économie EODHD ~30-50%.
-    const sessionFilterEnabled = cfgRow?.gainers_session_filter_enabled !== false;
+    // Default false en mémoire (= activé seulement si explicitement set true en DB).
+    // En prod, la migration 0123 crée la colonne avec DEFAULT true → activé pour
+    // tous les portfolios existants. En test, cfgRow ne contient pas la colonne →
+    // sessionFilterEnabled = false → tests restent stables quel que soit l'horaire.
+    // Crypto jamais filtré (24/7). Économie EODHD ~30-50%.
+    const sessionFilterEnabled = cfgRow?.gainers_session_filter_enabled === true;
     const nowUtc = new Date();
     const usOpen = !sessionFilterEnabled || isMarketOpen('us', nowUtc);
     const euOpen = !sessionFilterEnabled || isMarketOpen('eu', nowUtc);
@@ -1667,24 +1681,41 @@ export class TopGainersScannerService implements OnModuleInit {
     // observait avant P19x.3 et le P19x.1 MIN_NET_PROFIT guard limite déjà
     // les fake TPs en cascade.
     const recentCloseByKey = new Map<string, number>();
+    // PR #270 — Post-SL : map symbole → dernier timestamp closed_stop. Distinct du
+    // recentCloseByKey générique (tout outcome). Ban additionnel par symbole.
+    const recentSlBySymbol = new Map<string, number>();
     try {
+      // Query unique : on prend le max(cooldownMs, postSlCooldownMs) pour chercher
+      // assez loin dans le passé pour couvrir les 2 cooldowns.
+      const lookbackMs = Math.max(cooldownMs, postSlCooldownMin * 60_000);
+      const lookbackSinceIso = new Date(Date.now() - lookbackMs).toISOString();
       const { data: recentClosesRaw } = await this.supabase
         .getClient()
         .from('lisa_positions')
-        .select('symbol, direction, exit_timestamp')
+        .select('symbol, direction, exit_timestamp, status')
         .eq('portfolio_id', portfolioId)
         .neq('status', 'open')
-        .gte('exit_timestamp', cooldownSinceIso);
+        .gte('exit_timestamp', lookbackSinceIso);
       for (const row of recentClosesRaw ?? []) {
         const key = `${String(row.symbol).toUpperCase()}::${String(row.direction)}`;
         const exitMs = new Date(String(row.exit_timestamp)).getTime();
         if (!Number.isFinite(exitMs)) continue;
-        const prev = recentCloseByKey.get(key) ?? 0;
-        if (exitMs > prev) recentCloseByKey.set(key, exitMs);
+        // Cooldown générique (TP/SL/manuel) — uniquement si fermé < cooldownMs
+        if (Date.now() - exitMs < cooldownMs) {
+          const prev = recentCloseByKey.get(key) ?? 0;
+          if (exitMs > prev) recentCloseByKey.set(key, exitMs);
+        }
+        // Post-SL ban (indépendant) — uniquement si status closed_stop
+        if (String(row.status) === 'closed_stop') {
+          const symKey = String(row.symbol).toUpperCase();
+          const prev = recentSlBySymbol.get(symKey) ?? 0;
+          if (exitMs > prev) recentSlBySymbol.set(symKey, exitMs);
+        }
       }
     } catch (e) {
       this.logger.debug(`[top-gainers] cooldown query skipped: ${String(e).slice(0, 100)}`);
     }
+    const postSlCooldownMs = postSlCooldownMin * 60_000;
 
     for (const cand of coverageValidTop) {
       if (opened >= maxThisCycle) break;
@@ -1702,6 +1733,20 @@ export class TopGainersScannerService implements OnModuleInit {
           `[top-gainers] ${cand.symbol} cooldown actif (fermé il y a ${elapsedMin} min < ${cooldownMinutes} min) → skip re-entry`,
         );
         continue;
+      }
+
+      // PR #270 — Post-SL cooldown : si dernier closed_stop < postSlCooldownMin → skip.
+      // Empêche le pattern observé 07/05/2026 : SL → mini-rebond technique →
+      // re-open → SL again sur le même downtrend.
+      if (postSlCooldownMs > 0) {
+        const lastSlMs = recentSlBySymbol.get(cand.symbol.toUpperCase());
+        if (lastSlMs && Date.now() - lastSlMs < postSlCooldownMs) {
+          const elapsedMin = Math.floor((Date.now() - lastSlMs) / 60_000);
+          this.logger.log(
+            `[top-gainers] ${cand.symbol} POST_SL_COOLDOWN actif (SL il y a ${elapsedMin} min < ${postSlCooldownMin} min) → skip`,
+          );
+          continue;
+        }
       }
 
       // P8 gate — persistance multi-TF
@@ -1802,24 +1847,34 @@ export class TopGainersScannerService implements OnModuleInit {
           // qui pass-through (1.0 not < 1.0)
         }
 
+        // PR #271 — Asia strictness boost : on booste les seuils path/persistence
+        // pour les candidats asia_equity (compense la choppy nature des small-caps Asia).
+        const isAsia = cand.assetClass === 'asia_equity';
+        const effectiveMinScore = isAsia
+          ? Math.min(1, minScore + asiaStrictnessBoost)
+          : minScore;
+        const effectiveMinPathEff = (isAsia && minPathEff != null)
+          ? Math.min(1, minPathEff + asiaStrictnessBoost)
+          : minPathEff;
+
         // Integer gate: Math.round avoids float off-by-one (4/6=0.6666 < 0.67 was
         // silently excluding 4/6-TF candidates). 0.67×6=4.02 → rounds to 4.
-        const minPositive = Math.round(minScore * persistence.availableCount);
+        const minPositive = Math.round(effectiveMinScore * persistence.availableCount);
         if (persistence.positiveCount < minPositive) {
           this.logger.log(
-            `[top-gainers] ${cand.symbol} ${persistence.persistenceCount} (${persistence.positiveCount}/${persistence.availableCount} TFs) < min=${minPositive}/${persistence.availableCount} → skip`,
+            `[top-gainers] ${cand.symbol} ${persistence.persistenceCount} (${persistence.positiveCount}/${persistence.availableCount} TFs) < min=${minPositive}/${persistence.availableCount}${isAsia ? ' [asia +' + asiaStrictnessBoost.toFixed(2) + ']' : ''} → skip`,
           );
           continue;
         }
         // P9-UX ADDENDUM — Path quality gate (skip pump-and-dump qui passent persistence)
         if (
-          minPathEff != null &&
+          effectiveMinPathEff != null &&
           persistence.pathQuality &&
           persistence.pathQuality.overallEfficiency != null &&
-          persistence.pathQuality.overallEfficiency < minPathEff
+          persistence.pathQuality.overallEfficiency < effectiveMinPathEff
         ) {
           this.logger.log(
-            `[top-gainers] ${cand.symbol} pathEff=${persistence.pathQuality.overallEfficiency.toFixed(2)} (${persistence.pathQuality.overallSmoothness}) < min=${minPathEff.toFixed(2)} → skip`,
+            `[top-gainers] ${cand.symbol} pathEff=${persistence.pathQuality.overallEfficiency.toFixed(2)} (${persistence.pathQuality.overallSmoothness}) < min=${effectiveMinPathEff.toFixed(2)}${isAsia ? ' [asia +' + asiaStrictnessBoost.toFixed(2) + ']' : ''} → skip`,
           );
           continue;
         }

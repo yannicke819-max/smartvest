@@ -307,6 +307,10 @@ export class LisaService {
       gainers_rotation_stagnant_min_age_min: pick('gainers_rotation_stagnant_min_age_min', 'gainersRotationStagnantMinAgeMin', existing?.gainers_rotation_stagnant_min_age_min ?? 90),
       // PR #269 — Capital rotation : seuil pathEff candidat A+ (0..1 ou null pour désactiver, default 0.5)
       gainers_rotation_min_path_efficiency: pick('gainers_rotation_min_path_efficiency', 'gainersRotationMinPathEfficiency', existing?.gainers_rotation_min_path_efficiency ?? 0.5),
+      // PR #270 — Post-SL cooldown par symbole (0..1440 min, default 60)
+      gainers_post_sl_cooldown_min: pick('gainers_post_sl_cooldown_min', 'gainersPostSlCooldownMin', existing?.gainers_post_sl_cooldown_min ?? 60),
+      // PR #271 — Asia strictness boost additif sur path/persistence (0..0.50, default 0.10)
+      gainers_asia_strictness_boost: pick('gainers_asia_strictness_boost', 'gainersAsiaStrictnessBoost', existing?.gainers_asia_strictness_boost ?? 0.10),
       // PR #243 — Adaptive Selectivity toggle (migration 0119). Opt-in default false.
       gainers_adaptive_enabled: pick('gainers_adaptive_enabled', 'gainersAdaptiveEnabled', existing?.gainers_adaptive_enabled ?? false),
       // PR #266 — Session-aware filter + force-close before close (migration 0123).
@@ -387,6 +391,12 @@ export class LisaService {
     // PR #269 — rotation min path efficiency 0..1 (null désactive le gate)
     if (merged.gainers_rotation_min_path_efficiency != null) {
       validateNum('gainers_rotation_min_path_efficiency', merged.gainers_rotation_min_path_efficiency, 0, 1);
+    }
+    // PR #270 — post-SL cooldown 0..1440 min
+    validateInt('gainers_post_sl_cooldown_min', merged.gainers_post_sl_cooldown_min, 0, 1440);
+    // PR #271 — asia strictness boost 0..0.50
+    if (merged.gainers_asia_strictness_boost != null) {
+      validateNum('gainers_asia_strictness_boost', merged.gainers_asia_strictness_boost, 0, 0.50);
     }
     // Cohérence : positionPct × maxOpen + cashReserve ne doit pas dépasser 100%
     // (sinon impossible de tenir le cash buffer en pratique). Warning soft, pas hard fail.
@@ -588,6 +598,24 @@ export class LisaService {
       this.logger.warn('Colonne gainers_rotation_min_path_efficiency (migration 0125) absente — retry sans ce champ');
       const { gainers_rotation_min_path_efficiency: _rmpe, ...mergedFallback } = merged;
       void _rmpe;
+      const retry = await this.supabase.getClient()
+        .from('lisa_session_configs')
+        .upsert(mergedFallback, { onConflict: 'portfolio_id' })
+        .select()
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
+
+    // PR #270/#271 — fallback si migrations 0126/0127 pas appliquées
+    if (error && /gainers_post_sl_cooldown_min|gainers_asia_strictness_boost/i.test(error.message)) {
+      this.logger.warn('Colonnes gainers_post_sl_cooldown_min / gainers_asia_strictness_boost (migrations 0126/0127) absentes — retry sans ces champs');
+      const {
+        gainers_post_sl_cooldown_min: _psc,
+        gainers_asia_strictness_boost: _asb,
+        ...mergedFallback
+      } = merged;
+      void _psc; void _asb;
       const retry = await this.supabase.getClient()
         .from('lisa_session_configs')
         .upsert(mergedFallback, { onConflict: 'portfolio_id' })
