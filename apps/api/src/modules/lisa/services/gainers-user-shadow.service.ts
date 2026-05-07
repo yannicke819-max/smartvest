@@ -165,12 +165,15 @@ export class GainersUserShadowService {
       } catch (e) {
         failures++;
         this.logger.warn(`[user-shadow] simulate ${row.symbol} failed: ${String(e).slice(0, 100)}`);
-        // Mark as run with empty results to avoid infinite retry
-        await this.supabase.getClient()
-          .from('gainers_user_shadow_signals')
-          .update({ sim_results: { error: String(e).slice(0, 200) }, sim_run_at: new Date().toISOString() })
-          .eq('id', row.id)
-          .catch(() => { /* nothing */ });
+        // Mark as run with empty results to avoid infinite retry.
+        // PostgrestFilterBuilder is thenable but not a Promise — wrap in
+        // try/catch instead of .catch().
+        try {
+          await this.supabase.getClient()
+            .from('gainers_user_shadow_signals')
+            .update({ sim_results: { error: String(e).slice(0, 200) }, sim_run_at: new Date().toISOString() })
+            .eq('id', row.id);
+        } catch { /* nothing */ }
       }
     }
     if (processed > 0 || failures > 0) {

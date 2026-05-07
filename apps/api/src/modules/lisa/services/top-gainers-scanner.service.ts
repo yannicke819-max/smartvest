@@ -493,8 +493,13 @@ export class TopGainersScannerService implements OnModuleInit {
      * (accept / reject_*) avec snapshot config. simulatePending() walk-forward
      * 5m candles pour TP 2%/SL 0.9% + grille alt 1.5%/0.6% sur fenêtres
      * 30m + 60m. Régret cost calculable via /lisa/gainers-shadow-regret.
+     *
+     * Optionnel (`?`) : 9 specs `top-gainers-scanner.*.spec.ts` historiques
+     * instantient le service avec 12 args. Plutôt que de toucher 9 fichiers,
+     * on accepte undefined → recordShadowDecision et simulatePending no-op
+     * silencieusement quand absent (cf. call sites).
      */
-    private readonly userShadow: GainersUserShadowService,
+    private readonly userShadow?: GainersUserShadowService,
   ) {}
 
   /**
@@ -805,10 +810,12 @@ export class TopGainersScannerService implements OnModuleInit {
 
     // PR #280 — User shadow simulator : worker in-line. Pick rows ≥ 60min old
     // sans simulation, walk-forward 5m candles, fill sim_results JSONB.
-    // Cap 50 rows/cycle. Non-bloquant (catch).
-    void this.userShadow.simulatePending().catch((e) => {
-      this.logger.warn(`[user-shadow] simulatePending failed: ${String(e).slice(0, 100)}`);
-    });
+    // Cap 50 rows/cycle. Non-bloquant (catch). No-op si dep absente.
+    if (this.userShadow) {
+      void this.userShadow.simulatePending().catch((e) => {
+        this.logger.warn(`[user-shadow] simulatePending failed: ${String(e).slice(0, 100)}`);
+      });
+    }
 
     if (candidates.length === 0) {
       this.recordEarlyReturn('candidates_fetched_but_none_selected');
@@ -1771,6 +1778,7 @@ export class TopGainersScannerService implements OnModuleInit {
       decision: ShadowDecision,
       pers: PersistenceWithPath | undefined,
     ) => {
+      if (!this.userShadow) return;  // back-compat 12-arg specs
       void this.userShadow.recordDecision({
         portfolioId,
         symbol: candInner.symbol,
