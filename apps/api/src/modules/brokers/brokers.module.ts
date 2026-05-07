@@ -8,6 +8,7 @@ import { IbkrSessionKeepAliveService } from './services/ibkr-session-keepalive.s
 import { PreExecutionGuardService } from './services/pre-execution-guard.service';
 import { BrokerReconciliationService } from './services/broker-reconciliation.service';
 import { RealCostCalibratorService } from './services/real-cost-calibrator.service';
+import { LiveFeatureFlagsService } from './services/live-feature-flags.service';
 import { SupabaseModule } from '../supabase/supabase.module';
 import { FeatureFlagsModule } from '../feature-flags/feature-flags.module';
 
@@ -23,7 +24,14 @@ import { FeatureFlagsModule } from '../feature-flags/feature-flags.module';
     PreExecutionGuardService,
     BrokerReconciliationService,
     RealCostCalibratorService,
+    LiveFeatureFlagsService,
   ],
-  exports: [BrokersService, BrokerSyncService, CredentialsVaultService, PreExecutionGuardService],
+  exports: [
+    BrokersService,
+    BrokerSyncService,
+    CredentialsVaultService,
+    PreExecutionGuardService,
+    LiveFeatureFlagsService,
+  ],
 })
 export class BrokersModule {}
