@@ -31,6 +31,7 @@ import { DailyHarvestPanel } from '@/components/lisa/daily-harvest-panel';
 import { MacroModeSelector } from '@/components/lisa/macro-mode-selector';
 import { GainersStatusTile } from '@/components/lisa/gainers-status-tile';
 import { GainersConfigPanel } from '@/components/lisa/gainers-config-panel';
+import { ScalingReadinessPanel } from '@/components/lisa/scaling-readiness-panel';
 import { useOperatingMode } from '@/hooks/use-operating-mode';
 import { AutopilotBudgetBadge } from '@/components/lisa/autopilot-budget-badge';
 import { LisaDecisionLog } from '@/components/lisa/decision-log';
@@ -585,6 +586,12 @@ export default function LisaPage() {
           univers, persistence, fees). Visible quand mode='gainers'. */}
       {selectedPortfolioId && currentMode === 'gainers' && (
         <GainersConfigPanel portfolioId={selectedPortfolioId} />
+      )}
+
+      {/* PR #268 — Scaling readiness : 5 critères data-driven pour décider
+          si on peut scaler le capital ou passer LIVE. Visible quand mode='gainers'. */}
+      {selectedPortfolioId && currentMode === 'gainers' && (
+        <ScalingReadinessPanel portfolioId={selectedPortfolioId} />
       )}
 
       {/* Portfolio summary */}

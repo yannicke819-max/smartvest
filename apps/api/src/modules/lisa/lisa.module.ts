@@ -36,6 +36,7 @@ import { LisaMemoryService } from './services/lisa-memory.service';
 import { MaterialChangeDetectorService } from './services/material-change-detector.service';
 import { TradeOutcomeRecorderService } from './services/trade-outcome-recorder.service';
 import { LisaPerformanceAnalyticsService } from './services/lisa-performance-analytics.service';
+import { TradingStatsService } from './services/trading-stats.service';
 import { DailySessionService } from './services/daily-session.service';
 import { ProfitSweepService } from './services/profit-sweep.service';
 import { DailyProfitGovernor } from './services/daily-profit-governor.service';
@@ -91,6 +92,7 @@ import { SignalForwardTrackerService } from '../gainers-scanner/automations/sign
     MaterialChangeDetectorService,
     TradeOutcomeRecorderService,
     LisaPerformanceAnalyticsService,
+    TradingStatsService,
     // DAILY_HARVEST (Phase 1+2) — CRUD + sweep + governor (state machine)
     DailySessionService,
     ProfitSweepService,
