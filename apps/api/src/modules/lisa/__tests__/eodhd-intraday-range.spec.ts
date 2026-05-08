@@ -147,4 +147,32 @@ describe('EodhdIntradayService — PR #284 range fetch + retention', () => {
     const result = await service.getCandles('NYT.US', '5m', 10, { fromTs, toTs });
     expect(result!.candles).toHaveLength(30);  // pas slicé à 10
   });
+
+  it('PR #285 — populates rawCount + requestedSymbol for diagnostic', async () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const fromTs = nowSec - 12 * 3600;
+    const toTs = fromTs + 3900;
+    // Réponse mixte : 5 candles, dont 2 avec close=null (filter doit les
+    // rejeter). rawCount doit refléter les 5, candles.length les 3 valides.
+    fetchSpy.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => '',
+      json: async () => [
+        { timestamp: fromTs + 60, open: 100, high: 100.5, low: 99.5, close: 100.2, volume: 1000 },
+        { timestamp: fromTs + 360, open: null, high: null, low: null, close: null, volume: 0 },  // pre-market gap
+        { timestamp: fromTs + 660, open: 100.2, high: 101, low: 100, close: 100.8, volume: 1500 },
+        { timestamp: fromTs + 960, open: 0, high: 0, low: 0, close: 0, volume: 0 },               // empty bucket
+        { timestamp: fromTs + 1260, open: 100.8, high: 101.5, low: 100.5, close: 101, volume: 2000 },
+      ],
+    } as Response);
+
+    const result = await service.getCandles('300161.SHE', '5m', 30, { fromTs, toTs });
+    expect(result).not.toBeNull();
+    expect(result!.candles).toHaveLength(3);              // post-filter close>0
+    expect(result!.rawCount).toBe(5);                     // pre-filter total
+    expect(result!.requestedSymbol).toBe('300161.SHE');   // ce qui a été envoyé en URL
+    // diff rawCount - candles.length = nb buckets null/zero (= "nulls" dans le diag log)
+    expect(result!.rawCount! - result!.candles.length).toBe(2);
+  });
 });

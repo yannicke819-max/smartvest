@@ -28,6 +28,19 @@ export interface CandleSeries {
   interval: '1m' | '5m' | '1h';
   candles: Candle[];
   asOf: number;
+  /**
+   * PR #285 — Total candles retournées par l'API EODHD AVANT filter
+   * `close > 0`. Permet diagnostic Asia/exotic : EODHD peut retourner des
+   * buckets avec close=null en pré-marché, lunch break, post-close.
+   * `rawCount - candles.length` = nb candles avec close invalide.
+   */
+  rawCount?: number;
+  /**
+   * PR #285 — Le ticker effectivement envoyé dans l'URL (post-normalize).
+   * Permet de détecter un éventuel mismatch entre input scanner et requête
+   * EODHD (ex: legacy `.SZ` mappé vers `.SHE`).
+   */
+  requestedSymbol?: string;
 }
 
 /**
@@ -290,7 +303,18 @@ export class EodhdIntradayService {
       // les query params from/to.
       const candles = useRange ? allCandles : allCandles.slice(-count);
 
-      const series: CandleSeries = { ticker: eodhdTicker, interval, candles, asOf: Date.now() };
+      // PR #285 — rawCount = nb candles AVANT filter close>0 ; requestedSymbol
+      // = ticker effectivement envoyé dans l'URL EODHD (peut différer de
+      // l'input scanner après injection `.US` ou si normalize divergeait).
+      // Permet diagnostic mismatch suffix.
+      const series: CandleSeries = {
+        ticker: eodhdTicker,
+        interval,
+        candles,
+        asOf: Date.now(),
+        rawCount: data.length,
+        requestedSymbol: eodhdTicker,
+      };
       this.cache.set(cacheKey, series);
       return series;
     } catch (e) {
@@ -495,6 +519,8 @@ export class EodhdIntradayService {
       interval,
       candles,
       asOf: Date.now(),
+      rawCount: ticks.length,        // PR #285 — diagnostic
+      requestedSymbol: eodhdTicker,  // PR #285 — ce qui a été envoyé en URL
     };
     this.logger.log(
       `[eodhd:ticks] ${eodhdTicker} reconstructed ${candles.length} ${interval} bars from ${ticks.length} ticks`,
