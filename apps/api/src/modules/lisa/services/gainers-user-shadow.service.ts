@@ -156,6 +156,15 @@ export interface FetchDiagStep {
   // Pour le step `selectedStep`, c'est le même que fetchDiag.forwardCount
   // (compatibility). Pour les autres, undefined (on ne calcule pas).
   forwardCountAfterFilter?: number;
+  // PR #291 — Freshness diagnostic. Permet de détecter la latence d'ingestion
+  // EODHD (observée 22h sur US à 18:01 UTC, signe d'un problème data-side
+  // qui invalide tout le shadow simulator). SQL post-deploy : si age_ms
+  // est dominant > 30min sur tous les rows, c'est le data-source qui patine.
+  //   age_ms = (now_ms - lastCandleTs_ms)  → fraicheur de la candle la
+  //                                            plus récente fetchée
+  //   candle_freshness_s = age_ms / 1000  (alias plus lisible en SQL)
+  age_ms?: number;
+  candle_freshness_s?: number;
   error?: string;
 }
 export interface FetchDiag {
@@ -515,6 +524,14 @@ export class GainersUserShadowService {
             const tsec = t > 1e12 ? Math.floor(t / 1000) : t;
             return tsec >= startTs;
           }).length;
+          // PR #291 — Freshness : age de la candle la plus récente vs NOW.
+          // Auto-detect ms vs s pour cohérence avec normalizeAndSortCandles.
+          const lastTsSec = stepEntry.lastCandleTs > 1e12
+            ? Math.floor(stepEntry.lastCandleTs / 1000)
+            : stepEntry.lastCandleTs;
+          const nowSec = Math.floor(Date.now() / 1000);
+          stepEntry.age_ms = (nowSec - lastTsSec) * 1000;
+          stepEntry.candle_freshness_s = nowSec - lastTsSec;
         }
       }
       fetchDiag.steps.push(stepEntry);
