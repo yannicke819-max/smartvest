@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
 import {
@@ -23,13 +23,50 @@ import {
  * Pour batch backfill, le caller (script ou cron) itère sur closed_stop pending.
  */
 @Injectable()
-export class PostSlBackfillService {
+export class PostSlBackfillService implements OnApplicationBootstrap {
   private readonly logger = new Logger(PostSlBackfillService.name);
 
   constructor(
     private readonly supabase: SupabaseService,
     private readonly eodhd: EodhdIntradayService,
   ) {}
+
+  /**
+   * PR #293 — Auto-trigger backfill on app bootstrap quand env var set.
+   *
+   * Use case : user n'a pas accès flyctl SSH ni curl auth pour déclencher
+   * manuellement le backfill batch. Mécanisme :
+   *
+   *   1. flyctl secrets set RUN_BACKFILL_POST_SL_ON_BOOT=true -a smartvest
+   *   2. Fly redéploie automatiquement → app reboot
+   *   3. NestJS appelle onApplicationBootstrap() → backfill tourne 1×
+   *   4. Logs Fly : `[post-sl-backfill] auto-boot done: {processed, succeeded, failed}`
+   *   5. flyctl secrets unset RUN_BACKFILL_POST_SL_ON_BOOT (sinon reboot suivant
+   *      retriggère mais re-process des rows déjà fait = no-op grâce à
+   *      `is('post_sl_path', null)` filter, donc safe mais inutile)
+   *
+   * Cap configurable via RUN_BACKFILL_POST_SL_LIMIT (default 100).
+   * Portfolio configurable via RUN_BACKFILL_POST_SL_PORTFOLIO_ID (default
+   * tous les portfolios).
+   *
+   * Non-bloquant : ne crash pas l'app si erreur. Log warn + continue.
+   */
+  async onApplicationBootstrap(): Promise<void> {
+    if (process.env.RUN_BACKFILL_POST_SL_ON_BOOT !== 'true') return;
+    const limit = Math.max(1, Math.min(500, Number(process.env.RUN_BACKFILL_POST_SL_LIMIT) || 100));
+    const portfolioId = process.env.RUN_BACKFILL_POST_SL_PORTFOLIO_ID;
+    this.logger.log(
+      `[post-sl-backfill] auto-boot triggered: limit=${limit} portfolioId=${portfolioId ?? 'all'}`,
+    );
+    try {
+      const result = portfolioId
+        ? await this.backfillBatch({ limit, portfolioId })
+        : await this.backfillBatch({ limit });
+      this.logger.log(`[post-sl-backfill] auto-boot done: ${JSON.stringify(result)}`);
+    } catch (e) {
+      this.logger.warn(`[post-sl-backfill] auto-boot failed: ${String(e).slice(0, 200)}`);
+    }
+  }
 
   /**
    * Backfill une seule position. Retourne le résultat ou error.
