@@ -125,7 +125,7 @@ function resolveShadowLookbackCandles(): number {
 }
 
 export interface SimOutcome {
-  outcome: 'TP_HIT' | 'SL_HIT' | 'TIME_LIMIT' | 'NO_DATA';
+  outcome: 'TP_HIT' | 'SL_HIT' | 'TIME_LIMIT' | 'NO_DATA' | 'OFF_SESSION';
   exit_price: number | null;
   exit_at: string | null;
   pnl_pct: number | null;       // NET (slippage already subtracted)
@@ -162,7 +162,7 @@ export interface FetchDiag {
   steps: FetchDiagStep[];
   selectedStep: number | null;  // index 0-based dans steps[] qui a fourni les candles
   forwardCount: number;         // post normalize+filter par startTs
-  outcome: 'ok' | 'no_data' | 'error';
+  outcome: 'ok' | 'no_data' | 'error' | 'off_session';
   // PR #287 — Pour analyse SQL : on persiste startTs et cutoffTs (sim window
   // 60min). Sans ça il faut recalculer depuis created_at à chaque query.
   startTs?: number;
@@ -553,26 +553,30 @@ export class GainersUserShadowService {
 
     // PR #283 — Critique : normaliser unité (ms→s) ET trier ASC AVANT
     // walkForward. EODHD retournait DESC, le bug a causé 100% NO_DATA prod.
-    let normalizedCandles = normalizeAndSortCandles(selectedSeries.candles);
+    const normalizedCandles = normalizeAndSortCandles(selectedSeries.candles);
 
-    // PR #288 — Asia/Pacific timezone correction. EODHD encode les timestamps
-    // intraday en LOCAL exchange time traités comme UTC pour Asia. Sans cette
-    // correction, candles paraissent ~8-10h dans le passé vs startTs (real
-    // UTC) → forward filter rejette tout → NO_DATA. Détection par suffix
-    // ticker (.SHE/.SHG/.HK +8h ; .KO/.KQ/.T +9h ; .AU +10h ; US/EU=0).
-    const tzOffsetSec = getExchangeUtcOffsetSec(args.symbol);
-    if (tzOffsetSec > 0) {
-      normalizedCandles = normalizedCandles.map((c) => ({
-        ...c,
-        timestamp: c.timestamp + tzOffsetSec,
-      }));
-      fetchDiag.applied_tz_offset_sec = tzOffsetSec;
-    } else {
-      fetchDiag.applied_tz_offset_sec = 0;
-    }
+    // PR #289 — REVERT du +offset shift (PR #288 introduit par mauvaise
+    // interprétation). Postgres `to_timestamp` confirme : EODHD retourne
+    // déjà real UTC pour les timestamps Asia. Le helper getExchangeUtcOffsetSec
+    // est conservé pour future logic session-aware (PR #290+) mais N'EST PLUS
+    // appliqué sur les candles. Persisted = 0 pour audit.
+    fetchDiag.applied_tz_offset_sec = 0;
 
     const forward = normalizedCandles.filter((c) => c.timestamp >= startTs);
     fetchDiag.forwardCount = forward.length;
+
+    // PR #289 — Détection OFF_SESSION : si on a fetché des candles MAIS
+    // toutes sont AVANT startTs, ça signifie que la row a été créée en
+    // dehors de la session de trading active du symbole (ex: scanner
+    // capture Asia ticker pendant US session 18:02 UTC → Shenzhen fermé
+    // depuis 11h, latest candle = 07:00 UTC bien avant startTs).
+    //
+    // Sémantique : "row hors session, sim impossible structurellement".
+    // Distinct de NO_DATA (= échec EODHD) et de TIME_LIMIT (= sim normal
+    // sans hit). Exclu de getRegretSummary pour ne pas polluer les stats.
+    const isOffSession = forward.length === 0
+      && normalizedCandles.length > 0
+      && normalizedCandles[normalizedCandles.length - 1].timestamp < startTs;
 
     if (forward.length === 0) {
       const first = normalizedCandles[0];
@@ -594,6 +598,21 @@ export class GainersUserShadowService {
         `firstValidTs=${firstValid} lastValidTs=${lastValid} ` +
         `startTs=${startTs} cutoffMaxTs=${startTs + 60 * 60}`,
       );
+    }
+
+    // PR #289 — Si OFF_SESSION détecté, court-circuiter walkForward avec
+    // outcome dédié sur toutes les grilles (au lieu de NO_DATA générique).
+    if (isOffSession) {
+      const offSessionOutcome: SimOutcome = {
+        outcome: 'OFF_SESSION',
+        exit_price: null,
+        exit_at: null,
+        pnl_pct: null,
+        hit_at_min: null,
+      };
+      for (const g of SIM_GRIDS) results[g.key] = offSessionOutcome;
+      fetchDiag.outcome = 'off_session';
+      return { results, fetchDiag };
     }
 
     for (const grid of SIM_GRIDS) {
@@ -634,6 +653,11 @@ export class GainersUserShadowService {
       for (const grid of SIM_GRIDS) {
         const o = sim[grid.key];
         if (!o || o.pnl_pct == null) continue;
+        // PR #289 — Exclure OFF_SESSION du calcul regret stats. Ces rows
+        // n'ont pas pu être simulées car capturées hors session de trading
+        // (ex: scanner détecte Asia ticker en US session). Pas un échec
+        // de gate, juste un constraint structurel — ne pollue pas les KPI.
+        if (o.outcome === 'OFF_SESSION') continue;
         const key = `${row.decision}|${grid.key}`;
         if (!buckets.has(key)) buckets.set(key, { pnls: [], notional });
         buckets.get(key)!.pnls.push(Number(o.pnl_pct));
