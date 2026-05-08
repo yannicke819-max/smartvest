@@ -98,6 +98,29 @@ export interface SimOutcome {
   hit_at_min: number | null;
 }
 
+// PR #286 — fetch_diag schema persisté en JSONB après chaque sim.
+// Permet SQL post-mortem de la fallback chain sans grep Fly logs.
+export interface FetchDiagStep {
+  endpoint: string;             // 'eodhd_getCandles_5m_range' | 'eodhd_ticks_range' | ...
+  interval: '1m' | '5m' | '1h';
+  rangeMode: boolean;
+  fromTs: number | null;
+  toTs: number | null;
+  inputSymbol: string;
+  requestedSymbol: string | null;
+  rawCount: number;             // pre-filter close>0 (selon fallback path)
+  validClose: number;           // post-filter
+  nulls: number;                // rawCount - validClose
+  ms: number;                   // latency
+  error?: string;
+}
+export interface FetchDiag {
+  steps: FetchDiagStep[];
+  selectedStep: number | null;  // index 0-based dans steps[] qui a fourni les candles
+  forwardCount: number;         // post normalize+filter par startTs
+  outcome: 'ok' | 'no_data' | 'error';
+}
+
 // PR #283 — Type minimal pour walkForward (ne nécessite pas EodhdIntradayService.Candle)
 export interface CandleLike {
   timestamp: number;  // unix seconds (auto-normalisé si en ms)
@@ -251,7 +274,7 @@ export class GainersUserShadowService {
     let failures = 0;
     for (const row of rows) {
       try {
-        const simResults = await this.simulateRow({
+        const { results: simResults, fetchDiag } = await this.simulateRow({
           symbol: String(row.symbol),
           assetClass: String(row.asset_class),
           entryPrice: row.entry_price != null ? Number(row.entry_price) : null,
@@ -261,6 +284,7 @@ export class GainersUserShadowService {
           .from('gainers_user_shadow_signals')
           .update({
             sim_results: simResults,
+            fetch_diag: fetchDiag,        // PR #286 — diagnostic JSONB
             sim_run_at: new Date().toISOString(),
             sim_window_max_min: 60,
           })
@@ -291,105 +315,175 @@ export class GainersUserShadowService {
     assetClass: string;
     entryPrice: number | null;
     createdAt: string;
-  }): Promise<Record<string, SimOutcome>> {
+  }): Promise<{ results: Record<string, SimOutcome>; fetchDiag: FetchDiag }> {
     const results: Record<string, SimOutcome> = {};
     const noEntry = (): SimOutcome => ({
       outcome: 'NO_DATA', exit_price: null, exit_at: null, pnl_pct: null, hit_at_min: null,
     });
+    const fetchDiag: FetchDiag = {
+      steps: [],
+      selectedStep: null,
+      forwardCount: 0,
+      outcome: 'no_data',
+    };
 
     if (args.entryPrice == null || args.entryPrice <= 0) {
       for (const g of SIM_GRIDS) results[g.key] = noEntry();
-      return results;
+      fetchDiag.outcome = 'error';
+      fetchDiag.steps.push({
+        endpoint: 'precondition',
+        interval: '5m',
+        rangeMode: false,
+        fromTs: null,
+        toTs: null,
+        inputSymbol: args.symbol,
+        requestedSymbol: null,
+        rawCount: 0,
+        validClose: 0,
+        nulls: 0,
+        ms: 0,
+        error: 'no_entry_price',
+      });
+      return { results, fetchDiag };
     }
 
     // Crypto = no support yet (would need Binance klines), skip gracefully
     if (args.assetClass === 'crypto_major' || args.assetClass === 'crypto_alt') {
       for (const g of SIM_GRIDS) results[g.key] = noEntry();
-      return results;
+      fetchDiag.outcome = 'error';
+      fetchDiag.steps.push({
+        endpoint: 'precondition',
+        interval: '5m',
+        rangeMode: false,
+        fromTs: null,
+        toTs: null,
+        inputSymbol: args.symbol,
+        requestedSymbol: null,
+        rawCount: 0,
+        validClose: 0,
+        nulls: 0,
+        ms: 0,
+        error: 'crypto_not_supported',
+      });
+      return { results, fetchDiag };
     }
 
-    // Le scanner stocke le symbol avec suffix exchange déjà appliqué
-    // ("WFCF.US", "017550.KO", "AAZ.LSE"). On garde le symbol tel quel
-    // — getCandles applique normalizeForEodhdIntraday + fallback .US si
-    // le suffix manquait par erreur.
     const eodhdTicker = args.symbol;
-
-    // PR #284 — FETCH RANGE EXPLICITE (au lieu de "latest N candles").
-    //
-    // Bug pré-PR #284 : `getCandles('5m', 30)` retournait les 30 dernières
-    // candles existantes. Pour une row simulée 12h après recordDecision (cas
-    // retro UPDATE), les latest candles couvraient la session courante, pas
-    // la fenêtre [startTs, startTs+60min] d'origine → 100% NO_DATA.
-    //
-    // Fix : passer `fromTs/toTs` explicites au range exact dont on a besoin
-    // ([startTs - 5min, endTs + buffer]). Le 5min de buffer côté gauche permet
-    // d'avoir 1 candle pré-entry comme contexte si on en veut plus tard
-    // (path quality forward, etc.). Côté droit, +5min pour clipper la dernière
-    // candle 60min cleanly.
-    //
-    // Retention guard EODHD 5j : cf. EodhdIntradayService.RETENTION_LIMIT_SEC.
-    // Au-delà l'API retourne empty → on log EODHD_RETENTION_EXCEEDED + null.
     const startTs = new Date(args.createdAt).getTime() / 1000;
-    const fromTs = Math.floor(startTs - 300);                 // -5min buffer pré-entry
-    const toTs = Math.floor(startTs + 60 * 60 + 300);         // +60min sim window + 5min
-    const candleCount = resolveShadowLookbackCandles();        // legacy back-compat (slice when no range)
-
+    const fromTs = Math.floor(startTs - 300);
+    const toTs = Math.floor(startTs + 60 * 60 + 300);
+    const candleCount = resolveShadowLookbackCandles();
     const isAsia = args.assetClass === 'asia_equity';
 
-    const seriesPrimary = await this.eodhd
-      .getCandles(eodhdTicker, '5m', candleCount, { fromTs, toTs })
-      .catch(() => null);
+    // PR #286 — Fallback chain alignée sur MultiTimeframePersistenceService
+    // (cf. multi-tf-persistence.service.ts:321-431) mais adaptée pour le
+    // mode range-fetch (PR #284). L'ordre maximise la probabilité de
+    // récupérer des candles dans la fenêtre [startTs - 5min, +65min]
+    // d'un row potentiellement vieux de plusieurs heures :
+    //
+    //   step1 : EODHD getCandles 5m + range mode  (primary, déjà testé)
+    //   step2 : EODHD getCandlesViaTicks 5m + range  (sparse coverage)
+    //   step3 : EODHD getCandles 1m + range mode  (parfois plus complet sur Asia)
+    //   step4 : EODHD getCandles 5m + DEFAULT mode + filter client-side
+    //           (si range mode pète, default mode peut couvrir si row récent)
+    //
+    // Chaque step alimente fetchDiag.steps[] persisté en JSONB pour SQL
+    // post-mortem. selectedStep = index du premier step qui a fourni
+    // assez de candles pour walkForward.
 
-    // PR #285 — Diag verbeux Asia step 1 : ce que le primary path retourne
-    // AVANT fallback. Permet de voir si getCandles seul fonctionne sur Asia
-    // ou si on tombe systématiquement sur le fallback ticks.
-    if (isAsia) {
-      this.logger.warn(
-        `[user-shadow-fetch-asia] step1=getCandles ` +
-        `inputSymbol=${args.symbol} requestedSymbol=${seriesPrimary?.requestedSymbol ?? 'n/a'} ` +
-        `fromTs=${fromTs} toTs=${toTs} ` +
-        `rawCount=${seriesPrimary?.rawCount ?? 0} validClose=${seriesPrimary?.candles?.length ?? 0} ` +
-        `nulls=${(seriesPrimary?.rawCount ?? 0) - (seriesPrimary?.candles?.length ?? 0)}`,
-      );
-    }
+    type StepDef = {
+      endpoint: string;
+      interval: '1m' | '5m';
+      fn: () => Promise<{ candles: Array<{ timestamp: number; open: number; high: number; low: number; close: number; volume: number }>; rawCount?: number; requestedSymbol?: string } | null>;
+      rangeMode: boolean;
+    };
+    const stepDefs: StepDef[] = [
+      {
+        endpoint: 'eodhd_getCandles_5m_range',
+        interval: '5m',
+        rangeMode: true,
+        fn: () => this.eodhd.getCandles(eodhdTicker, '5m', candleCount, { fromTs, toTs }).catch(() => null),
+      },
+      {
+        endpoint: 'eodhd_ticks_5m_range',
+        interval: '5m',
+        rangeMode: true,
+        fn: () => this.eodhd.getCandlesViaTicks(eodhdTicker, '5m', candleCount, { fromTs, toTs }).catch(() => null),
+      },
+      {
+        endpoint: 'eodhd_getCandles_1m_range',
+        interval: '1m',
+        rangeMode: true,
+        fn: () => this.eodhd.getCandles(eodhdTicker, '1m', 65, { fromTs, toTs }).catch(() => null),
+      },
+      {
+        endpoint: 'eodhd_getCandles_5m_default',
+        interval: '5m',
+        rangeMode: false,
+        fn: () => this.eodhd.getCandles(eodhdTicker, '5m', candleCount).catch(() => null),
+      },
+    ];
 
-    // Fallback ticks-data si getCandles range-fetch retourne null (low-coverage
-    // EODHD : Asia/NSE/AU certaines fois, ou plan-dependent gaps).
-    let series = seriesPrimary;
-    if (!series || series.candles.length === 0) {
-      const seriesTicks = await this.eodhd
-        .getCandlesViaTicks(eodhdTicker, '5m', candleCount, { fromTs, toTs })
-        .catch(() => null);
+    let selectedSeries: { candles: Array<{ timestamp: number; open: number; high: number; low: number; close: number; volume: number }> } | null = null;
+    for (let i = 0; i < stepDefs.length; i++) {
+      const step = stepDefs[i];
+      const t0 = Date.now();
+      const series = await step.fn();
+      const ms = Date.now() - t0;
+      const validClose = series?.candles?.length ?? 0;
+      const rawCount = series?.rawCount ?? validClose;
+      const stepEntry: FetchDiagStep = {
+        endpoint: step.endpoint,
+        interval: step.interval,
+        rangeMode: step.rangeMode,
+        fromTs: step.rangeMode ? fromTs : null,
+        toTs: step.rangeMode ? toTs : null,
+        inputSymbol: args.symbol,
+        requestedSymbol: series?.requestedSymbol ?? null,
+        rawCount,
+        validClose,
+        nulls: rawCount - validClose,
+        ms,
+      };
+      fetchDiag.steps.push(stepEntry);
+
       if (isAsia) {
         this.logger.warn(
-          `[user-shadow-fetch-asia] step2=getCandlesViaTicks ` +
-          `inputSymbol=${args.symbol} requestedSymbol=${seriesTicks?.requestedSymbol ?? 'n/a'} ` +
-          `rawCount=${seriesTicks?.rawCount ?? 0} validClose=${seriesTicks?.candles?.length ?? 0}`,
+          `[user-shadow-fetch-asia] step${i + 1}=${step.endpoint} ` +
+          `inputSymbol=${args.symbol} requestedSymbol=${stepEntry.requestedSymbol ?? 'n/a'} ` +
+          `rangeMode=${step.rangeMode} rawCount=${rawCount} validClose=${validClose} nulls=${stepEntry.nulls} ms=${ms}`,
         );
       }
-      series = seriesTicks;
+
+      if (validClose > 0) {
+        selectedSeries = series;
+        fetchDiag.selectedStep = i;
+        break;
+      }
     }
 
-    // Log info systématique pour monitoring du fetch range (PR #284).
     this.logger.log(
-      `[user-shadow-fetch] ${eodhdTicker}: from=${fromTs} to=${toTs} got=${series?.candles?.length ?? 0}`,
+      `[user-shadow-fetch] ${eodhdTicker}: from=${fromTs} to=${toTs} ` +
+      `selectedStep=${fetchDiag.selectedStep ?? 'none'} got=${selectedSeries?.candles?.length ?? 0}`,
     );
 
-    if (!series || series.candles.length === 0) {
+    if (!selectedSeries || selectedSeries.candles.length === 0) {
       if (isAsia) {
         this.logger.warn(
-          `[user-shadow-fetch-asia] step3=EARLY_RETURN_NO_DATA ` +
-          `inputSymbol=${args.symbol} fromTs=${fromTs} toTs=${toTs} reason=both_endpoints_empty`,
+          `[user-shadow-fetch-asia] EARLY_RETURN_NO_DATA inputSymbol=${args.symbol} ` +
+          `fromTs=${fromTs} toTs=${toTs} reason=all_4_steps_empty`,
         );
       }
       for (const g of SIM_GRIDS) results[g.key] = noEntry();
-      return results;
+      fetchDiag.outcome = 'no_data';
+      return { results, fetchDiag };
     }
 
     // PR #283 — Critique : normaliser unité (ms→s) ET trier ASC AVANT
     // walkForward. EODHD retournait DESC, le bug a causé 100% NO_DATA prod.
-    const normalizedCandles = normalizeAndSortCandles(series.candles);
+    const normalizedCandles = normalizeAndSortCandles(selectedSeries.candles);
     const forward = normalizedCandles.filter((c) => c.timestamp >= startTs);
+    fetchDiag.forwardCount = forward.length;
 
     if (forward.length === 0) {
       const first = normalizedCandles[0];
@@ -401,17 +495,12 @@ export class GainersUserShadowService {
       );
     }
 
-    // PR #285 — Diag Asia post-filter : confirme la fenêtre walkForward
-    // dispose de candles utiles. Si fetched > 0 mais forward = 0 → le filter
-    // `c.timestamp >= startTs` rejette tout (fenêtre EODHD hors session ou
-    // session déjà clôturée). Si forward > 0 mais walkForward retourne
-    // NO_DATA, regarder cutoff (toutes candles > startTs+60min).
     if (isAsia) {
       const firstValid = normalizedCandles[0]?.timestamp ?? null;
       const lastValid = normalizedCandles[normalizedCandles.length - 1]?.timestamp ?? null;
       this.logger.warn(
-        `[user-shadow-fetch-asia] step4=post_filter ` +
-        `inputSymbol=${args.symbol} ` +
+        `[user-shadow-fetch-asia] post_filter inputSymbol=${args.symbol} ` +
+        `selectedStep=${fetchDiag.selectedStep} ` +
         `fetched=${normalizedCandles.length} forward=${forward.length} ` +
         `firstValidTs=${firstValid} lastValidTs=${lastValid} ` +
         `startTs=${startTs} cutoffMaxTs=${startTs + 60 * 60}`,
@@ -421,7 +510,8 @@ export class GainersUserShadowService {
     for (const grid of SIM_GRIDS) {
       results[grid.key] = walkForward(args.entryPrice, forward, startTs, grid);
     }
-    return results;
+    fetchDiag.outcome = forward.length > 0 ? 'ok' : 'no_data';
+    return { results, fetchDiag };
   }
 
   /**
