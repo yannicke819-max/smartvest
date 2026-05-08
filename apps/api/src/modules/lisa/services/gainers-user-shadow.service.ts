@@ -69,6 +69,40 @@ const SIM_GRIDS: SimGrid[] = [
   { key: 'alt15_60m',    tpPct: 0.015, slPct: 0.006, windowMin: 60 },
 ];
 
+// PR #288 — TZ offset par exchange Asia/Pacific.
+//
+// Bug observé prod 08/05/2026 07:30 UTC : Asia rows 100% NO_DATA même
+// après PR #284-#287. Diagnostic via fetch_diag JSONB (PR #287) confirme :
+// EODHD intraday renvoie les timestamps des candles encodés en LOCAL exchange
+// time traités comme UTC. Pour 300161.SHE Shenzhen :
+//   - Candle réelle close à 15:00 CST (= 07:00 UTC May 8)
+//   - EODHD encode timestamp = "2026-05-07 23:00 UTC" (= 15:00 CST en lecture
+//     naïve treating as UTC, soit -8h vs real UTC)
+// → notre filtre `c.timestamp >= startTs` (en real UTC) rejette tout.
+//
+// Fix : ajouter l'offset timezone de l'exchange aux timestamps avant filter.
+// Vérifié manuellement par utilisateur via SQL : step4_last + 8h = ~Shenzhen
+// close TODAY ; step4_last + 9h = ~KOSDAQ close TODAY. Cohérent.
+//
+// Sources : ces offsets sont stables (pas de DST en Asia/China/Korea/Japan).
+// Australie a DST mais en May/June = AEST stable UTC+10. DST Australia
+// (Oct-Avr UTC+11) sera fix follow-up si besoin.
+const EXCHANGE_UTC_OFFSET_SEC: Record<string, number> = {
+  SHE: 8 * 3600,   // Shenzhen — China Standard Time (no DST)
+  SHG: 8 * 3600,   // Shanghai
+  HK:  8 * 3600,   // Hong Kong
+  KO:  9 * 3600,   // KOSPI — Korea Standard Time (no DST)
+  KQ:  9 * 3600,   // KOSDAQ
+  T:   9 * 3600,   // Tokyo — JST (no DST)
+  AU: 10 * 3600,   // ASX — AEST (May-Sep, no DST during this window)
+};
+
+export function getExchangeUtcOffsetSec(symbol: string | null | undefined): number {
+  if (!symbol) return 0;
+  const suffix = symbol.split('.').pop()?.toUpperCase() ?? '';
+  return EXCHANGE_UTC_OFFSET_SEC[suffix] ?? 0;
+}
+
 const SLIPPAGE_HAIRCUT_BILATERAL = 0.0015;  // 15bps each side
 const SLIPPAGE_TOTAL = SLIPPAGE_HAIRCUT_BILATERAL * 2;  // 30bps round-trip
 const SIMULATE_AFTER_MIN = 60;  // attendre que la fenêtre 60m soit close
@@ -133,6 +167,10 @@ export interface FetchDiag {
   // 60min). Sans ça il faut recalculer depuis created_at à chaque query.
   startTs?: number;
   cutoffTs60?: number;
+  // PR #288 — Offset TZ appliqué sur les candles (positif si Asia/Pacific,
+  // 0 sinon). Audit SQL : permet de vérifier qu'on a bien shifté pour Asia
+  // et de débugguer si certains tickers sont mal détectés.
+  applied_tz_offset_sec?: number;
 }
 
 // PR #283 — Type minimal pour walkForward (ne nécessite pas EodhdIntradayService.Candle)
@@ -515,7 +553,24 @@ export class GainersUserShadowService {
 
     // PR #283 — Critique : normaliser unité (ms→s) ET trier ASC AVANT
     // walkForward. EODHD retournait DESC, le bug a causé 100% NO_DATA prod.
-    const normalizedCandles = normalizeAndSortCandles(selectedSeries.candles);
+    let normalizedCandles = normalizeAndSortCandles(selectedSeries.candles);
+
+    // PR #288 — Asia/Pacific timezone correction. EODHD encode les timestamps
+    // intraday en LOCAL exchange time traités comme UTC pour Asia. Sans cette
+    // correction, candles paraissent ~8-10h dans le passé vs startTs (real
+    // UTC) → forward filter rejette tout → NO_DATA. Détection par suffix
+    // ticker (.SHE/.SHG/.HK +8h ; .KO/.KQ/.T +9h ; .AU +10h ; US/EU=0).
+    const tzOffsetSec = getExchangeUtcOffsetSec(args.symbol);
+    if (tzOffsetSec > 0) {
+      normalizedCandles = normalizedCandles.map((c) => ({
+        ...c,
+        timestamp: c.timestamp + tzOffsetSec,
+      }));
+      fetchDiag.applied_tz_offset_sec = tzOffsetSec;
+    } else {
+      fetchDiag.applied_tz_offset_sec = 0;
+    }
+
     const forward = normalizedCandles.filter((c) => c.timestamp >= startTs);
     fetchDiag.forwardCount = forward.length;
 
