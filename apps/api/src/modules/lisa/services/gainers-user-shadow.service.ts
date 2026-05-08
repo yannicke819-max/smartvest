@@ -334,16 +334,40 @@ export class GainersUserShadowService {
     const toTs = Math.floor(startTs + 60 * 60 + 300);         // +60min sim window + 5min
     const candleCount = resolveShadowLookbackCandles();        // legacy back-compat (slice when no range)
 
-    let series = await this.eodhd
+    const isAsia = args.assetClass === 'asia_equity';
+
+    const seriesPrimary = await this.eodhd
       .getCandles(eodhdTicker, '5m', candleCount, { fromTs, toTs })
       .catch(() => null);
 
+    // PR #285 — Diag verbeux Asia step 1 : ce que le primary path retourne
+    // AVANT fallback. Permet de voir si getCandles seul fonctionne sur Asia
+    // ou si on tombe systématiquement sur le fallback ticks.
+    if (isAsia) {
+      this.logger.warn(
+        `[user-shadow-fetch-asia] step1=getCandles ` +
+        `inputSymbol=${args.symbol} requestedSymbol=${seriesPrimary?.requestedSymbol ?? 'n/a'} ` +
+        `fromTs=${fromTs} toTs=${toTs} ` +
+        `rawCount=${seriesPrimary?.rawCount ?? 0} validClose=${seriesPrimary?.candles?.length ?? 0} ` +
+        `nulls=${(seriesPrimary?.rawCount ?? 0) - (seriesPrimary?.candles?.length ?? 0)}`,
+      );
+    }
+
     // Fallback ticks-data si getCandles range-fetch retourne null (low-coverage
     // EODHD : Asia/NSE/AU certaines fois, ou plan-dependent gaps).
+    let series = seriesPrimary;
     if (!series || series.candles.length === 0) {
-      series = await this.eodhd
+      const seriesTicks = await this.eodhd
         .getCandlesViaTicks(eodhdTicker, '5m', candleCount, { fromTs, toTs })
         .catch(() => null);
+      if (isAsia) {
+        this.logger.warn(
+          `[user-shadow-fetch-asia] step2=getCandlesViaTicks ` +
+          `inputSymbol=${args.symbol} requestedSymbol=${seriesTicks?.requestedSymbol ?? 'n/a'} ` +
+          `rawCount=${seriesTicks?.rawCount ?? 0} validClose=${seriesTicks?.candles?.length ?? 0}`,
+        );
+      }
+      series = seriesTicks;
     }
 
     // Log info systématique pour monitoring du fetch range (PR #284).
@@ -352,21 +376,44 @@ export class GainersUserShadowService {
     );
 
     if (!series || series.candles.length === 0) {
+      if (isAsia) {
+        this.logger.warn(
+          `[user-shadow-fetch-asia] step3=EARLY_RETURN_NO_DATA ` +
+          `inputSymbol=${args.symbol} fromTs=${fromTs} toTs=${toTs} reason=both_endpoints_empty`,
+        );
+      }
       for (const g of SIM_GRIDS) results[g.key] = noEntry();
       return results;
     }
 
     // PR #283 — Critique : normaliser unité (ms→s) ET trier ASC AVANT
     // walkForward. EODHD retournait DESC, le bug a causé 100% NO_DATA prod.
-    const normalized = normalizeAndSortCandles(series.candles);
-    const forward = normalized.filter((c) => c.timestamp >= startTs);
+    const normalizedCandles = normalizeAndSortCandles(series.candles);
+    const forward = normalizedCandles.filter((c) => c.timestamp >= startTs);
 
     if (forward.length === 0) {
-      const first = normalized[0];
-      const last = normalized[normalized.length - 1];
+      const first = normalizedCandles[0];
+      const last = normalizedCandles[normalizedCandles.length - 1];
       this.logger.warn(
-        `[user-shadow] ${eodhdTicker}: forward=0 fetched=${normalized.length} ` +
+        `[user-shadow] ${eodhdTicker}: forward=0 fetched=${normalizedCandles.length} ` +
         `firstTs=${first?.timestamp ?? 'n/a'} lastTs=${last?.timestamp ?? 'n/a'} ` +
+        `startTs=${startTs} cutoffMaxTs=${startTs + 60 * 60}`,
+      );
+    }
+
+    // PR #285 — Diag Asia post-filter : confirme la fenêtre walkForward
+    // dispose de candles utiles. Si fetched > 0 mais forward = 0 → le filter
+    // `c.timestamp >= startTs` rejette tout (fenêtre EODHD hors session ou
+    // session déjà clôturée). Si forward > 0 mais walkForward retourne
+    // NO_DATA, regarder cutoff (toutes candles > startTs+60min).
+    if (isAsia) {
+      const firstValid = normalizedCandles[0]?.timestamp ?? null;
+      const lastValid = normalizedCandles[normalizedCandles.length - 1]?.timestamp ?? null;
+      this.logger.warn(
+        `[user-shadow-fetch-asia] step4=post_filter ` +
+        `inputSymbol=${args.symbol} ` +
+        `fetched=${normalizedCandles.length} forward=${forward.length} ` +
+        `firstValidTs=${firstValid} lastValidTs=${lastValid} ` +
         `startTs=${startTs} cutoffMaxTs=${startTs + 60 * 60}`,
       );
     }
