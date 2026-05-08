@@ -28,6 +28,7 @@ import { EodhdIntradayService } from './eodhd-intraday.service';
 import { YahooIntradayService } from './yahoo-intraday.service';
 import { IntradayCacheService, CachedCandle } from './intraday-cache.service';
 import { EodhdQuotaService } from './eodhd-quota.service';
+import { filterOutOtcForeignOrdinary } from './otc-prefilter.helper';
 
 interface Candidate {
   symbol: string;
@@ -184,11 +185,27 @@ export class MultiTimeframePersistenceService {
       return out;
     }
 
-    // P19a — pas de pré-filtre exchange. Le routing multi-vendor décide
-    // (EODHD primaire, Yahoo fallback, sinon coverage='none' annoté).
+    // PR #295 — Pré-filtre OTC Foreign Ordinary (5-letter US ticker ending in F).
+    // Ces tickers (BRDCF.US, MGDDF.US, ...) ne sont couverts par aucun provider
+    // intraday : Yahoo retourne null, EODHD 1m/5m/ticks 404. Skip en amont
+    // évite la chaîne fallback à 6 étages (~6 calls/ticker/cycle gaspillés)
+    // et la pollution shadow logger (`coverage=none` rows comptés comme fail
+    // dans l'analyse Kelly).
+    const { kept: nonOtc, dropped: otcDropped } = filterOutOtcForeignOrdinary(candidates);
+    if (otcDropped.length > 0) {
+      const sample = otcDropped.slice(0, 5).map((c) => c.symbol).join(', ');
+      this.logger.log(
+        `[mtf-persist] otc-prefilter dropped ${otcDropped.length} likely-OTC ticker(s) (sample: ${sample})`,
+      );
+      this.skippedUnsupportedMarketCounter += otcDropped.length;
+    }
+
+    // P19a — pas de pré-filtre exchange (sauf OTC ci-dessus). Le routing
+    // multi-vendor décide pour le reste (EODHD primaire, Yahoo fallback,
+    // sinon coverage='none' annoté).
     const crypto: Candidate[] = [];
     const equity: Candidate[] = [];
-    for (const c of candidates) {
+    for (const c of nonOtc) {
       if (this.isCrypto(c)) crypto.push(c);
       else equity.push(c);
     }
