@@ -48,6 +48,7 @@ import { OhlcvCacheService } from './services/ohlcv-cache.service';
 import { TopGainersScannerService } from './services/top-gainers-scanner.service';
 import { GainersUserShadowService } from './services/gainers-user-shadow.service';
 import { GainersAutoRelaxService } from './services/gainers-auto-relax.service';
+import { PostSlBackfillService } from './services/post-sl-backfill.service';
 import { ShadowExitSimulatorService } from './services/shadow-exit-simulator.service';
 import { OperatingModeService } from './services/operating-mode.service';
 import { MultiTimeframePersistenceService } from './services/multi-tf-persistence.service';
@@ -117,6 +118,8 @@ import { SignalForwardTrackerService } from '../gainers-scanner/automations/sign
     GainersUserShadowService,
     // PR #282 — Auto-relax adaptive : lit cumulative_regret 7j et propose/auto-applique relax
     GainersAutoRelaxService,
+    // PR #292 — Backfill post_sl_path JSONB (analysis rebound/ATR post closed_stop)
+    PostSlBackfillService,
     // PR6.5 — Worker exit-simulator : replay BLOC 4 state machine sur shadow signals ACCEPT
     ShadowExitSimulatorService,
     // P7-MODE-GAINERS-BADGE — toggle 3-modes opératoires (UI badge → DB strategy_mode)

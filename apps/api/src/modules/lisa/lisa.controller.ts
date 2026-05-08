@@ -20,6 +20,7 @@ import { TopGainersScannerService } from './services/top-gainers-scanner.service
 import { TradingStatsService } from './services/trading-stats.service';
 import { GainersUserShadowService } from './services/gainers-user-shadow.service';
 import { GainersAutoRelaxService } from './services/gainers-auto-relax.service';
+import { PostSlBackfillService } from './services/post-sl-backfill.service';
 import { MultiTimeframePersistenceService } from './services/multi-tf-persistence.service';
 import { PersistenceProbabilityService } from './services/persistence-probability.service';
 import { EodhdQuotaService } from './services/eodhd-quota.service';
@@ -48,6 +49,7 @@ export class LisaController {
     private readonly tradingStats: TradingStatsService,
     private readonly gainersUserShadow: GainersUserShadowService,
     private readonly gainersAutoRelax: GainersAutoRelaxService,
+    private readonly postSlBackfill: PostSlBackfillService,
   ) {}
 
   // ─────────────────────────────────────────────────────────────────
@@ -858,6 +860,41 @@ export class LisaController {
   ) {
     const userId = extractUserId(headers);
     return this.gainersAutoRelax.applyProposal(proposalId, userId);
+  }
+
+  /**
+   * PR #292 — Backfill post_sl_path JSONB sur une position closed_stop.
+   * Refetch EODHD 1m candles 30min post-SL + 5m candles 75min prior pour ATR(14).
+   * Calcule rebound metrics, drawdown_in_atr_units, recovery thresholds.
+   * Utile pour analyser si les SL sont des wicks vs vrais mouvements.
+   */
+  @Post('positions/:positionId/backfill-post-sl-path')
+  @HttpCode(200)
+  async backfillPostSlPath(
+    @Headers() headers: Record<string, string>,
+    @Param('positionId') positionId: string,
+    @Query('force') forceRaw?: string,
+  ) {
+    extractUserId(headers);
+    const force = forceRaw === 'true';
+    return this.postSlBackfill.backfillOne(positionId, force);
+  }
+
+  /**
+   * PR #292 — Backfill batch (par défaut 10 closed_stop pending).
+   * Body : { limit?: number, portfolioId?: string }
+   */
+  @Post('positions/backfill-post-sl-path-batch')
+  @HttpCode(200)
+  async backfillPostSlPathBatch(
+    @Headers() headers: Record<string, string>,
+    @Body() body: { limit?: number; portfolioId?: string },
+  ) {
+    extractUserId(headers);
+    const limit = Math.max(1, Math.min(50, Number(body?.limit) || 10));
+    const opts: { limit: number; portfolioId?: string } = { limit };
+    if (body?.portfolioId) opts.portfolioId = body.portfolioId;
+    return this.postSlBackfill.backfillBatch(opts);
   }
 
   /**
