@@ -177,10 +177,21 @@ export class EodhdIntradayService {
     return 30 * 24 * 3600;                             // 30 jours pour 1h
   }
 
+  /**
+   * PR #284 — Limite de rétention EODHD intraday standard. Au-delà l'API
+   * peut retourner empty silencieusement (selon plan), créant des sims
+   * fantômes NO_DATA. On log explicite et on early-return null.
+   *
+   * Aligné avec les TTLs cache mais utilisé ici comme guard caller-side
+   * pour les fetch range explicites (shadow simulator retro-sim).
+   */
+  static readonly RETENTION_LIMIT_SEC = 5 * 24 * 3600;  // 5 days
+
   async getCandles(
     eodhdTicker: string,
     interval: '1m' | '5m' | '1h' = '5m',
     count = 20,
+    options?: { fromTs?: number; toTs?: number },
   ): Promise<CandleSeries | null> {
     // Hotfix EODHD bypass — defense in depth : si un caller passe un symbol
     // sans suffix exchange (ex: legacy row "005940" au lieu de "005940.KO"),
@@ -195,7 +206,24 @@ export class EodhdIntradayService {
     }
     // P19k — Normaliser le suffix avant cache key + URL pour cohérence.
     const normalized = this.normalizeForEodhdIntraday(eodhdTicker);
-    const cacheKey = `${normalized}::${interval}`;
+
+    // PR #284 — Mode range explicite : skip cache (range-specific), guard
+    // retention 5 jours, désactive le slice(-count) (on prend tout le range).
+    const useRange = options?.fromTs != null || options?.toTs != null;
+    if (useRange && options?.fromTs != null) {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const ageDays = (nowSec - options.fromTs) / 86400;
+      if (ageDays > 5) {
+        this.logger.warn(
+          `[eodhd] ${eodhdTicker} EODHD_RETENTION_EXCEEDED : fromTs=${options.fromTs} (${ageDays.toFixed(1)}d ago) > 5d retention. Skipping fetch.`,
+        );
+        return null;
+      }
+    }
+
+    const cacheKey = useRange
+      ? `${normalized}::${interval}::${options?.fromTs ?? '_'}::${options?.toTs ?? '_'}`
+      : `${normalized}::${interval}`;
     const cached = this.cache.get(cacheKey);
     if (cached && Date.now() - cached.asOf < this.cacheTtlMs(interval)) {
       return cached;
@@ -210,8 +238,10 @@ export class EodhdIntradayService {
       return null;
     }
 
-    const toUnix = Math.floor(Date.now() / 1000);
-    const fromUnix = toUnix - this.windowForInterval(interval);
+    // PR #284 — Range explicite via options.fromTs/toTs override le default
+    // (latest window). Permet retro-sim shadow signals avec window précise.
+    const toUnix = options?.toTs ?? Math.floor(Date.now() / 1000);
+    const fromUnix = options?.fromTs ?? (toUnix - this.windowForInterval(interval));
 
     const tStart = Date.now();
     try {
@@ -243,7 +273,7 @@ export class EodhdIntradayService {
         return null;
       }
 
-      const candles: Candle[] = data
+      const allCandles: Candle[] = data
         .map((d) => ({
           timestamp: typeof d.timestamp === 'number' ? d.timestamp : Number(d.timestamp ?? 0),
           open: Number(d.open ?? 0),
@@ -252,8 +282,13 @@ export class EodhdIntradayService {
           close: Number(d.close ?? 0),
           volume: Number(d.volume ?? 0),
         }))
-        .filter((c) => c.timestamp > 0 && c.close > 0)
-        .slice(-count);
+        .filter((c) => c.timestamp > 0 && c.close > 0);
+
+      // PR #284 — En mode range, on prend toutes les candles dans la fenêtre
+      // (pas de slice(-count) qui prendrait juste les dernières et perdrait
+      // les candles utiles au caller). Le serveur EODHD a déjà restreint via
+      // les query params from/to.
+      const candles = useRange ? allCandles : allCandles.slice(-count);
 
       const series: CandleSeries = { ticker: eodhdTicker, interval, candles, asOf: Date.now() };
       this.cache.set(cacheKey, series);
@@ -402,9 +437,23 @@ export class EodhdIntradayService {
     eodhdTicker: string,
     interval: '1m' | '5m' | '1h' = '5m',
     count = 20,
+    options?: { fromTs?: number; toTs?: number },
   ): Promise<CandleSeries | null> {
-    const toUnix = Math.floor(Date.now() / 1000);
-    const fromUnix = toUnix - this.windowForInterval(interval);
+    // PR #284 — Range explicite override (cf. getCandles). Retention guard
+    // identique : >5j → log warn + return null.
+    const useRange = options?.fromTs != null || options?.toTs != null;
+    if (useRange && options?.fromTs != null) {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const ageDays = (nowSec - options.fromTs) / 86400;
+      if (ageDays > 5) {
+        this.logger.warn(
+          `[eodhd:ticks] ${eodhdTicker} EODHD_RETENTION_EXCEEDED : fromTs=${options.fromTs} (${ageDays.toFixed(1)}d ago) > 5d. Skipping fetch.`,
+        );
+        return null;
+      }
+    }
+    const toUnix = options?.toTs ?? Math.floor(Date.now() / 1000);
+    const fromUnix = options?.fromTs ?? (toUnix - this.windowForInterval(interval));
     // Limit 5000 = compromis : sur ticker liquide ~100-500 ticks/5m → 5000 ticks
     // couvre 50-250 minutes ; sur micro-cap sparse ~5-20 ticks/5m → couvre 1-2j.
     const ticks = await this.getTickData(eodhdTicker, fromUnix, toUnix, 5000);
@@ -438,7 +487,8 @@ export class EodhdIntradayService {
       }
     }
     const sorted = [...buckets.values()].sort((a, b) => a.timestamp - b.timestamp);
-    const candles = sorted.slice(-count);
+    // PR #284 — En mode range, on prend tout (pas de slice(-count)).
+    const candles = useRange ? sorted : sorted.slice(-count);
     if (candles.length === 0) return null;
     const series: CandleSeries = {
       ticker: eodhdTicker,

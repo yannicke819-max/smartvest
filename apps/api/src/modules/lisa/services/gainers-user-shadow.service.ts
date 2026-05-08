@@ -314,20 +314,48 @@ export class GainersUserShadowService {
     // le suffix manquait par erreur.
     const eodhdTicker = args.symbol;
 
-    // PR #283 — Lookback configurable (env USER_SHADOW_5M_LOOKBACK_MIN, default
-    // 150min = 30 candles). Fallback ticks-data si getCandles retourne null
-    // (couvre Asia/NSE low-coverage où l'intraday standard échoue).
-    const candleCount = resolveShadowLookbackCandles();
-    let series = await this.eodhd.getCandles(eodhdTicker, '5m', candleCount).catch(() => null);
+    // PR #284 — FETCH RANGE EXPLICITE (au lieu de "latest N candles").
+    //
+    // Bug pré-PR #284 : `getCandles('5m', 30)` retournait les 30 dernières
+    // candles existantes. Pour une row simulée 12h après recordDecision (cas
+    // retro UPDATE), les latest candles couvraient la session courante, pas
+    // la fenêtre [startTs, startTs+60min] d'origine → 100% NO_DATA.
+    //
+    // Fix : passer `fromTs/toTs` explicites au range exact dont on a besoin
+    // ([startTs - 5min, endTs + buffer]). Le 5min de buffer côté gauche permet
+    // d'avoir 1 candle pré-entry comme contexte si on en veut plus tard
+    // (path quality forward, etc.). Côté droit, +5min pour clipper la dernière
+    // candle 60min cleanly.
+    //
+    // Retention guard EODHD 5j : cf. EodhdIntradayService.RETENTION_LIMIT_SEC.
+    // Au-delà l'API retourne empty → on log EODHD_RETENTION_EXCEEDED + null.
+    const startTs = new Date(args.createdAt).getTime() / 1000;
+    const fromTs = Math.floor(startTs - 300);                 // -5min buffer pré-entry
+    const toTs = Math.floor(startTs + 60 * 60 + 300);         // +60min sim window + 5min
+    const candleCount = resolveShadowLookbackCandles();        // legacy back-compat (slice when no range)
+
+    let series = await this.eodhd
+      .getCandles(eodhdTicker, '5m', candleCount, { fromTs, toTs })
+      .catch(() => null);
+
+    // Fallback ticks-data si getCandles range-fetch retourne null (low-coverage
+    // EODHD : Asia/NSE/AU certaines fois, ou plan-dependent gaps).
     if (!series || series.candles.length === 0) {
-      series = await this.eodhd.getCandlesViaTicks(eodhdTicker, '5m', candleCount).catch(() => null);
+      series = await this.eodhd
+        .getCandlesViaTicks(eodhdTicker, '5m', candleCount, { fromTs, toTs })
+        .catch(() => null);
     }
+
+    // Log info systématique pour monitoring du fetch range (PR #284).
+    this.logger.log(
+      `[user-shadow-fetch] ${eodhdTicker}: from=${fromTs} to=${toTs} got=${series?.candles?.length ?? 0}`,
+    );
+
     if (!series || series.candles.length === 0) {
       for (const g of SIM_GRIDS) results[g.key] = noEntry();
       return results;
     }
 
-    const startTs = new Date(args.createdAt).getTime() / 1000;
     // PR #283 — Critique : normaliser unité (ms→s) ET trier ASC AVANT
     // walkForward. EODHD retournait DESC, le bug a causé 100% NO_DATA prod.
     const normalized = normalizeAndSortCandles(series.candles);
