@@ -82,13 +82,15 @@ describe('PR #286 — fetch_diag shape', () => {
     };
     const svc = buildService({
       candlesByEndpoint: {
-        getCandles_5m_range: { candles: [validCandle], rawCount: 1, requestedSymbol: '300161.SHE' },
+        getCandles_5m_range: { candles: [validCandle], rawCount: 1, requestedSymbol: 'WFCF.US' },
       },
       callLog,
     });
+    // PR #288 — Test utilise un ticker US (offset=0) pour éviter le shift TZ
+    // Asia/Pacific qui décalerait la candle hors cutoff sim window 60min.
     const { fetchDiag, results } = await runSim(svc, {
-      symbol: '300161.SHE',
-      assetClass: 'asia_equity',
+      symbol: 'WFCF.US',
+      assetClass: 'us_equity_small_mid',
       entryPrice: 28.42,
       createdAt: new Date(startTs * 1000).toISOString(),
     }) as { fetchDiag: FetchDiag; results: Record<string, { outcome: string }> };
@@ -99,7 +101,7 @@ describe('PR #286 — fetch_diag shape', () => {
     expect(fetchDiag.forwardCount).toBe(1);
     expect(results.baseline_60m.outcome).toBe('TIME_LIMIT');  // 1 candle, no TP/SL hit
     // Vérif callLog : seul l'endpoint primary a été appelé
-    expect(callLog).toEqual([{ endpoint: 'getCandles_5m_range', ticker: '300161.SHE' }]);
+    expect(callLog).toEqual([{ endpoint: 'getCandles_5m_range', ticker: 'WFCF.US' }]);
   });
 
   it('falls through to step 3 (1m_range) when 5m_range and ticks return empty', async () => {
