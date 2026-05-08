@@ -1896,6 +1896,27 @@ export class MechanicalTradingService {
    * relâcher). Et ne jamais trailer un stop qui résulterait en P&L négatif.
    */
   private async checkReactiveSignals(pos: OpenPosition, currentPrice: Decimal, isHyperActive: boolean = false): Promise<void> {
+    // PR #292 — Toggle env pour désactiver les exits réactifs RSI/MACD.
+    //
+    // Bug observé prod 08/05/2026 (analyse Kelly empirique sur 65 trades) :
+    //   - R-ratio = 1.067 (vs 2.22 théorique TP 2% / SL 0.9%)
+    //   - avg_win = $11.04 (vs $18 attendu si TP plein)
+    //   - 24% des "stops" à -0.1% à -0.7% = early exits réactifs prématurés
+    //   - Kelly = -4.32% (négatif → expectancy négative)
+    //
+    // Cause : exits réactifs ferment des trades à pnl +0.5-0.7% (bien avant
+    // TP plein 2%) sur signal RSI > 70 + MACD bearish. Symétriquement, ils
+    // coupent des stops avant que le SL absolu ne déclenche, transformant
+    // certains trades en "fake stops" précoces.
+    //
+    // Fix toggle (env-only, zero migration) : ENABLE_REACTIVE_EXITS=false
+    // → laisser TP/SL absolu fonctionner sans interférence. Re-mesurer
+    // Kelly dans 5-7 jours. Si R-ratio remonte vers 2.0+, le bug est confirmé
+    // et on peut décider de retirer définitivement la logique réactive.
+    if (process.env.ENABLE_REACTIVE_EXITS === 'false') {
+      return;
+    }
+
     const entryPx = new Decimal(pos.entryPrice);
     if (entryPx.lte(0)) return;
 
