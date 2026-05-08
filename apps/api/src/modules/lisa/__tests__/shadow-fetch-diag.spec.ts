@@ -179,6 +179,65 @@ describe('PR #286 — fetch_diag shape', () => {
     expect(callLog).toHaveLength(0);  // pas de fetch tenté
   });
 
+  it('PR #287 — populates firstCandleTs/lastCandleTs + forwardCountAfterFilter per step', async () => {
+    const callLog: FetchCall[] = [];
+    const startTs = Math.floor(Date.now() / 1000) - 6 * 3600;
+    // 3 candles : 1 avant startTs (rejected by filter) + 2 après
+    const candles = [
+      { timestamp: startTs - 600, open: 100, high: 100, low: 99.5, close: 99.8, volume: 100 },
+      { timestamp: startTs + 300, open: 100, high: 101, low: 99.5, close: 100.5, volume: 1000 },
+      { timestamp: startTs + 900, open: 100.5, high: 102, low: 100, close: 101.5, volume: 1500 },
+    ];
+    const svc = buildService({
+      candlesByEndpoint: {
+        getCandles_5m_range: { candles, rawCount: 3, requestedSymbol: '300161.SHE' },
+      },
+      callLog,
+    });
+    const { fetchDiag } = await runSim(svc, {
+      symbol: '300161.SHE',
+      assetClass: 'asia_equity',
+      entryPrice: 100,
+      createdAt: new Date(startTs * 1000).toISOString(),
+    }) as { fetchDiag: FetchDiag };
+
+    expect(fetchDiag.steps[0].firstCandleTs).toBe(startTs - 600);
+    expect(fetchDiag.steps[0].lastCandleTs).toBe(startTs + 900);
+    expect(fetchDiag.steps[0].forwardCountAfterFilter).toBe(2); // 2/3 candles >= startTs
+    // Top-level startTs/cutoffTs60 capturés
+    expect(fetchDiag.startTs).toBe(startTs);
+    expect(fetchDiag.cutoffTs60).toBe(startTs + 60 * 60);
+  });
+
+  it('PR #287 — requestedSymbol falls back to inputSymbol when call returns null', async () => {
+    const callLog: FetchCall[] = [];
+    const svc = buildService({
+      candlesByEndpoint: {
+        getCandles_5m_range: null,  // EODHD returns null → no series object
+        ticks_range: null,
+        getCandles_1m_range: null,
+        getCandles_5m_default: null,
+      },
+      callLog,
+    });
+    const { fetchDiag } = await runSim(svc, {
+      symbol: '300303.SHE',
+      assetClass: 'asia_equity',
+      entryPrice: 28.42,
+      createdAt: new Date(Date.now() - 6 * 3600 * 1000).toISOString(),
+    }) as { fetchDiag: FetchDiag };
+
+    // PR #287 — Avant : requestedSymbol=null sur tous les steps quand call=null.
+    // Maintenant : fallback à inputSymbol → permet de voir en SQL le ticker tenté.
+    expect(fetchDiag.steps).toHaveLength(4);
+    for (const step of fetchDiag.steps) {
+      expect(step.requestedSymbol).toBe('300303.SHE');
+      expect(step.inputSymbol).toBe('300303.SHE');
+      expect(step.firstCandleTs).toBeUndefined();  // pas de candles → pas de timestamps
+      expect(step.lastCandleTs).toBeUndefined();
+    }
+  });
+
   it('skips crypto with explicit error step (Binance not yet wired)', async () => {
     const callLog: FetchCall[] = [];
     const svc = buildService({ candlesByEndpoint: {}, callLog });

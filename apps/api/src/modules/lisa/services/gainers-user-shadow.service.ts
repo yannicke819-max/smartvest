@@ -112,6 +112,16 @@ export interface FetchDiagStep {
   validClose: number;           // post-filter
   nulls: number;                // rawCount - validClose
   ms: number;                   // latency
+  // PR #287 — Diagnostic timestamps : extrema des candles retournées par
+  // ce step. Permet SQL post-deploy de comparer aux startTs/cutoffTs et
+  // détecter cause exacte du `forward_count=0` malgré `selectedStep>=0`.
+  // Populated UNIQUEMENT quand validClose > 0 (sinon undefined).
+  firstCandleTs?: number;
+  lastCandleTs?: number;
+  // PR #287 — forwardCount par step (= candles avec timestamp >= startTs).
+  // Pour le step `selectedStep`, c'est le même que fetchDiag.forwardCount
+  // (compatibility). Pour les autres, undefined (on ne calcule pas).
+  forwardCountAfterFilter?: number;
   error?: string;
 }
 export interface FetchDiag {
@@ -119,6 +129,10 @@ export interface FetchDiag {
   selectedStep: number | null;  // index 0-based dans steps[] qui a fourni les candles
   forwardCount: number;         // post normalize+filter par startTs
   outcome: 'ok' | 'no_data' | 'error';
+  // PR #287 — Pour analyse SQL : on persiste startTs et cutoffTs (sim window
+  // 60min). Sans ça il faut recalculer depuis created_at à chaque query.
+  startTs?: number;
+  cutoffTs60?: number;
 }
 
 // PR #283 — Type minimal pour walkForward (ne nécessite pas EodhdIntradayService.Candle)
@@ -374,6 +388,9 @@ export class GainersUserShadowService {
     const toTs = Math.floor(startTs + 60 * 60 + 300);
     const candleCount = resolveShadowLookbackCandles();
     const isAsia = args.assetClass === 'asia_equity';
+    // PR #287 — Capture top-level pour SQL post-mortem (vs recalcul depuis created_at)
+    fetchDiag.startTs = Math.floor(startTs);
+    fetchDiag.cutoffTs60 = Math.floor(startTs + 60 * 60);
 
     // PR #286 — Fallback chain alignée sur MultiTimeframePersistenceService
     // (cf. multi-tf-persistence.service.ts:321-431) mais adaptée pour le
@@ -439,12 +456,29 @@ export class GainersUserShadowService {
         fromTs: step.rangeMode ? fromTs : null,
         toTs: step.rangeMode ? toTs : null,
         inputSymbol: args.symbol,
-        requestedSymbol: series?.requestedSymbol ?? null,
+        // PR #287 — Force fallback à inputSymbol si requestedSymbol est null
+        // (cas où la call EODHD a retourné null sans construire de series).
+        // Permet diagnostic SQL : voir le ticker qu'on AURAIT envoyé.
+        requestedSymbol: series?.requestedSymbol ?? args.symbol,
         rawCount,
         validClose,
         nulls: rawCount - validClose,
         ms,
       };
+      // PR #287 — Capture extrema timestamps (utiles SQL pour comparer
+      // au startTs et identifier les patterns "candles d'une session OLDER").
+      if (series?.candles && series.candles.length > 0) {
+        const tsList = series.candles.map((c) => Number(c.timestamp)).filter((t) => Number.isFinite(t));
+        if (tsList.length > 0) {
+          stepEntry.firstCandleTs = Math.min(...tsList);
+          stepEntry.lastCandleTs = Math.max(...tsList);
+          stepEntry.forwardCountAfterFilter = tsList.filter((t) => {
+            // Auto-detect ms vs s (mirror normalizeAndSortCandles logic)
+            const tsec = t > 1e12 ? Math.floor(t / 1000) : t;
+            return tsec >= startTs;
+          }).length;
+        }
+      }
       fetchDiag.steps.push(stepEntry);
 
       if (isAsia) {
