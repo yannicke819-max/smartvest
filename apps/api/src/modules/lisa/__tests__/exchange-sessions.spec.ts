@@ -289,9 +289,13 @@ describe('isInExchangeSession — NYSE Holidays 2026', () => {
     expect(isInExchangeSession('AAPL.US', '2026-11-27T17:00:00Z')).toBe(true);
   });
 
-  it('Holiday list applies to TSX (.TO) too in v1', () => {
-    // TSX has its own holiday calendar but v1 reuses NYSE list (mostly aligns).
-    expect(isInExchangeSession('SHOP.TO', '2026-12-25T17:00:00Z')).toBe(false);
+  it('Holiday list does NOT apply to TSX (.TO) — known bug v1', () => {
+    // TSX a son propre calendar (Victoria Day, Canada Day, etc.) très
+    // différent de NYSE. Ancien héritage NYSE était faux à ~12 jours/an.
+    // V1 : pas de holiday handling pour .TO → Christmas Dec 25 13:00 EDT
+    // est classé "in session" (faux positif rare 1×/an, < ancien biais).
+    // Cf. follow-up PR #297 pour calendar TSX dédié.
+    expect(isInExchangeSession('SHOP.TO', '2026-12-25T17:00:00Z')).toBe(true);
   });
 
   it('Holiday list does NOT apply to non-US exchanges', () => {
@@ -453,6 +457,29 @@ describe('isInExchangeSession — DST boundary tests per marketplace', () => {
   it('ASX winter AEST: 00:00 UTC = 10:00 AEST → true', () => {
     // 2026-07-15 00:00 UTC = 10:00 AEST (Sydney winter, no DST in winter)
     expect(isInExchangeSession('CCP.AU', '2026-07-15T00:00:00Z')).toBe(true);
+  });
+
+  // EU DST transitions ≠ US (last Sunday March/October vs 2nd Sun Mar / 1st Sun Nov).
+  // 2026 EU DST : Spring forward 2026-03-29 (last Sun March), Fall back 2026-10-25.
+
+  it('Paris pre-EU-DST 2026-03-27 (Fri): 08:00 UTC = 9:00 CET → true (still winter)', () => {
+    expect(isInExchangeSession('MC.PA', '2026-03-27T08:00:00Z')).toBe(true);
+  });
+
+  it('Paris post-EU-DST 2026-03-30 (Mon): 07:00 UTC = 9:00 CEST → true (after spring forward)', () => {
+    expect(isInExchangeSession('MC.PA', '2026-03-30T07:00:00Z')).toBe(true);
+  });
+
+  it('LSE post-EU-DST 2026-03-30 (Mon): 07:00 UTC = 8:00 BST → true (open exact)', () => {
+    expect(isInExchangeSession('HSBA.LSE', '2026-03-30T07:00:00Z')).toBe(true);
+  });
+
+  it('Paris pre-EU-fall-back 2026-10-23 (Fri): 07:00 UTC = 9:00 CEST → true', () => {
+    expect(isInExchangeSession('MC.PA', '2026-10-23T07:00:00Z')).toBe(true);
+  });
+
+  it('Paris post-EU-fall-back 2026-10-26 (Mon): 08:00 UTC = 9:00 CET → true (back to winter)', () => {
+    expect(isInExchangeSession('MC.PA', '2026-10-26T08:00:00Z')).toBe(true);
   });
 });
 

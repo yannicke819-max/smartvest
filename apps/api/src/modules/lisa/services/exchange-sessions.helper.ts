@@ -139,8 +139,15 @@ export function isInExchangeSession(symbol: string, at: Date | string | number):
   const weekday = getLocalWeekday(date, session.tz);
   if (weekday === 0 || weekday === 6) return false;  // Sun / Sat
 
-  // Holiday check (NYSE-only v1, applies to .US and .TO which mostly aligns)
-  if (suffix === '.US' || suffix === '.TO') {
+  // Holiday check (NYSE-only v1).
+  //
+  // RETIRÉ : ancien héritage NYSE pour .TO. Ratio correct=3/15 vs wrong=12/15
+  // (TSX a ses propres fériés : Victoria Day, Canada Day, Civic Holiday,
+  // Remembrance Day, Boxing Day. Et TSX OUVRE des fériés US : MLK,
+  // Presidents, Memorial, Juneteenth, Independence, Labor, Thanksgiving).
+  // Mieux vaut pas de holiday handling .TO que mauvais. Cf. follow-up PR
+  // #297 pour calendar TSX dédié + autres marketplaces.
+  if (suffix === '.US') {
     const localDateStr = getLocalDateString(date, session.tz);
     if (NYSE_FULL_HOLIDAYS_2026.has(localDateStr)) return false;
   }
