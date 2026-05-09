@@ -11,7 +11,8 @@ export type EarlyReturnReason =
   | 'no_candidates_fetched'
   | 'candidates_fetched_but_none_selected'
   | 'persist_log_failed'
-  | 'upstream_provider_error';
+  | 'upstream_provider_error'
+  | 'macro_veto';  // PR Action 3 — LLM macro veto (regime risk-off)
 
 export const EARLY_RETURN_REASONS: readonly EarlyReturnReason[] = [
   'scanner_paused',
@@ -21,6 +22,7 @@ export const EARLY_RETURN_REASONS: readonly EarlyReturnReason[] = [
   'candidates_fetched_but_none_selected',
   'persist_log_failed',
   'upstream_provider_error',
+  'macro_veto',
 ] as const;
 
 export interface PerExchangeResult {

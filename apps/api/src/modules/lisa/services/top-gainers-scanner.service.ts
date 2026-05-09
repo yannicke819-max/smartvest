@@ -32,6 +32,7 @@ import { MultiTimeframePersistenceService, type PersistenceWithPath } from './mu
 import { PersistenceProbabilityService } from './persistence-probability.service';
 import { EodhdQuotaService } from './eodhd-quota.service';
 import { EodhdCalendarService } from './eodhd-calendar.service';
+import { MacroVetoService } from './macro-veto.service';
 import { GainersUserShadowService, type ShadowDecision } from './gainers-user-shadow.service';
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
 // PR6.3 — Shadow wiring (LisaModule import GainersModule pour résolution DI)
@@ -507,6 +508,11 @@ export class TopGainersScannerService implements OnModuleInit {
      * Quand undefined → earnings filter no-op silencieux.
      */
     private readonly eodhdCalendar?: EodhdCalendarService,
+    /**
+     * PR Action 3 — Macro veto LLM hourly. Optional back-compat tests.
+     * Quand undefined → veto check skip silently (legacy behavior).
+     */
+    private readonly macroVeto?: MacroVetoService,
   ) {}
 
   /**
@@ -715,6 +721,26 @@ export class TopGainersScannerService implements OnModuleInit {
       this.logger.log(`[top-gainers] paused — ${reason} — cycle skipped`);
       this.recordEarlyReturn('scanner_paused');
       return;
+    }
+
+    // PR Action 3 — LLM macro veto check (env-gated, default off).
+    //
+    // Hourly cron MacroVetoService produit une décision macro (allow/veto)
+    // basée sur VIX, SPX, DXY, US10Y, news flash. Si veto active ET env
+    // GAINERS_MACRO_VETO_ENABLED=true → skip ce cycle scanner.
+    //
+    // Fail-safe : si pas de décision récente (>2h) OU LLM disabled, default = allow.
+    // Lecture ultra-rapide (cache 60s côté MacroVetoService → pas d'impact perf).
+    const macroVetoEnabled = (this.config.get<string>('GAINERS_MACRO_VETO_ENABLED') ?? 'false').toLowerCase() === 'true';
+    if (macroVetoEnabled && this.macroVeto) {
+      const macroFlag = await this.macroVeto.getCurrentFlag().catch(() => null);
+      if (macroFlag && !macroFlag.macroAllowed && !macroFlag.fallbackUsed) {
+        this.logger.log(
+          `[top-gainers] macro veto active — regime=${macroFlag.regime} reason="${macroFlag.vetoReason ?? 'n/a'}" confidence=${macroFlag.confidence.toFixed(2)} — cycle skipped`,
+        );
+        this.recordEarlyReturn('macro_veto');
+        return;
+      }
     }
 
     // P7 — Priorité DB : portfolios en strategy_mode='gainers' (toggle UI).
