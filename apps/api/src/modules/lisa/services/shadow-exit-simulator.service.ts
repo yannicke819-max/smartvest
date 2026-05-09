@@ -25,6 +25,7 @@ import { PositionState, ExitReason } from '../../gainers-scanner/domain/gainers-
 import { EodhdIntradayService } from './eodhd-intraday.service';
 import { BinanceMarketService } from './binance-market.service';
 import { ensureEodhdSuffix } from './eodhd-symbol.util';
+import { isLikelyOtcForeignOrdinaryUS } from './otc-prefilter.helper';
 
 interface ShadowSignalRow {
   id: string;
@@ -206,6 +207,11 @@ export class ShadowExitSimulatorService {
     // ce fix, des rows legacy (pré-PR #234) avec symbol RAW (ex: "005940",
     // "NOCIL") tombaient en HTTP 404 silencieusement → coverage='none'.
     const eodhdTicker = ensureEodhdSuffix(row.symbol, row.exchange);
+    // PR #298 BUG 2 FIX — Skip OTC Foreign Ordinary US (jamais d'intraday
+    // dispo). Évite EODHD call inutile dans le replay shadow-exit.
+    if (isLikelyOtcForeignOrdinaryUS(eodhdTicker)) {
+      return null;
+    }
     const series = await this.eodhd.getCandles(eodhdTicker, '1m', count);
     return series ? series.candles.map((c) => ({ close: c.close })) : null;
   }

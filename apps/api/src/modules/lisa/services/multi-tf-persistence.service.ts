@@ -28,7 +28,7 @@ import { EodhdIntradayService } from './eodhd-intraday.service';
 import { YahooIntradayService } from './yahoo-intraday.service';
 import { IntradayCacheService, CachedCandle } from './intraday-cache.service';
 import { EodhdQuotaService } from './eodhd-quota.service';
-import { filterOutOtcForeignOrdinary } from './otc-prefilter.helper';
+import { filterOutOtcForeignOrdinary, isLikelyOtcForeignOrdinaryUS } from './otc-prefilter.helper';
 
 interface Candidate {
   symbol: string;
@@ -474,6 +474,14 @@ export class MultiTimeframePersistenceService {
   }
 
   private async fetchEquityPersistence(c: Candidate): Promise<PersistenceWithPath | null> {
+    // PR #298 BUG 2 FIX — Étendre le OTC pre-filter (PR #294) au single-symbol
+    // path. analyzeBatch était filtré mais cette fonction (appelée par
+    // analyze() single-symbol UI) ne l'était pas. ~14 OTC tickers/cycle
+    // continuaient à fetch EODHD pour rien.
+    if (isLikelyOtcForeignOrdinaryUS(c.symbol)) {
+      this.logger.debug(`[mtf-persist] ${c.symbol} otc-prefilter (single-path) → skip`);
+      return null;
+    }
     // EODHD ticker convention : SYMBOL.EXCHANGE
     const eodhdTicker = this.toEodhdTicker(c);
     // 13 candles 5-min couvre 1h05 — assez pour les TFs 5m..1h

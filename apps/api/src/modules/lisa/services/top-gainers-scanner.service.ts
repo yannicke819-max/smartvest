@@ -1010,11 +1010,39 @@ export class TopGainersScannerService implements OnModuleInit {
     const tasks: Promise<TopGainerCandidate[]>[] = [];
 
     if (apiKey) {
+      // PR #298 BUG 1 FIX — Per-exchange session-aware skip (gated env).
+      //
+      // Avant : `for (const ex of NON_EU_EXCHANGES) tasks.push(fetchScreener(ex))`
+      // → 9 calls EODHD screener par cycle UNCONDITIONNELS, même samedi/dimanche.
+      // Avec cycle 5min × 48h weekend × ~63 calls/cycle ≈ 36k calls EODHD perdus
+      // (tous marchés non-crypto fermés, data stale, 0 candidat qualifié).
+      //
+      // Maintenant : si `SCANNER_SESSION_AWARE=true`, on skip per-exchange selon
+      // session class. Crypto (Binance fetched plus bas) jamais affecté.
+      // Default false pour back-compat (les portfolios qui veulent 24/7 keep that).
+      //
+      // Mapping exchange → session class (US RTH 13:30-20:00 UTC, EU 8-16:30 UTC,
+      // Asia 0-8 UTC, all Mon-Fri only).
+      const sessionAware = (this.config.get<string>('SCANNER_SESSION_AWARE') ?? 'false').toLowerCase() === 'true';
+      const exchangeToSession: Record<string, MarketSessionClass> = {
+        'US': 'us', 'TO': 'us',           // NYSE/NASDAQ + TSX (similar hours)
+        'T': 'asia', 'HK': 'asia', 'KO': 'asia', 'KQ': 'asia',
+        'SHG': 'asia', 'SHE': 'asia', 'AU': 'asia',
+      };
+
       // Non-EU exchanges always scanned (US 24/7 with after-hours, Asia, Other).
       // P19s+ — log warn on screener failure (was silent .catch(() => [])
       // qui masquait les 0-result silencieux sur LSE/PA/TSE/HK/AU avant le
       // fix UPPERCASE + change_p).
+      const skippedNonEu: string[] = [];
       for (const ex of NON_EU_EXCHANGES) {
+        if (sessionAware) {
+          const cls = exchangeToSession[ex];
+          if (cls && !isMarketOpen(cls, now)) {
+            skippedNonEu.push(`${ex}(${cls})`);
+            continue;
+          }
+        }
         tasks.push(
           this.fetchEodhdScreener(ex, apiKey)
             .then((rows) => {
@@ -1028,6 +1056,11 @@ export class TopGainersScannerService implements OnModuleInit {
               this.recordEarlyReturn('upstream_provider_error', `${ex}: ${msg.slice(0, 80)}`);
               return [];
             }),
+        );
+      }
+      if (sessionAware && skippedNonEu.length > 0) {
+        this.logger.log(
+          `[top-gainers] session-aware fetch: skipped ${skippedNonEu.length} closed exchanges (${skippedNonEu.join(',')}) — saved ${skippedNonEu.length} EODHD screener calls`,
         );
       }
 
