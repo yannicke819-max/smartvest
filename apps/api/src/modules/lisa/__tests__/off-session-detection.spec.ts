@@ -45,13 +45,36 @@ async function runSim(svc: GainersUserShadowService, args: { symbol: string; ass
   return await (svc as any).simulateRow(args);
 }
 
+/**
+ * PR #296 — Helper to pick an UTC timestamp during the symbol's exchange
+ * session, on a Wednesday (always a weekday). Avoids flakiness from
+ * `Date.now()` which would land on weekends or off-hours.
+ *
+ * Wed May 13 2026:
+ *   - .SHE / .SHG (Shanghai 09:30-15:00 +8) → 03:00 UTC = 11:00 Shanghai ✓
+ *   - .US (NYSE 09:30-16:00 EDT) → 17:00 UTC = 13:00 EDT ✓
+ *   - .NSE / .BSE (NSE 09:15-15:30 +5:30) → 06:00 UTC = 11:30 IST ✓
+ */
+function inSessionStartTs(symbol: string): number {
+  const wed = '2026-05-13';
+  if (symbol.endsWith('.US') || symbol.endsWith('.TO')) {
+    return Math.floor(new Date(`${wed}T17:00:00Z`).getTime() / 1000);
+  }
+  if (symbol.endsWith('.NSE') || symbol.endsWith('.BSE')) {
+    return Math.floor(new Date(`${wed}T06:00:00Z`).getTime() / 1000);
+  }
+  // Asia (.SHE/.SHG/.HK/.T/.KO/.KQ) ~ 03:00 UTC = covered by most APAC sessions
+  return Math.floor(new Date(`${wed}T03:00:00Z`).getTime() / 1000);
+}
+
 describe('PR #289 — TZ shift reverted', () => {
   it('Asia ticker candles are NOT shifted (timestamps used as-is)', async () => {
     const callLog: FetchCall[] = [];
     // Row captured at startTs. Candle at startTs + 600 (+10min within sim window).
     // Avant PR #289 : ce candle aurait été shifté +8h → bien au-delà cutoff → NO_DATA.
     // Après PR #289 : timestamp utilisé tel quel → walkForward normal.
-    const startTs = Math.floor(Date.now() / 1000) - 6 * 3600;
+    // PR #296 : startTs = Wed in-session for .SHE (avoid Step 0 short-circuit).
+    const startTs = inSessionStartTs('300161.SHE');
     const candles = [
       { timestamp: startTs + 300, open: 100, high: 100.5, low: 99.5, close: 100.2, volume: 1000 },
       { timestamp: startTs + 900, open: 100.2, high: 102.5, low: 100, close: 102.1, volume: 1500 },
@@ -78,7 +101,8 @@ describe('PR #289 — TZ shift reverted', () => {
 
   it('US ticker still has zero offset (no regression)', async () => {
     const callLog: FetchCall[] = [];
-    const startTs = Math.floor(Date.now() / 1000) - 6 * 3600;
+    // PR #296 : Wed in-session for .US.
+    const startTs = inSessionStartTs('AAPL.US');
     const candles = [
       { timestamp: startTs + 300, open: 100, high: 100.5, low: 99.5, close: 100.2, volume: 1000 },
     ];
@@ -101,11 +125,12 @@ describe('PR #289 — TZ shift reverted', () => {
 });
 
 describe('PR #289 — OFF_SESSION detection', () => {
-  it('marks OFF_SESSION when all fetched candles are before startTs', async () => {
+  it('marks OFF_SESSION (stale_data) when all fetched candles are before startTs', async () => {
     const callLog: FetchCall[] = [];
-    // startTs = TODAY 18:02 UTC (~ scanner US session)
-    const startTs = Math.floor(Date.now() / 1000);
-    // Latest candle Shenzhen close = TODAY 07:00 UTC = 11h avant startTs
+    // PR #296 : startTs in-session for .SHE → Step 0 lets through.
+    // Candles 11-12h before startTs simulate EODHD stale data → triggers
+    // post-fetch OFF_SESSION marker with off_session_reason='stale_data'.
+    const startTs = inSessionStartTs('300161.SHE');
     const candles = [
       { timestamp: startTs - 12 * 3600, open: 28, high: 28.5, low: 27.9, close: 28.2, volume: 1000 },
       { timestamp: startTs - 11 * 3600, open: 28.2, high: 28.5, low: 28.0, close: 28.42, volume: 1500 },
@@ -136,7 +161,8 @@ describe('PR #289 — OFF_SESSION detection', () => {
 
   it('does NOT mark OFF_SESSION when some candles >= startTs (normal flow)', async () => {
     const callLog: FetchCall[] = [];
-    const startTs = Math.floor(Date.now() / 1000) - 6 * 3600;
+    // PR #296 : Wed in-session for .SHE.
+    const startTs = inSessionStartTs('300161.SHE');
     // Mix : 1 candle avant startTs + 2 après (forward filter en garde 2)
     const candles = [
       { timestamp: startTs - 600, open: 100, high: 100.5, low: 99.5, close: 99.8, volume: 1000 },
@@ -163,7 +189,8 @@ describe('PR #289 — OFF_SESSION detection', () => {
 
   it('NO_DATA (not OFF_SESSION) when zero candles fetched at all', async () => {
     const callLog: FetchCall[] = [];
-    const startTs = Math.floor(Date.now() / 1000) - 6 * 3600;
+    // PR #296 : Wed in-session for .NSE (so Step 0 doesn't short-circuit).
+    const startTs = inSessionStartTs('HEG.NSE');
     const svc = buildService({
       candlesByEndpoint: {
         getCandles_5m_range: { candles: [], rawCount: 0, requestedSymbol: 'HEG.NSE' },

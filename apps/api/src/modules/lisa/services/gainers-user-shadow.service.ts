@@ -1,7 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
+import { YahooIntradayService } from './yahoo-intraday.service';
 import { bootstrapMeanCI, verdictFromCI, GateVerdict } from '@smartvest/ai-analyst';
+import { isInExchangeSession } from './exchange-sessions.helper';
 
 /**
  * GainersUserShadowService — PR #280
@@ -130,6 +132,30 @@ export interface SimOutcome {
   exit_at: string | null;
   pnl_pct: number | null;       // NET (slippage already subtracted)
   hit_at_min: number | null;
+  /**
+   * PR #296 — Sub-classification du marker OFF_SESSION pour distinguer :
+   *   - 'capture'     : capture créée pendant fermeture exchange (pas de
+   *                     trade possible). Skip fetch entirely (économise
+   *                     ~6 API calls EODHD/row). Détecté par session helper.
+   *   - 'stale_data'  : capture créée pendant session active mais EODHD/Yahoo
+   *                     ne renvoient pas de candle forward. Cas où Yahoo
+   *                     fallback (PR #297 future) pourrait débloquer.
+   * Undefined pour outcomes != OFF_SESSION (backward-compatible).
+   */
+  off_session_reason?: 'capture' | 'stale_data';
+  /**
+   * PR #296 — Flag prévention biais Kelly/regret stats. Set à `true` quand
+   * la fenêtre forward effective est <50% de la fenêtre attendue (ex :
+   * capture 5min avant close NYSE → seulement 5 candles 1m forward au lieu
+   * de 60 attendues). Permet d'exclure ces rows du calcul Kelly sans les
+   * supprimer de l'audit trail.
+   *
+   * Seuil configurable via env `PARTIAL_WINDOW_THRESHOLD` (default 0.5).
+   *
+   * Populated uniquement quand outcome ∈ {TP_HIT, SL_HIT, TIME_LIMIT}
+   * (les outcomes OFF_SESSION/NO_DATA sont déjà exclus par leur nature).
+   */
+  partial_window?: boolean;
 }
 
 // PR #286 — fetch_diag schema persisté en JSONB après chaque sim.
@@ -277,6 +303,12 @@ export class GainersUserShadowService {
   constructor(
     private readonly supabase: SupabaseService,
     private readonly eodhd: EodhdIntradayService,
+    /**
+     * PR #296 Partie B — Yahoo fallback pour les captures RTH où EODHD est
+     * stale (24-25h lag observé prod). Yahoo intraday lag ~15min.
+     * Optional pour back-compat avec tests existants (qui n'injectent pas yahoo).
+     */
+    private readonly yahoo?: YahooIntradayService,
   ) {}
 
   /**
@@ -429,6 +461,49 @@ export class GainersUserShadowService {
       return { results, fetchDiag };
     }
 
+    // PR #296 Partie A — Step 0 : skip simulator si capture genuinely off-session.
+    //
+    // Avant tout fetch EODHD (4 endpoints, ~1.5s round-trip cumul), check
+    // si le ticker était en session active à l'heure de capture. Si non →
+    // marquer OFF_SESSION avec sub-reason='capture' et économiser les API
+    // calls. Sinon → continue dans le fetch chain normal.
+    //
+    // Volumétrie attendue (analyse 09/05/2026 sur n=978/12h) :
+    //   - ~70% des captures hors session → short-circuit ici
+    //   - ~30% pendant session (US RTH 14:30-21:00 UTC, KRX 0-6:30 UTC, ...)
+    //     → fetch normal, EODHD stale ou Yahoo (PR #297 future) génère outcome
+    //
+    // Le marker OFF_SESSION existant plus bas (post-fetch) reçoit sub-reason
+    // 'stale_data' pour les rows pendant session où data sources échouent.
+    // Cette distinction permet de mesurer en prod la part de chaque cas.
+    if (!isInExchangeSession(args.symbol, args.createdAt)) {
+      const offCaptureOutcome: SimOutcome = {
+        outcome: 'OFF_SESSION',
+        exit_price: null,
+        exit_at: null,
+        pnl_pct: null,
+        hit_at_min: null,
+        off_session_reason: 'capture',
+      };
+      for (const g of SIM_GRIDS) results[g.key] = offCaptureOutcome;
+      fetchDiag.outcome = 'off_session';
+      fetchDiag.steps.push({
+        endpoint: 'session_check',
+        interval: '5m',
+        rangeMode: false,
+        fromTs: null,
+        toTs: null,
+        inputSymbol: args.symbol,
+        requestedSymbol: null,
+        rawCount: 0,
+        validClose: 0,
+        nulls: 0,
+        ms: 0,
+        error: 'capture_outside_session',
+      });
+      return { results, fetchDiag };
+    }
+
     const eodhdTicker = args.symbol;
     const startTs = new Date(args.createdAt).getTime() / 1000;
     const fromTs = Math.floor(startTs - 300);
@@ -487,6 +562,57 @@ export class GainersUserShadowService {
         fn: () => this.eodhd.getCandles(eodhdTicker, '5m', candleCount).catch(() => null),
       },
     ];
+
+    // PR #296 Partie B — Yahoo intraday fallback en step5 quand `yahoo` injecté.
+    //
+    // Justification empirique (curl 09/05/2026 06:26 UTC samedi) :
+    //   - EODHD US lastCandleTs = May 7 20:00 UTC (Thursday close, ~34h stale)
+    //   - Yahoo US lastCandleTs = May 8 20:00 UTC (Friday close, ~10h stale)
+    //   - Différentiel persistent : Yahoo +24h plus frais
+    //
+    // Pour les captures RTH-active (Step 0 lets through) où EODHD retourne
+    // empty sur les 4 endpoints, Yahoo couvre la fenêtre [startTs, startTs+60min]
+    // dans les 95%+ des cas (1m intraday native, 1d range = 391 candles RTH).
+    //
+    // Coût marginal : 1 call Yahoo par row OFF_SESSION_STALE_DATA (estimé
+    // ~150-250/12h selon distribution prod). Yahoo public API gratuit, pas
+    // d'auth, soft rate-limit ~2000 req/h sur même IP — circuit breaker
+    // intégré côté YahooIntradayService gère 429/5xx avec backoff exponentiel.
+    //
+    // Si yahoo non injecté (back-compat tests legacy) → step skip silently.
+    if (this.yahoo) {
+      stepDefs.push({
+        endpoint: 'yahoo_intraday_5m',
+        interval: '5m',
+        rangeMode: false,
+        fn: async () => {
+          const yc = await this.yahoo!.getCandles(eodhdTicker, '5m').catch(() => null);
+          if (!yc || yc.length === 0) return null;
+          // Filter Yahoo candles to the target window [fromTs, toTs] for symmetry
+          // with range-mode EODHD steps. walkForward filtre quand même par startTs
+          // mais on évite d'envoyer des centaines de candles inutiles.
+          const ts0 = fromTs;
+          const ts1 = toTs;
+          const filtered = yc.filter((c) => {
+            const cts = Math.floor(new Date(c.datetime).getTime() / 1000);
+            return cts >= ts0 && cts <= ts1;
+          });
+          if (filtered.length === 0) return null;
+          return {
+            candles: filtered.map((c) => ({
+              timestamp: Math.floor(new Date(c.datetime).getTime() / 1000),
+              open: c.open,
+              high: c.high,
+              low: c.low,
+              close: c.close,
+              volume: c.volume,
+            })),
+            rawCount: filtered.length,
+            requestedSymbol: eodhdTicker,
+          };
+        },
+      });
+    }
 
     let selectedSeries: { candles: Array<{ timestamp: number; open: number; high: number; low: number; close: number; volume: number }> } | null = null;
     for (let i = 0; i < stepDefs.length; i++) {
@@ -617,8 +743,13 @@ export class GainersUserShadowService {
       );
     }
 
-    // PR #289 — Si OFF_SESSION détecté, court-circuiter walkForward avec
-    // outcome dédié sur toutes les grilles (au lieu de NO_DATA générique).
+    // PR #289 — Si OFF_SESSION détecté post-fetch, court-circuiter walkForward.
+    //
+    // PR #296 — Sub-reason 'stale_data' (vs 'capture' du Step 0 plus haut).
+    // Ici on est arrivé après le fetch chain EODHD qui a retourné des candles
+    // mais toutes vieilles vs startTs (ex : EODHD US 25h stale). La capture
+    // était DURANT session active mais aucun provider n'avait de data forward.
+    // Cas candidat pour PR #297 Yahoo fallback (Yahoo lag 15min vs EODHD 24h+).
     if (isOffSession) {
       const offSessionOutcome: SimOutcome = {
         outcome: 'OFF_SESSION',
@@ -626,14 +757,37 @@ export class GainersUserShadowService {
         exit_at: null,
         pnl_pct: null,
         hit_at_min: null,
+        off_session_reason: 'stale_data',
       };
       for (const g of SIM_GRIDS) results[g.key] = offSessionOutcome;
       fetchDiag.outcome = 'off_session';
       return { results, fetchDiag };
     }
 
+    // PR #296 — Flag partial_window pour prévenir biais Kelly/regret stats.
+    // Capture pendant les dernières minutes de session (ex : 19:55 UTC NYSE,
+    // 5min avant close 20:00 UTC) → forward window contient ~5-12 candles
+    // au lieu de 60 attendues → outcome statistiquement non-comparable aux
+    // captures normales. Threshold configurable via env (default 50%).
+    //
+    // Calcul attendu candles 60min :
+    //   - 5m interval → 12 candles
+    //   - 1m interval → 60 candles
+    // Estimation conservative : on prend 12 (cas 5m, le plus fréquent).
+    const partialWindowThreshold = (() => {
+      const raw = process.env.PARTIAL_WINDOW_THRESHOLD;
+      const parsed = raw != null ? Number(raw) : 0.5;
+      return Number.isFinite(parsed) && parsed > 0 && parsed <= 1 ? parsed : 0.5;
+    })();
+    const expectedCandles = 12;  // 60min / 5min
+    const isPartialWindow = forward.length < expectedCandles * partialWindowThreshold;
+
     for (const grid of SIM_GRIDS) {
-      results[grid.key] = walkForward(args.entryPrice, forward, startTs, grid);
+      const out = walkForward(args.entryPrice, forward, startTs, grid);
+      if (isPartialWindow && (out.outcome === 'TP_HIT' || out.outcome === 'SL_HIT' || out.outcome === 'TIME_LIMIT')) {
+        out.partial_window = true;
+      }
+      results[grid.key] = out;
     }
     fetchDiag.outcome = forward.length > 0 ? 'ok' : 'no_data';
     return { results, fetchDiag };

@@ -38,6 +38,19 @@ async function runSim(svc: GainersUserShadowService, args: { symbol: string; ass
 }
 
 describe('PR #291 — freshness diagnostic per step', () => {
+  // PR #296 — Freeze "now" to Wed late-RTH UTC so Step 0 (session check)
+  // doesn't short-circuit even with `nowSec - 6h` createdAt computations,
+  // and so age_ms calculations are deterministic.
+  // Wed May 13 2026 19:30 UTC = 15:30 EDT (NYSE active, last 30min of RTH).
+  // nowSec - 6h = Wed 13:30 UTC = 9:30 EDT (NYSE open exactly, in-session).
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    jest.setSystemTime(new Date('2026-05-13T19:30:00Z'));
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   it('populates age_ms + candle_freshness_s when candles returned', async () => {
     const callLog: FetchCall[] = [];
     const nowSec = Math.floor(Date.now() / 1000);
@@ -103,6 +116,9 @@ describe('PR #291 — freshness diagnostic per step', () => {
   });
 
   it('age_ms NOT populated when validClose=0 (no candles)', async () => {
+    // PR #296 — Override fake time to NSE in-session (06:00 UTC = 11:30 IST)
+    // since this test uses HEG.NSE.
+    jest.setSystemTime(new Date('2026-05-13T06:00:00Z'));
     const callLog: FetchCall[] = [];
     const startTs = Math.floor(Date.now() / 1000) - 60;
     const svc = buildService({
