@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
+import { YahooIntradayService } from './yahoo-intraday.service';
 import { bootstrapMeanCI, verdictFromCI, GateVerdict } from '@smartvest/ai-analyst';
 import { isInExchangeSession } from './exchange-sessions.helper';
 
@@ -289,6 +290,12 @@ export class GainersUserShadowService {
   constructor(
     private readonly supabase: SupabaseService,
     private readonly eodhd: EodhdIntradayService,
+    /**
+     * PR #296 Partie B — Yahoo fallback pour les captures RTH où EODHD est
+     * stale (24-25h lag observé prod). Yahoo intraday lag ~15min.
+     * Optional pour back-compat avec tests existants (qui n'injectent pas yahoo).
+     */
+    private readonly yahoo?: YahooIntradayService,
   ) {}
 
   /**
@@ -542,6 +549,57 @@ export class GainersUserShadowService {
         fn: () => this.eodhd.getCandles(eodhdTicker, '5m', candleCount).catch(() => null),
       },
     ];
+
+    // PR #296 Partie B — Yahoo intraday fallback en step5 quand `yahoo` injecté.
+    //
+    // Justification empirique (curl 09/05/2026 06:26 UTC samedi) :
+    //   - EODHD US lastCandleTs = May 7 20:00 UTC (Thursday close, ~34h stale)
+    //   - Yahoo US lastCandleTs = May 8 20:00 UTC (Friday close, ~10h stale)
+    //   - Différentiel persistent : Yahoo +24h plus frais
+    //
+    // Pour les captures RTH-active (Step 0 lets through) où EODHD retourne
+    // empty sur les 4 endpoints, Yahoo couvre la fenêtre [startTs, startTs+60min]
+    // dans les 95%+ des cas (1m intraday native, 1d range = 391 candles RTH).
+    //
+    // Coût marginal : 1 call Yahoo par row OFF_SESSION_STALE_DATA (estimé
+    // ~150-250/12h selon distribution prod). Yahoo public API gratuit, pas
+    // d'auth, soft rate-limit ~2000 req/h sur même IP — circuit breaker
+    // intégré côté YahooIntradayService gère 429/5xx avec backoff exponentiel.
+    //
+    // Si yahoo non injecté (back-compat tests legacy) → step skip silently.
+    if (this.yahoo) {
+      stepDefs.push({
+        endpoint: 'yahoo_intraday_5m',
+        interval: '5m',
+        rangeMode: false,
+        fn: async () => {
+          const yc = await this.yahoo!.getCandles(eodhdTicker, '5m').catch(() => null);
+          if (!yc || yc.length === 0) return null;
+          // Filter Yahoo candles to the target window [fromTs, toTs] for symmetry
+          // with range-mode EODHD steps. walkForward filtre quand même par startTs
+          // mais on évite d'envoyer des centaines de candles inutiles.
+          const ts0 = fromTs;
+          const ts1 = toTs;
+          const filtered = yc.filter((c) => {
+            const cts = Math.floor(new Date(c.datetime).getTime() / 1000);
+            return cts >= ts0 && cts <= ts1;
+          });
+          if (filtered.length === 0) return null;
+          return {
+            candles: filtered.map((c) => ({
+              timestamp: Math.floor(new Date(c.datetime).getTime() / 1000),
+              open: c.open,
+              high: c.high,
+              low: c.low,
+              close: c.close,
+              volume: c.volume,
+            })),
+            rawCount: filtered.length,
+            requestedSymbol: eodhdTicker,
+          };
+        },
+      });
+    }
 
     let selectedSeries: { candles: Array<{ timestamp: number; open: number; high: number; low: number; close: number; volume: number }> } | null = null;
     for (let i = 0; i < stepDefs.length; i++) {

@@ -301,6 +301,95 @@ describe('isInExchangeSession — NYSE Holidays 2026', () => {
   });
 });
 
+describe('isInExchangeSession — Cross-TZ weekend boundary (V2)', () => {
+  // CRITIQUE : le check weekend doit utiliser la TZ de l'exchange, PAS UTC.
+  // Exemple bug potentiel : Sunday 23:00 UTC = Monday 08:00 JST.
+  // Si check weekend en UTC → returns false (Sunday) → bug : on skip
+  // faussement la session TSE Monday matin.
+  // Si check weekend en exchange-TZ → Monday in JST → continue, hour check
+  //  → 08:00 < 09:00 (TSE open) → false (correct, before open).
+
+  it('Sunday 23:00 UTC = Monday 08:00 JST → false (before TSE 09:00 open)', () => {
+    expect(isInExchangeSession('7203.T', '2026-05-10T23:00:00Z')).toBe(false);
+  });
+
+  it('Monday 00:00 UTC = Monday 09:00 JST → true (TSE open exact)', () => {
+    expect(isInExchangeSession('7203.T', '2026-05-11T00:00:00Z')).toBe(true);
+  });
+
+  it('Sunday 14:30 UTC = Sunday 23:30 JST → false (Sunday in Tokyo)', () => {
+    // Critical : si on faisait le check weekend en UTC, ça retournerait false
+    // pour la BONNE raison (Sunday). Mais c'est aussi false en JST (Sunday).
+    // Test confirme cohérence both-ways.
+    expect(isInExchangeSession('7203.T', '2026-05-10T14:30:00Z')).toBe(false);
+  });
+
+  it('Friday 23:30 UTC = Saturday 08:30 JST → false (Saturday in Tokyo)', () => {
+    // BUG TRAP : UTC weekday=Friday (=5), JST weekday=Saturday (=6).
+    // Si check weekend en UTC → returns true → BUG (TSE fermé samedi).
+    // Notre helper utilise session.tz → correct false.
+    expect(isInExchangeSession('7203.T', '2026-05-15T23:30:00Z')).toBe(false);
+  });
+
+  it('Saturday 23:30 UTC = Sunday 08:30 JST → false (Sunday in Tokyo)', () => {
+    expect(isInExchangeSession('7203.T', '2026-05-16T23:30:00Z')).toBe(false);
+  });
+
+  it('HKEX: Sunday 17:30 UTC = Monday 01:30 HKT → false (before 09:30 open)', () => {
+    expect(isInExchangeSession('0700.HK', '2026-05-10T17:30:00Z')).toBe(false);
+  });
+
+  it('HKEX: Monday 01:30 UTC = Monday 09:30 HKT → true (open exact)', () => {
+    expect(isInExchangeSession('0700.HK', '2026-05-11T01:30:00Z')).toBe(true);
+  });
+
+  it('HKEX: Friday 23:00 UTC = Saturday 07:00 HKT → false (Saturday in HK)', () => {
+    // Same trap as TSE : UTC=Friday but HKT=Saturday weekend.
+    expect(isInExchangeSession('0700.HK', '2026-05-15T23:00:00Z')).toBe(false);
+  });
+
+  it('ASX summer: Sunday 23:00 UTC = Monday 10:00 AEDT → true (open exact)', () => {
+    // ASX summer = AEDT (UTC+11) ; Sunday 23:00 UTC = Monday 10:00 AEDT = open.
+    // Critical : UTC weekday=Sunday but AEDT weekday=Monday → must NOT skip.
+    expect(isInExchangeSession('CCP.AU', '2026-01-04T23:00:00Z')).toBe(true);
+  });
+
+  it('ASX summer: Friday 23:00 UTC = Saturday 10:00 AEDT → false (Saturday in Sydney)', () => {
+    expect(isInExchangeSession('CCP.AU', '2026-01-09T23:00:00Z')).toBe(false);
+  });
+});
+
+describe('isInExchangeSession — Borderline near-close (V3)', () => {
+  // Capture pendant les dernières minutes de session. Step 0 lets through
+  // (in-session). Le sim window T+60min déborde la close → le caller
+  // (Yahoo/EODHD) retournera des candles partielles. Le helper SEUL ne
+  // sait pas modéliser ça — l'outcome (TIME_LIMIT vs partial fill) est
+  // déterminé par walkForward sur les candles forward dispo.
+
+  it('NYSE Friday 19:55 UTC = 15:55 EDT → true (5min before close)', () => {
+    // Capture in-session. Step 0 lets through. walkForward verra ~5 candles
+    // 19:55-20:00 puis rien après 20:00 (close). Outcome attendu : TIME_LIMIT
+    // si ni TP ni SL touché dans ces 5 minutes (cas typique).
+    expect(isInExchangeSession('AAPL.US', '2026-05-15T19:55:00Z')).toBe(true);
+  });
+
+  it('NYSE Friday 19:59 UTC = 15:59 EDT → true (1min before close)', () => {
+    expect(isInExchangeSession('AAPL.US', '2026-05-15T19:59:00Z')).toBe(true);
+  });
+
+  it('NYSE Friday 20:00 UTC = 16:00 EDT → false (close exact, exclusive)', () => {
+    expect(isInExchangeSession('AAPL.US', '2026-05-15T20:00:00Z')).toBe(false);
+  });
+
+  it('TSE Friday 05:55 UTC = 14:55 JST → true (5min before TSE close 15:00)', () => {
+    expect(isInExchangeSession('7203.T', '2026-05-15T05:55:00Z')).toBe(true);
+  });
+
+  it('TSE Friday 06:00 UTC = 15:00 JST → false (TSE close exact)', () => {
+    expect(isInExchangeSession('7203.T', '2026-05-15T06:00:00Z')).toBe(false);
+  });
+});
+
 describe('isInExchangeSession — Edge cases', () => {
   it('returns false for symbol without suffix', () => {
     // 'AAPL' or 'BTCUSDT' without dot — conservative false
