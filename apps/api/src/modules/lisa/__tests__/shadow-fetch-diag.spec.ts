@@ -34,6 +34,25 @@ function buildService(opts: {
   return new GainersUserShadowService(supabaseMock as never, eodhdMock as never);
 }
 
+/**
+ * PR #296 — In-session timestamp helper. Returns a Wed UTC epoch second
+ * during the symbol's exchange session, so Step 0 doesn't short-circuit.
+ *   .US → 17:00 UTC Wed (= 13:00 EDT mid-RTH)
+ *   .NSE/.BSE → 06:00 UTC Wed (= 11:30 IST mid-session)
+ *   Asia / others → 03:00 UTC Wed (= 11:00 Shanghai/12:00 Tokyo/12:00 KRX active)
+ */
+function inSessionStartTs(symbol: string): number {
+  const wed = '2026-05-13';
+  if (symbol.endsWith('.US') || symbol.endsWith('.TO')) {
+    return Math.floor(new Date(`${wed}T17:00:00Z`).getTime() / 1000);
+  }
+  if (symbol.endsWith('.NSE') || symbol.endsWith('.BSE')) {
+    return Math.floor(new Date(`${wed}T06:00:00Z`).getTime() / 1000);
+  }
+  // Asia (.SHE/.SHG/.HK/.T/.KO/.KQ) ~ 03:00 UTC
+  return Math.floor(new Date(`${wed}T03:00:00Z`).getTime() / 1000);
+}
+
 // Helper : appelle simulateRow via reflection (private méthode, mais accessible
 // via TS bracket notation pour tests). Sinon il faudrait exposer un wrapper.
 async function runSim(svc: GainersUserShadowService, args: { symbol: string; assetClass: string; entryPrice: number; createdAt: string }) {
@@ -53,7 +72,7 @@ describe('PR #286 — fetch_diag shape', () => {
       },
       callLog,
     });
-    const startTs = Math.floor(Date.now() / 1000) - 12 * 3600;  // 12h ago, within retention
+    const startTs = inSessionStartTs('300161.SHE');  // Wed in-session, retention OK
     const { fetchDiag } = await runSim(svc, {
       symbol: '300161.SHE',
       assetClass: 'asia_equity',
@@ -75,7 +94,7 @@ describe('PR #286 — fetch_diag shape', () => {
 
   it('stops at step 1 when primary 5m_range returns valid candles', async () => {
     const callLog: FetchCall[] = [];
-    const startTs = Math.floor(Date.now() / 1000) - 6 * 3600;
+    const startTs = inSessionStartTs('WFCF.US');
     const validCandle = {
       timestamp: startTs + 600,
       open: 28.42, high: 28.50, low: 28.40, close: 28.48, volume: 1000,
@@ -106,7 +125,7 @@ describe('PR #286 — fetch_diag shape', () => {
 
   it('falls through to step 3 (1m_range) when 5m_range and ticks return empty', async () => {
     const callLog: FetchCall[] = [];
-    const startTs = Math.floor(Date.now() / 1000) - 6 * 3600;
+    const startTs = inSessionStartTs('013310.KQ');
     const validCandle = {
       timestamp: startTs + 300,
       open: 100, high: 102.5, low: 99.5, close: 102.1, volume: 1000,
@@ -138,7 +157,7 @@ describe('PR #286 — fetch_diag shape', () => {
 
   it('records nulls correctly when EODHD returns mixed null/valid candles', async () => {
     const callLog: FetchCall[] = [];
-    const startTs = Math.floor(Date.now() / 1000) - 6 * 3600;
+    const startTs = inSessionStartTs('300161.SHE');
     const svc = buildService({
       candlesByEndpoint: {
         // rawCount=10 mais candles.length=3 (7 candles avec close=null filtrées)
@@ -183,7 +202,7 @@ describe('PR #286 — fetch_diag shape', () => {
 
   it('PR #287 — populates firstCandleTs/lastCandleTs + forwardCountAfterFilter per step', async () => {
     const callLog: FetchCall[] = [];
-    const startTs = Math.floor(Date.now() / 1000) - 6 * 3600;
+    const startTs = inSessionStartTs('300161.SHE');
     // 3 candles : 1 avant startTs (rejected by filter) + 2 après
     const candles = [
       { timestamp: startTs - 600, open: 100, high: 100, low: 99.5, close: 99.8, volume: 100 },
@@ -226,7 +245,7 @@ describe('PR #286 — fetch_diag shape', () => {
       symbol: '300303.SHE',
       assetClass: 'asia_equity',
       entryPrice: 28.42,
-      createdAt: new Date(Date.now() - 6 * 3600 * 1000).toISOString(),
+      createdAt: new Date(inSessionStartTs('300303.SHE') * 1000).toISOString(),
     }) as { fetchDiag: FetchDiag };
 
     // PR #287 — Avant : requestedSymbol=null sur tous les steps quand call=null.

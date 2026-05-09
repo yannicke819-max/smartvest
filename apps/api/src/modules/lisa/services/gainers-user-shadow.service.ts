@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
 import { bootstrapMeanCI, verdictFromCI, GateVerdict } from '@smartvest/ai-analyst';
+import { isInExchangeSession } from './exchange-sessions.helper';
 
 /**
  * GainersUserShadowService — PR #280
@@ -130,6 +131,17 @@ export interface SimOutcome {
   exit_at: string | null;
   pnl_pct: number | null;       // NET (slippage already subtracted)
   hit_at_min: number | null;
+  /**
+   * PR #296 — Sub-classification du marker OFF_SESSION pour distinguer :
+   *   - 'capture'     : capture créée pendant fermeture exchange (pas de
+   *                     trade possible). Skip fetch entirely (économise
+   *                     ~6 API calls EODHD/row). Détecté par session helper.
+   *   - 'stale_data'  : capture créée pendant session active mais EODHD/Yahoo
+   *                     ne renvoient pas de candle forward. Cas où Yahoo
+   *                     fallback (PR #297 future) pourrait débloquer.
+   * Undefined pour outcomes != OFF_SESSION (backward-compatible).
+   */
+  off_session_reason?: 'capture' | 'stale_data';
 }
 
 // PR #286 — fetch_diag schema persisté en JSONB après chaque sim.
@@ -429,6 +441,49 @@ export class GainersUserShadowService {
       return { results, fetchDiag };
     }
 
+    // PR #296 Partie A — Step 0 : skip simulator si capture genuinely off-session.
+    //
+    // Avant tout fetch EODHD (4 endpoints, ~1.5s round-trip cumul), check
+    // si le ticker était en session active à l'heure de capture. Si non →
+    // marquer OFF_SESSION avec sub-reason='capture' et économiser les API
+    // calls. Sinon → continue dans le fetch chain normal.
+    //
+    // Volumétrie attendue (analyse 09/05/2026 sur n=978/12h) :
+    //   - ~70% des captures hors session → short-circuit ici
+    //   - ~30% pendant session (US RTH 14:30-21:00 UTC, KRX 0-6:30 UTC, ...)
+    //     → fetch normal, EODHD stale ou Yahoo (PR #297 future) génère outcome
+    //
+    // Le marker OFF_SESSION existant plus bas (post-fetch) reçoit sub-reason
+    // 'stale_data' pour les rows pendant session où data sources échouent.
+    // Cette distinction permet de mesurer en prod la part de chaque cas.
+    if (!isInExchangeSession(args.symbol, args.createdAt)) {
+      const offCaptureOutcome: SimOutcome = {
+        outcome: 'OFF_SESSION',
+        exit_price: null,
+        exit_at: null,
+        pnl_pct: null,
+        hit_at_min: null,
+        off_session_reason: 'capture',
+      };
+      for (const g of SIM_GRIDS) results[g.key] = offCaptureOutcome;
+      fetchDiag.outcome = 'off_session';
+      fetchDiag.steps.push({
+        endpoint: 'session_check',
+        interval: '5m',
+        rangeMode: false,
+        fromTs: null,
+        toTs: null,
+        inputSymbol: args.symbol,
+        requestedSymbol: null,
+        rawCount: 0,
+        validClose: 0,
+        nulls: 0,
+        ms: 0,
+        error: 'capture_outside_session',
+      });
+      return { results, fetchDiag };
+    }
+
     const eodhdTicker = args.symbol;
     const startTs = new Date(args.createdAt).getTime() / 1000;
     const fromTs = Math.floor(startTs - 300);
@@ -617,8 +672,13 @@ export class GainersUserShadowService {
       );
     }
 
-    // PR #289 — Si OFF_SESSION détecté, court-circuiter walkForward avec
-    // outcome dédié sur toutes les grilles (au lieu de NO_DATA générique).
+    // PR #289 — Si OFF_SESSION détecté post-fetch, court-circuiter walkForward.
+    //
+    // PR #296 — Sub-reason 'stale_data' (vs 'capture' du Step 0 plus haut).
+    // Ici on est arrivé après le fetch chain EODHD qui a retourné des candles
+    // mais toutes vieilles vs startTs (ex : EODHD US 25h stale). La capture
+    // était DURANT session active mais aucun provider n'avait de data forward.
+    // Cas candidat pour PR #297 Yahoo fallback (Yahoo lag 15min vs EODHD 24h+).
     if (isOffSession) {
       const offSessionOutcome: SimOutcome = {
         outcome: 'OFF_SESSION',
@@ -626,6 +686,7 @@ export class GainersUserShadowService {
         exit_at: null,
         pnl_pct: null,
         hit_at_min: null,
+        off_session_reason: 'stale_data',
       };
       for (const g of SIM_GRIDS) results[g.key] = offSessionOutcome;
       fetchDiag.outcome = 'off_session';
