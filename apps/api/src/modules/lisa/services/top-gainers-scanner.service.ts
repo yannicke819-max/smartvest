@@ -31,6 +31,7 @@ import { BinanceMarketService } from './binance-market.service';
 import { MultiTimeframePersistenceService, type PersistenceWithPath } from './multi-tf-persistence.service';
 import { PersistenceProbabilityService } from './persistence-probability.service';
 import { EodhdQuotaService } from './eodhd-quota.service';
+import { EodhdCalendarService } from './eodhd-calendar.service';
 import { GainersUserShadowService, type ShadowDecision } from './gainers-user-shadow.service';
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
 // PR6.3 — Shadow wiring (LisaModule import GainersModule pour résolution DI)
@@ -500,6 +501,12 @@ export class TopGainersScannerService implements OnModuleInit {
      * silencieusement quand absent (cf. call sites).
      */
     private readonly userShadow?: GainersUserShadowService,
+    /**
+     * PR Phase 1 — EODHD calendar service pour earnings filter pré-trade.
+     * Optional pour back-compat tests (qui n'injectent pas le calendar).
+     * Quand undefined → earnings filter no-op silencieux.
+     */
+    private readonly eodhdCalendar?: EodhdCalendarService,
   ) {}
 
   /**
@@ -1866,6 +1873,54 @@ export class TopGainersScannerService implements OnModuleInit {
           );
           recordShadowDecision(cand, 'reject_post_sl_cooldown', undefined);
           continue;
+        }
+      }
+
+      // PR Phase 1 — Statistical pré-trade filters (env-gated, default off).
+      //
+      // Filtre #1 : earnings_tomorrow → skip si earnings dans N jours (default 1).
+      // Justification : earnings = event binaire, gap risk démeures momentum.
+      // Configurable via env GAINERS_EARNINGS_FILTER_DAYS (default 0 = disabled).
+      const earningsFilterDays = Number(this.config.get<string>('GAINERS_EARNINGS_FILTER_DAYS') ?? '0');
+      if (earningsFilterDays > 0 && this.eodhdCalendar && cand.assetClass !== 'crypto_major' && cand.assetClass !== 'crypto_alt') {
+        try {
+          const nextEarnings = await this.eodhdCalendar.getNextEarningsDate(cand.symbol, earningsFilterDays + 1);
+          if (nextEarnings) {
+            const daysUntil = Math.floor(
+              (new Date(nextEarnings).getTime() - Date.now()) / 86_400_000,
+            );
+            if (daysUntil >= 0 && daysUntil <= earningsFilterDays) {
+              this.logger.log(
+                `[top-gainers] ${cand.symbol} earnings ${nextEarnings} dans ${daysUntil}j (filter window=${earningsFilterDays}j) → skip`,
+              );
+              recordShadowDecision(cand, 'reject_earnings_imminent', undefined);
+              continue;
+            }
+          }
+        } catch {
+          // Earnings fetch fail = proceed (fail-safe, ne bloque pas le trade)
+        }
+      }
+
+      // Filtre #2 : opening_buffer → skip si dans les N premières minutes après
+      // open du marché concerné. Justification : volatilité/slippage gap-fill,
+      // faux signaux de momentum sur premier tick. Crypto exempt (24/7, no open).
+      // Configurable via env GAINERS_OPEN_BUFFER_MIN (default 0 = disabled).
+      const openBufferMin = Number(this.config.get<string>('GAINERS_OPEN_BUFFER_MIN') ?? '0');
+      if (openBufferMin > 0 && cand.assetClass !== 'crypto_major' && cand.assetClass !== 'crypto_alt') {
+        const sessionCls = sessionClassFor(cand.assetClass);
+        if (sessionCls) {
+          const { openUtcMin } = MARKET_SESSION_HOURS[sessionCls];
+          // `nowUtc` = new Date() défini plus haut L1525 (in scope ici)
+          const localNowMin = nowUtc.getUTCHours() * 60 + nowUtc.getUTCMinutes();
+          const localMinsSinceOpen = localNowMin - openUtcMin;
+          if (localMinsSinceOpen >= 0 && localMinsSinceOpen < openBufferMin) {
+            this.logger.log(
+              `[top-gainers] ${cand.symbol} (${sessionCls}) opening buffer ${localMinsSinceOpen}/${openBufferMin}min → skip`,
+            );
+            recordShadowDecision(cand, 'reject_opening_buffer', undefined);
+            continue;
+          }
         }
       }
 
