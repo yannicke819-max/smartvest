@@ -57,6 +57,7 @@ import { YahooIntradayService } from './services/yahoo-intraday.service';
 import { IntradayCacheService } from './services/intraday-cache.service';
 import { PersistenceProbabilityService } from './services/persistence-probability.service';
 import { ScannerLlmRouterService } from './services/scanner-llm-router.service';
+import { MacroVetoService } from './services/macro-veto.service';
 // Phase B — Weekly P9 ML refit cron auto-logging insights
 import { ProbabilityRefitCronService } from '../gainers-scanner/automations/probability-refit-cron.service';
 // PR6.8 RCFT — Cron daily 00:30 UTC qui suit forward returns des shadow signals
@@ -134,6 +135,8 @@ import { SignalForwardTrackerService } from '../gainers-scanner/automations/sign
     PersistenceProbabilityService,
     // P17 — LLM router multi-vendor pour scanner Gainers (Gemini/GPT-nano/Codestral/Claude)
     ScannerLlmRouterService,
+    // PR Action 3 — LLM macro veto cron hourly (gate scanner cycle entries)
+    MacroVetoService,
     // P19v (30/04/2026) — Quota service centralisé EODHD (cost map + auto-throttle)
     EodhdQuotaService,
     // Phase B — Cron Sunday 02:00 UTC qui refit P9 logistic regression et auto-log
