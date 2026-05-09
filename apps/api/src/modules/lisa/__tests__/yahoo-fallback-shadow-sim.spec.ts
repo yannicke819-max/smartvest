@@ -56,6 +56,27 @@ function rthCaptureTs(): number {
   return Math.floor(new Date('2026-05-13T17:00:00Z').getTime() / 1000);
 }
 
+describe('PR #296 — DI smoke test (3-args constructor)', () => {
+  // Sanity check : le constructor accepte bien 3 args (supabase + eodhd + yahoo)
+  // sans throw. Vérifie la cohérence type/runtime de la signature après ajout
+  // de la dépendance optional Yahoo. Vrai test e2e Test.createTestingModule
+  // out-of-scope (déjà 95 unit tests + tsc clean + fail-fast au boot Nest).
+
+  it('instantiates with all 3 deps without throwing', () => {
+    const supabase = { getClient: () => ({}) } as never;
+    const eodhd = { getCandles: jest.fn(), getCandlesViaTicks: jest.fn() } as never;
+    const yahoo = { getCandles: jest.fn() } as never;
+    expect(() => new GainersUserShadowService(supabase, eodhd, yahoo)).not.toThrow();
+  });
+
+  it('back-compat : instantiates with 2 deps (yahoo undefined) without throwing', () => {
+    const supabase = { getClient: () => ({}) } as never;
+    const eodhd = { getCandles: jest.fn(), getCandlesViaTicks: jest.fn() } as never;
+    // Yahoo missing → field undefined, Step 5 skipped silently
+    expect(() => new GainersUserShadowService(supabase, eodhd)).not.toThrow();
+  });
+});
+
 describe('PR #296 Partie B — Yahoo fallback in simulator fetch chain', () => {
   it('falls back to Yahoo when all 4 EODHD steps return empty', async () => {
     const callLog: FetchCall[] = [];
@@ -184,6 +205,69 @@ describe('PR #296 Partie B — Yahoo fallback in simulator fetch chain', () => {
     expect(fetchDiag.steps[4].rawCount).toBe(1);  // 2 hors-fenêtre filtrées
     expect(fetchDiag.selectedStep).toBe(4);
     expect(results.baseline_60m.outcome).toBe('TP_HIT');
+  });
+
+  it('sets partial_window=true when forward candles < 50% of expected window', async () => {
+    const callLog: FetchCall[] = [];
+    const startTs = rthCaptureTs();
+    // Simule capture 5min avant close NYSE : seulement 5 candles forward
+    // (5x 1min ou ~1x 5min) au lieu de 12 attendues sur fenêtre 60min.
+    // 5 < 12 × 0.5 = 6 → partial_window = true
+    const yahooCandles = [
+      { datetime: new Date((startTs + 60) * 1000).toISOString(), open: 100, high: 100.3, low: 99.8, close: 100.1, volume: 1000 },
+      { datetime: new Date((startTs + 120) * 1000).toISOString(), open: 100.1, high: 100.4, low: 100, close: 100.2, volume: 1000 },
+      { datetime: new Date((startTs + 180) * 1000).toISOString(), open: 100.2, high: 100.5, low: 100.1, close: 100.3, volume: 1000 },
+      { datetime: new Date((startTs + 240) * 1000).toISOString(), open: 100.3, high: 100.6, low: 100.2, close: 100.4, volume: 1000 },
+      { datetime: new Date((startTs + 300) * 1000).toISOString(), open: 100.4, high: 100.7, low: 100.3, close: 100.5, volume: 1000 },
+    ];
+    const svc = buildService({
+      candlesByEndpoint: {
+        getCandles_5m_range: { candles: [], rawCount: 0, requestedSymbol: 'AAPL.US' },
+        ticks_range: null,
+        getCandles_1m_range: null,
+        getCandles_5m_default: null,
+      },
+      yahooCandles,
+      callLog,
+    });
+    const { results } = await runSim(svc, {
+      symbol: 'AAPL.US',
+      assetClass: 'us_equity_large',
+      entryPrice: 100,
+      createdAt: new Date(startTs * 1000).toISOString(),
+    }) as { fetchDiag: FetchDiag; results: Record<string, SimOutcome> };
+
+    expect(results.baseline_60m.outcome).toBe('TIME_LIMIT');  // ni TP ni SL touché
+    expect(results.baseline_60m.partial_window).toBe(true);   // window incomplete
+  });
+
+  it('does NOT set partial_window when forward candles >= 50% of expected', async () => {
+    const callLog: FetchCall[] = [];
+    const startTs = rthCaptureTs();
+    // 7 candles forward (>= 12*0.5=6), partial_window doit NOT être set
+    const yahooCandles = Array.from({ length: 7 }, (_, i) => ({
+      datetime: new Date((startTs + (i + 1) * 60) * 1000).toISOString(),
+      open: 100 + i * 0.1, high: 100.3 + i * 0.1, low: 99.8 + i * 0.1, close: 100.1 + i * 0.1, volume: 1000,
+    }));
+    const svc = buildService({
+      candlesByEndpoint: {
+        getCandles_5m_range: { candles: [], rawCount: 0, requestedSymbol: 'AAPL.US' },
+        ticks_range: null,
+        getCandles_1m_range: null,
+        getCandles_5m_default: null,
+      },
+      yahooCandles,
+      callLog,
+    });
+    const { results } = await runSim(svc, {
+      symbol: 'AAPL.US',
+      assetClass: 'us_equity_large',
+      entryPrice: 100,
+      createdAt: new Date(startTs * 1000).toISOString(),
+    }) as { results: Record<string, SimOutcome> };
+
+    expect(results.baseline_60m.outcome).toBe('TIME_LIMIT');
+    expect(results.baseline_60m.partial_window).toBeUndefined();
   });
 
   it('skip OFF_SESSION_CAPTURE entirely when Step 0 catches (no Yahoo call)', async () => {

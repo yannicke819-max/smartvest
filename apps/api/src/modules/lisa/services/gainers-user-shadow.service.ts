@@ -143,6 +143,19 @@ export interface SimOutcome {
    * Undefined pour outcomes != OFF_SESSION (backward-compatible).
    */
   off_session_reason?: 'capture' | 'stale_data';
+  /**
+   * PR #296 — Flag prévention biais Kelly/regret stats. Set à `true` quand
+   * la fenêtre forward effective est <50% de la fenêtre attendue (ex :
+   * capture 5min avant close NYSE → seulement 5 candles 1m forward au lieu
+   * de 60 attendues). Permet d'exclure ces rows du calcul Kelly sans les
+   * supprimer de l'audit trail.
+   *
+   * Seuil configurable via env `PARTIAL_WINDOW_THRESHOLD` (default 0.5).
+   *
+   * Populated uniquement quand outcome ∈ {TP_HIT, SL_HIT, TIME_LIMIT}
+   * (les outcomes OFF_SESSION/NO_DATA sont déjà exclus par leur nature).
+   */
+  partial_window?: boolean;
 }
 
 // PR #286 — fetch_diag schema persisté en JSONB après chaque sim.
@@ -751,8 +764,30 @@ export class GainersUserShadowService {
       return { results, fetchDiag };
     }
 
+    // PR #296 — Flag partial_window pour prévenir biais Kelly/regret stats.
+    // Capture pendant les dernières minutes de session (ex : 19:55 UTC NYSE,
+    // 5min avant close 20:00 UTC) → forward window contient ~5-12 candles
+    // au lieu de 60 attendues → outcome statistiquement non-comparable aux
+    // captures normales. Threshold configurable via env (default 50%).
+    //
+    // Calcul attendu candles 60min :
+    //   - 5m interval → 12 candles
+    //   - 1m interval → 60 candles
+    // Estimation conservative : on prend 12 (cas 5m, le plus fréquent).
+    const partialWindowThreshold = (() => {
+      const raw = process.env.PARTIAL_WINDOW_THRESHOLD;
+      const parsed = raw != null ? Number(raw) : 0.5;
+      return Number.isFinite(parsed) && parsed > 0 && parsed <= 1 ? parsed : 0.5;
+    })();
+    const expectedCandles = 12;  // 60min / 5min
+    const isPartialWindow = forward.length < expectedCandles * partialWindowThreshold;
+
     for (const grid of SIM_GRIDS) {
-      results[grid.key] = walkForward(args.entryPrice, forward, startTs, grid);
+      const out = walkForward(args.entryPrice, forward, startTs, grid);
+      if (isPartialWindow && (out.outcome === 'TP_HIT' || out.outcome === 'SL_HIT' || out.outcome === 'TIME_LIMIT')) {
+        out.partial_window = true;
+      }
+      results[grid.key] = out;
     }
     fetchDiag.outcome = forward.length > 0 ? 'ok' : 'no_data';
     return { results, fetchDiag };

@@ -357,6 +357,28 @@ describe('isInExchangeSession — Cross-TZ weekend boundary (V2)', () => {
   it('ASX summer: Friday 23:00 UTC = Saturday 10:00 AEDT → false (Saturday in Sydney)', () => {
     expect(isInExchangeSession('CCP.AU', '2026-01-09T23:00:00Z')).toBe(false);
   });
+
+  // Cas négatifs explicites — preuve qu'on ne laisse pas passer des faux
+  // positifs weekend cross-TZ. Demandés en review pour clore happy path bias.
+
+  it('NEGATIVE: TSE Sunday 14:59 UTC = Sunday 23:59 JST → false (Sunday weekend in JST)', () => {
+    // Just before midnight Sunday in Tokyo. UTC = Sunday 14:59. Both UTC and JST
+    // are Sunday → weekend. Helper must return false (not let through pre-Monday).
+    expect(isInExchangeSession('7203.T', '2026-05-10T14:59:00Z')).toBe(false);
+  });
+
+  it('NEGATIVE: KRX Saturday 06:30 UTC = Saturday 15:30 KST → false (Saturday weekend)', () => {
+    // Saturday in both UTC and KST. KRX would be at "close time" 15:30 KST
+    // on a weekday but Saturday → weekend. Must return false.
+    // Note : .KO/.KQ are EODHD suffixes (not Yahoo .KS).
+    expect(isInExchangeSession('005930.KO', '2026-05-09T06:30:00Z')).toBe(false);
+  });
+
+  it('NEGATIVE: HKEX Sunday 08:00 UTC = Sunday 16:00 HKT → false (Sunday weekend)', () => {
+    // Sunday in both UTC and HKT. HKEX would be at "close time" on a weekday
+    // but Sunday → weekend. Must return false.
+    expect(isInExchangeSession('0700.HK', '2026-05-10T08:00:00Z')).toBe(false);
+  });
 });
 
 describe('isInExchangeSession — Borderline near-close (V3)', () => {
