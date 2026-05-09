@@ -2196,6 +2196,35 @@ export class TopGainersScannerService implements OnModuleInit {
         }
       }
 
+      // PR Phase 2 — ATR-based dynamic SL (env-gated, default off).
+      //
+      // Justification empirique (analyse #298 sur n=14 backfilled) :
+      //   - 35.7% des SL sont des wicks (drawdown < 1 ATR = bruit)
+      //   - 42.9% des trades reviennent au break-even dans 30min post-SL
+      //   - 0% n'auraient atteint TP +2% (donc loosen SL ne ramène PAS de gain)
+      //
+      // Conclusion : SL dynamique = max(default_sl_pct, atr_pct × multiplier)
+      // permet d'éviter les wicks SL sans amplifier les vraies pertes.
+      // Multiplier ×1.5 = balance optimale (×2 trop large, ×1.2 inefficace).
+      //
+      // Activation env :
+      //   GAINERS_SL_ATR_MULTIPLIER=1.5    # SL = max(cfg, ATR × 1.5)
+      //   GAINERS_SL_ATR_MULTIPLIER=0      # disabled (default)
+      //
+      // ATR provenant de persistence.atrPct (calculé sur les candles 1m/5m
+      // déjà fetchées, zéro EODHD call extra).
+      let effectiveSlPct = slPct;
+      const atrMultiplier = Number(this.config.get<string>('GAINERS_SL_ATR_MULTIPLIER') ?? '0');
+      if (atrMultiplier > 0 && persistence.atrPct != null && persistence.atrPct > 0) {
+        const atrSlPct = persistence.atrPct * 100 * atrMultiplier;
+        if (atrSlPct > slPct) {
+          effectiveSlPct = atrSlPct;
+          this.logger.log(
+            `[top-gainers] ${cand.symbol} SL widened: base=${slPct.toFixed(2)}% → ATR×${atrMultiplier}=${atrSlPct.toFixed(2)}% (atrPct=${(persistence.atrPct * 100).toFixed(3)}%)`,
+          );
+        }
+      }
+
       const insertedPosId = await this.openTopGainerPosition(
         userId,
         portfolioId,
@@ -2203,7 +2232,7 @@ export class TopGainersScannerService implements OnModuleInit {
         persistence,
         {
           tpPct,
-          slPct,
+          slPct: effectiveSlPct,
           capitalUsd,
           positionPct,
           positionNotionalUsd,

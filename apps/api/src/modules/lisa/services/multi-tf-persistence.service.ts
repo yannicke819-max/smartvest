@@ -29,6 +29,23 @@ import { YahooIntradayService } from './yahoo-intraday.service';
 import { IntradayCacheService, CachedCandle } from './intraday-cache.service';
 import { EodhdQuotaService } from './eodhd-quota.service';
 import { filterOutOtcForeignOrdinary, isLikelyOtcForeignOrdinaryUS } from './otc-prefilter.helper';
+import { computeAtr } from './shadow-indicators.helper';
+
+/**
+ * PR Phase 2 — Helper local : compute ATR(14) en % du current price sur n'importe
+ * quelle série de candles {high, low, close}. Pure function, fail-safe (null si
+ * pas assez de candles ou current price invalide).
+ */
+function computeAtrPctFromCandles(
+  candles: Array<{ high: number; low: number; close: number }>,
+  currentPrice: number,
+  period = 14,
+): number | null {
+  if (currentPrice <= 0 || candles.length < period + 1) return null;
+  const atrAbs = computeAtr(candles, period);
+  if (atrAbs == null || atrAbs <= 0) return null;
+  return atrAbs / currentPrice;
+}
 
 interface Candidate {
   symbol: string;
@@ -85,6 +102,15 @@ export interface PersistenceWithPath extends PersistenceResult {
   coverage?: CoverageSource;
   /** P19i — Si coverage='cache_stale', âge en ms de la série cachée. */
   cacheAgeMs?: number;
+  /**
+   * PR Phase 2 — ATR(14) en % du current price, computed on the intraday
+   * candles fetched for persistence (5m equity / 1m crypto). Utilisé par le
+   * gainers scanner pour SL dynamique :
+   *   sl_pct_effective = max(cfg.gainers_default_sl_pct, atrPct * multiplier)
+   * où multiplier = env GAINERS_SL_ATR_MULTIPLIER (default 0 = disabled).
+   * Null si moins de 15 candles disponibles ou current price invalide.
+   */
+  atrPct?: number | null;
 }
 
 interface CacheEntry {
@@ -295,6 +321,16 @@ export class MultiTimeframePersistenceService {
     const prices = extractPricesFromOneMinSeries(candles);
     const persistence = evaluatePersistence(c.currentPrice, prices);
     const pathQuality = computePathQualityForTfsFromOneMin(candles);
+    // PR Phase 2 — ATR(14) on 1m crypto klines, fail-safe.
+    const atrPct = computeAtrPctFromCandles(
+      candles.map((k: any) => ({
+        high: Number(k.high),
+        low: Number(k.low),
+        close: Number(k.close),
+      })),
+      c.currentPrice,
+      14,
+    );
     // P19i — Write-on-success
     void this.intradayCache.write(
       c.symbol.toUpperCase(),
@@ -308,7 +344,7 @@ export class MultiTimeframePersistenceService {
         volume: Number(k.volume),
       })),
     );
-    return { ...persistence, pathQuality, coverage: 'binance' };
+    return { ...persistence, pathQuality, coverage: 'binance', atrPct };
   }
 
   /**
@@ -340,9 +376,15 @@ export class MultiTimeframePersistenceService {
       const prices = extractPricesFromFiveMinSeries(yahooCandles);
       const persistence = evaluatePersistence(c.currentPrice, prices);
       const pathQuality = computePathQualityForTfsFromFiveMin(yahooCandles);
+      // PR Phase 2 — ATR(14) on 5m yahoo candles (fail-safe).
+      const atrPct = computeAtrPctFromCandles(
+        yahooCandles.map((k) => ({ high: k.high, low: k.low, close: k.close })),
+        c.currentPrice,
+        14,
+      );
       // Write-on-success : cache pour fallback futur
       void this.intradayCache.write(cacheKey, 'yahoo', candlesToCached(yahooCandles, '5m'));
-      return { ...persistence, pathQuality, coverage: 'yahoo' };
+      return { ...persistence, pathQuality, coverage: 'yahoo', atrPct };
     }
 
     // P19j — Log explicit bascule yahoo→eodhd pour visibilité prod.
@@ -369,11 +411,16 @@ export class MultiTimeframePersistenceService {
       const prices = extractPricesFromOneMinSeries(oneMinSeries.candles);
       const persistence = evaluatePersistence(c.currentPrice, prices);
       const pathQuality = computePathQualityForTfsFromOneMin(oneMinSeries.candles);
+      const atrPct = computeAtrPctFromCandles(
+        oneMinSeries.candles.map((k) => ({ high: k.high, low: k.low, close: k.close })),
+        c.currentPrice,
+        14,
+      );
       void this.intradayCache.write(cacheKey, 'eodhd_1m', eodhdCandlesToCached(oneMinSeries.candles));
       this.logger.log(
         `[provider-router] eodhd 1m OK for ${eodhdTicker} (${oneMinSeries.candles.length} candles), coverage=eodhd_1m`,
       );
-      return { ...persistence, pathQuality, coverage: 'eodhd_1m' };
+      return { ...persistence, pathQuality, coverage: 'eodhd_1m', atrPct };
     }
 
     this.logger.log(
@@ -386,9 +433,14 @@ export class MultiTimeframePersistenceService {
       const prices = extractPricesFromFiveMinSeries(series.candles);
       const persistence = evaluatePersistence(c.currentPrice, prices);
       const pathQuality = computePathQualityForTfsFromFiveMin(series.candles);
+      const atrPct = computeAtrPctFromCandles(
+        series.candles.map((k) => ({ high: k.high, low: k.low, close: k.close })),
+        c.currentPrice,
+        14,
+      );
       void this.intradayCache.write(cacheKey, 'eodhd', eodhdCandlesToCached(series.candles));
       this.logger.log(`[provider-router] eodhd OK for ${eodhdTicker} (${series.candles.length} candles), coverage=eodhd`);
-      return { ...persistence, pathQuality, coverage: 'eodhd' };
+      return { ...persistence, pathQuality, coverage: 'eodhd', atrPct };
     }
 
     this.logger.log(`[provider-router] eodhd intraday null for ${eodhdTicker}, trying tick-data fallback`);
@@ -411,11 +463,16 @@ export class MultiTimeframePersistenceService {
       const prices = extractPricesFromFiveMinSeries(tickFiveMin);
       const persistence = evaluatePersistence(c.currentPrice, prices);
       const pathQuality = computePathQualityForTfsFromFiveMin(tickFiveMin);
+      const atrPct = computeAtrPctFromCandles(
+        tickSeries.candles.map((k) => ({ high: k.high, low: k.low, close: k.close })),
+        c.currentPrice,
+        14,
+      );
       void this.intradayCache.write(cacheKey, 'eodhd_ticks', eodhdCandlesToCached(tickSeries.candles));
       this.logger.log(
         `[provider-router] eodhd ticks OK for ${eodhdTicker} (${tickSeries.candles.length} bars), coverage=eodhd_ticks`,
       );
-      return { ...persistence, pathQuality, coverage: 'eodhd_ticks' };
+      return { ...persistence, pathQuality, coverage: 'eodhd_ticks', atrPct };
     }
 
     this.logger.log(`[provider-router] eodhd ticks null for ${eodhdTicker}, falling back to IntradayCache`);
