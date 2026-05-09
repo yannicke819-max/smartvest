@@ -109,3 +109,66 @@ describe('PR #298 BUG 1 — Session-aware skip logic', () => {
     expect(skipped).toHaveLength(0);  // 0 skip = back-compat preserved
   });
 });
+
+describe('PR follow-up — EU weekend skip (sessionAware mode)', () => {
+  // Bug résiduel observé prod 09/05/2026 10:00 UTC samedi :
+  //   [top-gainers] EU session active (cac40/dax40/ftse100), scanning 9 exchanges
+  // alors que EU markets sont fermés weekend.
+  //
+  // Cause : isWithinSession (helper) check uniquement open/close UTC, pas
+  // weekend. Saturday 10:00 UTC ∈ [08:00, 16:30] → returns true.
+  //
+  // Fix : wrap getActiveEuWatchlists avec isMarketOpen('eu', now) qui check
+  // weekend ET hours, quand sessionAware=true.
+
+  it('isMarketOpen("eu") returns FALSE on Saturday in EU window', () => {
+    // Saturday 2026-05-09T10:00:00Z = 12:00 CEST samedi
+    // Inside EU window 08:00-16:30 UTC mais Saturday → must be false
+    const saturdayInWindow = new Date('2026-05-09T10:00:00Z');
+    expect(isMarketOpen('eu', saturdayInWindow)).toBe(false);
+  });
+
+  it('isMarketOpen("eu") returns FALSE on Sunday in EU window', () => {
+    const sundayInWindow = new Date('2026-05-10T12:00:00Z');
+    expect(isMarketOpen('eu', sundayInWindow)).toBe(false);
+  });
+
+  it('isMarketOpen("eu") returns TRUE on Wednesday in EU window', () => {
+    // Wed 2026-05-13T10:00:00Z = 12:00 CEST mercredi
+    const wedInWindow = new Date('2026-05-13T10:00:00Z');
+    expect(isMarketOpen('eu', wedInWindow)).toBe(true);
+  });
+
+  it('isMarketOpen("eu") returns FALSE Wed before open', () => {
+    // Wed 07:30 UTC = before 08:00 UTC open
+    const wedBeforeOpen = new Date('2026-05-13T07:30:00Z');
+    expect(isMarketOpen('eu', wedBeforeOpen)).toBe(false);
+  });
+
+  it('isMarketOpen("eu") returns FALSE Wed after close', () => {
+    // Wed 17:00 UTC = after 16:30 UTC close
+    const wedAfterClose = new Date('2026-05-13T17:00:00Z');
+    expect(isMarketOpen('eu', wedAfterClose)).toBe(false);
+  });
+
+  it('sessionAware=true + Saturday → euMarketOpen=false → skip EU watchlists fetch', () => {
+    const sessionAware = true;
+    const saturday = new Date('2026-05-09T10:00:00Z');
+    const euMarketOpen = !sessionAware || isMarketOpen('eu', saturday);
+    expect(euMarketOpen).toBe(false);  // skip EU
+  });
+
+  it('sessionAware=true + Wed → euMarketOpen=true → fetch EU watchlists', () => {
+    const sessionAware = true;
+    const wed = new Date('2026-05-13T10:00:00Z');
+    const euMarketOpen = !sessionAware || isMarketOpen('eu', wed);
+    expect(euMarketOpen).toBe(true);  // fetch
+  });
+
+  it('sessionAware=false (back-compat) → euMarketOpen=true regardless', () => {
+    const sessionAware = false;
+    const saturday = new Date('2026-05-09T10:00:00Z');
+    const euMarketOpen = !sessionAware || isMarketOpen('eu', saturday);
+    expect(euMarketOpen).toBe(true);  // legacy behavior preserved
+  });
+});

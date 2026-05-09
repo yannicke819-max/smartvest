@@ -1072,7 +1072,15 @@ export class TopGainersScannerService implements OnModuleInit {
       }
 
       // EU exchanges gated on session windows.
-      const activeEu = await this.getActiveEuWatchlists(now);
+      // PR follow-up #303 — Bug résiduel : `getActiveEuWatchlists` (via
+      // `isWithinSession` helper) check uniquement open/close UTC, pas le
+      // weekend. Saturday 10:00 UTC tombe dans la fenêtre 08:00-16:30 UTC
+      // → considéré "active" alors qu'EU markets sont fermés samedi/dimanche.
+      // Fix : wrap avec `isMarketOpen('eu', now)` (qui check weekend ET hours)
+      // quand SCANNER_SESSION_AWARE=true. Économie : ~9 calls EODHD screener
+      // /cycle weekend = ~5k calls supplémentaires sauvés.
+      const euMarketOpen = !sessionAware || isMarketOpen('eu', now);
+      const activeEu = euMarketOpen ? await this.getActiveEuWatchlists(now) : [];
       if (activeEu.length > 0) {
         this.logger.log(
           `[top-gainers] EU session active (${activeEu.join('/')}), scanning ${EU_EXCHANGES.length} exchanges: ${EU_EXCHANGES.join(',')}`,
@@ -1085,6 +1093,10 @@ export class TopGainersScannerService implements OnModuleInit {
             }),
           );
         }
+      } else if (sessionAware && !euMarketOpen) {
+        this.logger.log(
+          `[top-gainers] session-aware fetch: EU markets closed (weekend or off-hours UTC=${now.toISOString().slice(11, 16)}) — saved ${EU_EXCHANGES.length} EODHD screener calls`,
+        );
       } else {
         this.logger.log(
           `[top-gainers] EU sessions closed — skipping ${EU_EXCHANGES.length} exchanges (${EU_EXCHANGES.join(',')})`,
