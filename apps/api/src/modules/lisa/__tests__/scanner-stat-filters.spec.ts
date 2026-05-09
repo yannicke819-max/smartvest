@@ -8,7 +8,8 @@
 
 describe('PR Phase 1 — Earnings filter logic', () => {
   it('threshold 0 (default) → filter disabled, no skip', () => {
-    const earningsFilterDays = Number(undefined ?? '0');
+    const envValue: string | undefined = undefined;
+    const earningsFilterDays = Number(envValue ?? '0');
     expect(earningsFilterDays).toBe(0);
     expect(earningsFilterDays > 0).toBe(false);
   });
@@ -125,25 +126,25 @@ describe('PR Phase 1 — Crypto exempt from both filters', () => {
   // Both filters check `cand.assetClass !== 'crypto_major' && cand.assetClass !== 'crypto_alt'`.
 
   it('crypto_major bypasses earnings filter', () => {
-    const assetClass = 'crypto_major';
+    const assetClass: string = 'crypto_major';
     const isNonCrypto = assetClass !== 'crypto_major' && assetClass !== 'crypto_alt';
     expect(isNonCrypto).toBe(false);  // crypto = no filter
   });
 
   it('crypto_alt bypasses opening buffer filter', () => {
-    const assetClass = 'crypto_alt';
+    const assetClass: string = 'crypto_alt';
     const isNonCrypto = assetClass !== 'crypto_major' && assetClass !== 'crypto_alt';
     expect(isNonCrypto).toBe(false);
   });
 
   it('us_equity_large gets filters applied', () => {
-    const assetClass = 'us_equity_large';
+    const assetClass: string = 'us_equity_large';
     const isNonCrypto = assetClass !== 'crypto_major' && assetClass !== 'crypto_alt';
     expect(isNonCrypto).toBe(true);
   });
 
   it('asia_equity gets filters applied', () => {
-    const assetClass = 'asia_equity';
+    const assetClass: string = 'asia_equity';
     const isNonCrypto = assetClass !== 'crypto_major' && assetClass !== 'crypto_alt';
     expect(isNonCrypto).toBe(true);
   });
