@@ -412,6 +412,50 @@ describe('isInExchangeSession — Borderline near-close (V3)', () => {
   });
 });
 
+describe('isInExchangeSession — DST boundary tests per marketplace', () => {
+  // Vérification que IANA TZ gère bien DST automatiquement pour TOUS les
+  // marketplaces avec DST. Tests par exchange, pas seulement US.
+  // Pas de DST en Asie (JST/HKT/KST/SGT/CST/IST tous fixés).
+
+  it('Frankfurt CET winter: 08:00 UTC = 9:00 CET → true', () => {
+    expect(isInExchangeSession('BMW.XETRA', '2026-01-15T08:00:00Z')).toBe(true);
+  });
+
+  it('Frankfurt CEST summer: 07:00 UTC = 9:00 CEST → true', () => {
+    expect(isInExchangeSession('BMW.XETRA', '2026-07-15T07:00:00Z')).toBe(true);
+  });
+
+  it('Frankfurt CEST: 06:00 UTC = 8:00 CEST → false (1h before open)', () => {
+    expect(isInExchangeSession('BMW.XETRA', '2026-07-15T06:00:00Z')).toBe(false);
+  });
+
+  it('Swiss CET winter: 08:00 UTC = 9:00 CET → true', () => {
+    expect(isInExchangeSession('NESN.SW', '2026-01-15T08:00:00Z')).toBe(true);
+  });
+
+  it('Amsterdam CEST summer: 07:00 UTC = 9:00 CEST → true', () => {
+    expect(isInExchangeSession('ASML.AS', '2026-07-15T07:00:00Z')).toBe(true);
+  });
+
+  it('TSX summer EDT: 13:30 UTC = 9:30 EDT → true (matches NYSE EDT)', () => {
+    expect(isInExchangeSession('SHOP.TO', '2026-07-15T13:30:00Z')).toBe(true);
+  });
+
+  it('TSX winter EST: 14:30 UTC = 9:30 EST → true', () => {
+    expect(isInExchangeSession('SHOP.TO', '2026-01-15T14:30:00Z')).toBe(true);
+  });
+
+  it('ASX summer AEDT: 23:00 UTC = 10:00 AEDT next day → true', () => {
+    // 2026-01-04 23:00 UTC = 2026-01-05 10:00 AEDT (Sydney summer DST)
+    expect(isInExchangeSession('CCP.AU', '2026-01-04T23:00:00Z')).toBe(true);
+  });
+
+  it('ASX winter AEST: 00:00 UTC = 10:00 AEST → true', () => {
+    // 2026-07-15 00:00 UTC = 10:00 AEST (Sydney winter, no DST in winter)
+    expect(isInExchangeSession('CCP.AU', '2026-07-15T00:00:00Z')).toBe(true);
+  });
+});
+
 describe('isInExchangeSession — Edge cases', () => {
   it('returns false for symbol without suffix', () => {
     // 'AAPL' or 'BTCUSDT' without dot — conservative false
