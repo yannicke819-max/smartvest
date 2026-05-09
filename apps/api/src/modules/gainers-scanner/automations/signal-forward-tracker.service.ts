@@ -28,6 +28,7 @@ import { SupabaseService } from '../../supabase/supabase.service';
 import { BinanceMarketService } from '../../lisa/services/binance-market.service';
 import { EodhdIntradayService } from '../../lisa/services/eodhd-intraday.service';
 import { ensureEodhdSuffix } from '../../lisa/services/eodhd-symbol.util';
+import { isLikelyOtcForeignOrdinaryUS } from '../../lisa/services/otc-prefilter.helper';
 import { GainersInsightsService } from '../insights/gainers-insights.service';
 
 const SEED_LOOKBACK_HOURS = 96;
@@ -340,6 +341,11 @@ export class SignalForwardTrackerService {
     // Hotfix EODHD bypass — applique suffix exchange (rows legacy peuvent
     // avoir symbol RAW sans suffix → 404).
     const eodhdTicker = ensureEodhdSuffix(symbol, exchange);
+    // PR #298 BUG 2 FIX — Skip OTC Foreign Ordinary US (jamais d'intraday
+    // dispo). Évite EODHD call inutile.
+    if (isLikelyOtcForeignOrdinaryUS(eodhdTicker)) {
+      return null;
+    }
     const series = await this.eodhd.getCandles(eodhdTicker, '1h', 100);
     if (!series || series.candles.length === 0) return null;
     // Trouver la candle avec timestamp le plus proche de targetTime
