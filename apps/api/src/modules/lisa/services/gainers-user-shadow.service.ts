@@ -33,6 +33,8 @@ export type ShadowDecision =
   | 'reject_p_win'
   | 'reject_budget_cap'
   | 'reject_no_tf_data'
+  | 'reject_earnings_imminent'  // PR Phase 1 — earnings dans la fenêtre filter
+  | 'reject_opening_buffer'     // PR Phase 1 — premières N min après open
   | 'reject_other';
 
 export interface RecordDecisionInput {
