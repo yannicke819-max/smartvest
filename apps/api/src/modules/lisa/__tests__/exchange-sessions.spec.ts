@@ -211,6 +211,96 @@ describe('isInExchangeSession — Always-on classes', () => {
   });
 });
 
+describe('isInExchangeSession — TSX (.TO) Toronto', () => {
+  // TSX: 9:30-16:00 ET, same as NYSE. Follows NYSE holidays in v1 mapping.
+
+  it('TSX 13:30 UTC = 9:30 EDT exact open → true', () => {
+    expect(isInExchangeSession('SHOP.TO', '2026-05-15T13:30:00Z')).toBe(true);
+  });
+
+  it('TSX 20:00 UTC = 16:00 EDT exact close → false (exclusive)', () => {
+    expect(isInExchangeSession('SHOP.TO', '2026-05-15T20:00:00Z')).toBe(false);
+  });
+
+  it('TSX winter EST: 14:30 UTC = 9:30 EST → true', () => {
+    expect(isInExchangeSession('BB.TO', '2026-02-10T14:30:00Z')).toBe(true);
+  });
+
+  it('TSX Saturday during would-be RTH → false', () => {
+    expect(isInExchangeSession('SHOP.TO', '2026-05-09T17:00:00Z')).toBe(false);
+  });
+});
+
+describe('isInExchangeSession — NSE (.NSE) India', () => {
+  // NSE: 9:15-15:30 IST = UTC+5:30 (no DST in India)
+  // 9:15 IST = 03:45 UTC, 15:30 IST = 10:00 UTC
+
+  it('NSE 03:45 UTC = 9:15 IST exact open → true', () => {
+    expect(isInExchangeSession('BHEL.NSE', '2026-05-15T03:45:00Z')).toBe(true);
+  });
+
+  it('NSE 03:44 UTC = 9:14 IST → false (1min before open)', () => {
+    expect(isInExchangeSession('BHEL.NSE', '2026-05-15T03:44:00Z')).toBe(false);
+  });
+
+  it('NSE 10:00 UTC = 15:30 IST exact close → false (exclusive)', () => {
+    expect(isInExchangeSession('HEG.NSE', '2026-05-15T10:00:00Z')).toBe(false);
+  });
+
+  it('NSE 09:59 UTC = 15:29 IST → true (1min before close)', () => {
+    expect(isInExchangeSession('HEG.NSE', '2026-05-15T09:59:00Z')).toBe(true);
+  });
+
+  it('NSE Sunday → false', () => {
+    expect(isInExchangeSession('BHEL.NSE', '2026-05-10T06:00:00Z')).toBe(false);
+  });
+
+  it('BSE same hours as NSE: 06:00 UTC = 11:30 IST mid-session → true', () => {
+    expect(isInExchangeSession('RELIANCE.BSE', '2026-05-15T06:00:00Z')).toBe(true);
+  });
+});
+
+describe('isInExchangeSession — NYSE Holidays 2026', () => {
+  // 13:30-20:00 UTC = 9:30-16:00 EDT/EST RTH on a normal weekday.
+  // On a holiday, even if the wall clock is in RTH, returns false.
+
+  it('Christmas Dec 25 2026 (Friday) at 17:00 UTC RTH hour → false (closed)', () => {
+    expect(isInExchangeSession('AAPL.US', '2026-12-25T17:00:00Z')).toBe(false);
+  });
+
+  it('Independence Day observed July 3 2026 (Friday) at 17:00 UTC → false', () => {
+    // July 4 2026 = Saturday → observed July 3 (Friday)
+    expect(isInExchangeSession('AAPL.US', '2026-07-03T17:00:00Z')).toBe(false);
+  });
+
+  it('Thanksgiving Nov 26 2026 (Thursday) at 17:00 UTC → false', () => {
+    expect(isInExchangeSession('AAPL.US', '2026-11-26T17:00:00Z')).toBe(false);
+  });
+
+  it('Day before Christmas Dec 24 2026 (Thursday) at 17:00 UTC → true (still trading)', () => {
+    // Note: NYSE closes early at 13:00 ET on Christmas Eve, but v1 doesn't
+    // model early closes. 17:00 UTC = 13:00 EDT borderline. Test verifies
+    // v1 limitation (full RTH assumed). Future PR : early-close support.
+    expect(isInExchangeSession('AAPL.US', '2026-12-24T17:00:00Z')).toBe(true);
+  });
+
+  it('Day after Thanksgiving Nov 27 2026 (Friday) at 17:00 UTC → true', () => {
+    // NYSE has early close (13:00 ET) day after Thanksgiving but v1 ignores.
+    expect(isInExchangeSession('AAPL.US', '2026-11-27T17:00:00Z')).toBe(true);
+  });
+
+  it('Holiday list applies to TSX (.TO) too in v1', () => {
+    // TSX has its own holiday calendar but v1 reuses NYSE list (mostly aligns).
+    expect(isInExchangeSession('SHOP.TO', '2026-12-25T17:00:00Z')).toBe(false);
+  });
+
+  it('Holiday list does NOT apply to non-US exchanges', () => {
+    // 7203.T (Tokyo) on Dec 25 = normal trading day in Japan
+    // Dec 25 2026 = Friday, JST 9:00 = 00:00 UTC Friday Dec 25
+    expect(isInExchangeSession('7203.T', '2026-12-25T01:00:00Z')).toBe(true);
+  });
+});
+
 describe('isInExchangeSession — Edge cases', () => {
   it('returns false for symbol without suffix', () => {
     // 'AAPL' or 'BTCUSDT' without dot — conservative false

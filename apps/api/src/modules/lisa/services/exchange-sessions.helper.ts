@@ -16,6 +16,7 @@
 import {
   EXCHANGE_SESSIONS,
   ALWAYS_ON_SUFFIXES,
+  NYSE_FULL_HOLIDAYS_2026,
   type ExchangeSession,
 } from './exchange-sessions.config';
 
@@ -68,6 +69,20 @@ function getLocalHourMinute(date: Date, tz: string): { h: number; m: number } {
   const h = Number(parts.find((p) => p.type === 'hour')?.value ?? -1);
   const m = Number(parts.find((p) => p.type === 'minute')?.value ?? -1);
   return { h, m };
+}
+
+/**
+ * Récupère la date locale au format YYYY-MM-DD dans la TZ spécifiée.
+ * Utilisé pour matcher contre NYSE_FULL_HOLIDAYS_2026.
+ */
+function getLocalDateString(date: Date, tz: string): string {
+  const fmt = new Intl.DateTimeFormat('en-CA', {  // 'en-CA' uses YYYY-MM-DD format
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  return fmt.format(date);
 }
 
 /** Parse "HH:mm" → { h, m }. Hardcoded format trusted from config. */
@@ -123,6 +138,12 @@ export function isInExchangeSession(symbol: string, at: Date | string | number):
   // Weekend check in exchange local TZ
   const weekday = getLocalWeekday(date, session.tz);
   if (weekday === 0 || weekday === 6) return false;  // Sun / Sat
+
+  // Holiday check (NYSE-only v1, applies to .US and .TO which mostly aligns)
+  if (suffix === '.US' || suffix === '.TO') {
+    const localDateStr = getLocalDateString(date, session.tz);
+    if (NYSE_FULL_HOLIDAYS_2026.has(localDateStr)) return false;
+  }
 
   // Hour/minute window check
   const local = getLocalHourMinute(date, session.tz);

@@ -76,3 +76,30 @@ export const ALWAYS_ON_SUFFIXES: ReadonlySet<string> = new Set([
   '.COMM',   // commodities EODHD
   '.INDX',   // indices (généralement always-quoted en intraday)
 ]);
+
+/**
+ * NYSE holidays — minimal subset des fermetures complètes (skip-list).
+ * Support v1 uniquement pour US (.US, .TO suit globalement le calendrier US).
+ * Format : 'YYYY-MM-DD' en local NY date.
+ *
+ * Limitations v1 :
+ *   - Pas de support early-close (Christmas Eve, Black Friday)
+ *   - Pas de support holidays Asia/EU exchanges
+ *   - Maintenu manuellement (~10 dates/an, low-effort)
+ *
+ * Future PR : intégrer `date-holidays` package pour cover all exchanges.
+ *
+ * Source : NYSE official 2026 calendar (https://www.nyse.com/markets/hours-calendars).
+ */
+export const NYSE_FULL_HOLIDAYS_2026: ReadonlySet<string> = new Set([
+  '2026-01-01',  // New Year's Day
+  '2026-01-19',  // MLK Day (3rd Mon Jan)
+  '2026-02-16',  // Presidents' Day (3rd Mon Feb)
+  '2026-04-03',  // Good Friday
+  '2026-05-25',  // Memorial Day (last Mon May)
+  '2026-06-19',  // Juneteenth
+  '2026-07-03',  // Independence Day observed (July 4 = Saturday → observed Friday)
+  '2026-09-07',  // Labor Day (1st Mon Sept)
+  '2026-11-26',  // Thanksgiving (4th Thu Nov)
+  '2026-12-25',  // Christmas Day
+]);
