@@ -166,7 +166,27 @@ export function getExchangeUtcOffsetSec(symbol: string | null | undefined): numb
 
 const SLIPPAGE_HAIRCUT_BILATERAL = 0.0015;  // 15bps each side
 const SLIPPAGE_TOTAL = SLIPPAGE_HAIRCUT_BILATERAL * 2;  // 30bps round-trip
-const SIMULATE_AFTER_MIN = 60;  // attendre que la fenêtre 60m soit close
+
+/**
+ * SHORT-SHADOW TIMING-FIX (11/05/2026) — Cutoff dynamique pour simulatePending.
+ *
+ * Bug observé 08/05/2026 : 0/503 mesurables (100% OFF_SESSION stale_data) sur les
+ * signaux du jour, alors que 07/05/2026 = 141/143 mesurables (98%). Diagnostic :
+ * scan→sim délai 0-1h sur 8 mai vs 10h+ sur 7 mai. À 60min sharp (cutoff
+ * pré-existant), race condition avec EODHD candle propagation lag (~5min typique
+ * post-bar-close) → fetch retourne empty / partial → outcome marqué OFF_SESSION.
+ *
+ * Fix : `max(windowMin) + buffer 5min`. Pour les grilles actuelles (LONG + SHORT,
+ * max window = 60min), cutoff = 65min. Tolère le lag sans retarder excessivement
+ * la simulation.
+ *
+ * Si nouvelles grilles ajoutées avec windowMin > 60, la constante MAX_WINDOW_MIN
+ * doit être mise à jour manuellement (pas dérivé du tableau pour éviter circular
+ * dep avec getGridsForAssetClass au module init).
+ */
+export const MAX_WINDOW_MIN = 60;
+export const SIMULATE_BUFFER_MIN = 5;
+export const SIMULATE_AFTER_MIN = MAX_WINDOW_MIN + SIMULATE_BUFFER_MIN;  // = 65
 const SIMULATE_BATCH_SIZE = 50;
 
 // PR #283 — Lookback fenêtre 5m pour fetch candles. Configurable via env
@@ -464,9 +484,12 @@ export class GainersUserShadowService {
   }
 
   /**
-   * Pick rows where sim_run_at IS NULL AND created_at > 60 min ago,
+   * Pick rows where sim_run_at IS NULL AND created_at > SIMULATE_AFTER_MIN ago,
    * fetch 5m candles forward, walk-forward to find TP/SL hits sur 4 grilles.
    * Cap batch à SIMULATE_BATCH_SIZE pour éviter timeouts.
+   *
+   * SHORT-SHADOW TIMING-FIX (11/05/2026) — SIMULATE_AFTER_MIN bumped 60→65 pour
+   * tolérer EODHD candle propagation lag ~5min. Cf. constante explication.
    */
   async simulatePending(): Promise<{ processed: number; failures: number }> {
     const cutoff = new Date(Date.now() - SIMULATE_AFTER_MIN * 60_000).toISOString();

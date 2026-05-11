@@ -13,6 +13,9 @@ import {
   walkForward,
   computePriceSnapshots,
   getGridsForAssetClass,
+  MAX_WINDOW_MIN,
+  SIMULATE_BUFFER_MIN,
+  SIMULATE_AFTER_MIN,
   type SimGrid,
   type CandleLike,
 } from '../services/gainers-user-shadow.service';
@@ -448,5 +451,30 @@ describe('getGridsForAssetClass — scope strict SHORT (SHORT-SHADOW)', () => {
     expect(shortBaseline.windowMin).toBe(longBaseline.windowMin);
     expect(shortBaseline.direction).toBe('short');
     expect(longBaseline.direction).toBe('long');
+  });
+});
+
+// ============================================================
+// G. SHORT-SHADOW TIMING-FIX (11/05/2026) — SIMULATE_AFTER_MIN
+// ============================================================
+describe('SIMULATE_AFTER_MIN — cutoff timing simulatePending (SHORT-SHADOW TIMING-FIX)', () => {
+  it('SIMULATE_AFTER_MIN = MAX_WINDOW_MIN + SIMULATE_BUFFER_MIN', () => {
+    expect(SIMULATE_AFTER_MIN).toBe(MAX_WINDOW_MIN + SIMULATE_BUFFER_MIN);
+  });
+
+  it('MAX_WINDOW_MIN = 60 (largest grid window across LONG + SHORT)', () => {
+    expect(MAX_WINDOW_MIN).toBe(60);
+    // Sanity check : aucune grille n'a un windowMin supérieur
+    const smallMidGrids = getGridsForAssetClass('us_equity_small_mid');
+    const maxObserved = Math.max(...smallMidGrids.map((g) => g.windowMin));
+    expect(maxObserved).toBeLessThanOrEqual(MAX_WINDOW_MIN);
+  });
+
+  it('SIMULATE_BUFFER_MIN = 5 (EODHD candle propagation lag tolerance)', () => {
+    expect(SIMULATE_BUFFER_MIN).toBe(5);
+  });
+
+  it('SIMULATE_AFTER_MIN = 65 (bug-fix 08/05/2026 : 60→65 pour tolérer race condition)', () => {
+    expect(SIMULATE_AFTER_MIN).toBe(65);
   });
 });
