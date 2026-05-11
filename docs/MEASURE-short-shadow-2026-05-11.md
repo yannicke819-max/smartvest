@@ -105,21 +105,17 @@ Le filtre cascade (path_eff, persistence, cooldown, post_sl_cooldown) ne disting
 
 **Implication** : le système de filtrage actuel **filtre arbitrairement** des signaux qui auraient été aussi profitables que ceux acceptés. À repenser.
 
-### 4.2 Bug timing simulator
+### 4.2 Bug timing simulator — guard sous-dimensionné
 
-**Root cause** : `simulatePending` peut être appelé moins de 60min après création du signal. Sans 60min de candles forward disponibles, l'outcome est marqué `OFF_SESSION` à tort.
+**Root cause** : un guard `SIMULATE_AFTER_MIN = 60` existait déjà dans le code (`simulatePending`, ligne 169, filtre `.lte('created_at', cutoff)` ligne 477). Il était **trop serré** : race condition avec le lag de propagation des candles EODHD (~5min). À exactement 60min après création, certaines candles forward n'étaient pas encore disponibles → outcome marqué `OFF_SESSION` à tort.
 
 **Preuves** :
-- 7 mai 2026 : scan→sim délai ≈ 10h → 141/143 mesurables (98%)
-- 8 mai 2026 : scan→sim délai = 0-1h → 0/503 mesurables (100% OFF_SESSION)
+- 7 mai 2026 : scan→sim délai ≈ 10h → 141/143 mesurables (98%) — bien au-delà du cutoff, candles présentes
+- 8 mai 2026 : scan→sim délai = 0-1h → 0/503 mesurables (100% OFF_SESSION) — boundary 60min, candles encore en propagation
 
-**Fix requis** :
-```sql
--- garde dans simulatePending
-WHERE created_at < NOW() - (max(windowMin grilles) + 5min buffer)
-```
+**Fix appliqué (commit 5835656)** : bump du guard à 65min via expression dérivée `MAX_WINDOW_MIN + SIMULATE_BUFFER_MIN` (5min). Plus robuste et traçable qu'un chiffre magique, dérive automatiquement si une grille à fenêtre plus large est ajoutée.
 
-**Impact** : sans fix, ~80% des signaux US seront perdus systématiquement en phase forward 14j.
+**Impact sans fix** : ~80% des signaux US perdus systématiquement en phase forward 14j (boundary race).
 
 ### 4.3 Direction signal hardcoded LONG
 
@@ -154,11 +150,13 @@ Range 60m observé sur small/mid US : 0.5-1.2%.
 
 **Action** : commit local, pas de push.
 
-### 5.2 Phase 1.5 — Fix bug timing simulator (NOUVEAU)
+### 5.2 Phase 1.5 — Fix bug timing simulator (commitée)
 
-**Scope** : garde-fou `created_at < NOW() - windowMin - 5min` dans `simulatePending`. ~20 LoC + 1 test.
+**Scope** : guard `SIMULATE_AFTER_MIN` passé de 60 à 65min via expression dérivée `MAX_WINDOW_MIN + SIMULATE_BUFFER_MIN`. Pas un guard manquant, un guard sous-dimensionné.
 
-**Action** : commit local, pas de push.
+**Statut** : commit `5835656` sur branche `feature/short-shadow-grids`, commit séparé du Phase 1 (`896848e`) pour clarté review (orthogonalité SHORT-SHADOW vs TIMING-FIX). 28/28 tests PASS, typecheck clean.
+
+**Action** : commité local, pas pushé.
 
 ### 5.3 Phase 2 — Rétroactif sur n=147 (read-only)
 
@@ -284,10 +282,10 @@ Base : 16 trades mesurables/jour × $1 050/position × expectancy × win rate ne
 - [x] Identification bugs structurels
 - [x] Plan Phase 1/2/3 défini
 - [x] Risk management chiffré
-- [x] Phase 1 (code SHORT) — **commit `896848e` local sur `feature/short-shadow-grids`**
-- [x] Phase 1.5 (fix timing simulator) — **commit `5835656` local sur `feature/short-shadow-grids`**
-- [ ] Phase 2 (rétroactif sur n=147)
-- [ ] Phase 3 (deploy MESURE-only)
+- [x] **Phase 1 (code SHORT) — commit 896848e local**
+- [x] **Phase 1.5 (fix timing simulator) — commit 5835656 local**
+- [ ] Phase 2 (rétroactif sur n=147) — option 1 retenue : script Node standalone read-only
+- [ ] Phase 3 (deploy MESURE-only) — conditionnel à Phase 2
 - [ ] Shadow forward 14j
 - [ ] Décision GO LIVE
 
