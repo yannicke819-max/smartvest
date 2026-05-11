@@ -186,26 +186,71 @@ Range 60m observé sur small/mid US : 0.5-1.2%.
 
 ---
 
-## 6. Critères GO LIVE — décision finale après 14j shadow forward
+## 6. Critères GO PAPER — décision après 14j shadow forward
 
 Le shadow forward 14j produit des données. À J+15, vérifier :
 
 | Critère | Seuil minimum |
 |---|---|
 | Trades mesurables SHORT small/mid US | **≥ 80** |
-| Win rate | **≥ 50%** (à n=80, IC95 inférieur > 40%) |
+| Win rate | **≥ 65%** (revu après proxy SQL Phase 2) |
 | Expectancy nette (post-slippage 30bps) | **> +0.4%/trade** |
 | Sharpe ratio daily | **> 1.0** |
 | Max drawdown shadow | **< 5%** du capital simulé |
 | Diversité temporelle | **≥ 5 jours de marché distincts** |
 | Pas de jour > 30% du PnL total | (sinon trop concentré) |
 
-**Si tous critères atteints** → ouverture discussion live trading.
+**Si tous critères atteints** → GO Phase 4 (paper trading).
 **Si un critère échoue** → STOP, documentation, pivot.
+
+## 6 bis. Phase 4 — Paper Trading (4-6 semaines minimum)
+
+Étape **obligatoire** entre shadow et live. Le shadow mesure l'edge sans exécution ; le paper trading capture les frictions d'exécution réelles **sans risque de capital**.
+
+### Frictions à mesurer en paper
+
+| Friction | Impact attendu | Comment c'est mesuré |
+|---|---|---|
+| Slippage réel | 10-50bps selon liquidité | Comparer prix shadow vs prix paper fill |
+| Latence broker | 100-500ms | Délai signal → ordre filled |
+| Partial fills | 5-20% des ordres | Compter ordres incomplets |
+| Short borrow rate | 1-5%/an sur small/mid US | Frais quotidiens table positions |
+| Hard-to-borrow | Refus brokerage | Compter signaux non exécutables |
+| Pre-market/after-hours | Volatilité × 2-3 | Restriction plage horaire confirmée |
+
+### Critères GO LIVE — après 4-6 semaines paper
+
+| Critère | Seuil minimum |
+|---|---|
+| Période paper trading | **≥ 4 semaines pleines** (≥20 jours marché) |
+| Trades paper mesurables | **≥ 200** |
+| Win rate paper | **≥ 60%** (admettant -5pp vs shadow par friction) |
+| Expectancy nette paper | **> +0.3%/trade** (admettant -10bps slippage réel) |
+| Sharpe ratio daily paper | **> 0.8** |
+| Max drawdown paper | **< 8%** du capital simulé |
+| Hard-to-borrow rate | **< 15%** des signaux |
+| Cohérence shadow vs paper | divergence WR < 15pp, divergence expectancy < 30% |
+
+**Le dernier critère est critique** : si paper trading donne un edge significativement plus faible que le shadow 14j, ça signifie que les frictions d'exécution mangent une grande partie de l'edge. Dans ce cas, soit on optimise l'exécution, soit on accepte l'edge réduit, soit on stoppe.
+
+## 6 ter. Critères GO LIVE — décision finale post-paper
+
+À partir du moment où Phase 4 paper trading est validée :
+
+| Critère | Seuil |
+|---|---|
+| Tous les critères §6 bis atteints | **Obligatoire** |
+| Période ininterrompue paper sans bug majeur | **≥ 2 semaines** |
+| Risk management documenté et testé en paper | DLL, kill switch, max positions tous déclenchés au moins 1× sans dégât |
+| Plan de retour arrière prêt | Si live perd > 5% en 1 semaine, retour paper |
+| Capital initial live ≤ paper capital | Pas de scale-up avant 4 semaines live profitable |
+
+**Si tous critères atteints** → GO LIVE à taille réduite (50% du sizing nominal pendant 2 premières semaines).
+**Si un critère échoue** → retour Phase 4 paper, pas de live.
 
 ---
 
-## 7. Risk Management — règles opérationnelles LIVE
+## 7. Risk Management — règles opérationnelles (applicables paper ET live)
 
 ### 7.1 Sizing
 
@@ -273,21 +318,48 @@ Base : 16 trades mesurables/jour × $1 050/position × expectancy × win rate ne
 
 ---
 
-## 9. État d'avancement
+## 9. Phases — récapitulatif visuel
+
+```
+[Phase 1] Code SHORT grids       ✅ commit 896848e
+   │
+[Phase 1.5] Fix timing simulator ✅ commit 5835656
+   │
+[Phase 2] Rétroactif proxy SQL   ✅ validé (WR 99% proxy, expectancy net +0.59%)
+   │
+   │  Caveat : proxy SQL surestime, réalité probable WR 65-80%
+   ▼
+[Phase 3] Shadow forward 14j     ⏸️ en attente push + deploy MESURE-only
+   │
+   │  Validation diversité temporelle + path intra-fenêtre
+   ▼
+[Phase 4] Paper Trading 4-6 sem  ⏸️ obligatoire avant LIVE
+   │
+   │  Validation frictions exécution (slippage, borrow, latence)
+   ▼
+[Phase 5] LIVE à taille réduite  ⏸️ 50% sizing nominal pendant 2 sem
+   │
+   │  Validation comportement capital réel
+   ▼
+[Phase 6] LIVE full sizing       ⏸️ si Phase 5 profitable 4 sem
+```
+
+## 10. État d'avancement
 
 - [x] Cadrage cible recalibrée
 - [x] Audit shadow LONG (verdict négatif documenté)
 - [x] Découverte direction inversée (proxy à valider)
 - [x] Cartographie pipelines V1 vs legacy
 - [x] Identification bugs structurels
-- [x] Plan Phase 1/2/3 défini
+- [x] Plan Phase 1/2/3/4/5 défini
 - [x] Risk management chiffré
 - [x] **Phase 1 (code SHORT) — commit 896848e local**
 - [x] **Phase 1.5 (fix timing simulator) — commit 5835656 local**
-- [ ] Phase 2 (rétroactif sur n=147) — option 1 retenue : script Node standalone read-only
-- [ ] Phase 3 (deploy MESURE-only) — conditionnel à Phase 2
-- [ ] Shadow forward 14j
-- [ ] Décision GO LIVE
+- [x] **Phase 2 (rétroactif proxy SQL) — validé le 11 mai 2026** (WR 99% proxy, expectancy net +0.59%, caveat surestimation)
+- [ ] **Phase 3 (deploy MESURE-only + shadow forward 14j)** — en attente push branche
+- [ ] **Phase 4 (paper trading 4-6 semaines)** — obligatoire avant live
+- [ ] **Phase 5 (live taille réduite 50% sizing)** — 2 semaines de probation
+- [ ] **Phase 6 (live full sizing)** — si Phase 5 profitable 4 semaines
 
 ---
 
