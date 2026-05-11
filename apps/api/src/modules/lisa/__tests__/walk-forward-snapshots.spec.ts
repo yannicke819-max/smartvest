@@ -12,6 +12,7 @@
 import {
   walkForward,
   computePriceSnapshots,
+  getGridsForAssetClass,
   type SimGrid,
   type CandleLike,
 } from '../services/gainers-user-shadow.service';
@@ -309,5 +310,143 @@ describe('simulatePending UPDATE structure — JSONB root-level snapshots', () =
     const priceSnapshots: { '5': number | null; '15': number | null; '30': number | null; '60': number | null } | undefined = undefined;
     const fallback = priceSnapshots ?? { '5': null, '15': null, '30': null, '60': null };
     expect(fallback).toEqual({ '5': null, '15': null, '30': null, '60': null });
+  });
+});
+
+// ============================================================
+// E. SHORT-SHADOW (11/05/2026) — walkForward direction='short'
+// ============================================================
+describe('walkForward — direction SHORT (SHORT-SHADOW)', () => {
+  const startTs = 1700000000;
+  const entry = 100;
+  const SHORT_BASELINE: SimGrid = { key: 'short_baseline_60m', tpPct: 0.020, slPct: 0.009, windowMin: 60, direction: 'short' };
+
+  it('SHORT TP_HIT : prix DESCEND vers tpPrice = entry - tpPct', () => {
+    // entry=100, tp = 100 × (1 - 0.02) = 98. SL = 100 × (1 + 0.009) = 100.9
+    // Candle à +7min avec low=97.5 → hit TP en short (prix sous 98)
+    const candles = [
+      mkCandle(180, 100.1, { low: 99.8, high: 100.3 }),
+      mkCandle(420, 98.5, { low: 97.5, high: 99.5 }),  // low <= 98 = TP_HIT
+    ];
+    const r = walkForward(entry, candles, startTs, SHORT_BASELINE);
+    expect(r.outcome).toBe('TP_HIT');
+    expect(r.exit_price).toBe(98);
+    expect(r.pnl_pct).toBeCloseTo(0.017, 3);  // +tpPct - slippage = profit positif
+    expect(r.hit_at_min).toBe(7);
+  });
+
+  it('SHORT SL_HIT : prix MONTE vers slPrice = entry + slPct', () => {
+    // entry=100, sl = 100 × (1 + 0.009) = 100.9. TP = 98
+    // Candle à +12min avec high=101.5 → hit SL en short (prix au-dessus 100.9)
+    const candles = [
+      mkCandle(300, 100.4, { low: 100.2, high: 100.7 }),
+      mkCandle(720, 101.2, { low: 100.9, high: 101.5 }),  // high >= 100.9 = SL_HIT
+    ];
+    const r = walkForward(entry, candles, startTs, SHORT_BASELINE);
+    expect(r.outcome).toBe('SL_HIT');
+    expect(r.exit_price).toBeCloseTo(100.9, 2);
+    expect(r.pnl_pct).toBeCloseTo(-0.012, 3);  // -slPct - slippage = loss négatif
+    expect(r.hit_at_min).toBe(12);
+  });
+
+  it('SHORT TIME_LIMIT : pnl positif si prix descend, négatif si prix monte', () => {
+    // entry=100, fenêtre 60min, 13 candles linéaires close 100→99.4
+    // En SHORT, profit si prix descend → closePnl = (entry - close) / entry = +0.6%
+    const candles = Array.from({ length: 13 }, (_, i) => {
+      const close = 100 - i * 0.05;  // 100, 99.95, ..., 99.4
+      return mkCandle(i * 300, close, { high: close + 0.05, low: close - 0.05 });
+    });
+    const r = walkForward(entry, candles, startTs, SHORT_BASELINE);
+    expect(r.outcome).toBe('TIME_LIMIT');
+    expect(r.exit_price).toBeCloseTo(99.4, 2);
+    // (100 - 99.4) / 100 - 0.003 slip = 0.0030
+    expect(r.pnl_pct).toBeCloseTo(0.003, 3);
+  });
+
+  it('SHORT TIME_LIMIT inverse-symmetry : sur path montant, SHORT pnl = -LONG pnl à slip près', () => {
+    // entry=100, prix monte linéairement 100→100.6 sur 60min
+    // LONG  closePnl = (100.6 - 100) / 100 = +0.006 → pnl_pct = +0.003 (après slip)
+    // SHORT closePnl = (100 - 100.6) / 100 = -0.006 → pnl_pct = -0.009 (après slip)
+    const candles = Array.from({ length: 13 }, (_, i) => {
+      const close = 100 + i * 0.05;
+      return mkCandle(i * 300, close, { high: close + 0.05, low: close - 0.05 });
+    });
+    const LONG_BASELINE: SimGrid = { key: 'baseline_60m', tpPct: 0.020, slPct: 0.009, windowMin: 60, direction: 'long' };
+    const rLong = walkForward(entry, candles, startTs, LONG_BASELINE);
+    const rShort = walkForward(entry, candles, startTs, SHORT_BASELINE);
+    expect(rLong.outcome).toBe('TIME_LIMIT');
+    expect(rShort.outcome).toBe('TIME_LIMIT');
+    // LONG profit (prix monte) ↔ SHORT loss (prix monte) — pnl signs opposés
+    expect(rLong.pnl_pct).toBeCloseTo(0.003, 3);
+    expect(rShort.pnl_pct).toBeCloseTo(-0.009, 3);
+  });
+
+  it('SHORT NO_DATA on empty candles', () => {
+    const r = walkForward(entry, [], startTs, SHORT_BASELINE);
+    expect(r.outcome).toBe('NO_DATA');
+    expect(r.pnl_pct).toBeNull();
+  });
+
+  it('Rétro-compat : grid sans direction = LONG par défaut', () => {
+    const noDirectionGrid: SimGrid = { key: 'legacy', tpPct: 0.020, slPct: 0.009, windowMin: 60 };
+    const candles = [mkCandle(180, 100.3), mkCandle(420, 102.5, { high: 102.5 })];
+    const r = walkForward(entry, candles, startTs, noDirectionGrid);
+    // LONG TP_HIT à +7min = comportement pré-patch
+    expect(r.outcome).toBe('TP_HIT');
+    expect(r.exit_price).toBe(102);
+    expect(r.hit_at_min).toBe(7);
+  });
+});
+
+// ============================================================
+// F. SHORT-SHADOW — getGridsForAssetClass (scope strict small/mid US)
+// ============================================================
+describe('getGridsForAssetClass — scope strict SHORT (SHORT-SHADOW)', () => {
+  it('us_equity_small_mid retourne 10 grids (4 LONG + 6 SHORT)', () => {
+    const grids = getGridsForAssetClass('us_equity_small_mid');
+    expect(grids).toHaveLength(10);
+    const keys = grids.map((g) => g.key);
+    expect(keys).toEqual([
+      'baseline_30m', 'baseline_60m', 'alt15_30m', 'alt15_60m',
+      'short_baseline_30m', 'short_baseline_60m',
+      'short_alt15_30m', 'short_alt15_60m',
+      'short_calibrated_30m', 'short_calibrated_60m',
+    ]);
+  });
+
+  it('us_equity_large retourne 4 grids LONG seulement', () => {
+    const grids = getGridsForAssetClass('us_equity_large');
+    expect(grids).toHaveLength(4);
+    expect(grids.every((g) => g.direction !== 'short')).toBe(true);
+  });
+
+  it('eu_equity, asia_equity, crypto_major retournent 4 grids LONG (scope strict)', () => {
+    for (const cls of ['eu_equity', 'asia_equity', 'crypto_major', 'crypto_alt']) {
+      const grids = getGridsForAssetClass(cls);
+      expect(grids).toHaveLength(4);
+      expect(grids.every((g) => g.direction !== 'short')).toBe(true);
+    }
+  });
+
+  it('SHORT calibrated grids : TP 0.8% / SL 0.4% (ratio 2:1, breakeven 33%)', () => {
+    const grids = getGridsForAssetClass('us_equity_small_mid');
+    const calibrated = grids.filter((g) => g.key.startsWith('short_calibrated_'));
+    expect(calibrated).toHaveLength(2);
+    for (const g of calibrated) {
+      expect(g.tpPct).toBeCloseTo(0.008, 4);
+      expect(g.slPct).toBeCloseTo(0.004, 4);
+      expect(g.direction).toBe('short');
+    }
+  });
+
+  it('SHORT baseline mirror : mêmes TP/SL que LONG baseline (apples-to-apples)', () => {
+    const grids = getGridsForAssetClass('us_equity_small_mid');
+    const longBaseline = grids.find((g) => g.key === 'baseline_60m')!;
+    const shortBaseline = grids.find((g) => g.key === 'short_baseline_60m')!;
+    expect(shortBaseline.tpPct).toBe(longBaseline.tpPct);
+    expect(shortBaseline.slPct).toBe(longBaseline.slPct);
+    expect(shortBaseline.windowMin).toBe(longBaseline.windowMin);
+    expect(shortBaseline.direction).toBe('short');
+    expect(longBaseline.direction).toBe('long');
   });
 });

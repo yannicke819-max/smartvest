@@ -64,8 +64,65 @@ export interface SimGrid {
   tpPct: number;
   slPct: number;
   windowMin: number;
+  /**
+   * SHORT-SHADOW (11/05/2026) — Direction du signal simulé.
+   * 'long'  : signal classique, TP au-dessus entry, SL en-dessous (default backward-compat)
+   * 'short' : signal inversé (mean-reversion fade), TP en-dessous entry, SL au-dessus
+   * Field optionnel pour préserver toutes les grilles LONG existantes sans modification.
+   */
+  direction?: 'long' | 'short';
 }
 
+/**
+ * SHORT-SHADOW (11/05/2026) — Retourne les grilles de simulation selon l'asset class.
+ *
+ * Stratégie : SHORT grids UNIQUEMENT sur `us_equity_small_mid` (scope strict MESURE,
+ * basé sur observation n=147 trades mono-journée 07/05/2026, expectancy LONG -1.20%
+ * vs proxy SHORT +1.18%). Hypothèse "fade the gainer" sur small caps illiquides.
+ *
+ * Toutes les autres classes (us_equity_large, eu_equity, asia_equity, crypto_*)
+ * conservent uniquement les 4 grilles LONG historiques. Aucun changement de
+ * comportement pour ces classes (rétro-compat parfaite).
+ *
+ * Calibration grilles SHORT (us_equity_small_mid uniquement) :
+ *   - short_baseline_30m/60m : TP 2.0% / SL 0.9% (mirror LONG baseline pour comparaison
+ *     apples-to-apples)
+ *   - short_alt15_30m/60m    : TP 1.5% / SL 0.6% (mirror LONG alt15)
+ *   - short_calibrated_30m/60m : TP 0.8% / SL 0.4% (ratio 2:1, breakeven 33%, calibré
+ *     sur range 60min réellement observé small/mid US 0.5-1.2%)
+ */
+export function getGridsForAssetClass(assetClass: string): SimGrid[] {
+  const longGrids: SimGrid[] = [
+    { key: 'baseline_30m', tpPct: 0.020, slPct: 0.009, windowMin: 30, direction: 'long' },
+    { key: 'baseline_60m', tpPct: 0.020, slPct: 0.009, windowMin: 60, direction: 'long' },
+    { key: 'alt15_30m',    tpPct: 0.015, slPct: 0.006, windowMin: 30, direction: 'long' },
+    { key: 'alt15_60m',    tpPct: 0.015, slPct: 0.006, windowMin: 60, direction: 'long' },
+  ];
+
+  if (assetClass !== 'us_equity_small_mid') {
+    return longGrids;
+  }
+
+  // SHORT grids — SCOPE STRICT us_equity_small_mid uniquement
+  return [
+    ...longGrids,
+    // Mirror LONG baseline (apples-to-apples comparison)
+    { key: 'short_baseline_30m', tpPct: 0.020, slPct: 0.009, windowMin: 30, direction: 'short' },
+    { key: 'short_baseline_60m', tpPct: 0.020, slPct: 0.009, windowMin: 60, direction: 'short' },
+    // Mirror LONG alt15
+    { key: 'short_alt15_30m', tpPct: 0.015, slPct: 0.006, windowMin: 30, direction: 'short' },
+    { key: 'short_alt15_60m', tpPct: 0.015, slPct: 0.006, windowMin: 60, direction: 'short' },
+    // Calibrated for small/mid US 60m range (TP 0.8% / SL 0.4%, ratio 2:1)
+    { key: 'short_calibrated_30m', tpPct: 0.008, slPct: 0.004, windowMin: 30, direction: 'short' },
+    { key: 'short_calibrated_60m', tpPct: 0.008, slPct: 0.004, windowMin: 60, direction: 'short' },
+  ];
+}
+
+/**
+ * @deprecated SHORT-SHADOW (11/05/2026) — Préservé pour rétro-compat lecture.
+ * Utiliser getGridsForAssetClass(assetClass) pour le nouveau comportement
+ * conditionnel par asset class.
+ */
 const SIM_GRIDS: SimGrid[] = [
   { key: 'baseline_30m', tpPct: 0.020, slPct: 0.009, windowMin: 30 },
   { key: 'baseline_60m', tpPct: 0.020, slPct: 0.009, windowMin: 60 },
@@ -299,28 +356,43 @@ export function walkForward(
   startTs: number,
   grid: SimGrid,
 ): SimOutcome {
-  const tpPrice = entry * (1 + grid.tpPct);
-  const slPrice = entry * (1 - grid.slPct);
+  // SHORT-SHADOW (11/05/2026) — Direction read from grid (default 'long' rétro-compat).
+  // LONG : TP au-dessus entry, SL en-dessous, profit si prix monte
+  // SHORT : TP en-dessous entry, SL au-dessus, profit si prix descend
+  const direction = grid.direction ?? 'long';
+  const isShort = direction === 'short';
+
+  const tpPrice = isShort ? entry * (1 - grid.tpPct) : entry * (1 + grid.tpPct);
+  const slPrice = isShort ? entry * (1 + grid.slPct) : entry * (1 - grid.slPct);
   const cutoffTs = startTs + grid.windowMin * 60;
   let lastBeforeCutoff: CandleLike | null = null;
 
   for (const c of candles) {
     if (c.timestamp > cutoffTs) break;
     lastBeforeCutoff = c;
-    if (c.low <= slPrice) {
+
+    // SHORT-SHADOW : hit conditions inversées
+    // SHORT SL hit si c.high >= slPrice (prix MONTE à travers SL au-dessus)
+    // SHORT TP hit si c.low  <= tpPrice (prix DESCEND à travers TP en-dessous)
+    const slHit = isShort ? c.high >= slPrice : c.low <= slPrice;
+    const tpHit = isShort ? c.low <= tpPrice : c.high >= tpPrice;
+
+    if (slHit) {
       return {
         outcome: 'SL_HIT',
         exit_price: slPrice,
         exit_at: new Date(c.timestamp * 1000).toISOString(),
+        // pnl_pct sign : SL loss is negative for both LONG and SHORT (grid.slPct is magnitude)
         pnl_pct: -grid.slPct - SLIPPAGE_TOTAL,
         hit_at_min: Math.round((c.timestamp - startTs) / 60),
       };
     }
-    if (c.high >= tpPrice) {
+    if (tpHit) {
       return {
         outcome: 'TP_HIT',
         exit_price: tpPrice,
         exit_at: new Date(c.timestamp * 1000).toISOString(),
+        // pnl_pct sign : TP profit is positive for both LONG and SHORT
         pnl_pct: grid.tpPct - SLIPPAGE_TOTAL,
         hit_at_min: Math.round((c.timestamp - startTs) / 60),
       };
@@ -328,7 +400,12 @@ export function walkForward(
   }
 
   if (lastBeforeCutoff) {
-    const closePnl = (lastBeforeCutoff.close - entry) / entry;
+    // SHORT-SHADOW : TIME_LIMIT pnl signe inversé pour SHORT
+    // LONG  closePnl = (close - entry) / entry  (positif si close > entry = profit long)
+    // SHORT closePnl = (entry - close) / entry  (positif si entry > close = profit short)
+    const closePnl = isShort
+      ? (entry - lastBeforeCutoff.close) / entry
+      : (lastBeforeCutoff.close - entry) / entry;
     return {
       outcome: 'TIME_LIMIT',
       exit_price: lastBeforeCutoff.close,
@@ -459,7 +536,12 @@ export class GainersUserShadowService {
     assetClass: string;
     entryPrice: number | null;
     createdAt: string;
-  }): Promise<{ results: Record<string, SimOutcome>; fetchDiag: FetchDiag }> {
+  }): Promise<{
+    results: Record<string, SimOutcome>;
+    fetchDiag: FetchDiag;
+    /** MESURE-PR (e1dfec6) — Snapshots prix raw aux 4 instants cibles, undefined sur early-returns */
+    priceSnapshots?: PriceSnapshots;
+  }> {
     const results: Record<string, SimOutcome> = {};
     const noEntry = (): SimOutcome => ({
       outcome: 'NO_DATA', exit_price: null, exit_at: null, pnl_pct: null, hit_at_min: null,
@@ -472,7 +554,7 @@ export class GainersUserShadowService {
     };
 
     if (args.entryPrice == null || args.entryPrice <= 0) {
-      for (const g of SIM_GRIDS) results[g.key] = noEntry();
+      for (const g of getGridsForAssetClass(args.assetClass)) results[g.key] = noEntry();
       fetchDiag.outcome = 'error';
       fetchDiag.steps.push({
         endpoint: 'precondition',
@@ -493,7 +575,7 @@ export class GainersUserShadowService {
 
     // Crypto = no support yet (would need Binance klines), skip gracefully
     if (args.assetClass === 'crypto_major' || args.assetClass === 'crypto_alt') {
-      for (const g of SIM_GRIDS) results[g.key] = noEntry();
+      for (const g of getGridsForAssetClass(args.assetClass)) results[g.key] = noEntry();
       fetchDiag.outcome = 'error';
       fetchDiag.steps.push({
         endpoint: 'precondition',
@@ -536,7 +618,7 @@ export class GainersUserShadowService {
         hit_at_min: null,
         off_session_reason: 'capture',
       };
-      for (const g of SIM_GRIDS) results[g.key] = offCaptureOutcome;
+      for (const g of getGridsForAssetClass(args.assetClass)) results[g.key] = offCaptureOutcome;
       fetchDiag.outcome = 'off_session';
       fetchDiag.steps.push({
         endpoint: 'session_check',
@@ -740,7 +822,7 @@ export class GainersUserShadowService {
           `fromTs=${fromTs} toTs=${toTs} reason=all_4_steps_empty`,
         );
       }
-      for (const g of SIM_GRIDS) results[g.key] = noEntry();
+      for (const g of getGridsForAssetClass(args.assetClass)) results[g.key] = noEntry();
       fetchDiag.outcome = 'no_data';
       return { results, fetchDiag };
     }
@@ -810,7 +892,7 @@ export class GainersUserShadowService {
         hit_at_min: null,
         off_session_reason: 'stale_data',
       };
-      for (const g of SIM_GRIDS) results[g.key] = offSessionOutcome;
+      for (const g of getGridsForAssetClass(args.assetClass)) results[g.key] = offSessionOutcome;
       fetchDiag.outcome = 'off_session';
       return { results, fetchDiag };
     }
@@ -838,7 +920,10 @@ export class GainersUserShadowService {
     // grille). Permet la SQL persistance directionnelle pure post-rétro-simulation.
     const priceSnapshots = computePriceSnapshots(forward, startTs);
 
-    for (const grid of SIM_GRIDS) {
+    // SHORT-SHADOW (11/05/2026) — getGridsForAssetClass retourne 4 LONG grids + 6 SHORT
+    // grids pour us_equity_small_mid uniquement, sinon 4 LONG grids seulement. La direction
+    // SHORT est portée par grid.direction lue dans walkForward.
+    for (const grid of getGridsForAssetClass(args.assetClass)) {
       const out = walkForward(args.entryPrice, forward, startTs, grid);
       if (isPartialWindow && (out.outcome === 'TP_HIT' || out.outcome === 'SL_HIT' || out.outcome === 'TIME_LIMIT')) {
         out.partial_window = true;
