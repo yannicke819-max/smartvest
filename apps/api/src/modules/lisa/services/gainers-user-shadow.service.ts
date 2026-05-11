@@ -238,6 +238,48 @@ export function normalizeAndSortCandles<T extends CandleLike>(candles: readonly 
 }
 
 /**
+ * MESURE-PR (11/05/2026) — Raw close prices à 5/15/30/60min après startTs,
+ * indépendants de tout TP/SL. Stockés au niveau RACINE de sim_results JSONB
+ * (pas dupliqués par grille). Permet de mesurer la persistance directionnelle
+ * pure P(up_60m | up_30m) sur TIME_LIMIT et sur outcomes où TP/SL fire tard.
+ * Null si aucune candle ne couvre l'instant cible.
+ */
+export type PriceSnapshots = {
+  '5': number | null;
+  '15': number | null;
+  '30': number | null;
+  '60': number | null;
+};
+
+/**
+ * MESURE-PR — Helper pur : extrait close prices aux 4 instants cibles
+ * indépendamment de la logique TP/SL. À appeler UNE FOIS par row, pas par
+ * grille, pour éviter la duplication 4× dans sim_results JSONB.
+ *
+ * Itère candles ASC. Pour chaque candle, set result[key]=c.close si
+ * minSinceStart >= key et pas encore set. Boucle interne O(4) négligeable.
+ *
+ * Fonction pure exportée pour testabilité.
+ */
+export function computePriceSnapshots(
+  candles: readonly CandleLike[],
+  startTs: number,
+): PriceSnapshots {
+  const targets = [5, 15, 30, 60] as const;
+  const result: PriceSnapshots = { '5': null, '15': null, '30': null, '60': null };
+  for (const c of candles) {
+    const minSinceStart = (c.timestamp - startTs) / 60;
+    for (const t of targets) {
+      const key = String(t) as keyof PriceSnapshots;
+      if (minSinceStart >= t && result[key] === null) {
+        result[key] = c.close;
+      }
+    }
+  }
+  return result;
+}
+
+/**
  * PR #283 — walkForward : itère les candles ASCENDING, applique TP/SL d'une
  * grille (TP%, SL%, windowMin), retourne le premier hit ou TIME_LIMIT.
  *
@@ -369,16 +411,23 @@ export class GainersUserShadowService {
     let failures = 0;
     for (const row of rows) {
       try {
-        const { results: simResults, fetchDiag } = await this.simulateRow({
+        const { results: simResults, fetchDiag, priceSnapshots } = await this.simulateRow({
           symbol: String(row.symbol),
           assetClass: String(row.asset_class),
           entryPrice: row.entry_price != null ? Number(row.entry_price) : null,
           createdAt: String(row.created_at),
         });
+        // MESURE-PR — Merge priceSnapshots au niveau RACINE de sim_results JSONB.
+        // Early-returns de simulateRow (no_entry, off_session capture) ne calculent
+        // pas snapshots → fallback all-null pour cohérence schéma.
+        const simResultsRoot = {
+          ...simResults,
+          price_snapshots: priceSnapshots ?? { '5': null, '15': null, '30': null, '60': null },
+        };
         await this.supabase.getClient()
           .from('gainers_user_shadow_signals')
           .update({
-            sim_results: simResults,
+            sim_results: simResultsRoot,
             fetch_diag: fetchDiag,        // PR #286 — diagnostic JSONB
             sim_run_at: new Date().toISOString(),
             sim_window_max_min: 60,
@@ -784,6 +833,11 @@ export class GainersUserShadowService {
     const expectedCandles = 12;  // 60min / 5min
     const isPartialWindow = forward.length < expectedCandles * partialWindowThreshold;
 
+    // MESURE-PR — Snapshots calculés UNE fois sur `forward`, indépendants des grilles.
+    // Stockés au niveau RACINE de sim_results par simulatePending (pas duplique par
+    // grille). Permet la SQL persistance directionnelle pure post-rétro-simulation.
+    const priceSnapshots = computePriceSnapshots(forward, startTs);
+
     for (const grid of SIM_GRIDS) {
       const out = walkForward(args.entryPrice, forward, startTs, grid);
       if (isPartialWindow && (out.outcome === 'TP_HIT' || out.outcome === 'SL_HIT' || out.outcome === 'TIME_LIMIT')) {
@@ -792,7 +846,7 @@ export class GainersUserShadowService {
       results[grid.key] = out;
     }
     fetchDiag.outcome = forward.length > 0 ? 'ok' : 'no_data';
-    return { results, fetchDiag };
+    return { results, fetchDiag, priceSnapshots };
   }
 
   /**
