@@ -1,9 +1,19 @@
 # SmartVest — Phase MESURE : Audit Edge & Risk Management
 
-**Date** : 11-12 mai 2026 (v4 — Phase 2 walk-forward closed, Phase 3 démarrée)
+**Date** : 11-12 mai 2026 (v5 — Phase 3 STOPPÉE, Phase 2b INVALIDÉE, bugs scanner critiques découverts)
 **Auteur** : Yannick Elouard
-**Statut** : Phase MESURE — pas de PR, pas de push, pas de deploy
+**Statut** : Phase MESURE — pas de PR, pas de push, pas de deploy. Cron monitoring SUPPRIMÉ le 12 mai 08:02 CEST.
 **Cible opérationnelle** : $150-250/jour avec $10 500 de capital
+
+---
+
+## AVERTISSEMENT EN TÊTE — v5 (12 mai 2026 08:00 CEST)
+
+**Phase 2b est INVALIDÉE.** Les chiffres §10 (WR 71.9%, expectancy nette +0.73%, n=114 sur bucket `path_eff<0.25`) sont **un artefact statistique** causé par des doublons massifs dans le scanner. Après déduplication par `(symbol, jour, entry_price)`, le bucket chaotic tombe à **n=3 distincts** — pas un edge, un mirage.
+
+**Voir §16 ci-dessous pour le détail des 6 bugs scanner/simulator découverts.**
+
+**Critères §12 GO PAPER : INVALIDÉS.** À réécrire après fix scanner et nouvelle Phase 2 propre.
 
 ---
 
@@ -514,6 +524,183 @@ Mise à jour de §6 pour intégrer la découverte `path_eff < 0.25` :
 
 ---
 
+## 16. INVALIDATION PHASE 2b — bugs scanner critiques découverts (12 mai 2026)
+
+### 16.1 Découverte fatale
+
+En approfondissant l'anomalie `null_path_eff` (§14) après une suggestion d'investigation poussée (logs Fly EODHD trouées sur Asia), une série de requêtes Supabase MCP a révélé que **le scanner persiste des doublons massifs sur certains symboles small/mid US peu liquides**, avec `change_pct_1m` EXACTEMENT figé entre les occurrences. Cela contamine toutes les analyses Phase 2b en gonflant artificiellement le `n` de chaque bucket.
+
+### 16.2 Inventaire des doublons (Supabase, table `gainers_user_shadow_signals`)
+
+Sur la fenêtre 7-9 mai, après comptage `COUNT(*) GROUP BY symbol`, les symboles suivants sont massivement dupliqués avec `change_pct_1m` strictement identique sur toutes les lignes :
+
+| Symbole | n lignes | change_pct_1m figé | Notes |
+|---|---|---|---|
+| ATEC.US | 87 | 10.87% | Aussi présent §14 (33 lignes `path_eff=NULL`) |
+| GEO.US | 25 | 20.92% | entry 22.20 répété |
+| ACLS.US | 21 | 22.41% | entry 171.x répété |
+| MRCY.US | 18 | 10.49% | entry 91.66 répété |
+| KMT.US | 17 | 15.36% | entry 43.27 répété |
+| HRB.US | 14 | 23.77% | entry 36.29, outcomes mixés TP/SL |
+| CCRN.US | 13 | — | outcomes mixés SL/TIMEOUT |
+| ST.US, ORA.US, ANGI.US | <10 chacun | — | bruit résiduel |
+
+Aucune contrainte `UNIQUE (symbol, day, entry_price)` n'existe en DB. Le scanner peut donc écrire 87× la même opportunité ATEC sur 3 jours sans broncher.
+
+### 16.3 Liste consolidée des 6 bugs (par sévérité)
+
+| # | Bug | Sévérité | Détails |
+|---|---|---|---|
+| 1 | **Scanner persiste doublons massifs** | **CRITIQUE** | 87 ATEC, 25 GEO, 21 ACLS, 18 MRCY, 17 KMT, 14 HRB avec `change_pct_1m` exactement figé. Cause directe de l'invalidation Phase 2b. |
+| 2 | `path_eff` / `score` / `persistence_score` = NULL malgré `fetch_diag.outcome=ok` | Bloquant | 70 lignes sur 6 symboles (ATEC, ST, KMT, ORA, ACLS, MRCY). Incohérence : fetch_diag dit OK mais sortie naïve manquante. |
+| 3 | `TP_HIT` déclenché alors que prix n'atteint pas le target | Logique cassée | Exemple : ATEC entry 7.75, exit 7.688 → -0.8% marqué `TP_HIT` (TP target SHORT était -2%). |
+| 4 | `pnl_pct` stocké = brut MOINS 30 bps slippage déjà appliqué | Doc manquante | Toutes mes soustractions "-30bps" en Phase 2b ont compté le slippage **2 fois**. Edge net réel encore plus faible que -0.05%. |
+| 5 | 430 lignes `OFF_SESSION` non documentées | Mineur | Sur 749 total avec `path_eff` non null. Outcome inconnu du modèle de comptage. |
+| 6 | Aucune contrainte `UNIQUE (symbol, day, entry_price)` en DB | Cause racine #1 | Permet la duplication décrite bug #1. |
+
+### 16.4 Recalcul Phase 2b après déduplication
+
+Requête de dédup : `SELECT DISTINCT ON (symbol, DATE(created_at), entry_price) ...` sur grille `short_baseline_30m`, fenêtre 7-9 mai, asset_class = `us_equity_small_mid`, `path_eff IS NOT NULL`.
+
+| Bucket path_eff | n distincts (vs annoncé Phase 2b) | TP | SL | WR | avg pnl_net |
+|---|---|---|---|---|---|
+| **< 0.25 (chaotic)** | **3** (vs 114) | 3 | 0 | 100% IC95 Wilson [29.2% ; 100%] | +0.5% |
+| 0.25-0.5 (mid) | 3 (vs 114 cumulés mid+high) | 1 | 1 | 50% | -0.17% |
+| ≥ 0.5 (directional) | 7 (vs 91) | 4 | 3 | 57% | -0.01% |
+
+**Verdict** : l'edge "WR 71.9%, +0.73% net, n=114" du §10.6 est **un mirage statistique**. Sur n=3 réels, l'intervalle de confiance Wilson IC95 commence à 29% — pas un edge prouvable. Toutes les conclusions §10.6, §10.7 (projection $643/jour théorique), §12 (critères GO PAPER `path_eff<0.25`) sont **caduques**.
+
+### 16.5 Impact sur Phases 2a, 2b, 3
+
+- **Phase 2a (proxy SQL, WR 99% +0.59%)** : déjà documenté comme artefact dans §10 (le proxy ×-1 sur grille asymétrique n'était pas rigoureux). Confirmé.
+- **Phase 2b (walk-forward, WR 71.9% +0.73% sur path_eff<0.25)** : INVALIDÉE. Doublons + slippage compté 2× = chiffres faux.
+- **Phase 3 (shadow forward 14j)** : **STOPPÉE** à la décision du 12 mai 08:00 CEST. Continuer à mesurer sur un scanner cassé biaise tout. Cron `7f3209be` SUPPRIMÉ à 08:02 CEST.
+
+### 16.6 Décision opérationnelle
+
+**STOP Phase 3. Fix scanner d'abord.** Aucun deploy, aucun trade, aucun nouvel échantillonnage tant que les 6 bugs ne sont pas corrigés et qu'une nouvelle Phase 2 propre n'a pas redonné une mesure fiable.
+
+Ordre de priorité fix proposé (à valider avec Claude) :
+
+1. Bug #6 — ajouter contrainte `UNIQUE (symbol, DATE(created_at), entry_price, asset_class)` ou cooldown applicatif côté scanner → empêche le poison à la source.
+2. Bug #1 — corriger la logique scanner qui re-soumet le même `change_pct_1m` figé. Probable cause : cache stale ou absence de déduplication intra-batch.
+3. Bug #2 — résoudre l'incohérence `fetch_diag.outcome=ok` vs `path_eff NULL`. Soit le simulator déclare `NO_DATA`, soit il calcule réellement.
+4. Bug #3 — fix logique TP_HIT : ne marquer TP que si `prix atteint ≥ target` (pour LONG) ou `prix atteint ≤ target` (pour SHORT). Bug actuel marque TP au moindre signe de dérive.
+5. Bug #4 — documenter explicitement que `pnl_pct` est net de 30 bps slippage, ou refactorer pour stocker brut et appliquer slippage en analyse uniquement. Préférence : stocker brut, appliquer en aval.
+6. Bug #5 — documenter outcome `OFF_SESSION` et l'intégrer au modèle de comptage actionables.
+
+Une fois ces 6 fixes mergés et redeployés, **relancer Phase 2 walk-forward propre** sur une nouvelle fenêtre 7+ jours, sans contamination doublons. Reévaluer §12 critères GO PAPER à ce moment-là.
+
+### 16.7 Schéma table actuel (référence)
+
+```
+gainers_user_shadow_signals
+  id uuid, created_at timestamptz, portfolio_id uuid,
+  symbol text, asset_class text,
+  change_pct_1m numeric, score numeric,
+  path_eff numeric, persistence_score numeric, persistence_count text,
+  entry_price numeric, notional_usd numeric, decision text,
+  cfg_min_path_eff, cfg_min_persistence, cfg_asia_boost, cfg_tp_pct, cfg_sl_pct,
+  is_asia bool,
+  sim_results jsonb, sim_run_at timestamptz, sim_window_max_min int,
+  fetch_diag jsonb
+```
+
+Aucune contrainte UNIQUE en place — bug #6.
+
+### 16.8 Investigation code post-probe (12 mai 2026, après-midi)
+
+L'investigation s'est poursuivie après la décision STOP en clonant le repo `feature/short-shadow-grids` et en grep-pointant ligne à ligne. Voici les conclusions précises sur chaque bug, avec pointeurs code et rectifications de la liste initiale §16.3.
+
+#### Bug #1 — SMOKING GUN identifié : `SCANNER_SESSION_AWARE` absent de fly.toml
+
+- **Le fix existe déjà dans le code.** PR #298 (test `apps/api/src/modules/lisa/__tests__/scanner-session-aware.spec.ts`) décrit exactement ce bug : « avec `gainers_session_filter_enabled=true` en DB, le scanner continue à fetch les 9 EODHD screener à chaque cycle samedi ».
+- **Le fix est gardé par un feature flag env.** Ligne 1059 de `apps/api/src/modules/lisa/services/top-gainers-scanner.service.ts` : `sessionAware = this.config.get('SCANNER_SESSION_AWARE') === 'true'`.
+- **Le flag n'est PAS défini dans fly.toml.** Section `[env]` actuelle = `NODE_ENV='production', API_PORT='3001', PORT='3001'`. Conséquence : `sessionAware` reste `false` en prod, le scanner skip la garde session, et continue à fetch hors-RTH → poison des 148 lignes HRB.
+- **Le filtre `usOpen` reste actif lignes 1633-1644** mais n'empêche pas le fetch initial des screeners EODHD ; il filtre les candidats post-fetch. Or les 9 calls EODHD screener sont déjà partis et la duplication a lieu en amont.
+
+**Fix immédiat = ajouter une ligne dans fly.toml** : `SCANNER_SESSION_AWARE = 'true'` dans le bloc `[env]`. 1 char de config, fix instantané sans modifier le code.
+
+#### Bug #6 — Confirmation : aucune contrainte UNIQUE en DB
+
+Migration `supabase/migrations/0134_gainers_user_shadow_signals.sql` confirmée : 3 index simples (portfolio, symbol, sim_run_at), zéro UNIQUE. `recordDecision` ligne 462 = `supabase.from('gainers_user_shadow_signals').insert(...)` brut, sans `ON CONFLICT`. Même si bug #1 est corrigé, un bug futur (rejouage cycle, retry réseau) peut réintroduire des doublons. Garde-fou DB nécessaire en complément.
+
+#### Bug #2 — RECLASSIFIÉ : pas un bug, doc manquante
+
+L'incohérence apparente « `fetch_diag.outcome=ok` mais `path_eff=NULL` » s'explique par la séquence d'écriture :
+
+1. **À la décision** (cycle scanner) : `recordDecision` insère la ligne avec `path_eff = pers?.pathQuality?.overallEfficiency ?? null`.
+2. **~65 min plus tard** (simulator job) : `simulatePending` met à jour la même ligne avec `fetch_diag` calculé indépendamment.
+
+Quand la décision est `reject_cooldown` ou `reject_post_sl_cooldown` (lignes 1898 et 1912 du scanner), `pers` est explicitement passé `undefined` → `path_eff` enregistré = `null`, par design. Le simulator ultérieur peut très bien fetcher des bars valides 60 min plus tard (`fetch_diag.outcome=ok`) car le marché est ouvert : les deux champs sont **disjoints fonctionnellement**.
+
+Probe Supabase confirmant l'hypothèse, 7 derniers jours :
+
+| Decision | n | n_path_null | n_fetch_ok | n_path_null & fetch_ok |
+|---|---|---|---|---|
+| reject_persistence | 3323 | 875 | 929 | **0** |
+| reject_path_eff | 1898 | 0 | 419 | **0** |
+| reject_post_sl_cooldown | 436 | 436 | 80 | **80** |
+| accept | 267 | 4 | 22 | **0** |
+| reject_cooldown | 62 | 62 | 8 | **8** |
+
+100% des `path_eff IS NULL AND fetch_diag.outcome=ok` (88/88) sont des `reject_cooldown` / `reject_post_sl_cooldown`. Comportement attendu, pas un bug. Action : **ajouter un commentaire SQL** sur `path_eff` documentant que NULL est légitime pour les decisions cooldown.
+
+Les 875 NULL sur `reject_persistence` ont une autre cause (légitime aussi) : `pathQuality` peut être lui-même `null` côté `persistence-probability.service.ts` quand le calcul de smoothness ne dispose pas de données suffisantes. Pas un bug non plus.
+
+#### Bug #3 — `TP_HIT` exemple ATEC entry 7.75 exit 7.688
+
+Lignes 380-437 de `gainers-user-shadow.service.ts`, walkForward :
+
+- SHORT TP teste `c.low <= tpPrice` (TP target pour SHORT = entry × (1 − tpPct))
+- SHORT SL teste `c.high >= slPrice` (SL pour SHORT = entry × (1 + slPct))
+- `pnl_pct: closePnl − SLIPPAGE_TOTAL` ligne 433
+- En grille short_calibrated TP 0.8% / SL 0.6% : ATEC 7.75 SHORT → TP price = 7.75 × 0.992 = **7.688**
+
+**Verdict** : la logique TP/SL elle-même est correcte. ATEC exit à 7.688 EST le TP price exact (8 décimales sont arrondies en colonne). Le pnl_pct affiché −0.005 = +0.8% − 0.3% slippage round-trip = bug #4 mal compté, pas bug #3.
+
+Ce que je croyais être un bug TP_HIT est en fait l'effet conjoint de :
+- input prix figé (bug #1, scanner persiste close=adjusted_close pourri hors-RTH ligne 1287-1289)
+- slippage déjà appliqué (bug #4, doc manquante)
+
+Donc **bug #3 est REQUALIFIÉ comme conséquence de bugs #1+#4**. À retester après fix #1.
+
+#### Bug #4 — Confirmation `pnl_pct` est NET de 30 bps slippage
+
+Ligne 433 de `gainers-user-shadow.service.ts` : `pnl_pct: closePnl − SLIPPAGE_TOTAL`. `SLIPPAGE_TOTAL = 0.003` (constante en tête de fichier). Documentation Phase 2b incorrecte : toutes mes soustractions « -30 bps » comptaient le slippage 2 fois. Edge réel "brut" sur la grille short_calibrated TP 0.8% / SL 0.6% = `+0.5%` net en TP, `−0.9%` net en SL.
+
+Action : commenter `pnl_pct` en SQL et dans le doc-comment du field `sim_results` (migration 0134 ligne 68-69 dit déjà « pnl_pct = NET (slippage 30bps round-trip déjà soustrait) » — le commentaire DB existe, c'est moi qui ne l'avais pas lu).
+
+#### Bug #5 — `OFF_SESSION` outcome non documenté en migration 0134
+
+- Migration 0134 ligne 68 documente seulement `outcome ∈ 'TP_HIT' | 'SL_HIT' | 'TIME_LIMIT' | 'NO_DATA'`.
+- PR #289 a ajouté `OFF_SESSION` côté TS (lignes 209, 637, 911 de `gainers-user-shadow.service.ts`) avec sub-classification `off_session_reason` ∈ `capture | stale_data`.
+- Aucune migration n'a mis à jour la doc DB.
+- Aussi : `fetch_diag.outcome` peut valoir `off_session` (ligne 645 service) en plus de `ok | no_data | error` documenté en migration 0136.
+
+Action : migration noop type `COMMENT ON COLUMN` pour mettre à jour les deux docs (`sim_results.outcome` et `fetch_diag.outcome`). Cosmétique mais important pour audit futur.
+
+### 16.9 Reclassement par sévérité après investigation code
+
+| # | Bug | Sévérité reclassée | Action |
+|---|---|---|---|
+| 1 | `SCANNER_SESSION_AWARE` absent fly.toml | **CRITIQUE / 1 ligne fix** | Ajouter env dans fly.toml et redeploy |
+| 6 | Aucun UNIQUE en DB | Important / garde-fou | Migration `UNIQUE (symbol, DATE(created_at), entry_price, asset_class)` ou applicatif |
+| 4 | `pnl_pct` net 30 bps non documenté côté analyse | Doc / mes calculs Phase 2b | Refaire les soustractions sans redoubler le slippage |
+| 5 | `OFF_SESSION` et `fetch_diag.outcome=off_session` non documentés en DB | Doc / cosmétique | Migration `COMMENT ON COLUMN` |
+| 2 | `path_eff NULL` vs `fetch_diag.outcome=ok` | **Annulé (faux bug)** | Commentaire DB sur `path_eff` legitimate NULL pour decisions cooldown |
+| 3 | `TP_HIT` exit hors target | **Requalifié conséquence #1+#4** | Re-tester après fix #1 |
+
+### 16.10 Plan fix consolidé
+
+1. Fix #1 (instantané) : éditer `fly.toml` `[env]` → ajouter `SCANNER_SESSION_AWARE = 'true'`. `fly deploy` → 1 cycle scanner (5 min) suffit pour vérifier qu'aucun nouveau doublon n'apparaît hors-RTH.
+2. Fix #6 (garde-fou) : migration Supabase `ALTER TABLE gainers_user_shadow_signals ADD CONSTRAINT uniq_decision_per_symbol_day UNIQUE (portfolio_id, symbol, asset_class, DATE(created_at), entry_price)`. Attention : DATE(...) n'est pas indexable directement en contrainte unique Postgres, donc soit colonne générée `created_date GENERATED ALWAYS AS (DATE(created_at)) STORED` puis UNIQUE dessus, soit index unique partiel avec expression. À discuter avec Claude.
+3. Fix #4+#5 : migration `COMMENT ON COLUMN` consolidée mettant à jour les docs (`path_eff` legitimate NULL conditions, `sim_results.outcome` ajout `OFF_SESSION`, `fetch_diag.outcome` ajout `off_session`). Cosmétique mais audit-critical.
+4. Re-test : après deploy fix #1, attendre 24h de scanner propre puis recompter `COUNT(*) GROUP BY symbol` 7-9 jours forward.
+5. Relancer Phase 2 walk-forward propre sur la nouvelle fenêtre. Réévaluer §12 critères GO PAPER.
+
+---
+
 ## 14. Bug simulator détecté (corriger en Phase 4, ne PAS toucher maintenant)
 
 ### Anomalie null_path_eff (12 mai 07:16 CEST)
@@ -521,37 +708,36 @@ Mise à jour de §6 pour intégrer la découverte `path_eff < 0.25` :
 Lors du setup du monitoring quotidien (cron Supabase), une requête de distribution path_eff sur les 389 trades actionables Phase 2 a révélé un bucket aberrant :
 
 - **n=70, path_eff IS NULL, outcome='TP_HIT' systématique, pnl_pct=+0.005 (TP target SHORT)**
-- Pattern systémique côté EODHD pour les **small caps US peu liquides** sur sessions 7-8 mai
-- **6 symboles affectés** (pas seulement ATEC) :
-  - ATEC.US (33 occurrences)
-  - ST.US (12)
-  - KMT.US (7)
-  - ORA.US (7)
-  - ACLS.US (6)
-  - MRCY.US (5)
-- Tous avec `exit_price` strictement identique par symbole (ex: ATEC=7.688), `entry_price=NULL`, `time_to_exit_min=NULL`
-- `decision=reject_post_sl_cooldown` majoritaire (signaux rejetés par le LIVE filter)
+- Réparti sur **6 symboles small/mid US peu liquides** (pas seulement ATEC) :
+  - ATEC.US (33), ST.US (12), KMT.US (7), ORA.US (7), ACLS.US (6), MRCY.US (5)
+- Période concentrée : 7-8 mai 2026 (sessions à forte volatilité vs faible liquidité EODHD)
+- Tous avec `exit_price` identique au sein du symbole, `entry_price=NULL`, `time_to_exit_min=NULL`
+- `decision=reject_post_sl_cooldown` (signaux rejetés par le LIVE filter)
+- Donc **pattern systémique**, pas une anomalie ATEC isolée
 
 ### Diagnostic
 
-Le simulator SHORT (vérifié sur calibrated_60m, très probablement sur toutes les grilles SHORT) a un **fallback hardcodé** : quand les données intra-bar EODHD ne permettent pas de calculer `entry_price`/`path_eff`/`time_to_exit`, il retourne `outcome='TP_HIT'` avec `pnl_pct=+TP_target` au lieu d'écrire `NULL` ou un outcome `NO_DATA`. Sur ATEC.US (probablement illiquide à cette heure), ça a produit 70 faux positifs consécutifs sur la session du 8 mai.
+Le simulator SHORT (vérifié sur calibrated_60m, très probablement sur toutes les grilles SHORT) a un **fallback hardcodé** : quand les données intra-bar EODHD ne permettent pas de calculer `entry_price`/`path_eff`/`time_to_exit`, il retourne `outcome='TP_HIT'` avec `pnl_pct=+TP_target` au lieu d'écrire `NULL` ou un outcome `NO_DATA`. **Confirmé sur 6 symboles small/mid US**, tous peu liquides hors RTH ou avec données EODHD trouées. Les logs Fly Asia (12 mai 05:50 UTC) montrent un pattern similaire (149 candles brutes / 13 closes valides / 136 nulls) sans nécessairement déclencher le fake TP_HIT — à surveiller.
 
 ### Impact rétroactif sur Phase 2
 
-- Total actionables réel : **319 trades** (389 − 70 ATEC junk), pas 389
+- Total actionables réel : **319 trades** (389 − 70 lignes corrompues), pas 389
 - Bucket `path_eff<0.25` non impacté : n=114, WR 71-78%, edge confirmé
 - Bucket `null_path_eff` à **exclure définitivement** des analyses et critères GO PAPER
+- **Risque Phase 3 forward** : les 6 symboles peuvent réapparaître dans le scanner US small/mid au cours des 14 jours. Le filtre `path_eff IS NOT NULL` du cron `7f3209be` les exclut automatiquement.
+- **Risque résiduel à surveiller** : si EODHD renvoie des données partielles permettant un `path_eff` calculé mais erroné, le bucket `chaotic<0.25` pourrait être contaminé par des faux positifs. À vérifier au T+3 jours par cross-check sur les symboles récurrents.
 
 ### Action Phase 4 (post-26 mai si GO)
 
-- Fix simulator : `if (entry_price IS NULL OR path_eff IS NULL) RETURN outcome='NO_DATA'`
+- Fix simulator : `if (entry_price IS NULL OR path_eff IS NULL OR validClose < threshold) RETURN outcome='NO_DATA'`
 - Filtre query par défaut : `AND path_eff IS NOT NULL` (déjà intégré dans le cron)
 - Ajouter détecteur d'anomalie : alerte si un symbole >10 occurrences avec même exit_price exact
-- Investiguer pourquoi EODHD renvoie des données manquantes sur ATEC.US spécifiquement
+- Investiguer pourquoi EODHD renvoie des données trouées sur ATEC/ST/KMT/ORA/ACLS/MRCY (probablement small caps hors RTH ou volume insuffisant pour ticks)
+- Évaluer un fallback **Intrinio** ou **Yahoo extended hours** pour ces symboles
 
 ---
 
-## 13. État d'avancement (v4)
+## 13. État d'avancement (v5)
 
 - [x] Cadrage cible recalibrée
 - [x] Audit shadow LONG (verdict négatif documenté)
@@ -562,19 +748,24 @@ Le simulator SHORT (vérifié sur calibrated_60m, très probablement sur toutes 
 - [x] Risk management chiffré
 - [x] **Phase 1 (code SHORT) — commit 896848e local**
 - [x] **Phase 1.5 (fix timing simulator) — commit 5835656 local**
-- [x] **Phase 2a (rétroactif proxy SQL) — validé 11 mai** (WR 99% proxy, +0.59% net, **caveat confirmé : artefact**)
+- [~] **Phase 2a (rétroactif proxy SQL)** — confirmé artefact (proxy ×-1 non rigoureux)
 - [x] **Deploy SHORT shadow MESURE-only sur Fly** — 11 mai 16:55 UTC (commit 4c7b345, `/version` vérifié)
-- [x] **Phase 2b (walk-forward sur 824 signaux)** — 12 mai 2026
-   - [x] Edge global non filtré : ABSENT (−0.05% net)
-   - [x] **Edge conditionnel `path_eff < 0.25` : VALIDÉ (WR 71.9%, +0.73% net, n=114, 3 jours)**
+- [~] **Phase 2b (walk-forward sur 824 signaux)** — **INVALIDÉE le 12 mai 08:00 CEST**
+   - [x] Edge global non filtré : ABSENT (−0.05% net) — ce chiffre lui-même est sous-estimé à cause du bug #4 (double slippage)
+   - [~] Edge conditionnel `path_eff < 0.25` : **MIRAGE** (n=3 distincts réels vs 114 annoncés, doublons scanner)
 - [x] **Incident scanner US shadow** — diagnostiqué et fixé 12 mai 05:04 UTC
-- [ ] **Phase 3 (shadow forward 14j)** — démarrée 12 mai 05:05 UTC, fin prévue ~26 mai
-   - [ ] T+8h : NYSE open 13:30 UTC, premier signal US shadow attendu
-   - [ ] T+72h : ~840 signaux US attendus, premier n significatif post-filtre
-   - [ ] T+14j : verdict GO PAPER (critères §12)
-- [ ] **Phase 4 (paper trading 4-6 semaines)** — obligatoire avant live
-   - [ ] Câblage direction SHORT dans pipeline LIVE GAINERS (Q1 ouverte vers Claude)
-   - [ ] Application filtre `path_eff < 0.25` au scanner LIVE (Q2 ouverte)
+- [x] **Découverte 6 bugs scanner/simulator** — 12 mai 07:30-08:00 CEST (§16)
+- [x] **STOP Phase 3** — décision 12 mai 08:00 CEST, cron `7f3209be` supprimé 08:02 CEST
+- [ ] **Phase 3 bis (fix scanner)** — brief Claude en cours
+   - [ ] Bug #6 contrainte UNIQUE / cooldown applicatif
+   - [ ] Bug #1 logique scanner anti-doublons
+   - [ ] Bug #2 cohérence fetch_diag vs path_eff
+   - [ ] Bug #3 logique TP_HIT (target réellement touché)
+   - [ ] Bug #4 doc/refactor pnl_pct slippage
+   - [ ] Bug #5 doc OFF_SESSION
+- [ ] **Phase 2 bis (walk-forward propre)** — après fix scanner, nouvelle fenêtre 7+ jours
+- [ ] **Critères §12 GO PAPER** — à réécrire post-Phase 2 bis (caducs sur path_eff<0.25)
+- [ ] **Phase 4 (paper trading 4-6 semaines)** — obligatoire avant live, bloquée tant que Phase 2 bis non validée
 - [ ] **Phase 5 (live taille réduite 50% sizing)** — 2 semaines de probation
 - [ ] **Phase 6 (live full sizing)** — si Phase 5 profitable 4 semaines
 
@@ -582,10 +773,11 @@ Le simulator SHORT (vérifié sur calibrated_60m, très probablement sur toutes 
 
 **Note** : pas de PR, pas de push, pas de deploy, pas de secret. Phase MESURE intégrale.
 
-**Prochaines actions** :
-- Aucune action urgente. Le shadow tourne tout seul pendant 14 jours.
-- Checkpoint quotidien automatisé : cron `7f3209be` (09:00 CEST) sur Supabase MCP.
-- Refaire l'analyse Phase 2b après 7 jours forward pour voir si filtre `path_eff < 0.25` tient sur n plus large.
+**Prochaines actions (v5)** :
+- Ne plus lancer aucune analyse Phase 2b/3 sur les données actuelles (contaminées par doublons et double slippage).
+- Brief comprehensive à envoyer à Claude listant les 6 bugs + ordre de priorité (voir §16.6).
+- Décider du sort de la connexion Supabase MCP : garder (pour re-valider après fix) ou disconnect (cohabitation "pas de secret").
+- Aucune réactivation de cron monitoring tant que le scanner n'est pas fixé.
 
 ---
 
@@ -624,8 +816,15 @@ Figé ici pour garder la trace des décisions et événements depuis le début d
 | 05:16 | Computer (via Supabase MCP) | **Bug ATEC.US détecté** lors du test du cron : 70 lignes `path_eff=NULL` toutes sur ATEC.US, `pnl_pct=+0.005` hardcodé. → N'invalide pas l'edge `<0.25` mais réduit le total Phase 2 à 319 actionables réels. À fixer Phase 4. |
 | 05:18 | Computer | MESURE.md v4 → v4.1 (ajout §14 bug simulator, précision §12 sur exclusion `path_eff IS NOT NULL`) |
 | 05:18 | Computer (cron) | **Tâche récurrente créée** : `7f3209be` SmartVest Shadow Daily Monitor, 09:00 CEST quotidien, premier run aujourd'hui 12 mai (test à vide attendu silencieux) |
-| 13:30 (à venir) | NYSE | Ouverture marché. Premier signal US shadow attendu post-fix |
-| ~14:40 (à venir) | Simulator | Premier batch sim US small/mid (buffer SIMULATE_AFTER_MIN=65min) |
+| 13:30 (à venir) | NYSE | Ouverture marché. Premier signal US shadow attendu post-fix — **rendu moot par STOP Phase 3** |
+| ~14:40 (à venir) | Simulator | Premier batch sim US small/mid (buffer SIMULATE_AFTER_MIN=65min) — **rendu moot** |
+| 07:16-07:55 | Computer + yannick | Logs Fly partagés : EODHD massives failures sur Asia (149 candles / 13 closes / 136 nulls). Suggestion d'approfondir |
+| 07:30-08:00 | Computer (Supabase MCP) | **Découverte fatale** : scanner persiste 87 ATEC, 25 GEO, 21 ACLS, 18 MRCY, 17 KMT, 14 HRB avec `change_pct_1m` exactement figé. Aucune contrainte UNIQUE en DB |
+| 07:55 | Computer | Recalcul Phase 2b avec `DISTINCT ON (symbol, day, entry_price)` : bucket chaotic tombe à **n=3** vs 114 annoncés |
+| 07:58 | Computer | Découverte bug #3 (TP_HIT à -0.8% alors que target -2%), bug #4 (pnl_pct stocké déjà net de 30 bps), bug #5 (430 OFF_SESSION non documentés) |
+| 08:00 | yannick | **Décision : STOP Phase 3, fix scanner d'abord** |
+| 08:02 | Computer | Cron `7f3209be` SUPPRIMÉ |
+| 08:05 | Computer | MESURE.md v4.3 → v5 (§16 INVALIDATION, mise à jour §13 et §15) |
 
 ### Décisions structurantes prises pendant la session
 
