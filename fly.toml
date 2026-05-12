@@ -31,6 +31,12 @@ primary_region = 'cdg'
   NODE_ENV = 'production'
   API_PORT = '3001'
   PORT = '3001'
+  # Fix #1 (12/05/2026) — Active le gate session-aware dans top-gainers-scanner
+  # ligne 1059 (PR #298 + test scanner-session-aware.spec.ts). Sans ce flag,
+  # le scanner appelait les 9 EODHD screener à chaque cycle hors-RTH et écrivait
+  # des doublons figés (148 HRB, 87 ATEC, etc.) dans gainers_user_shadow_signals.
+  # Voir MEASURE-short-shadow-2026-05-11.md §16.8 pour l'investigation complète.
+  SCANNER_SESSION_AWARE = 'true'
 
 [http_service]
   internal_port = 3001
