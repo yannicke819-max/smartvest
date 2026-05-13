@@ -64,13 +64,52 @@ interface YahooChartResponse {
 }
 
 /**
- * P19g — User-Agent réaliste obligatoire pour éviter Cloudflare 403 sur
- * `query1.finance.yahoo.com`. Le UA Mozilla est utilisé par les SDK Yahoo
- * officieux et n'est pas blacklisté.
+ * P19g (avant Bug #C) — Un seul User-Agent fixe (Chrome 120 Linux x86_64).
+ * P19k / Bug #C (13/05/2026) — Pool de 4 UAs validés 200 OK + rotation
+ * round-robin par appel + single-shot retry sur 429.
+ *
+ * Diagnostic : depuis le 7 mai 2026 (commit 22e276b PR #268), 100% des
+ * requêtes prod Yahoo retournent 429. Tests empiriques agent depuis sandbox
+ * datacenter (IP 34.19.49.124, le 13/05/2026) :
+ *   - Chrome 120 Linux x86_64 (prod actuel)  → 429 banni
+ *   - Chrome 131 Mac                          → 429 banni
+ *   - Firefox 121 Mac                         → 429 banni
+ *   - Chrome 124 Windows NT 10.0              → 200 OK
+ *   - Chrome 126 Windows NT 10.0              → 200 OK
+ *   - iPhone Safari iOS 17                    → 200 OK
+ *   - Googlebot/2.1                           → 200 OK
+ *
+ * Ce n'est PAS un problème d'IP datacenter (mêmes IPs, UA différents =
+ * comportements différents). Yahoo maintient une blocklist UA statique sur
+ * les patterns "dev bot common" (Linux x86_64, Firefox Mac, Chrome Mac avec
+ * dernière version).
+ *
+ * Impact prod (SQL gainers_user_shadow_signals 24h) : 1026 signaux passent
+ * par step yahoo_intraday_5m → tous null → tous OFF_SESSION. Yahoo en
+ * PRIMAIRE dans multi-tf-persistence ET en fallback dans simulator → cascade
+ * vers EODHD aggrave Bug #H/#I.
+ *
+ * UAs bannis statiquement par Yahoo le 13/05/2026 (NE PAS RÉINTRODUIRE) :
+ *   - Chrome Linux x86_64 (toutes versions ≥ 120)
+ *   - Chrome 131 Mac
+ *   - Firefox 121 Mac
+ *
+ * Retry single-shot sur 429 : avec rotation UA, un 429 isolé n'est plus
+ * représentatif d'une panne provider — c'est souvent un UA particulier qui
+ * vient d'être banni. On retry une fois avec l'UA suivant avant de tripper
+ * le circuit breaker. Sur 403/5xx (sans 429), comportement P19h inchangé
+ * (open circuit immédiat).
  */
-const YAHOO_USER_AGENT =
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) ' +
-  'Chrome/120.0.0.0 Safari/537.36';
+const YAHOO_USER_AGENTS: ReadonlyArray<string> = [
+  // Chrome 124 Windows NT 10.0 — validé 200 OK 13/05/2026
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  // Chrome 126 Windows NT 10.0 — validé 200 OK 13/05/2026
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+  // iPhone Safari iOS 17.0 — validé 200 OK 13/05/2026
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+  // iPhone Safari iOS 17.2 — validé 200 OK 13/05/2026
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1',
+];
 
 /**
  * P19h — Circuit breaker config.
@@ -97,7 +136,11 @@ const YAHOO_USER_AGENT =
  * En cas de back online ponctuel, le probe se fait toujours après 30 min, on
  * récupère le service automatiquement sans intervention.
  */
-const DEFAULT_BASE_COOLDOWN_MS = 60_000;       // 60s
+// P19k / Bug #C — Réduit 60s → 15s. Avec rotation UA + single-shot retry, un
+// 429 isolé n'est plus représentatif d'une panne provider. Backoff exp 15s
+// → 30s → 60s → ... → 30min reste protecteur. Sur panne réelle, on atteint
+// la cap 30min après ~7 échecs consécutifs (vs ~5 pré-Bug #C, ~+30s).
+const DEFAULT_BASE_COOLDOWN_MS = 15_000;       // 15s (était 60s avant Bug #C)
 const DEFAULT_MAX_COOLDOWN_MS = 1_800_000;     // 30 min
 
 @Injectable()
@@ -112,6 +155,11 @@ export class YahooIntradayService {
   private consecutiveFailures = 0;
   /** P19h — Cumulative breaker openings (observability). */
   private circuitOpenCount = 0;
+  /**
+   * P19k / Bug #C — Index round-robin pour rotation User-Agent. Incrémenté
+   * à chaque sélection d'UA dans getCandles (call principal + retry 429).
+   */
+  private uaIndex = 0;
 
   /** P19h — Allow tests / external code to read state. */
   getCircuitStatus(): { state: 'closed' | 'open'; openUntilMs: number; consecutiveFailures: number; openCount: number } {
@@ -189,10 +237,66 @@ export class YahooIntradayService {
     // sera tronqué au 60 dernières candles côté caller).
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=${interval}&range=1d`;
 
+    // P19k / Bug #C — Attempt 1 avec UA rotaté.
+    const ua1 = YAHOO_USER_AGENTS[this.uaIndex++ % YAHOO_USER_AGENTS.length];
+    const attempt1 = await this.fetchAttempt(url, ua1, eodhdTicker, yahooSymbol);
+
+    if (attempt1.kind === 'ok') {
+      this.closeCircuitOnSuccess();
+      return attempt1.candles;
+    }
+    if (attempt1.kind === 'silent_null') {
+      return null;
+    }
+    if (attempt1.kind === 'open_circuit') {
+      // 403 / 5xx / fetch_error sur premier appel → open immédiat (P19h inchangé).
+      this.openCircuit(attempt1.reason);
+      return null;
+    }
+    // attempt1.kind === 'retry_on_429' — P19k / Bug #C single-shot retry avec UA suivant.
+    const ua2 = YAHOO_USER_AGENTS[this.uaIndex++ % YAHOO_USER_AGENTS.length];
+    const attempt2 = await this.fetchAttempt(url, ua2, eodhdTicker, yahooSymbol);
+
+    if (attempt2.kind === 'ok') {
+      this.closeCircuitOnSuccess();
+      return attempt2.candles;
+    }
+    if (attempt2.kind === 'silent_null') {
+      // Retry returned 404 / chart.error / empty payload → ticker unknown, pas d'open.
+      return null;
+    }
+    // attempt2.kind in {'retry_on_429', 'open_circuit'} — la retry a échoué, on
+    // ouvre le breaker avec la raison Bug #C explicite (peu importe que ce soit
+    // 429 récidive, 403, 5xx, ou network error : on a déjà retry le coup UA).
+    this.openCircuit('HTTP 429 after UA rotation retry');
+    return null;
+  }
+
+  /**
+   * P19k / Bug #C — Tentative unique de fetch + parse. Séparée de getCandles
+   * pour permettre la rotation UA + retry single-shot sans duplication de logic.
+   *
+   * Retourne un discriminated union pour que getCandles décide quoi faire :
+   *   - 'ok'              : 200 + payload valide → success path
+   *   - 'silent_null'     : 404, chart.error, empty payload → null sans trip
+   *   - 'retry_on_429'    : 429 spécifique → caller peut retry avec next UA
+   *   - 'open_circuit'    : 403 / 5xx / fetch_error → caller doit open circuit
+   */
+  private async fetchAttempt(
+    url: string,
+    userAgent: string,
+    eodhdTicker: string,
+    yahooSymbol: string,
+  ): Promise<
+    | { kind: 'ok'; candles: YahooCandle[] }
+    | { kind: 'silent_null' }
+    | { kind: 'retry_on_429' }
+    | { kind: 'open_circuit'; reason: string }
+  > {
     try {
       const res = await fetch(url, {
         headers: {
-          'User-Agent': YAHOO_USER_AGENT,
+          'User-Agent': userAgent,
           'Accept': 'application/json',
           'Accept-Language': 'en-US,en;q=0.9',
         },
@@ -200,32 +304,33 @@ export class YahooIntradayService {
       });
 
       if (!res.ok) {
-        // P19h — Specific HTTP statuses that indicate provider-level failure
-        // (vs ticker-not-found which is just 404 and should NOT trip breaker)
-        if (res.status === 429 || res.status === 403 || res.status >= 500) {
-          this.openCircuit(`HTTP ${res.status}`);
-        } else {
-          this.logger.debug(
-            `[yahoo-intraday] ${eodhdTicker}→${yahooSymbol} HTTP ${res.status}`,
-          );
+        if (res.status === 429) {
+          // P19k / Bug #C — 429 isolé : caller peut tenter retry avec autre UA.
+          return { kind: 'retry_on_429' };
         }
-        return null;
+        if (res.status === 403 || res.status >= 500) {
+          // P19h — 403 / 5xx : panne provider claire, open circuit immédiat.
+          return { kind: 'open_circuit', reason: `HTTP ${res.status}` };
+        }
+        // Autres 4xx (404, etc.) : ticker unknown, silent null.
+        this.logger.debug(
+          `[yahoo-intraday] ${eodhdTicker}→${yahooSymbol} HTTP ${res.status}`,
+        );
+        return { kind: 'silent_null' };
       }
 
       const json = (await res.json()) as YahooChartResponse;
 
-      // Path Yahoo : json.chart.result[0]
       const chartErr = json?.chart?.error;
       if (chartErr) {
-        // chart.error = symbol not found in Yahoo; ne pas tripper le breaker
-        // (provider OK, ticker unknown). Retour null silently.
-        return null;
+        // chart.error = symbol not found in Yahoo; ne pas tripper le breaker.
+        return { kind: 'silent_null' };
       }
       const result = json?.chart?.result?.[0];
-      if (!result) return null;
+      if (!result) return { kind: 'silent_null' };
       const timestamps = result.timestamp ?? [];
       const quote = result.indicators?.quote?.[0];
-      if (!quote || timestamps.length === 0) return null;
+      if (!quote || timestamps.length === 0) return { kind: 'silent_null' };
 
       const opens = quote.open ?? [];
       const highs = quote.high ?? [];
@@ -252,13 +357,12 @@ export class YahooIntradayService {
           volume,
         });
       }
-      // P19h — Successful response → close breaker, reset failures counter
-      this.closeCircuitOnSuccess();
-      return out.length > 0 ? out : null;
+      return out.length > 0
+        ? { kind: 'ok', candles: out }
+        : { kind: 'silent_null' };
     } catch (e) {
-      // P19h — Network error / timeout / abort / parse → trip breaker
-      this.openCircuit(`fetch error: ${String(e).slice(0, 60)}`);
-      return null;
+      // P19h — Network error / timeout / abort / parse → open circuit.
+      return { kind: 'open_circuit', reason: `fetch error: ${String(e).slice(0, 60)}` };
     }
   }
 
