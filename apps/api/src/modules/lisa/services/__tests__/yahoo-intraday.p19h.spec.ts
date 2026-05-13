@@ -87,8 +87,10 @@ describe('YahooIntradayService — P19h circuit breaker', () => {
 
     const breakerWarn = warnSpy.mock.calls.filter((c) => String(c[0]).includes('[yahoo:circuit]'));
     expect(breakerWarn.length).toBe(1);
-    expect(String(breakerWarn[0][0])).toContain('HTTP 429');
-    expect(String(breakerWarn[0][0])).toContain('60s');
+    // P19k / Bug #C — 429 trigger now goes through UA rotation retry → reason
+    // distincte. Cooldown 60s → 15s (DEFAULT_BASE_COOLDOWN_MS reduced).
+    expect(String(breakerWarn[0][0])).toContain('HTTP 429 after UA rotation retry');
+    expect(String(breakerWarn[0][0])).toContain('15s');
   });
 
   it('HTTP 403 trips circuit', async () => {
@@ -138,7 +140,9 @@ describe('YahooIntradayService — P19h circuit breaker', () => {
     mockHttp(429);
     const svc = new YahooIntradayService();
     await svc.getCandles('AAPL.US', '5m'); // trips circuit
-    expect((global.fetch as jest.Mock).mock.calls.length).toBe(1);
+    // Bug #C : 429 trigger UA rotation retry → 2 fetch calls (primary + retry)
+    // avant que le circuit s'ouvre. Le 2e 429 trip le breaker.
+    expect((global.fetch as jest.Mock).mock.calls.length).toBe(2);
 
     // Subsequent calls during cooldown : no fetch, no extra warn
     warnSpy.mockClear();
@@ -146,36 +150,36 @@ describe('YahooIntradayService — P19h circuit breaker', () => {
     const r3 = await svc.getCandles('NVDA.US', '5m');
     expect(r2).toBeNull();
     expect(r3).toBeNull();
-    expect((global.fetch as jest.Mock).mock.calls.length).toBe(1); // still 1
+    expect((global.fetch as jest.Mock).mock.calls.length).toBe(2); // still 2
     expect(warnSpy.mock.calls.length).toBe(0); // no spam
   });
 
-  it('exponential backoff : 60s → 120s → 240s → 480s (cap 1800s/30min)', async () => {
+  it('exponential backoff : 15s → 30s → 60s → 120s (Bug #C reduced base 60→15s, cap 1800s/30min)', async () => {
     jest.useFakeTimers();
     mockHttp(503);
     const svc = new YahooIntradayService();
 
-    // Failure 1 → 60s
+    // Failure 1 → 15s
+    await svc.getCandles('AAPL.US', '5m');
+    expect(warnSpy.mock.calls.find((c) => String(c[0]).includes('15s'))).toBeDefined();
+
+    // Advance past cooldown 1, failure 2 → 30s
+    jest.advanceTimersByTime(16_000);
+    warnSpy.mockClear();
+    await svc.getCandles('AAPL.US', '5m');
+    expect(warnSpy.mock.calls.find((c) => String(c[0]).includes('30s'))).toBeDefined();
+
+    // Advance past cooldown 2, failure 3 → 60s
+    jest.advanceTimersByTime(31_000);
+    warnSpy.mockClear();
     await svc.getCandles('AAPL.US', '5m');
     expect(warnSpy.mock.calls.find((c) => String(c[0]).includes('60s'))).toBeDefined();
 
-    // Advance past cooldown 1, failure 2 → 120s
+    // Advance past cooldown 3, failure 4 → 120s
     jest.advanceTimersByTime(61_000);
     warnSpy.mockClear();
     await svc.getCandles('AAPL.US', '5m');
     expect(warnSpy.mock.calls.find((c) => String(c[0]).includes('120s'))).toBeDefined();
-
-    // Advance past cooldown 2, failure 3 → 240s
-    jest.advanceTimersByTime(121_000);
-    warnSpy.mockClear();
-    await svc.getCandles('AAPL.US', '5m');
-    expect(warnSpy.mock.calls.find((c) => String(c[0]).includes('240s'))).toBeDefined();
-
-    // Advance past cooldown 3, failure 4 → 480s (cap 1800s/30min raised in PR #268)
-    jest.advanceTimersByTime(241_000);
-    warnSpy.mockClear();
-    await svc.getCandles('AAPL.US', '5m');
-    expect(warnSpy.mock.calls.find((c) => String(c[0]).includes('480s'))).toBeDefined();
   });
 
   it('reset on success after cooldown: probe succeeds → circuit closes + LOG line', async () => {
@@ -186,8 +190,8 @@ describe('YahooIntradayService — P19h circuit breaker', () => {
     expect(svc.getCircuitStatus().state).toBe('open');
     expect(svc.getCircuitStatus().consecutiveFailures).toBe(1);
 
-    // Pass cooldown
-    jest.advanceTimersByTime(61_000);
+    // Pass cooldown (Bug #C : 15s base, was 60s)
+    jest.advanceTimersByTime(16_000);
     // Yahoo recovers
     mockOk();
     logSpy.mockClear();
@@ -233,8 +237,8 @@ describe('YahooIntradayService — P19h circuit breaker', () => {
     await svc.getCandles('AAPL.US', '5m');
     expect(svc.getCircuitStatus().openCount).toBe(1);
 
-    // Recover, then re-fail
-    jest.advanceTimersByTime(61_000);
+    // Recover, then re-fail (Bug #C : 15s base, was 60s)
+    jest.advanceTimersByTime(16_000);
     mockOk();
     await svc.getCandles('AAPL.US', '5m');
     expect(svc.getCircuitStatus().state).toBe('closed');
