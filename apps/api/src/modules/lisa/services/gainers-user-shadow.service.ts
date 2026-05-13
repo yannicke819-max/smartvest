@@ -221,7 +221,7 @@ export const SIMULATE_BUFFER_BY_CLASS: Readonly<Record<string, number>> = {
   us_equity_large:     60,  // lag EODHD live constaté ≫ 65 min (Bug #H)
   us_equity_small_mid: 60,  // même plan EODHD, même lag présumé
   eu_equity:            5,  // baseline ~17% pass rate
-  asia_equity:          5,  // pre-fetch session-aware + TZ shift adressent l'essentiel
+  asia_equity:         60,  // Bug #I — lag EODHD live identique US (trace 003550.KO candle_freshness=90134s, 493/493 signaux off_session sur 24h)
   crypto_major:         5,  // Binance live (Bug #A)
   crypto_alt:           5,  // idem
 };
