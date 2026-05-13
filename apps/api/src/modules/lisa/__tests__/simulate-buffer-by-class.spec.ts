@@ -1,16 +1,22 @@
 /**
- * Bug #H (13/05/2026) — Tests buffer dynamique par asset_class pour simulatePending.
+ * Bug #H + Bug #I (13/05/2026) — Tests buffer dynamique par asset_class pour simulatePending.
  *
- * Diagnostic : 246/246 captures us_equity_large 12/05 13:30-20:00 UTC marquées
+ * Bug #H : 246/246 captures us_equity_large 12/05 13:30-20:00 UTC marquées
  * off_session/stale_data malgré session ouverte. Cause = lag propagation EODHD
- * intraday US live ≫ 65 min. Fix = buffer 60 min pour US (after_min = 120),
- * 5 min pour les autres (after_min = 65, inchangé).
+ * intraday US live ≫ 65 min. Fix = buffer 60 min pour US (after_min = 120).
+ *
+ * Bug #I : 493/493 signaux asia_equity 24h marqués off_session (trace 003550.KO
+ * candle_freshness=90134s). Même cause racine que #H — EODHD live trail lag
+ * touche aussi Korea/HK/SHE/SZSE/TYO. Fix = buffer 60 min pour asia_equity
+ * (after_min = 120, aligné US).
+ *
+ * EU + crypto restent à 5 min (after_min = 65, inchangé).
  *
  * Couvre :
  *   - getSimulateBufferMin par classe (7 cas)
- *   - getSimulateAfterMin par classe (2 cas)
+ *   - getSimulateAfterMin par classe (3 cas)
  *   - simulatePending integration : pre-fetch query MIN cutoff + per-row JS filter
- *     (2 cas : US young row skipped, US mature row picked)
+ *     (US/asia young row skipped, US/asia mature row picked, EU/crypto unchanged)
  */
 import {
   GainersUserShadowService,
@@ -36,8 +42,8 @@ describe('Bug #H — getSimulateBufferMin par asset_class', () => {
     expect(getSimulateBufferMin('eu_equity')).toBe(5);
   });
 
-  it('asia_equity → 5 (TZ shift + session-aware adressent)', () => {
-    expect(getSimulateBufferMin('asia_equity')).toBe(5);
+  it('asia_equity → 60 (Bug #I — lag EODHD live identique US)', () => {
+    expect(getSimulateBufferMin('asia_equity')).toBe(60);
   });
 
   it('crypto_major → 5 (Binance live Bug #A)', () => {
@@ -60,9 +66,14 @@ describe('Bug #H — getSimulateAfterMin par asset_class', () => {
     expect(getSimulateAfterMin('us_equity_large')).toBe(MAX_WINDOW_MIN + 60);
   });
 
-  it('asia_equity → 65 (= MAX_WINDOW_MIN 60 + buffer 5, inchangé)', () => {
-    expect(getSimulateAfterMin('asia_equity')).toBe(65);
-    expect(getSimulateAfterMin('asia_equity')).toBe(MAX_WINDOW_MIN + DEFAULT_SIMULATE_BUFFER_MIN);
+  it('asia_equity → 120 (= MAX_WINDOW_MIN 60 + buffer 60, Bug #I)', () => {
+    expect(getSimulateAfterMin('asia_equity')).toBe(120);
+    expect(getSimulateAfterMin('asia_equity')).toBe(MAX_WINDOW_MIN + 60);
+  });
+
+  it('eu_equity → 65 (= MAX_WINDOW_MIN 60 + buffer 5, inchangé)', () => {
+    expect(getSimulateAfterMin('eu_equity')).toBe(65);
+    expect(getSimulateAfterMin('eu_equity')).toBe(MAX_WINDOW_MIN + DEFAULT_SIMULATE_BUFFER_MIN);
   });
 
   it('legacy SIMULATE_AFTER_MIN = 65 préservé (back-compat tests TIMING-FIX)', () => {
@@ -173,20 +184,54 @@ describe('Bug #H — simulatePending integration per-class filter', () => {
     expect(updateCalls).toContain('us-mature');
   });
 
-  it('asia_equity row created 70 min ago → PICKED (asia buffer 5 → mature at 65)', async () => {
+  it('asia_equity row created 70 min ago → SKIPPED (Bug #I: asia needs 120 min)', async () => {
     const nowMs = Date.now();
     const row: SupabaseRow = {
-      id: 'asia-mature',
+      id: 'asia-young',
       symbol: '005930.KO',
       asset_class: 'asia_equity',
       entry_price: 70000,
       created_at: new Date(nowMs - 70 * 60_000).toISOString(),
     };
     const { svc, updateCalls } = buildServiceWithRows([row]);
+    const { processed, failures } = await svc.simulatePending();
+
+    expect(processed).toBe(0);
+    expect(failures).toBe(0);
+    // Asia row maintenant filtré par JS filter (buffer 60 → mature at 120 min)
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it('asia_equity row created 130 min ago → PICKED (Bug #I: mature at 120)', async () => {
+    const nowMs = Date.now();
+    const row: SupabaseRow = {
+      id: 'asia-mature',
+      symbol: '005930.KO',
+      asset_class: 'asia_equity',
+      entry_price: 70000,
+      created_at: new Date(nowMs - 130 * 60_000).toISOString(),
+    };
+    const { svc, updateCalls } = buildServiceWithRows([row]);
     const { processed } = await svc.simulatePending();
 
     expect(processed).toBe(1);
     expect(updateCalls).toContain('asia-mature');
+  });
+
+  it('eu_equity row created 70 min ago → PICKED (EU buffer 5 → mature at 65, inchangé)', async () => {
+    const nowMs = Date.now();
+    const row: SupabaseRow = {
+      id: 'eu-mature',
+      symbol: 'OR.PA',
+      asset_class: 'eu_equity',
+      entry_price: 400,
+      created_at: new Date(nowMs - 70 * 60_000).toISOString(),
+    };
+    const { svc, updateCalls } = buildServiceWithRows([row]);
+    const { processed } = await svc.simulatePending();
+
+    expect(processed).toBe(1);
+    expect(updateCalls).toContain('eu-mature');
   });
 
   it('query SQL cutoff = MIN_SIMULATE_AFTER_MIN (65 min, permissive)', async () => {
@@ -201,24 +246,31 @@ describe('Bug #H — simulatePending integration per-class filter', () => {
     expect(Math.abs(cutoffMs - expectedMs)).toBeLessThan(2000);
   });
 
-  it('mixed batch : us_young skipped, us_mature + asia processed', async () => {
+  it('mixed batch : us/asia young skipped, us/asia mature + eu processed', async () => {
     const nowMs = Date.now();
     const rows: SupabaseRow[] = [
-      // Sera filtré par query (créé il y a 80 min seulement, query cutoff 65 → passe)
-      // mais JS filter (US needs 120) le skip
+      // us_young : query cutoff 65 → passe, JS filter (US needs 120) le skip
       { id: 'us-young', symbol: 'QCOM.US', asset_class: 'us_equity_large',
         entry_price: 150, created_at: new Date(nowMs - 80 * 60_000).toISOString() },
       { id: 'us-mature', symbol: 'AAPL.US', asset_class: 'us_equity_large',
         entry_price: 150, created_at: new Date(nowMs - 125 * 60_000).toISOString() },
-      { id: 'asia-mature', symbol: '005930.KO', asset_class: 'asia_equity',
+      // asia_young : query cutoff 65 → passe, JS filter (asia needs 120) le skip (Bug #I)
+      { id: 'asia-young', symbol: '005930.KO', asset_class: 'asia_equity',
         entry_price: 70000, created_at: new Date(nowMs - 70 * 60_000).toISOString() },
+      { id: 'asia-mature', symbol: '003550.KO', asset_class: 'asia_equity',
+        entry_price: 50000, created_at: new Date(nowMs - 125 * 60_000).toISOString() },
+      // eu_mature : passe à 65 min comme avant
+      { id: 'eu-mature', symbol: 'OR.PA', asset_class: 'eu_equity',
+        entry_price: 400, created_at: new Date(nowMs - 70 * 60_000).toISOString() },
     ];
     const { svc, updateCalls } = buildServiceWithRows(rows);
     const { processed } = await svc.simulatePending();
 
-    expect(processed).toBe(2);  // us-mature + asia-mature, us-young skipped
+    expect(processed).toBe(3);  // us-mature + asia-mature + eu-mature
     expect(updateCalls).toContain('us-mature');
     expect(updateCalls).toContain('asia-mature');
+    expect(updateCalls).toContain('eu-mature');
     expect(updateCalls).not.toContain('us-young');
+    expect(updateCalls).not.toContain('asia-young');
   });
 });
