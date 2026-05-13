@@ -72,6 +72,11 @@ export class BinanceMarketService {
   private readonly BASE_URL = 'https://api.binance.com';
   private readonly FAPI_URL = 'https://fapi.binance.com';
   private klinesCache = new Map<string, { data: BinanceCandle[]; asOf: number }>();
+  // Bug #A (13/05/2026) — Cache séparé pour getKlinesRange. TTL 1h car un range
+  // historique fermé [startTime, endTime] est immutable, pas besoin de refresh
+  // fréquent comme le legacy klinesCache (TTL 2min, fenêtre glissante last-N).
+  private klinesRangeCache = new Map<string, { data: BinanceCandle[]; asOf: number }>();
+  private readonly KLINES_RANGE_TTL_MS = 60 * 60 * 1000;
   private tickerCache = new Map<string, { data: BinanceTicker24h; asOf: number }>();
   private futuresCache = new Map<string, { data: BinanceFutureStats; asOf: number }>();
 
@@ -131,6 +136,62 @@ export class BinanceMarketService {
       return candles;
     } catch (e) {
       this.logger.warn(`Binance klines failed ${binanceSymbol}: ${String(e).slice(0, 80)}`);
+      return null;
+    }
+  }
+
+  /**
+   * Bug #A (13/05/2026) — Fetch klines avec fenêtre [startTime, endTime] explicite.
+   *
+   * Différence avec getKlines (limit-based, dernières N candles) : supporte les
+   * fenêtres historiques arbitraires nécessaires au shadow simulator
+   * (gainers-user-shadow.service.ts) qui rejoue des signaux capturés plusieurs
+   * heures dans le passé.
+   *
+   * Binance API native : /api/v3/klines?symbol=X&interval=Y&startTime=A&endTime=B
+   * accepte startTime/endTime en epoch millisecondes. Limit max 1000 (≥ tous les
+   * use cases prévus : 70min @ 5m = 14 candles, 24h @ 5m = 288 candles).
+   *
+   * Cache distinct du klinesCache : key inclut start/end ms, TTL 1h.
+   */
+  async getKlinesRange(
+    binanceSymbol: string,
+    interval: '1m' | '5m' | '15m' | '1h' | '4h' | '1d',
+    startTimeMs: number,
+    endTimeMs: number,
+  ): Promise<BinanceCandle[] | null> {
+    const cacheKey = `${binanceSymbol}::${interval}::${startTimeMs}::${endTimeMs}`;
+    const cached = this.klinesRangeCache.get(cacheKey);
+    if (cached && Date.now() - cached.asOf < this.KLINES_RANGE_TTL_MS) return cached.data;
+
+    try {
+      const url = `${this.BASE_URL}/api/v3/klines?symbol=${binanceSymbol}` +
+        `&interval=${interval}&startTime=${startTimeMs}&endTime=${endTimeMs}&limit=1000`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      if (!res.ok) {
+        this.logger.debug(`Binance klines range HTTP ${res.status} for ${binanceSymbol}`);
+        return null;
+      }
+      const data = await res.json() as unknown[];
+      if (!Array.isArray(data)) return null;
+
+      const candles: BinanceCandle[] = data.map((row) => {
+        const r = row as unknown[];
+        return {
+          openTime: Number(r[0]),
+          open: Number(r[1]),
+          high: Number(r[2]),
+          low: Number(r[3]),
+          close: Number(r[4]),
+          volume: Number(r[5]),
+          closeTime: Number(r[6]),
+          trades: Number(r[8]),
+        };
+      });
+      this.klinesRangeCache.set(cacheKey, { data: candles, asOf: Date.now() });
+      return candles;
+    } catch (e) {
+      this.logger.warn(`Binance klines range failed ${binanceSymbol}: ${String(e).slice(0, 80)}`);
       return null;
     }
   }

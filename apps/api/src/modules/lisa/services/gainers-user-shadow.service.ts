@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
 import { YahooIntradayService } from './yahoo-intraday.service';
+import { BinanceMarketService } from './binance-market.service';
 import { bootstrapMeanCI, verdictFromCI, GateVerdict } from '@smartvest/ai-analyst';
 import { isInExchangeSession } from './exchange-sessions.helper';
 
@@ -450,6 +451,12 @@ export class GainersUserShadowService {
      * Optional pour back-compat avec tests existants (qui n'injectent pas yahoo).
      */
     private readonly yahoo?: YahooIntradayService,
+    /**
+     * Bug #A (13/05/2026) — Binance pour crypto walkForward via getKlinesRange.
+     * Optional pour back-compat tests. Gated par env CRYPTO_SIMULATOR_ENABLED=true.
+     * Si non injecté OU flag off → short-circuit legacy crypto_not_supported préservé.
+     */
+    private readonly binance?: BinanceMarketService,
   ) {}
 
   /**
@@ -596,25 +603,150 @@ export class GainersUserShadowService {
       return { results, fetchDiag };
     }
 
-    // Crypto = no support yet (would need Binance klines), skip gracefully
+    // Bug #A (13/05/2026) — Crypto support via Binance klines range.
+    //
+    // Avant : short-circuit explicite `crypto_not_supported`. Les ~13 crypto/4j
+    // capturées par fetchBinanceGainers (top-gainers-scanner.service.ts:1136-1146)
+    // étaient toutes marquées outcome='error' → 0 mesurable.
+    //
+    // Après : gated par CRYPTO_SIMULATOR_ENABLED (default false). Si flag on
+    // ET binance injecté → fetch Binance 5m sur [startTs-5min, +65min] + walkForward.
+    //
+    // Placement préservé AVANT Step 0 (line ~635) : crypto = 24/7, le session
+    // check isInExchangeSession retournerait `false` pour BTCUSDT/ADAUSDT
+    // (suffix null, ligne 118 exchange-sessions.helper.ts → false conservatif),
+    // ce qui marquerait tout en OFF_SESSION 'capture'. On bypass volontairement.
     if (args.assetClass === 'crypto_major' || args.assetClass === 'crypto_alt') {
-      for (const g of getGridsForAssetClass(args.assetClass)) results[g.key] = noEntry();
-      fetchDiag.outcome = 'error';
-      fetchDiag.steps.push({
-        endpoint: 'precondition',
+      const cryptoEnabled = process.env.CRYPTO_SIMULATOR_ENABLED === 'true';
+      if (!cryptoEnabled || !this.binance) {
+        // Legacy short-circuit : préservé pour rollback rapide (flag off) ET
+        // pour tests qui n'injectent pas BinanceMarketService (back-compat).
+        for (const g of getGridsForAssetClass(args.assetClass)) results[g.key] = noEntry();
+        fetchDiag.outcome = 'error';
+        fetchDiag.steps.push({
+          endpoint: 'precondition',
+          interval: '5m',
+          rangeMode: false,
+          fromTs: null,
+          toTs: null,
+          inputSymbol: args.symbol,
+          requestedSymbol: null,
+          rawCount: 0,
+          validClose: 0,
+          nulls: 0,
+          ms: 0,
+          error: cryptoEnabled ? 'crypto_simulator_no_binance_service' : 'crypto_not_supported',
+        });
+        return { results, fetchDiag };
+      }
+
+      // Walk-forward crypto via Binance.
+      const binanceSymbol = this.binance.toBinanceSymbol(args.symbol);
+      if (!binanceSymbol) {
+        for (const g of getGridsForAssetClass(args.assetClass)) results[g.key] = noEntry();
+        fetchDiag.outcome = 'error';
+        fetchDiag.steps.push({
+          endpoint: 'precondition',
+          interval: '5m',
+          rangeMode: false,
+          fromTs: null,
+          toTs: null,
+          inputSymbol: args.symbol,
+          requestedSymbol: null,
+          rawCount: 0,
+          validClose: 0,
+          nulls: 0,
+          ms: 0,
+          error: 'crypto_unmappable_symbol',
+        });
+        return { results, fetchDiag };
+      }
+
+      const cryptoStartTs = Math.floor(new Date(args.createdAt).getTime() / 1000);
+      const cryptoFromTs = cryptoStartTs - 300;
+      const cryptoToTs = cryptoStartTs + 60 * 60 + 300;
+      fetchDiag.startTs = cryptoStartTs;
+      fetchDiag.cutoffTs60 = cryptoStartTs + 60 * 60;
+
+      const cryptoT0 = Date.now();
+      const binanceCandles = await this.binance.getKlinesRange(
+        binanceSymbol,
+        '5m',
+        cryptoFromTs * 1000,
+        cryptoToTs * 1000,
+      );
+      const cryptoMs = Date.now() - cryptoT0;
+      const binanceRawCount = binanceCandles?.length ?? 0;
+      const binanceValidClose = binanceCandles?.filter((c) => Number.isFinite(c.close) && c.close > 0).length ?? 0;
+
+      const binanceStep: FetchDiagStep = {
+        endpoint: 'binance_klines_range_5m',
         interval: '5m',
-        rangeMode: false,
-        fromTs: null,
-        toTs: null,
+        rangeMode: true,
+        fromTs: cryptoFromTs,
+        toTs: cryptoToTs,
         inputSymbol: args.symbol,
-        requestedSymbol: null,
-        rawCount: 0,
-        validClose: 0,
-        nulls: 0,
-        ms: 0,
-        error: 'crypto_not_supported',
-      });
-      return { results, fetchDiag };
+        requestedSymbol: binanceSymbol,
+        rawCount: binanceRawCount,
+        validClose: binanceValidClose,
+        nulls: binanceRawCount - binanceValidClose,
+        ms: cryptoMs,
+      };
+      if (binanceCandles == null) {
+        binanceStep.error = 'binance_api_error';
+      } else if (binanceValidClose === 0) {
+        binanceStep.error = 'empty_response';
+      }
+      fetchDiag.steps.push(binanceStep);
+
+      if (!binanceCandles || binanceValidClose === 0) {
+        for (const g of getGridsForAssetClass(args.assetClass)) results[g.key] = noEntry();
+        fetchDiag.outcome = 'no_data';
+        return { results, fetchDiag };
+      }
+
+      // BinanceCandle.openTime est en ms → normalizeAndSortCandles auto-convertit
+      // (timestamp > 1e12 ⇒ /1000) ET trie ASC.
+      const cryptoNormalized = normalizeAndSortCandles(
+        binanceCandles.map((c) => ({
+          timestamp: c.openTime,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+        })),
+      );
+      fetchDiag.selectedStep = 0;
+      fetchDiag.applied_tz_offset_sec = 0;
+
+      const cryptoForward = cryptoNormalized.filter((c) => c.timestamp >= cryptoStartTs);
+      fetchDiag.forwardCount = cryptoForward.length;
+
+      if (cryptoForward.length === 0) {
+        // Pas de candles forward (range fetch a retourné des candles antérieures
+        // au startTs, cas rare avec startTime explicite). Mark no_data ; pas
+        // OFF_SESSION car crypto n'a pas de notion de session.
+        for (const g of getGridsForAssetClass(args.assetClass)) results[g.key] = noEntry();
+        fetchDiag.outcome = 'no_data';
+        return { results, fetchDiag };
+      }
+
+      const cryptoPartialThreshold = (() => {
+        const raw = process.env.PARTIAL_WINDOW_THRESHOLD;
+        const parsed = raw != null ? Number(raw) : 0.5;
+        return Number.isFinite(parsed) && parsed > 0 && parsed <= 1 ? parsed : 0.5;
+      })();
+      const cryptoIsPartial = cryptoForward.length < 12 * cryptoPartialThreshold;
+      const cryptoSnapshots = computePriceSnapshots(cryptoForward, cryptoStartTs);
+
+      for (const grid of getGridsForAssetClass(args.assetClass)) {
+        const out = walkForward(args.entryPrice, cryptoForward, cryptoStartTs, grid);
+        if (cryptoIsPartial && (out.outcome === 'TP_HIT' || out.outcome === 'SL_HIT' || out.outcome === 'TIME_LIMIT')) {
+          out.partial_window = true;
+        }
+        results[grid.key] = out;
+      }
+      fetchDiag.outcome = 'ok';
+      return { results, fetchDiag, priceSnapshots: cryptoSnapshots };
     }
 
     // PR #296 Partie A — Step 0 : skip simulator si capture genuinely off-session.
