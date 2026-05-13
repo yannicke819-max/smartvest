@@ -210,12 +210,21 @@ const SIMULATE_BATCH_SIZE = 50;
  *   curl ".../intraday/QCOM.US?...&from=1778596418&to=1778600618"
  *   → 14 candles propres, volumes réalistes (14M sur 15:00-15:05).
  *
- * Conclusion : EODHD intraday US live lag de propagation ≫ 65 min. Pour Asia
- * (TZ shift + session-aware pre-fetch déjà déployés) et crypto (Binance live
- * via Bug #A), 5 min suffisent. EU baseline modéré.
+ * Conclusion : EODHD intraday US live lag de propagation ≫ 65 min.
  *
- * Trade-off US : signaux attendent 120 min avant simulation (vs 65 min). Délai
- * +55 min sur shadow verdict, accepté car alternative = 100% off_session.
+ * Bug #I (13/05/2026) — même cause racine étendue à asia_equity. SQL preuve
+ * 493/493 signaux asia_equity 24h outcome=off_session (100%). Trace probante
+ * 003550.KO 05:56:13 UTC : selectedStep=3 default, candle_freshness=90134s
+ * (~25h stale), forwardCountAfterFilter=0. L'hypothèse initiale 'session-aware
+ * pre-fetch + TZ shift suffisent pour Asia' est invalidée — le lag EODHD live
+ * touche aussi Korea/HK/SHE/SZSE/TYO. Asia aligné sur US (buffer 60min).
+ *
+ * Pour crypto (Binance live via Bug #A) et EU (baseline ~17% pass rate), 5 min
+ * suffisent.
+ *
+ * Trade-off US+Asia : signaux attendent 120 min avant simulation (vs 65 min).
+ * Délai +55 min sur shadow verdict, accepté car alternative = 100% off_session
+ * sur ces deux classes. EU + crypto inchangés (~25% du volume signaux).
  */
 export const SIMULATE_BUFFER_BY_CLASS: Readonly<Record<string, number>> = {
   us_equity_large:     60,  // lag EODHD live constaté ≫ 65 min (Bug #H)
