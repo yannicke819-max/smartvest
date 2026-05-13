@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
 import { YahooIntradayService } from './yahoo-intraday.service';
+import { BinanceMarketService } from './binance-market.service';
 import { bootstrapMeanCI, verdictFromCI, GateVerdict } from '@smartvest/ai-analyst';
 import { isInExchangeSession } from './exchange-sessions.helper';
 
@@ -64,8 +65,65 @@ export interface SimGrid {
   tpPct: number;
   slPct: number;
   windowMin: number;
+  /**
+   * SHORT-SHADOW (11/05/2026) — Direction du signal simulé.
+   * 'long'  : signal classique, TP au-dessus entry, SL en-dessous (default backward-compat)
+   * 'short' : signal inversé (mean-reversion fade), TP en-dessous entry, SL au-dessus
+   * Field optionnel pour préserver toutes les grilles LONG existantes sans modification.
+   */
+  direction?: 'long' | 'short';
 }
 
+/**
+ * SHORT-SHADOW (11/05/2026) — Retourne les grilles de simulation selon l'asset class.
+ *
+ * Stratégie : SHORT grids UNIQUEMENT sur `us_equity_small_mid` (scope strict MESURE,
+ * basé sur observation n=147 trades mono-journée 07/05/2026, expectancy LONG -1.20%
+ * vs proxy SHORT +1.18%). Hypothèse "fade the gainer" sur small caps illiquides.
+ *
+ * Toutes les autres classes (us_equity_large, eu_equity, asia_equity, crypto_*)
+ * conservent uniquement les 4 grilles LONG historiques. Aucun changement de
+ * comportement pour ces classes (rétro-compat parfaite).
+ *
+ * Calibration grilles SHORT (us_equity_small_mid uniquement) :
+ *   - short_baseline_30m/60m : TP 2.0% / SL 0.9% (mirror LONG baseline pour comparaison
+ *     apples-to-apples)
+ *   - short_alt15_30m/60m    : TP 1.5% / SL 0.6% (mirror LONG alt15)
+ *   - short_calibrated_30m/60m : TP 0.8% / SL 0.4% (ratio 2:1, breakeven 33%, calibré
+ *     sur range 60min réellement observé small/mid US 0.5-1.2%)
+ */
+export function getGridsForAssetClass(assetClass: string): SimGrid[] {
+  const longGrids: SimGrid[] = [
+    { key: 'baseline_30m', tpPct: 0.020, slPct: 0.009, windowMin: 30, direction: 'long' },
+    { key: 'baseline_60m', tpPct: 0.020, slPct: 0.009, windowMin: 60, direction: 'long' },
+    { key: 'alt15_30m',    tpPct: 0.015, slPct: 0.006, windowMin: 30, direction: 'long' },
+    { key: 'alt15_60m',    tpPct: 0.015, slPct: 0.006, windowMin: 60, direction: 'long' },
+  ];
+
+  if (assetClass !== 'us_equity_small_mid') {
+    return longGrids;
+  }
+
+  // SHORT grids — SCOPE STRICT us_equity_small_mid uniquement
+  return [
+    ...longGrids,
+    // Mirror LONG baseline (apples-to-apples comparison)
+    { key: 'short_baseline_30m', tpPct: 0.020, slPct: 0.009, windowMin: 30, direction: 'short' },
+    { key: 'short_baseline_60m', tpPct: 0.020, slPct: 0.009, windowMin: 60, direction: 'short' },
+    // Mirror LONG alt15
+    { key: 'short_alt15_30m', tpPct: 0.015, slPct: 0.006, windowMin: 30, direction: 'short' },
+    { key: 'short_alt15_60m', tpPct: 0.015, slPct: 0.006, windowMin: 60, direction: 'short' },
+    // Calibrated for small/mid US 60m range (TP 0.8% / SL 0.4%, ratio 2:1)
+    { key: 'short_calibrated_30m', tpPct: 0.008, slPct: 0.004, windowMin: 30, direction: 'short' },
+    { key: 'short_calibrated_60m', tpPct: 0.008, slPct: 0.004, windowMin: 60, direction: 'short' },
+  ];
+}
+
+/**
+ * @deprecated SHORT-SHADOW (11/05/2026) — Préservé pour rétro-compat lecture.
+ * Utiliser getGridsForAssetClass(assetClass) pour le nouveau comportement
+ * conditionnel par asset class.
+ */
 const SIM_GRIDS: SimGrid[] = [
   { key: 'baseline_30m', tpPct: 0.020, slPct: 0.009, windowMin: 30 },
   { key: 'baseline_60m', tpPct: 0.020, slPct: 0.009, windowMin: 60 },
@@ -109,7 +167,27 @@ export function getExchangeUtcOffsetSec(symbol: string | null | undefined): numb
 
 const SLIPPAGE_HAIRCUT_BILATERAL = 0.0015;  // 15bps each side
 const SLIPPAGE_TOTAL = SLIPPAGE_HAIRCUT_BILATERAL * 2;  // 30bps round-trip
-const SIMULATE_AFTER_MIN = 60;  // attendre que la fenêtre 60m soit close
+
+/**
+ * SHORT-SHADOW TIMING-FIX (11/05/2026) — Cutoff dynamique pour simulatePending.
+ *
+ * Bug observé 08/05/2026 : 0/503 mesurables (100% OFF_SESSION stale_data) sur les
+ * signaux du jour, alors que 07/05/2026 = 141/143 mesurables (98%). Diagnostic :
+ * scan→sim délai 0-1h sur 8 mai vs 10h+ sur 7 mai. À 60min sharp (cutoff
+ * pré-existant), race condition avec EODHD candle propagation lag (~5min typique
+ * post-bar-close) → fetch retourne empty / partial → outcome marqué OFF_SESSION.
+ *
+ * Fix : `max(windowMin) + buffer 5min`. Pour les grilles actuelles (LONG + SHORT,
+ * max window = 60min), cutoff = 65min. Tolère le lag sans retarder excessivement
+ * la simulation.
+ *
+ * Si nouvelles grilles ajoutées avec windowMin > 60, la constante MAX_WINDOW_MIN
+ * doit être mise à jour manuellement (pas dérivé du tableau pour éviter circular
+ * dep avec getGridsForAssetClass au module init).
+ */
+export const MAX_WINDOW_MIN = 60;
+export const SIMULATE_BUFFER_MIN = 5;
+export const SIMULATE_AFTER_MIN = MAX_WINDOW_MIN + SIMULATE_BUFFER_MIN;  // = 65
 const SIMULATE_BATCH_SIZE = 50;
 
 // PR #283 — Lookback fenêtre 5m pour fetch candles. Configurable via env
@@ -238,6 +316,48 @@ export function normalizeAndSortCandles<T extends CandleLike>(candles: readonly 
 }
 
 /**
+ * MESURE-PR (11/05/2026) — Raw close prices à 5/15/30/60min après startTs,
+ * indépendants de tout TP/SL. Stockés au niveau RACINE de sim_results JSONB
+ * (pas dupliqués par grille). Permet de mesurer la persistance directionnelle
+ * pure P(up_60m | up_30m) sur TIME_LIMIT et sur outcomes où TP/SL fire tard.
+ * Null si aucune candle ne couvre l'instant cible.
+ */
+export type PriceSnapshots = {
+  '5': number | null;
+  '15': number | null;
+  '30': number | null;
+  '60': number | null;
+};
+
+/**
+ * MESURE-PR — Helper pur : extrait close prices aux 4 instants cibles
+ * indépendamment de la logique TP/SL. À appeler UNE FOIS par row, pas par
+ * grille, pour éviter la duplication 4× dans sim_results JSONB.
+ *
+ * Itère candles ASC. Pour chaque candle, set result[key]=c.close si
+ * minSinceStart >= key et pas encore set. Boucle interne O(4) négligeable.
+ *
+ * Fonction pure exportée pour testabilité.
+ */
+export function computePriceSnapshots(
+  candles: readonly CandleLike[],
+  startTs: number,
+): PriceSnapshots {
+  const targets = [5, 15, 30, 60] as const;
+  const result: PriceSnapshots = { '5': null, '15': null, '30': null, '60': null };
+  for (const c of candles) {
+    const minSinceStart = (c.timestamp - startTs) / 60;
+    for (const t of targets) {
+      const key = String(t) as keyof PriceSnapshots;
+      if (minSinceStart >= t && result[key] === null) {
+        result[key] = c.close;
+      }
+    }
+  }
+  return result;
+}
+
+/**
  * PR #283 — walkForward : itère les candles ASCENDING, applique TP/SL d'une
  * grille (TP%, SL%, windowMin), retourne le premier hit ou TIME_LIMIT.
  *
@@ -257,28 +377,43 @@ export function walkForward(
   startTs: number,
   grid: SimGrid,
 ): SimOutcome {
-  const tpPrice = entry * (1 + grid.tpPct);
-  const slPrice = entry * (1 - grid.slPct);
+  // SHORT-SHADOW (11/05/2026) — Direction read from grid (default 'long' rétro-compat).
+  // LONG : TP au-dessus entry, SL en-dessous, profit si prix monte
+  // SHORT : TP en-dessous entry, SL au-dessus, profit si prix descend
+  const direction = grid.direction ?? 'long';
+  const isShort = direction === 'short';
+
+  const tpPrice = isShort ? entry * (1 - grid.tpPct) : entry * (1 + grid.tpPct);
+  const slPrice = isShort ? entry * (1 + grid.slPct) : entry * (1 - grid.slPct);
   const cutoffTs = startTs + grid.windowMin * 60;
   let lastBeforeCutoff: CandleLike | null = null;
 
   for (const c of candles) {
     if (c.timestamp > cutoffTs) break;
     lastBeforeCutoff = c;
-    if (c.low <= slPrice) {
+
+    // SHORT-SHADOW : hit conditions inversées
+    // SHORT SL hit si c.high >= slPrice (prix MONTE à travers SL au-dessus)
+    // SHORT TP hit si c.low  <= tpPrice (prix DESCEND à travers TP en-dessous)
+    const slHit = isShort ? c.high >= slPrice : c.low <= slPrice;
+    const tpHit = isShort ? c.low <= tpPrice : c.high >= tpPrice;
+
+    if (slHit) {
       return {
         outcome: 'SL_HIT',
         exit_price: slPrice,
         exit_at: new Date(c.timestamp * 1000).toISOString(),
+        // pnl_pct sign : SL loss is negative for both LONG and SHORT (grid.slPct is magnitude)
         pnl_pct: -grid.slPct - SLIPPAGE_TOTAL,
         hit_at_min: Math.round((c.timestamp - startTs) / 60),
       };
     }
-    if (c.high >= tpPrice) {
+    if (tpHit) {
       return {
         outcome: 'TP_HIT',
         exit_price: tpPrice,
         exit_at: new Date(c.timestamp * 1000).toISOString(),
+        // pnl_pct sign : TP profit is positive for both LONG and SHORT
         pnl_pct: grid.tpPct - SLIPPAGE_TOTAL,
         hit_at_min: Math.round((c.timestamp - startTs) / 60),
       };
@@ -286,7 +421,12 @@ export function walkForward(
   }
 
   if (lastBeforeCutoff) {
-    const closePnl = (lastBeforeCutoff.close - entry) / entry;
+    // SHORT-SHADOW : TIME_LIMIT pnl signe inversé pour SHORT
+    // LONG  closePnl = (close - entry) / entry  (positif si close > entry = profit long)
+    // SHORT closePnl = (entry - close) / entry  (positif si entry > close = profit short)
+    const closePnl = isShort
+      ? (entry - lastBeforeCutoff.close) / entry
+      : (lastBeforeCutoff.close - entry) / entry;
     return {
       outcome: 'TIME_LIMIT',
       exit_price: lastBeforeCutoff.close,
@@ -311,6 +451,12 @@ export class GainersUserShadowService {
      * Optional pour back-compat avec tests existants (qui n'injectent pas yahoo).
      */
     private readonly yahoo?: YahooIntradayService,
+    /**
+     * Bug #A (13/05/2026) — Binance pour crypto walkForward via getKlinesRange.
+     * Optional pour back-compat tests. Gated par env CRYPTO_SIMULATOR_ENABLED=true.
+     * Si non injecté OU flag off → short-circuit legacy crypto_not_supported préservé.
+     */
+    private readonly binance?: BinanceMarketService,
   ) {}
 
   /**
@@ -345,9 +491,12 @@ export class GainersUserShadowService {
   }
 
   /**
-   * Pick rows where sim_run_at IS NULL AND created_at > 60 min ago,
+   * Pick rows where sim_run_at IS NULL AND created_at > SIMULATE_AFTER_MIN ago,
    * fetch 5m candles forward, walk-forward to find TP/SL hits sur 4 grilles.
    * Cap batch à SIMULATE_BATCH_SIZE pour éviter timeouts.
+   *
+   * SHORT-SHADOW TIMING-FIX (11/05/2026) — SIMULATE_AFTER_MIN bumped 60→65 pour
+   * tolérer EODHD candle propagation lag ~5min. Cf. constante explication.
    */
   async simulatePending(): Promise<{ processed: number; failures: number }> {
     const cutoff = new Date(Date.now() - SIMULATE_AFTER_MIN * 60_000).toISOString();
@@ -369,16 +518,23 @@ export class GainersUserShadowService {
     let failures = 0;
     for (const row of rows) {
       try {
-        const { results: simResults, fetchDiag } = await this.simulateRow({
+        const { results: simResults, fetchDiag, priceSnapshots } = await this.simulateRow({
           symbol: String(row.symbol),
           assetClass: String(row.asset_class),
           entryPrice: row.entry_price != null ? Number(row.entry_price) : null,
           createdAt: String(row.created_at),
         });
+        // MESURE-PR — Merge priceSnapshots au niveau RACINE de sim_results JSONB.
+        // Early-returns de simulateRow (no_entry, off_session capture) ne calculent
+        // pas snapshots → fallback all-null pour cohérence schéma.
+        const simResultsRoot = {
+          ...simResults,
+          price_snapshots: priceSnapshots ?? { '5': null, '15': null, '30': null, '60': null },
+        };
         await this.supabase.getClient()
           .from('gainers_user_shadow_signals')
           .update({
-            sim_results: simResults,
+            sim_results: simResultsRoot,
             fetch_diag: fetchDiag,        // PR #286 — diagnostic JSONB
             sim_run_at: new Date().toISOString(),
             sim_window_max_min: 60,
@@ -410,7 +566,12 @@ export class GainersUserShadowService {
     assetClass: string;
     entryPrice: number | null;
     createdAt: string;
-  }): Promise<{ results: Record<string, SimOutcome>; fetchDiag: FetchDiag }> {
+  }): Promise<{
+    results: Record<string, SimOutcome>;
+    fetchDiag: FetchDiag;
+    /** MESURE-PR (e1dfec6) — Snapshots prix raw aux 4 instants cibles, undefined sur early-returns */
+    priceSnapshots?: PriceSnapshots;
+  }> {
     const results: Record<string, SimOutcome> = {};
     const noEntry = (): SimOutcome => ({
       outcome: 'NO_DATA', exit_price: null, exit_at: null, pnl_pct: null, hit_at_min: null,
@@ -423,7 +584,7 @@ export class GainersUserShadowService {
     };
 
     if (args.entryPrice == null || args.entryPrice <= 0) {
-      for (const g of SIM_GRIDS) results[g.key] = noEntry();
+      for (const g of getGridsForAssetClass(args.assetClass)) results[g.key] = noEntry();
       fetchDiag.outcome = 'error';
       fetchDiag.steps.push({
         endpoint: 'precondition',
@@ -442,25 +603,150 @@ export class GainersUserShadowService {
       return { results, fetchDiag };
     }
 
-    // Crypto = no support yet (would need Binance klines), skip gracefully
+    // Bug #A (13/05/2026) — Crypto support via Binance klines range.
+    //
+    // Avant : short-circuit explicite `crypto_not_supported`. Les ~13 crypto/4j
+    // capturées par fetchBinanceGainers (top-gainers-scanner.service.ts:1136-1146)
+    // étaient toutes marquées outcome='error' → 0 mesurable.
+    //
+    // Après : gated par CRYPTO_SIMULATOR_ENABLED (default false). Si flag on
+    // ET binance injecté → fetch Binance 5m sur [startTs-5min, +65min] + walkForward.
+    //
+    // Placement préservé AVANT Step 0 (line ~635) : crypto = 24/7, le session
+    // check isInExchangeSession retournerait `false` pour BTCUSDT/ADAUSDT
+    // (suffix null, ligne 118 exchange-sessions.helper.ts → false conservatif),
+    // ce qui marquerait tout en OFF_SESSION 'capture'. On bypass volontairement.
     if (args.assetClass === 'crypto_major' || args.assetClass === 'crypto_alt') {
-      for (const g of SIM_GRIDS) results[g.key] = noEntry();
-      fetchDiag.outcome = 'error';
-      fetchDiag.steps.push({
-        endpoint: 'precondition',
+      const cryptoEnabled = process.env.CRYPTO_SIMULATOR_ENABLED === 'true';
+      if (!cryptoEnabled || !this.binance) {
+        // Legacy short-circuit : préservé pour rollback rapide (flag off) ET
+        // pour tests qui n'injectent pas BinanceMarketService (back-compat).
+        for (const g of getGridsForAssetClass(args.assetClass)) results[g.key] = noEntry();
+        fetchDiag.outcome = 'error';
+        fetchDiag.steps.push({
+          endpoint: 'precondition',
+          interval: '5m',
+          rangeMode: false,
+          fromTs: null,
+          toTs: null,
+          inputSymbol: args.symbol,
+          requestedSymbol: null,
+          rawCount: 0,
+          validClose: 0,
+          nulls: 0,
+          ms: 0,
+          error: cryptoEnabled ? 'crypto_simulator_no_binance_service' : 'crypto_not_supported',
+        });
+        return { results, fetchDiag };
+      }
+
+      // Walk-forward crypto via Binance.
+      const binanceSymbol = this.binance.toBinanceSymbol(args.symbol);
+      if (!binanceSymbol) {
+        for (const g of getGridsForAssetClass(args.assetClass)) results[g.key] = noEntry();
+        fetchDiag.outcome = 'error';
+        fetchDiag.steps.push({
+          endpoint: 'precondition',
+          interval: '5m',
+          rangeMode: false,
+          fromTs: null,
+          toTs: null,
+          inputSymbol: args.symbol,
+          requestedSymbol: null,
+          rawCount: 0,
+          validClose: 0,
+          nulls: 0,
+          ms: 0,
+          error: 'crypto_unmappable_symbol',
+        });
+        return { results, fetchDiag };
+      }
+
+      const cryptoStartTs = Math.floor(new Date(args.createdAt).getTime() / 1000);
+      const cryptoFromTs = cryptoStartTs - 300;
+      const cryptoToTs = cryptoStartTs + 60 * 60 + 300;
+      fetchDiag.startTs = cryptoStartTs;
+      fetchDiag.cutoffTs60 = cryptoStartTs + 60 * 60;
+
+      const cryptoT0 = Date.now();
+      const binanceCandles = await this.binance.getKlinesRange(
+        binanceSymbol,
+        '5m',
+        cryptoFromTs * 1000,
+        cryptoToTs * 1000,
+      );
+      const cryptoMs = Date.now() - cryptoT0;
+      const binanceRawCount = binanceCandles?.length ?? 0;
+      const binanceValidClose = binanceCandles?.filter((c) => Number.isFinite(c.close) && c.close > 0).length ?? 0;
+
+      const binanceStep: FetchDiagStep = {
+        endpoint: 'binance_klines_range_5m',
         interval: '5m',
-        rangeMode: false,
-        fromTs: null,
-        toTs: null,
+        rangeMode: true,
+        fromTs: cryptoFromTs,
+        toTs: cryptoToTs,
         inputSymbol: args.symbol,
-        requestedSymbol: null,
-        rawCount: 0,
-        validClose: 0,
-        nulls: 0,
-        ms: 0,
-        error: 'crypto_not_supported',
-      });
-      return { results, fetchDiag };
+        requestedSymbol: binanceSymbol,
+        rawCount: binanceRawCount,
+        validClose: binanceValidClose,
+        nulls: binanceRawCount - binanceValidClose,
+        ms: cryptoMs,
+      };
+      if (binanceCandles == null) {
+        binanceStep.error = 'binance_api_error';
+      } else if (binanceValidClose === 0) {
+        binanceStep.error = 'empty_response';
+      }
+      fetchDiag.steps.push(binanceStep);
+
+      if (!binanceCandles || binanceValidClose === 0) {
+        for (const g of getGridsForAssetClass(args.assetClass)) results[g.key] = noEntry();
+        fetchDiag.outcome = 'no_data';
+        return { results, fetchDiag };
+      }
+
+      // BinanceCandle.openTime est en ms → normalizeAndSortCandles auto-convertit
+      // (timestamp > 1e12 ⇒ /1000) ET trie ASC.
+      const cryptoNormalized = normalizeAndSortCandles(
+        binanceCandles.map((c) => ({
+          timestamp: c.openTime,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+        })),
+      );
+      fetchDiag.selectedStep = 0;
+      fetchDiag.applied_tz_offset_sec = 0;
+
+      const cryptoForward = cryptoNormalized.filter((c) => c.timestamp >= cryptoStartTs);
+      fetchDiag.forwardCount = cryptoForward.length;
+
+      if (cryptoForward.length === 0) {
+        // Pas de candles forward (range fetch a retourné des candles antérieures
+        // au startTs, cas rare avec startTime explicite). Mark no_data ; pas
+        // OFF_SESSION car crypto n'a pas de notion de session.
+        for (const g of getGridsForAssetClass(args.assetClass)) results[g.key] = noEntry();
+        fetchDiag.outcome = 'no_data';
+        return { results, fetchDiag };
+      }
+
+      const cryptoPartialThreshold = (() => {
+        const raw = process.env.PARTIAL_WINDOW_THRESHOLD;
+        const parsed = raw != null ? Number(raw) : 0.5;
+        return Number.isFinite(parsed) && parsed > 0 && parsed <= 1 ? parsed : 0.5;
+      })();
+      const cryptoIsPartial = cryptoForward.length < 12 * cryptoPartialThreshold;
+      const cryptoSnapshots = computePriceSnapshots(cryptoForward, cryptoStartTs);
+
+      for (const grid of getGridsForAssetClass(args.assetClass)) {
+        const out = walkForward(args.entryPrice, cryptoForward, cryptoStartTs, grid);
+        if (cryptoIsPartial && (out.outcome === 'TP_HIT' || out.outcome === 'SL_HIT' || out.outcome === 'TIME_LIMIT')) {
+          out.partial_window = true;
+        }
+        results[grid.key] = out;
+      }
+      fetchDiag.outcome = 'ok';
+      return { results, fetchDiag, priceSnapshots: cryptoSnapshots };
     }
 
     // PR #296 Partie A — Step 0 : skip simulator si capture genuinely off-session.
@@ -487,7 +773,7 @@ export class GainersUserShadowService {
         hit_at_min: null,
         off_session_reason: 'capture',
       };
-      for (const g of SIM_GRIDS) results[g.key] = offCaptureOutcome;
+      for (const g of getGridsForAssetClass(args.assetClass)) results[g.key] = offCaptureOutcome;
       fetchDiag.outcome = 'off_session';
       fetchDiag.steps.push({
         endpoint: 'session_check',
@@ -691,7 +977,7 @@ export class GainersUserShadowService {
           `fromTs=${fromTs} toTs=${toTs} reason=all_4_steps_empty`,
         );
       }
-      for (const g of SIM_GRIDS) results[g.key] = noEntry();
+      for (const g of getGridsForAssetClass(args.assetClass)) results[g.key] = noEntry();
       fetchDiag.outcome = 'no_data';
       return { results, fetchDiag };
     }
@@ -761,7 +1047,7 @@ export class GainersUserShadowService {
         hit_at_min: null,
         off_session_reason: 'stale_data',
       };
-      for (const g of SIM_GRIDS) results[g.key] = offSessionOutcome;
+      for (const g of getGridsForAssetClass(args.assetClass)) results[g.key] = offSessionOutcome;
       fetchDiag.outcome = 'off_session';
       return { results, fetchDiag };
     }
@@ -784,7 +1070,15 @@ export class GainersUserShadowService {
     const expectedCandles = 12;  // 60min / 5min
     const isPartialWindow = forward.length < expectedCandles * partialWindowThreshold;
 
-    for (const grid of SIM_GRIDS) {
+    // MESURE-PR — Snapshots calculés UNE fois sur `forward`, indépendants des grilles.
+    // Stockés au niveau RACINE de sim_results par simulatePending (pas duplique par
+    // grille). Permet la SQL persistance directionnelle pure post-rétro-simulation.
+    const priceSnapshots = computePriceSnapshots(forward, startTs);
+
+    // SHORT-SHADOW (11/05/2026) — getGridsForAssetClass retourne 4 LONG grids + 6 SHORT
+    // grids pour us_equity_small_mid uniquement, sinon 4 LONG grids seulement. La direction
+    // SHORT est portée par grid.direction lue dans walkForward.
+    for (const grid of getGridsForAssetClass(args.assetClass)) {
       const out = walkForward(args.entryPrice, forward, startTs, grid);
       if (isPartialWindow && (out.outcome === 'TP_HIT' || out.outcome === 'SL_HIT' || out.outcome === 'TIME_LIMIT')) {
         out.partial_window = true;
@@ -792,7 +1086,7 @@ export class GainersUserShadowService {
       results[grid.key] = out;
     }
     fetchDiag.outcome = forward.length > 0 ? 'ok' : 'no_data';
-    return { results, fetchDiag };
+    return { results, fetchDiag, priceSnapshots };
   }
 
   /**
