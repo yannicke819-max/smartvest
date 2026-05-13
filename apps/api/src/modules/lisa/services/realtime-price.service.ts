@@ -159,7 +159,11 @@ export class RealtimePriceService implements OnModuleDestroy {
       'ETHUSD': 'ETHUSDT', 'ETHEUR': 'ETHUSDT', 'ETHSPOT': 'ETHUSDT', 'ETH': 'ETHUSDT',
       'SOL': 'SOLUSDT', 'BNB': 'BNBUSDT', 'XRP': 'XRPUSDT', 'ADA': 'ADAUSDT',
       'DOGE': 'DOGEUSDT', 'DOT': 'DOTUSDT', 'AVAX': 'AVAXUSDT',
-      'MATIC': 'MATICUSDT', 'LINK': 'LINKUSDT', 'LTC': 'LTCUSDT',
+      // Bug #G2 (13/05/2026) — MATIC → POL (Polygon rebrand sept 2024).
+      // MATICUSDT figé sur Binance, redirection vers POLUSDT pour live price WS.
+      // Mirror du fix dans binance-market.service.ts:toBinanceSymbol.
+      'MATIC': 'POLUSDT', 'POL': 'POLUSDT',
+      'LINK': 'LINKUSDT', 'LTC': 'LTCUSDT',
       'ATOM': 'ATOMUSDT', 'UNI': 'UNIUSDT',
     };
     return map[s] ?? null;

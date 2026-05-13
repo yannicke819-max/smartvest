@@ -94,7 +94,12 @@ export class BinanceMarketService {
       'XRP': 'XRPUSDT', 'XRPUSDT': 'XRPUSDT',
       'ADA': 'ADAUSDT', 'ADAUSDT': 'ADAUSDT',
       'DOGE': 'DOGEUSDT', 'DOGEUSDT': 'DOGEUSDT',
-      'DOT': 'DOTUSDT', 'AVAX': 'AVAXUSDT', 'MATIC': 'MATICUSDT',
+      'DOT': 'DOTUSDT', 'AVAX': 'AVAXUSDT',
+      // Bug #G2 (13/05/2026) — MATIC → POL (Polygon rebrand sept 2024).
+      // MATICUSDT figé sur Binance post-rebrand. Alias 'MATIC' redirige vers
+      // POLUSDT pour back-compat (Lisa proposals legacy text). Mirror du pattern
+      // BTC/ETH (alias short + ticker complet + variantes EODHD).
+      'MATIC': 'POLUSDT', 'POL': 'POLUSDT', 'POLUSDT': 'POLUSDT',
       'LINK': 'LINKUSDT', 'ATOM': 'ATOMUSDT', 'UNI': 'UNIUSDT',
       'LTC': 'LTCUSDT',
     };

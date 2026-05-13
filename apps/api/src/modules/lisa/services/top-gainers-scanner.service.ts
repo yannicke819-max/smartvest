@@ -137,7 +137,12 @@ const EU_EXCHANGES = ['LSE', 'XETRA', 'PA', 'SW', 'MI', 'MC', 'BME', 'AS', 'AMS'
 const NON_EU_EXCHANGES = ['US', 'T', 'HK', 'AU', 'KO', 'KQ', 'TO', 'SHG', 'SHE'];
 /** Watchlists EU dont la session_open_utc / session_close_utc gate l'EODHD scan. */
 const EU_WATCHLIST_NAMES = ['cac40', 'dax40', 'ftse100'];
-const CRYPTO_PAIRS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT', 'DOTUSDT', 'LINKUSDT', 'MATICUSDT'];
+// Bug #G2 (13/05/2026) — MATICUSDT remplacé par POLUSDT suite au rebrand
+// officiel Polygon (sept 2024). MATICUSDT figé à change_pct = -0.289% sur
+// 91 captures consécutives 12-13/05/2026 (volume Binance gelé post-rebrand),
+// occupait 1 slot/10 du pool crypto sans signal exploitable.
+// Export pour testabilité (Bug #G2 spec).
+export const CRYPTO_PAIRS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT', 'DOTUSDT', 'LINKUSDT', 'POLUSDT'];
 
 /**
  * PR #266 — Horaires session UTC (approximatifs, ne tient pas compte du DST
@@ -218,7 +223,10 @@ const CRYPTO_MARKET_CAP_USD: Record<string, number> = {
   AVAXUSDT:    15_000_000_000,
   DOTUSDT:      8_000_000_000,
   LINKUSDT:    10_000_000_000,
-  MATICUSDT:    8_000_000_000,
+  // Bug #G2 — MATICUSDT → POLUSDT. Valeur conservée à 8B (Phase MESURE :
+  // pas de modif config / gates scanner). POL market cap réel ~$4-5B mais
+  // gate sort-by-mcap reste cohérente avec le pool alt existant.
+  POLUSDT:      8_000_000_000,
 };
 
 /**
