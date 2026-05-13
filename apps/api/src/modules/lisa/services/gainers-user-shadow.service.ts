@@ -187,8 +187,75 @@ const SLIPPAGE_TOTAL = SLIPPAGE_HAIRCUT_BILATERAL * 2;  // 30bps round-trip
  */
 export const MAX_WINDOW_MIN = 60;
 export const SIMULATE_BUFFER_MIN = 5;
+/**
+ * @deprecated Bug #H (13/05/2026) — Conservé pour rétro-compat (tests
+ * TIMING-FIX SHORT-SHADOW référencent SIMULATE_AFTER_MIN === 65). Le code
+ * de simulatePending utilise désormais `getSimulateAfterMin(assetClass)`
+ * qui retourne 120 pour US, 65 pour les autres.
+ */
 export const SIMULATE_AFTER_MIN = MAX_WINDOW_MIN + SIMULATE_BUFFER_MIN;  // = 65
 const SIMULATE_BATCH_SIZE = 50;
+
+/**
+ * Bug #H (13/05/2026) — Buffer dynamique par asset_class pour absorber le lag
+ * de propagation EODHD intraday US live.
+ *
+ * Observation 12/05/2026 : 246/246 captures us_equity_large session ouverte
+ * 13:30-20:00 UTC marquées off_session/stale_data. Trace fetch_diag QCOM.US :
+ *   - Step1-3 (range mode, fenêtre [startTs-5min, +65min]) → rawCount=0
+ *   - Step4 (default mode latest) → rawCount=210, lastCandleTs J-1 close
+ *     (~20h stale vs startTs), forwardCountAfterFilter=0
+ *
+ * Test empirique curl T+22h sur EXACTEMENT la même fenêtre échouée :
+ *   curl ".../intraday/QCOM.US?...&from=1778596418&to=1778600618"
+ *   → 14 candles propres, volumes réalistes (14M sur 15:00-15:05).
+ *
+ * Conclusion : EODHD intraday US live lag de propagation ≫ 65 min. Pour Asia
+ * (TZ shift + session-aware pre-fetch déjà déployés) et crypto (Binance live
+ * via Bug #A), 5 min suffisent. EU baseline modéré.
+ *
+ * Trade-off US : signaux attendent 120 min avant simulation (vs 65 min). Délai
+ * +55 min sur shadow verdict, accepté car alternative = 100% off_session.
+ */
+export const SIMULATE_BUFFER_BY_CLASS: Readonly<Record<string, number>> = {
+  us_equity_large:     60,  // lag EODHD live constaté ≫ 65 min (Bug #H)
+  us_equity_small_mid: 60,  // même plan EODHD, même lag présumé
+  eu_equity:            5,  // baseline ~17% pass rate
+  asia_equity:          5,  // pre-fetch session-aware + TZ shift adressent l'essentiel
+  crypto_major:         5,  // Binance live (Bug #A)
+  crypto_alt:           5,  // idem
+};
+export const DEFAULT_SIMULATE_BUFFER_MIN = 5;
+
+/**
+ * Bug #H — Retourne le buffer post-window pour la classe donnée. Default 5 min
+ * pour les classes non listées (rétro-compat + future-proof).
+ */
+export function getSimulateBufferMin(assetClass: string): number {
+  return SIMULATE_BUFFER_BY_CLASS[assetClass] ?? DEFAULT_SIMULATE_BUFFER_MIN;
+}
+
+/**
+ * Bug #H — Délai total post-création (MAX_WINDOW + buffer) avant qu'un row
+ * soit éligible à la simulation. US = 120, autres = 65.
+ */
+export function getSimulateAfterMin(assetClass: string): number {
+  return MAX_WINDOW_MIN + getSimulateBufferMin(assetClass);
+}
+
+/**
+ * Bug #H — MIN des seuils par classe. Sert de cutoff SQL côté simulatePending
+ * pour récupérer tous les candidats potentiellement matures ; le filtre per-row
+ * applique ensuite le seuil exact (US 120 vs autres 65).
+ *
+ * Choix MIN plutôt que MAX : MAX (120) délaierait inutilement Asia/EU/crypto
+ * de 55 min — régression sur 95% du volume signaux. MIN (65) préserve la
+ * latence existante pour les autres classes, tighten via JS uniquement pour US.
+ */
+const MIN_SIMULATE_AFTER_MIN = MAX_WINDOW_MIN + Math.min(
+  DEFAULT_SIMULATE_BUFFER_MIN,
+  ...Object.values(SIMULATE_BUFFER_BY_CLASS),
+);
 
 // PR #283 — Lookback fenêtre 5m pour fetch candles. Configurable via env
 // `USER_SHADOW_5M_LOOKBACK_MIN` (default 150 min). Couvre largement la sim
@@ -491,20 +558,26 @@ export class GainersUserShadowService {
   }
 
   /**
-   * Pick rows where sim_run_at IS NULL AND created_at > SIMULATE_AFTER_MIN ago,
+   * Pick rows where sim_run_at IS NULL AND created_at > getSimulateAfterMin(asset_class) ago,
    * fetch 5m candles forward, walk-forward to find TP/SL hits sur 4 grilles.
    * Cap batch à SIMULATE_BATCH_SIZE pour éviter timeouts.
    *
    * SHORT-SHADOW TIMING-FIX (11/05/2026) — SIMULATE_AFTER_MIN bumped 60→65 pour
-   * tolérer EODHD candle propagation lag ~5min. Cf. constante explication.
+   * tolérer EODHD candle propagation lag ~5min.
+   *
+   * Bug #H (13/05/2026) — Cutoff dynamique par classe via getSimulateAfterMin.
+   * Query SQL utilise MIN_SIMULATE_AFTER_MIN (= 65) pour récupérer tous les
+   * candidats potentiellement matures, filtre per-row JS applique le seuil exact
+   * (US = 120 min pour absorber lag EODHD live, autres = 65 min inchangé).
    */
   async simulatePending(): Promise<{ processed: number; failures: number }> {
-    const cutoff = new Date(Date.now() - SIMULATE_AFTER_MIN * 60_000).toISOString();
+    // Bug #H — Query cutoff permissif (MIN) ; filtre JS tightens per-class.
+    const queryCutoff = new Date(Date.now() - MIN_SIMULATE_AFTER_MIN * 60_000).toISOString();
     const { data: rows, error } = await this.supabase.getClient()
       .from('gainers_user_shadow_signals')
       .select('id, symbol, asset_class, entry_price, created_at')
       .is('sim_run_at', null)
-      .lte('created_at', cutoff)
+      .lte('created_at', queryCutoff)
       .order('created_at', { ascending: true })
       .limit(SIMULATE_BATCH_SIZE);
 
@@ -516,7 +589,18 @@ export class GainersUserShadowService {
 
     let processed = 0;
     let failures = 0;
+    let skippedNotMature = 0;
+    const nowMs = Date.now();
     for (const row of rows) {
+      // Bug #H — Skip row si pas encore mature pour sa classe (US needs 120 min
+      // vs 65 min query cutoff). Sera repris au prochain cycle quand mûr.
+      const assetClass = String(row.asset_class);
+      const matureThresholdMs = nowMs - getSimulateAfterMin(assetClass) * 60_000;
+      const createdMs = new Date(String(row.created_at)).getTime();
+      if (createdMs > matureThresholdMs) {
+        skippedNotMature++;
+        continue;
+      }
       try {
         const { results: simResults, fetchDiag, priceSnapshots } = await this.simulateRow({
           symbol: String(row.symbol),
@@ -555,8 +639,10 @@ export class GainersUserShadowService {
         } catch { /* nothing */ }
       }
     }
-    if (processed > 0 || failures > 0) {
-      this.logger.log(`[user-shadow] simulated ${processed} rows (${failures} failures)`);
+    if (processed > 0 || failures > 0 || skippedNotMature > 0) {
+      this.logger.log(
+        `[user-shadow] simulated ${processed} rows (${failures} failures, ${skippedNotMature} skipped not-mature per class buffer)`,
+      );
     }
     return { processed, failures };
   }
