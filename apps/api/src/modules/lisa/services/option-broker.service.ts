@@ -277,7 +277,15 @@ export class OptionBrokerService {
         // fermée à valeur nulle = perte totale du premium.
         const isFallback = quote != null && quote.source != null && quote.source.startsWith('fallback');
         const priceNum = quote != null ? parseFloat(quote.price) : NaN;
-        const reliable = quote != null && !isFallback && Number.isFinite(priceNum) && priceNum > 0;
+        // 🛡️ Bug #R5 — ratio sanity bounds : un spot corrompu NON-NUL (glitch
+        // EODHD type 2.5 sur underlying d'entrée 5.0) fausserait le mark BS.
+        // Borne [0.5x, 2.0x] de entry_underlying_price. Si entry invalide →
+        // ratioOk=true (on ne bloque pas sur ça, les autres clauses couvrent).
+        const entryUnderlying = Number(opt.entry_underlying_price);
+        const ratioOk =
+          !(Number.isFinite(entryUnderlying) && entryUnderlying > 0) ||
+          (priceNum / entryUnderlying >= 0.5 && priceNum / entryUnderlying <= 2.0);
+        const reliable = quote != null && !isFallback && Number.isFinite(priceNum) && priceNum > 0 && ratioOk;
         // Pour l'expiration : spot fiable sinon entry_underlying_price (meilleur
         // que 0 — l'option DOIT être fermée car expirée, on ne peut pas skip).
         const spot = reliable ? priceNum : Number(opt.entry_underlying_price);

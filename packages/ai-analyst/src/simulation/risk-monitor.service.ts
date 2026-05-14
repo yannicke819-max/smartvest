@@ -188,6 +188,22 @@ export class RiskMonitorService {
     }
 
     const entryPx = new Decimal(pos.entryPrice);
+
+    // 🛡️ Bug #R5 (complément incrémental à Bug #M) — sanity bounds ratio.
+    // Bug #M couvrait price≤0 / fallback ; R5 ajoute la borne [0.5x, 2.0x] de
+    // l'entry pour rejeter une corruption NON-NULLE (glitch EODHD type 2.5 sur
+    // entry 5.0 — ni zéro, ni fallback, mais aberrant). Skip → retry next cycle.
+    if (entryPx.gt(0)) {
+      const ratio = livePrice.div(entryPx).toNumber();
+      if (ratio < 0.5 || ratio > 2.0) {
+        console.warn(
+          `[risk-monitor] ${pos.symbol}: livePrice ${quote.price} hors sanity bounds ` +
+          `[0.5x, 2.0x] entry ${pos.entryPrice} (ratio=${ratio.toFixed(3)}) — skip cycle`,
+        );
+        return;
+      }
+    }
+
     const isLong = pos.direction === 'long' || pos.direction === 'long_call' || pos.direction === 'long_put';
 
     // Stop-loss
@@ -308,10 +324,15 @@ export class RiskMonitorService {
         // corrompu (source fallback, NaN, ≤0) on ferme à entry_price (pnl=0)
         // plutôt qu'au prix corrompu qui produirait un exit_price=0 + perte -100%.
         const priceNum = parseFloat(quote.price);
+        // 🛡️ Bug #R5 — ratio sanity bounds en complément du check Bug #M :
+        // rejette aussi une corruption non-nulle hors [0.5x, 2.0x] de l'entry.
+        const entryNum = parseFloat(pos.entryPrice);
+        const ratio = Number.isFinite(entryNum) && entryNum > 0 ? priceNum / entryNum : 1;
         const corrupt =
           (quote.source != null && quote.source.startsWith('fallback')) ||
           !Number.isFinite(priceNum) ||
-          priceNum <= 0;
+          priceNum <= 0 ||
+          ratio < 0.5 || ratio > 2.0;
         const liquidationPx = corrupt ? pos.entryPrice : quote.price;
         const closedPos = await this.paperBroker.closePosition({
           positionId: pos.id,
