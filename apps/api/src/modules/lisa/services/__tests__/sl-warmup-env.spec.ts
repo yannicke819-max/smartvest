@@ -17,6 +17,11 @@
  * privé + 14 deps DI NestJS).
  */
 
+// `export {}` — force le traitement comme module ES (scope par fichier) :
+// évite la collision d'identifiants `warmupDecision` / `WarmupDecision` avec
+// sl-warmup.spec.ts qui les déclare aussi au top-level.
+export {};
+
 // --- Reproduit resolveWarmupMin de mechanical-trading.checkStopTarget --------
 function resolveWarmupMin(rawStr: string | undefined): number {
   const raw = Number(rawStr ?? '15');

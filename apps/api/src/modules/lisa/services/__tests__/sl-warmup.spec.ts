@@ -15,6 +15,11 @@
  * reproduit EXACTEMENT le gate de checkStopTarget.
  */
 
+// `export {}` — force le traitement de ce .spec.ts comme module ES : sans ça
+// TS le compile en "script" → scope global → collision d'identifiants avec
+// sl-warmup-env.spec.ts (Bug #R2) qui déclare aussi `warmupDecision`.
+export {};
+
 const SL_WARMUP_MIN = 15;
 const SL_WARMUP_SEVERE_LOSS_PCT = -3.0;
 
