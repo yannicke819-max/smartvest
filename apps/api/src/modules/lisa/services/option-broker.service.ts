@@ -215,7 +215,11 @@ export class OptionBrokerService {
     const pnlPct =
       pos.premium_paid_usd > 0 ? (pnlUsd / Number(pos.premium_paid_usd)) * 100 : 0;
 
-    await this.supabase
+    // Bug #314 #M2 — UPDATE atomique double-clause. Le cron expire et le cron
+    // TP peuvent fire sur la même option dans le même tick 5min → sans
+    // .eq('status','open') le 2e UPDATE écrase le 1er = double comptage PnL.
+    // Pattern canonique : paper-broker.service.ts:611-622.
+    const { data: updated } = await this.supabase
       .getClient()
       .from('lisa_option_positions')
       .update({
@@ -228,7 +232,18 @@ export class OptionBrokerService {
         realized_pnl_pct: pnlPct,
         updated_at: new Date().toISOString(),
       })
-      .eq('id', positionId);
+      .eq('id', positionId)
+      .eq('status', 'open')
+      .select('*');
+
+    // 0 rows touchées = option déjà fermée par un autre acteur (cron expire vs
+    // cron TP sur le même tick) → retour silencieux pour ne pas double-compter.
+    if (!updated || updated.length === 0) {
+      this.logger.warn(
+        `[option-broker] closeOption ${positionId} race detected — already closed, skipping double-close`,
+      );
+      return;
+    }
 
     this.logger.log(
       `[option-broker] Closed ${pos.kind} ${pos.underlying} reason=${reason} P&L=$${pnlUsd.toFixed(2)} (${pnlPct.toFixed(2)}%)`,

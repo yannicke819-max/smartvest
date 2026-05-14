@@ -205,13 +205,23 @@ export class ReboundMonitorService {
         // Keep specific status (TP3_HIT/SL_HIT/TIMEOUT) for audit
       }
     }
-    const { error } = await this.supabase
+    // Bug #314 m3 — UPDATE atomique avec garde de statut. Race interne
+    // improbable (cron unique 5min) mais on borne l'UPDATE aux statuts
+    // non-terminaux pour ne jamais écraser une position déjà CLOSED /
+    // TP3_HIT / SL_HIT / TIMEOUT. Pattern aligné sur paper-broker:611-622.
+    const { data: updated, error } = await this.supabase
       .getClient()
       .from('rebound_positions')
       .update(updates)
-      .eq('id', id);
+      .eq('id', id)
+      .in('status', ['OPEN', 'TP1_HIT', 'TP2_HIT'])
+      .select('id');
     if (error) {
       this.logger.error(`[rebound-monitor] update ${id} failed: ${error.message}`);
+    } else if (!updated || updated.length === 0) {
+      this.logger.warn(
+        `[rebound-monitor] closePosition ${id} race detected — already in terminal status, skipping`,
+      );
     }
     void exitPrice; // tagué pour audit futur (column exit_price si on l'ajoute)
   }

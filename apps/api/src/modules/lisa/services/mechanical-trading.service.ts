@@ -2378,7 +2378,12 @@ export class MechanicalTradingService {
     const pnlPct = realizedPnl.div(notional).mul(100).toNumber();
 
     const now = new Date().toISOString();
-    await this.supabase.getClient()
+    // Bug #314 #M1 — UPDATE atomique double-clause. Le SELECT initial (haut de
+    // closePosition) vérifie status='open', mais sans .eq('status','open') sur
+    // l'UPDATE un autre acteur (paper-broker, kill-switch user) pouvait fermer
+    // la position entre SELECT et UPDATE → double comptage P&L + audit pollué.
+    // Pattern canonique : paper-broker.service.ts:611-622.
+    const { data: updated } = await this.supabase.getClient()
       .from('lisa_positions')
       .update({
         status: reason,
@@ -2389,7 +2394,18 @@ export class MechanicalTradingService {
         realized_pnl_pct: pnlPct,
         updated_at: now,
       })
-      .eq('id', positionId);
+      .eq('id', positionId)
+      .eq('status', 'open')
+      .select('*');
+
+    // 0 rows touchées = position déjà fermée par un autre acteur entre le
+    // SELECT et l'UPDATE → retour silencieux pour ne pas double-compter.
+    if (!updated || updated.length === 0) {
+      this.logger.warn(
+        `[MÉCANIQUE] closePosition ${positionId} race detected — already closed by another actor, skipping double-close`,
+      );
+      return;
+    }
 
     // Phase 5 — fire-and-forget : capture l'outcome contextualisé pour
     // l'apprentissage continu Lisa. Ne bloque jamais le close.
