@@ -185,9 +185,12 @@ export class LisaService {
     this.riskMonitor = new RiskMonitorService(
       this.supabase.getClient(),
       this.paperBroker,
+      // Bug #M (14/05/2026) — expose `source` au risk-monitor pour qu'il puisse
+      // skipper les prix fallback corrompus (incident SEE.LSE exit_price=0).
+      // fetchLivePrice retourne déjà { symbol, price, asOf, source } (cf. l.2676).
       async (symbol) => {
         const q = await this.fetchLivePrice(symbol);
-        return { price: q.price };
+        return { price: q.price, source: q.source };
       },
     );
   }

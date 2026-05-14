@@ -62,7 +62,12 @@ export class RiskMonitorService {
   constructor(
     private readonly supabase: SupabaseClient,
     private readonly paperBroker: PaperBrokerService,
-    private readonly fetchLivePrice: (symbol: string) => Promise<{ price: string }>,
+    /**
+     * Bug #M (14/05/2026) — La signature expose `source` pour que le
+     * risk-monitor puisse skipper les prix fallback corrompus (incident
+     * SEE.LSE -$1574 le 14/05 : exit_price=0 sur source='fallback_unknown').
+     */
+    private readonly fetchLivePrice: (symbol: string) => Promise<{ price: string; source: string }>,
   ) {}
 
   /**
@@ -162,11 +167,24 @@ export class RiskMonitorService {
     result: RiskCheckResult,
   ): Promise<void> {
     let livePrice: Decimal;
+    let quote: { price: string; source: string };
     try {
-      const quote = await this.fetchLivePrice(pos.symbol);
+      quote = await this.fetchLivePrice(pos.symbol);
       livePrice = new Decimal(quote.price);
     } catch {
       return;  // skip si prix indisponible
+    }
+
+    // 🛡️ BUG #M (14/05/2026) — garde-fou anti-prix-0 (incident SEE.LSE -$1574
+    // sur exit_price=0 : source='fallback_unknown' producer retournait sentinel
+    // '0' que le consumer interprétait comme prix réel → SL trigger faux).
+    if (quote.source && quote.source.startsWith('fallback')) {
+      console.warn(`[risk-monitor] ${pos.symbol}: source=${quote.source} (fallback) — skip cycle (no SL/TP check)`);
+      return;
+    }
+    if (livePrice.isZero() || livePrice.isNegative() || !livePrice.isFinite()) {
+      console.warn(`[risk-monitor] ${pos.symbol}: invalid livePrice ${quote.price} — skip cycle`);
+      return;
     }
 
     const entryPx = new Decimal(pos.entryPrice);
@@ -286,11 +304,20 @@ export class RiskMonitorService {
     for (const pos of openPositions) {
       try {
         const quote = await this.fetchLivePrice(pos.symbol);
+        // 🛡️ BUG #M (14/05/2026) — anti-prix-0 sur HARD KILL : si le quote est
+        // corrompu (source fallback, NaN, ≤0) on ferme à entry_price (pnl=0)
+        // plutôt qu'au prix corrompu qui produirait un exit_price=0 + perte -100%.
+        const priceNum = parseFloat(quote.price);
+        const corrupt =
+          (quote.source != null && quote.source.startsWith('fallback')) ||
+          !Number.isFinite(priceNum) ||
+          priceNum <= 0;
+        const liquidationPx = corrupt ? pos.entryPrice : quote.price;
         const closedPos = await this.paperBroker.closePosition({
           positionId: pos.id,
           reason,
-          livePrice: quote.price,
-          rationale,
+          livePrice: liquidationPx,
+          rationale: rationale + (corrupt ? ' [Bug#M-guard: closed at entry_price]' : ''),
         });
         closed.push(closedPos);
       } catch (e) {
