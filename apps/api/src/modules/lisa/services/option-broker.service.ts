@@ -257,11 +257,26 @@ export class OptionBrokerService {
     for (const opt of (opens ?? []) as OptionPositionRow[]) {
       try {
         const quote = await this.lisa.getLivePrice(opt.underlying).catch(() => null);
-        const spot = quote ? Number(quote.price) : Number(opt.entry_underlying_price);
-        // Expiration ?
+        // 🛡️ Bug #M Part 3 (#C3) — garde fallback : si le quote est corrompu
+        // (source fallback, NaN, ≤0) un spot=0 produirait intrinsic=0 → option
+        // fermée à valeur nulle = perte totale du premium.
+        const isFallback = quote != null && quote.source != null && quote.source.startsWith('fallback');
+        const priceNum = quote != null ? parseFloat(quote.price) : NaN;
+        const reliable = quote != null && !isFallback && Number.isFinite(priceNum) && priceNum > 0;
+        // Pour l'expiration : spot fiable sinon entry_underlying_price (meilleur
+        // que 0 — l'option DOIT être fermée car expirée, on ne peut pas skip).
+        const spot = reliable ? priceNum : Number(opt.entry_underlying_price);
         if (todayDate >= opt.expiry) {
           await this.closeOption(opt.id, spot, 'closed_expired');
           expired++;
+          continue;
+        }
+        // Pour le TP : skip ce cycle si pas de prix fiable (l'option reste
+        // vivante, ré-évaluée au prochain cron quand un prix fiable arrive).
+        if (!reliable) {
+          this.logger.warn(
+            `[FALLBACK_GUARD] option ${opt.id} (${opt.underlying}) TP check skip — source=${quote?.source ?? 'no_quote'}`,
+          );
           continue;
         }
         // TP ×2 premium ?
