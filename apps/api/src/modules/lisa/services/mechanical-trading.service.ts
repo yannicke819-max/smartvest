@@ -1764,9 +1764,57 @@ export class MechanicalTradingService {
     const hitTarget = tpPrice && (isLong ? currentPrice.gte(tpPrice) : currentPrice.lte(tpPrice));
 
     if (hitStop) {
-      await this.closePosition(pos.id, quote.price, 'closed_stop',
-        `[MÉCANIQUE] Stop-loss atteint ${pos.symbol} @ ${currentPrice.toFixed(4)} (stop=${pos.stopLossPrice})`);
-      return;
+      // Bug #R1 — SL warmup 15min : skip le SL PRINCIPAL sur une position
+      // fraîche (<15 min) en perte modérée (> -3%). Garde-fou catastrophique :
+      // perte sévère (≤ -3%) → SL honoré même en warmup (couvre les vraies
+      // chutes type SEE.LSE). Audit 14/05 (closed_stop bruts, 14j) : 47%
+      // surviennent <15min, 3/4 sont des stop hunts (rebond breakeven <30min).
+      //
+      // Périmètre strict (décision #314 audit) : gate UNIQUEMENT ce bloc.
+      // hitTarget + checkReactiveSignals (incl. stop réactif) restent intacts —
+      // le stop réactif est la 2e ligne de défense et déclenche plus tard sur
+      // signaux dégradés, pas sur la mèche d'ouverture.
+      const SL_WARMUP_MIN = 15;
+      const SL_WARMUP_SEVERE_LOSS_PCT = -3.0;
+      const entryTsRaw = (pos as unknown as Record<string, unknown>)['entry_timestamp'];
+      const ageMin = entryTsRaw
+        ? (Date.now() - new Date(entryTsRaw as string).getTime()) / 60_000
+        : Infinity;  // pas de timestamp → pas de warmup, SL honoré (conservateur)
+      const unrealizedPnlPct = isLong
+        ? livePx.minus(entryPx).div(entryPx).mul(100).toNumber()
+        : entryPx.minus(livePx).div(entryPx).mul(100).toNumber();
+      const inWarmupWindow = ageMin < SL_WARMUP_MIN;
+      const severeLoss = unrealizedPnlPct <= SL_WARMUP_SEVERE_LOSS_PCT;
+      const warmupActive = inWarmupWindow && !severeLoss;
+
+      if (warmupActive) {
+        // Stop hunt probable : on ne ferme PAS, position réexaminée au prochain
+        // tick (60s). Fall-through vers checkReactiveSignals (2e ligne défense).
+        this.logger.log(
+          `[SL_WARMUP] ${pos.symbol} decision=warmup_skip position_id=${pos.id} ` +
+          `age_min=${ageMin.toFixed(2)} unrealized_pnl_pct=${unrealizedPnlPct.toFixed(3)} ` +
+          `sl_price=${pos.stopLossPrice} — SL principal ignoré (position fraîche, perte modérée)`,
+        );
+      } else {
+        if (inWarmupWindow && severeLoss) {
+          // Transition warmup → SL honoré : vraie chute pendant la fenêtre
+          // warmup. Tracké en warn pour mesurer stop hunts évités vs vraies pertes.
+          this.logger.warn(
+            `[SL_WARMUP] ${pos.symbol} decision=warmup_override_severe_loss position_id=${pos.id} ` +
+            `age_min=${ageMin.toFixed(2)} unrealized_pnl_pct=${unrealizedPnlPct.toFixed(3)} ` +
+            `sl_price=${pos.stopLossPrice} — garde-fou -3% : SL honoré malgré warmup`,
+          );
+        } else {
+          this.logger.log(
+            `[SL_WARMUP] ${pos.symbol} decision=sl_honored position_id=${pos.id} ` +
+            `age_min=${ageMin.toFixed(2)} unrealized_pnl_pct=${unrealizedPnlPct.toFixed(3)} ` +
+            `— warmup terminé, SL classique appliqué`,
+          );
+        }
+        await this.closePosition(pos.id, quote.price, 'closed_stop',
+          `[MÉCANIQUE] Stop-loss atteint ${pos.symbol} @ ${currentPrice.toFixed(4)} (stop=${pos.stopLossPrice})`);
+        return;
+      }
     }
     if (hitTarget) {
       await this.closePosition(pos.id, quote.price, 'closed_target',
