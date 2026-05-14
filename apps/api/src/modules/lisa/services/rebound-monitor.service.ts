@@ -126,6 +126,19 @@ export class ReboundMonitorService {
       this.logger.warn(`[rebound-monitor] ${row.ticker}: invalid price ${live.price} — skip`);
       return;
     }
+    // 🛡️ Bug #R5 — ratio sanity bounds : rejette un prix NON-NUL corrompu
+    // (glitch EODHD) hors [0.5x, 2.0x] de l'entry. Complément incrémental au
+    // check price≤0 ci-dessus (qui ne couvre que la corruption nulle).
+    if (Number.isFinite(entry) && entry > 0) {
+      const ratio = price / entry;
+      if (ratio < 0.5 || ratio > 2.0) {
+        this.logger.warn(
+          `[rebound-monitor] ${row.ticker}: price ${live.price} hors sanity bounds ` +
+          `[0.5x, 2.0x] entry ${row.entry_price} (ratio=${ratio.toFixed(3)}) — skip`,
+        );
+        return;
+      }
+    }
 
     // SL check : prioritaire sur TP. Close totalement.
     if (price <= sl) {

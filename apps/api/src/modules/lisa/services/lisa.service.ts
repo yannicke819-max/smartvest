@@ -1776,6 +1776,22 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
           );
           continue;
         }
+        // 🛡️ Bug #R5 — gap zéro NON-FALLBACK + ratio sanity bounds : la garde
+        // #C5 ne checkait QUE la source. Un prix 0/NaN/Infinity (glitch EODHD
+        // non-sentinel) OU hors [0.5x, 2.0x] de l'entry passait → close à un
+        // prix corrompu. On rejette quelle que soit la source.
+        const recPriceNum = parseFloat(quote.price);
+        const recEntryNum = parseFloat(pos.entryPrice);
+        const recRatio = Number.isFinite(recEntryNum) && recEntryNum > 0
+          ? recPriceNum / recEntryNum
+          : 1;
+        if (!Number.isFinite(recPriceNum) || recPriceNum <= 0 || recRatio < 0.5 || recRatio > 2.0) {
+          this.logger.warn(
+            `[FALLBACK_GUARD_LISA] close recommendation ${pos.symbol} skip — ` +
+            `livePrice ${quote.price} invalide ou hors sanity bounds [0.5x, 2.0x] (entry=${pos.entryPrice})`,
+          );
+          continue;
+        }
         await this.paperBroker.closePosition({
           positionId: pos.id,
           reason: 'closed_invalidated',
@@ -1966,9 +1982,21 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
           // 🛡️ Bug #M Part 3 (#C5) — skip swap si quote fallback corrompu : ne
           // pas fermer la position weakest sur un prix sentinel '0'. On n'ouvre
           // pas la nouvelle non plus (cap toujours plein) → break, retry next cycle.
-          if (swapQuote.source && swapQuote.source.startsWith('fallback')) {
+          // 🛡️ Bug #R5 — étendu : rejette aussi un prix 0/NaN/Infinity NON-FALLBACK
+          // OU hors [0.5x, 2.0x] de l'entry du swapTarget (corruption non-sentinel).
+          const swapPriceNum = parseFloat(swapQuote.price);
+          const swapEntryNum = parseFloat(String(swapTarget.entry_price ?? ''));
+          const swapRatio = Number.isFinite(swapEntryNum) && swapEntryNum > 0
+            ? swapPriceNum / swapEntryNum
+            : 1;
+          const swapPriceInvalid =
+            !Number.isFinite(swapPriceNum) || swapPriceNum <= 0 ||
+            swapRatio < 0.5 || swapRatio > 2.0;
+          if ((swapQuote.source && swapQuote.source.startsWith('fallback')) || swapPriceInvalid) {
             this.logger.warn(
-              `[FALLBACK_GUARD_LISA] SWAP ${swapTarget.symbol} skip — source=${swapQuote.source}`,
+              `[FALLBACK_GUARD_LISA] SWAP ${swapTarget.symbol} skip — ` +
+              `source=${swapQuote.source} livePrice=${swapQuote.price} ` +
+              `(invalide ou hors sanity bounds, entry=${swapTarget.entry_price})`,
             );
             break;
           }
