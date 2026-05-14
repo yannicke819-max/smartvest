@@ -25,6 +25,7 @@ import {
   type ThesisKind,
 } from '@smartvest/ai-analyst';
 import { mapPositionRows } from '../helpers/position.mapper';
+import { isLongPosition } from '../utils/position-direction';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { PerformanceService } from '../../performance/performance.service';
 import { DecisionLogService } from './decision-log.service';
@@ -1756,7 +1757,9 @@ export class MechanicalTradingService {
     const stopPrice = pos.stopLossPrice ? new Decimal(pos.stopLossPrice) : null;
     const tpPrice = pos.takeProfitPrice ? new Decimal(pos.takeProfitPrice) : null;
 
-    const isLong = pos.direction === 'long';
+    // Bug #314 #M4 — helper centralisé : reconnaît long/long_call/long_put.
+    // Avant : `=== 'long'` strict → options gérées comme SHORT → stop/target inversés.
+    const isLong = isLongPosition(pos.direction);
     const hitStop = stopPrice && (isLong ? currentPrice.lte(stopPrice) : currentPrice.gte(stopPrice));
     const hitTarget = tpPrice && (isLong ? currentPrice.gte(tpPrice) : currentPrice.lte(tpPrice));
 
@@ -1931,7 +1934,8 @@ export class MechanicalTradingService {
     const entryPx = new Decimal(pos.entryPrice);
     if (entryPx.lte(0)) return;
 
-    const isLong = pos.direction === 'long';
+    // Bug #314 #M4 — helper centralisé : reconnaît long/long_call/long_put.
+    const isLong = isLongPosition(pos.direction);
     const pnlPct = isLong
       ? currentPrice.minus(entryPx).div(entryPx).mul(100).toNumber()
       : entryPx.minus(currentPrice).div(entryPx).mul(100).toNumber();
@@ -2279,7 +2283,8 @@ export class MechanicalTradingService {
     const exitPrice = new Decimal(livePrice);
     const entryPrice = new Decimal(pos.entry_price as string);
     const notional = new Decimal(pos.entry_notional_usd as string);
-    const isLong = (pos.direction as string) === 'long';
+    // Bug #314 #M4 — helper centralisé : reconnaît long/long_call/long_put.
+    const isLong = isLongPosition(pos.direction as string);
     const qty = new Decimal(pos.quantity as string);
     const assetClass = (pos.asset_class as string | undefined) ?? undefined;
 
