@@ -1767,6 +1767,15 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       }
       try {
         const quote = await this.fetchLivePrice(pos.symbol);
+        // 🛡️ Bug #M Part 3 (#C5) — skip si quote fallback corrompu : ne pas
+        // fermer sur un prix sentinel '0'. La recommandation Lisa sera
+        // ré-évaluée au prochain cycle quand un prix fiable sera disponible.
+        if (quote.source && quote.source.startsWith('fallback')) {
+          this.logger.warn(
+            `[FALLBACK_GUARD_LISA] close recommendation ${pos.symbol} skip — source=${quote.source}`,
+          );
+          continue;
+        }
         await this.paperBroker.closePosition({
           positionId: pos.id,
           reason: 'closed_invalidated',
@@ -1954,6 +1963,15 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         // Swap : on ferme la position weakest avant d'ouvrir la nouvelle
         try {
           const swapQuote = await this.fetchLivePrice(String(swapTarget.symbol));
+          // 🛡️ Bug #M Part 3 (#C5) — skip swap si quote fallback corrompu : ne
+          // pas fermer la position weakest sur un prix sentinel '0'. On n'ouvre
+          // pas la nouvelle non plus (cap toujours plein) → break, retry next cycle.
+          if (swapQuote.source && swapQuote.source.startsWith('fallback')) {
+            this.logger.warn(
+              `[FALLBACK_GUARD_LISA] SWAP ${swapTarget.symbol} skip — source=${swapQuote.source}`,
+            );
+            break;
+          }
           await this.paperBroker.closePosition({
             positionId: String(swapTarget.id),
             reason: 'closed_invalidated',
@@ -2491,14 +2509,25 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     for (const pos of openPositions) {
       try {
         const quote = await this.fetchLivePrice(pos.symbol);
+        // 🛡️ Bug #M Part 3 (#C2) — garde fallback : le kill-switch user est un
+        // geste de protection. Si EODHD est down, quote.price='0' (sentinel
+        // fallback_unknown) → fermerait tout à $0. On ferme à entry_price
+        // (pnl≈0) plutôt qu'au prix corrompu. Pattern risk-monitor.liquidateAll.
+        const priceNum = parseFloat(quote.price);
+        const corrupt =
+          (quote.source != null && quote.source.startsWith('fallback')) ||
+          !Number.isFinite(priceNum) ||
+          priceNum <= 0;
+        const liquidationPx = corrupt ? pos.entryPrice : quote.price;
         await this.paperBroker.closePosition({
           positionId: pos.id,
           reason: 'closed_kill',
-          livePrice: quote.price,
-          rationale: `User kill switch: ${reason}`,
+          livePrice: liquidationPx,
+          rationale: `User kill switch: ${reason}`
+            + (corrupt ? ' [Bug#M-guard: closed at entry_price]' : ''),
         });
         // Phase 5 — capture outcome (kill switch)
-        this.tradeOutcomeRecorder.recordOutcome(pos.id, quote.price, 'closed_kill')
+        this.tradeOutcomeRecorder.recordOutcome(pos.id, liquidationPx, 'closed_kill')
           .catch(() => null);
       } catch (e) {
         this.logger.error(`Kill switch close failed for ${pos.symbol}: ${String(e)}`);

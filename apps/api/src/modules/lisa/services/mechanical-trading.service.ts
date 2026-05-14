@@ -1604,11 +1604,22 @@ export class MechanicalTradingService {
         const quote = await this.lisa.getLivePrice(pos.symbol).catch(() => null);
         if (!quote) continue;
         try {
+          // 🛡️ Bug #M Part 3 (#C1) — garde fallback : si le quote est corrompu
+          // (source fallback, NaN, ≤0) on ferme à entry_price (pnl≈0) plutôt
+          // qu'au sentinel '0' qui produirait une perte maximale. Pattern aligné
+          // sur risk-monitor.liquidateAll.
+          const priceNum = parseFloat(quote.price);
+          const corrupt =
+            this.isFallbackSource(quote.source) ||
+            !Number.isFinite(priceNum) ||
+            priceNum <= 0;
+          const closePx = corrupt ? pos.entryPrice : quote.price;
           await this.closePosition(
             pos.id,
-            quote.price,
+            closePx,
             'closed_invalidated',
-            `[P4.1 KILL-SWITCH] Drawdown intraday ${drawdownPct.toFixed(2)}% > ${killDD.toFixed(2)}% — fermeture auto`,
+            `[P4.1 KILL-SWITCH] Drawdown intraday ${drawdownPct.toFixed(2)}% > ${killDD.toFixed(2)}% — fermeture auto`
+              + (corrupt ? ' [Bug#M-guard: closed at entry_price]' : ''),
           );
           closedCount++;
         } catch (e) {
@@ -2131,7 +2142,12 @@ export class MechanicalTradingService {
 
     // Pré-fetch VIX une fois pour tous les checks (évite N appels)
     const vixQuote = await this.lisa.getLivePrice('VIX').catch(() => null);
-    const vixLevel = vixQuote ? Number(vixQuote.price) : null;
+    // 🛡️ Bug #M Part 3 (#m1) — null si source fallback : un VIX corrompu
+    // fausserait les règles autonomy basées sur vix. Pattern aligné sur
+    // material-change-detector.service.ts:224.
+    const vixLevel = vixQuote && !this.isFallbackSource(vixQuote.source)
+      ? Number(vixQuote.price)
+      : null;
 
     for (const pos of positionsWithRules) {
       for (const rule of pos.autonomy_rules ?? []) {
@@ -2162,7 +2178,10 @@ export class MechanicalTradingService {
           // Exécution de l'action
           if (rule.action === 'close' || rule.action === 'take_profit') {
             const quote = await this.lisa.getLivePrice(pos.symbol).catch(() => null);
-            if (quote) {
+            // 🛡️ Bug #M Part 3 (#C4) — skip si quote fallback corrompu : ne pas
+            // fermer sur un prix sentinel '0'. La règle sera ré-évaluée au
+            // prochain cycle quand un prix fiable sera disponible.
+            if (quote && !this.isFallbackSource(quote.source)) {
               await this.closePosition(
                 pos.id,
                 quote.price,
@@ -2170,6 +2189,10 @@ export class MechanicalTradingService {
                 `AutonomyRule: ${rule.reason}`.slice(0, 500),
               );
               break; // position fermée, plus la peine d'évaluer ses autres règles
+            } else {
+              this.logger.warn(
+                `[FALLBACK_GUARD] AutonomyRule close ${pos.symbol} skip — source=${quote?.source ?? 'no_quote'}`,
+              );
             }
           } else if (rule.action === 'tighten_stop') {
             // Déplace le stop à breakeven (entry price)
@@ -2197,11 +2220,17 @@ export class MechanicalTradingService {
     if (metric === 'vix') return vixCached;
     if (metric === 'price') {
       const q = await this.lisa.getLivePrice(pos.symbol).catch(() => null);
-      return q ? Number(q.price) : null;
+      // 🛡️ Bug #M Part 3 (#m2) — null si source fallback : un prix corrompu
+      // déclencherait faussement les règles autonomy 'price'.
+      if (!q || this.isFallbackSource(q.source)) return null;
+      return Number(q.price);
     }
     if (metric === 'pnl_pct') {
       const q = await this.lisa.getLivePrice(pos.symbol).catch(() => null);
       if (!q) return null;
+      // 🛡️ Bug #M Part 3 (#m2) — null si source fallback : un pnl_pct calculé
+      // sur prix corrompu déclencherait faussement les règles autonomy.
+      if (this.isFallbackSource(q.source)) return null;
       const entry = Number(pos.entryPrice);
       const live = Number(q.price);
       const isLong = pos.direction === 'long' || pos.direction === 'long_call' || pos.direction === 'long_put';
