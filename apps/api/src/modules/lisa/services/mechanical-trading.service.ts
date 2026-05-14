@@ -1764,18 +1764,59 @@ export class MechanicalTradingService {
     const hitTarget = tpPrice && (isLong ? currentPrice.gte(tpPrice) : currentPrice.lte(tpPrice));
 
     if (hitStop) {
-      // Bug #R1 — SL warmup 15min : skip le SL PRINCIPAL sur une position
-      // fraîche (<15 min) en perte modérée (> -3%). Garde-fou catastrophique :
-      // perte sévère (≤ -3%) → SL honoré même en warmup (couvre les vraies
-      // chutes type SEE.LSE). Audit 14/05 (closed_stop bruts, 14j) : 47%
-      // surviennent <15min, 3/4 sont des stop hunts (rebond breakeven <30min).
+      // Bug #R1 — SL warmup : skip le SL PRINCIPAL sur une position fraîche
+      // (<warmupMin) en perte modérée (> catastrophicPct). Garde-fou : perte
+      // sévère (≤ catastrophicPct) → SL honoré même en warmup (couvre les
+      // vraies chutes type SEE.LSE). Audit 14/05 (closed_stop bruts, 14j) :
+      // 47% surviennent <15min, 3/4 sont des stop hunts (rebond breakeven <30min).
+      //
+      // Bug #R2 — fenêtre + seuil garde-fou paramétrables via env vars.
+      // Defaults STRICTEMENT identiques à PR #319 (15 min, -3%) : env absente
+      // = comportement inchangé. Permet le tuning post-mesure sans redéploiement.
       //
       // Périmètre strict (décision #314 audit) : gate UNIQUEMENT ce bloc.
       // hitTarget + checkReactiveSignals (incl. stop réactif) restent intacts —
       // le stop réactif est la 2e ligne de défense et déclenche plus tard sur
       // signaux dégradés, pas sur la mèche d'ouverture.
-      const SL_WARMUP_MIN = 15;
-      const SL_WARMUP_SEVERE_LOSS_PCT = -3.0;
+
+      // Bug #R2 — résolution + validation des bornes des env vars.
+      const resolveWarmupMin = (): number => {
+        const rawStr = process.env.GAINERS_SL_WARMUP_MIN;
+        const raw = Number(rawStr ?? '15');
+        if (!Number.isFinite(raw) || raw < 0) {
+          this.logger.warn(
+            `[SL_WARMUP] GAINERS_SL_WARMUP_MIN invalid (${rawStr}) — fallback 15min`,
+          );
+          return 15;
+        }
+        if (raw > 60) {
+          this.logger.warn(
+            `[SL_WARMUP] GAINERS_SL_WARMUP_MIN=${raw} suspicious — capped at 60min`,
+          );
+          return 60;
+        }
+        return raw;
+      };
+      const resolveWarmupCatastrophicPct = (): number => {
+        const rawStr = process.env.GAINERS_SL_WARMUP_CATASTROPHIC_PCT;
+        const raw = Number(rawStr ?? '-3.0');
+        if (!Number.isFinite(raw) || raw > 0) {
+          this.logger.warn(
+            `[SL_WARMUP] GAINERS_SL_WARMUP_CATASTROPHIC_PCT invalid (${rawStr}, should be negative) — fallback -3`,
+          );
+          return -3.0;
+        }
+        if (raw < -10) {
+          this.logger.warn(
+            `[SL_WARMUP] GAINERS_SL_WARMUP_CATASTROPHIC_PCT=${raw} too lenient — capped at -10`,
+          );
+          return -10;
+        }
+        return raw;
+      };
+      const SL_WARMUP_MIN = resolveWarmupMin();
+      const SL_WARMUP_SEVERE_LOSS_PCT = resolveWarmupCatastrophicPct();
+
       const entryTsRaw = (pos as unknown as Record<string, unknown>)['entry_timestamp'];
       const ageMin = entryTsRaw
         ? (Date.now() - new Date(entryTsRaw as string).getTime()) / 60_000
@@ -1786,6 +1827,9 @@ export class MechanicalTradingService {
       const inWarmupWindow = ageMin < SL_WARMUP_MIN;
       const severeLoss = unrealizedPnlPct <= SL_WARMUP_SEVERE_LOSS_PCT;
       const warmupActive = inWarmupWindow && !severeLoss;
+      // Suffixe config commun aux 3 logs [SL_WARMUP] (Bug #R2 — traçabilité).
+      const warmupCfgSuffix =
+        `warmup_min_config=${SL_WARMUP_MIN} warmup_catastrophic_pct_config=${SL_WARMUP_SEVERE_LOSS_PCT}`;
 
       if (warmupActive) {
         // Stop hunt probable : on ne ferme PAS, position réexaminée au prochain
@@ -1793,7 +1837,7 @@ export class MechanicalTradingService {
         this.logger.log(
           `[SL_WARMUP] ${pos.symbol} decision=warmup_skip position_id=${pos.id} ` +
           `age_min=${ageMin.toFixed(2)} unrealized_pnl_pct=${unrealizedPnlPct.toFixed(3)} ` +
-          `sl_price=${pos.stopLossPrice} — SL principal ignoré (position fraîche, perte modérée)`,
+          `sl_price=${pos.stopLossPrice} ${warmupCfgSuffix} — SL principal ignoré (position fraîche, perte modérée)`,
         );
       } else {
         if (inWarmupWindow && severeLoss) {
@@ -1802,13 +1846,13 @@ export class MechanicalTradingService {
           this.logger.warn(
             `[SL_WARMUP] ${pos.symbol} decision=warmup_override_severe_loss position_id=${pos.id} ` +
             `age_min=${ageMin.toFixed(2)} unrealized_pnl_pct=${unrealizedPnlPct.toFixed(3)} ` +
-            `sl_price=${pos.stopLossPrice} — garde-fou -3% : SL honoré malgré warmup`,
+            `sl_price=${pos.stopLossPrice} ${warmupCfgSuffix} — garde-fou catastrophique : SL honoré malgré warmup`,
           );
         } else {
           this.logger.log(
             `[SL_WARMUP] ${pos.symbol} decision=sl_honored position_id=${pos.id} ` +
             `age_min=${ageMin.toFixed(2)} unrealized_pnl_pct=${unrealizedPnlPct.toFixed(3)} ` +
-            `— warmup terminé, SL classique appliqué`,
+            `${warmupCfgSuffix} — warmup terminé, SL classique appliqué`,
           );
         }
         await this.closePosition(pos.id, quote.price, 'closed_stop',
