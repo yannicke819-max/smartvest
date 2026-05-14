@@ -2283,6 +2283,8 @@ export class TopGainersScannerService implements OnModuleInit {
           positionPct,
           positionNotionalUsd,
           cashReservePct,
+          // Bug #314 #M3 — propage le cap pour l'ouverture atomique anti-race.
+          maxOpenPositions: maxOpen,
         },
         pWinResult, // PR #4 — pWin metrics persistés via paper_trades
       ).catch((e) => {
@@ -2693,6 +2695,9 @@ export class TopGainersScannerService implements OnModuleInit {
       positionPct: number;
       positionNotionalUsd: number;
       cashReservePct: number;
+      /** Bug #314 #M3 — cap positions, propagé à openPositionDirect pour
+       *  ouverture atomique anti-race scanner/autopilot. */
+      maxOpenPositions?: number;
     },
     // PR #4 — pWin metrics persistés dans paper_trades pour boucle apprentissage.
     pWinMeta?: {
@@ -2768,6 +2773,11 @@ export class TopGainersScannerService implements OnModuleInit {
         takeProfitPrice: tpPrice,
         horizonDays: 1,
         source: 'scanner_top_gainers',
+        // Bug #314 #M3 — ouverture atomique anti-race scanner/autopilot :
+        // si fourni, openPositionDirect passe par try_open_position (check
+        // cap + insert sous verrou advisory). Absent (caller legacy/test) →
+        // INSERT direct inchangé.
+        maxOpenPositions: overrides?.maxOpenPositions,
       });
 
       this.logger.log(

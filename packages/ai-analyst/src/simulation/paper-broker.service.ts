@@ -448,7 +448,10 @@ export class PaperBrokerService {
       updatedAt: now,
     };
 
-    const { error: insErr } = await this.supabase.from('lisa_positions').insert({
+    // Payload d'insertion — clés snake_case = colonnes lisa_positions. Partagé
+    // entre l'INSERT direct (legacy) et la fonction atomique try_open_position
+    // (Bug #314 #M3), qui le reçoit en JSONB.
+    const insertPayload = {
       id: position.id,
       portfolio_id: position.portfolioId,
       proposal_id: null,
@@ -470,7 +473,33 @@ export class PaperBrokerService {
       venue_fee_detail: { entry: entryFeeBreakdown, source: cmd.source ?? 'direct' },
       created_at: position.createdAt,
       updated_at: position.updatedAt,
-    });
+    };
+
+    // Bug #314 #M3 — Si maxOpenPositions fourni : ouverture atomique via la
+    // fonction DB try_open_position (check cap + insert sous verrou advisory
+    // scopé portfolio). Élimine la race scanner/autopilot qui pouvait dépasser
+    // le cap. Sinon : INSERT direct, comportement legacy inchangé.
+    if (cmd.maxOpenPositions != null) {
+      const { data: newId, error: rpcErr } = await this.supabase.rpc('try_open_position', {
+        p_portfolio_id: position.portfolioId,
+        p_max_open: cmd.maxOpenPositions,
+        p_payload: insertPayload,
+      });
+      if (rpcErr) {
+        throw new Error(`openPositionDirect try_open_position RPC failed: ${rpcErr.message}`);
+      }
+      if (newId == null) {
+        // Cap déjà atteint (un autre acteur a pris le dernier slot entre le
+        // pré-check du caller et cet appel). Throw reconnaissable : le caller
+        // (scanner/autopilot) catch déjà openPositionDirect → log + skip.
+        throw new Error(
+          `POSITION_CAP_REACHED: portfolio ${position.portfolioId} already at maxOpenPositions=${cmd.maxOpenPositions} (symbol=${cmd.symbol})`,
+        );
+      }
+      return position;
+    }
+
+    const { error: insErr } = await this.supabase.from('lisa_positions').insert(insertPayload);
     if (insErr) throw new Error(`openPositionDirect INSERT failed: ${insErr.message}`);
 
     return position;
