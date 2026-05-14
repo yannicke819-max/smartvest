@@ -138,6 +138,14 @@ export const OpenPositionDirectCommand = z.object({
   horizonDays: z.number().int().positive(),
   /** Source identifiable pour audit (ex: "scanner_top_gainers") */
   source: z.string().optional(),
+  /**
+   * Bug #314 #M3 — Si fourni, l'INSERT passe par la fonction atomique
+   * `try_open_position` (check cap + insert sous verrou advisory scopé
+   * portfolio) au lieu d'un INSERT direct. Protège contre la race
+   * scanner/autopilot qui pouvait dépasser le cap de positions ouvertes.
+   * Absent → INSERT direct, comportement legacy inchangé.
+   */
+  maxOpenPositions: z.number().int().positive().optional(),
 });
 export type OpenPositionDirectCommand = z.infer<typeof OpenPositionDirectCommand>;
 
