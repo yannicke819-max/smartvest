@@ -2382,9 +2382,15 @@ export class TopGainersScannerService implements OnModuleInit {
       if (ageMs < STAGNANT_MIN_AGE_MS) continue;
       const quote = await this.lisa.getLivePrice(String(pos.symbol)).catch(() => null);
       if (!quote || !quote.price) continue;
+      // 🛡️ BUG #M (cohérence) — skip fallback source pour la rotation stagnante
+      // (incident SEE.LSE : source='fallback_unknown' renvoie sentinel '0').
+      if (quote.source && quote.source.startsWith('fallback')) {
+        this.logger.warn(`[stagnant-rotation] ${pos.symbol}: source=${quote.source} → skip`);
+        continue;
+      }
       const livePrice = parseFloat(quote.price);
       const entry = parseFloat(String(pos.entry_price));
-      if (!Number.isFinite(livePrice) || !Number.isFinite(entry) || entry <= 0) continue;
+      if (!Number.isFinite(livePrice) || livePrice <= 0 || !Number.isFinite(entry) || entry <= 0) continue;
       const pnlPct = ((livePrice - entry) / entry) * 100;
       if (Math.abs(pnlPct) > STAGNANT_PNL_PCT) continue;
       stagnants.push({ pos, pnlPct, ageMs, currentPrice: livePrice });
@@ -2521,6 +2527,14 @@ export class TopGainersScannerService implements OnModuleInit {
       if (!quote || !quote.price) {
         this.logger.warn(
           `[force-close] ${portfolioId.slice(0, 8)} ${pos.symbol}: no live price — skip (will retry next cycle)`,
+        );
+        continue;
+      }
+      // 🛡️ BUG #M (cohérence) — skip fallback source pour le force-close before
+      // close (incident SEE.LSE : source='fallback_unknown' renvoie sentinel '0').
+      if (quote.source && quote.source.startsWith('fallback')) {
+        this.logger.warn(
+          `[force-close] ${portfolioId.slice(0, 8)} ${pos.symbol}: source=${quote.source} (fallback) → skip`,
         );
         continue;
       }
