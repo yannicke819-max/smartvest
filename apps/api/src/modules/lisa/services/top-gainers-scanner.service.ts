@@ -50,7 +50,10 @@ import {
   type PersistenceResult,
   isWithinSession,
   computeVenueFeeDetail,
+  filterTickersForFetch,
+  formatFilterLog,
 } from '@smartvest/ai-analyst';
+import { TickerBlacklistService } from './ticker-blacklist.service';
 import {
   EARLY_RETURN_REASONS,
   type EarlyReturnReason,
@@ -521,6 +524,13 @@ export class TopGainersScannerService implements OnModuleInit {
      * Quand undefined → veto check skip silently (legacy behavior).
      */
     private readonly macroVeto?: MacroVetoService,
+    /**
+     * Bug #R9 / #R10 — Universe pre-filter + auto-blacklist 404 strikes.
+     * Optional pour back-compat tests historiques (qui instancient le scanner
+     * sans blacklist). Quand undefined → pre-filter ne drop que par session
+     * (toujours bénéfique), pas d'auto-blacklist dynamique.
+     */
+    private readonly tickerBlacklist?: TickerBlacklistService,
   ) {}
 
   /**
@@ -1170,11 +1180,47 @@ export class TopGainersScannerService implements OnModuleInit {
       return true;
     });
 
+    // Bug #R9 / #R10 — Pre-filter universe (session-closed + dead-ticker
+    // blacklist) AVANT de retourner la liste partagée. Tout caller en aval
+    // (shadow batch, scanPortfolio, snapshot endpoint) reçoit déjà une liste
+    // tradable, ce qui coupe les fetches EODHD intraday inutiles dans
+    // `enrichShadowCandidate` / `mtfPersistence.analyze`.
+    //
+    // Mesure prod 15/05/2026 : ~23k calls EODHD/jour gaspillés sur Asia hors
+    // session + ~11.5k/jour sur 9 tickers .NSE morts. Le pre-filter coupe
+    // ces deux flux sans modifier le comportement trading sur les tickers
+    // vivants et marchés ouverts.
+    //
+    // Gate sur `tickerBlacklist` injecté (présent en prod via LisaModule,
+    // absent dans 9 specs historiques qui instancient le scanner sans cette
+    // dépendance optionnelle). Sans le service injecté → pre-filter no-op,
+    // back-compat préservée. La gate via env (GAINERS_PRE_FETCH_FILTER_ENABLED)
+    // est volontairement omise pour éviter une 3e source de vérité ; un kill
+    // d'urgence reste possible en setting GAINERS_NSE_BLACKLIST_ENABLED=false
+    // + en redémarrant sans le service.
+    let finalCandidates = deduped;
+    if (this.tickerBlacklist) {
+      const blacklist = this.tickerBlacklist;
+      const symbols = deduped.map((c) => c.symbol);
+      const filter = filterTickersForFetch(symbols, {
+        now,
+        isDynamicallyBlacklisted: (s: string) => blacklist.isBlacklisted(s),
+      });
+      const keptSet = new Set(filter.kept);
+      finalCandidates = deduped.filter((c) => keptSet.has(c.symbol));
+      const skippedTotal = deduped.length - finalCandidates.length;
+      if (skippedTotal > 0) {
+        // multiplier ~1 (un mtfPersistence.analyze ≈ 1 fetch intraday EODHD par
+        // candidat dans le shadow batch). Conservateur — le coût réel est >=1.
+        this.logger.log(`[top-gainers] ${formatFilterLog(filter, 1)}`);
+      }
+    }
+
     // P19s++ — Cache fill (TTL 15min). Permet aux UI polls et au cron scanner
     // de partager la même fetch sans re-frapper EODHD.
-    this.allCandidatesCache = { candidates: deduped, asOf: now.getTime() };
-    this.recordFetchAllCandidates(deduped.length, false);
-    return deduped;
+    this.allCandidatesCache = { candidates: finalCandidates, asOf: now.getTime() };
+    this.recordFetchAllCandidates(finalCandidates.length, false);
+    return finalCandidates;
   }
 
   /**

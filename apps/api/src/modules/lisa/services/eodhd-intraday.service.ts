@@ -1,6 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../supabase/supabase.service';
+import { TickerBlacklistService } from './ticker-blacklist.service';
 
 /**
  * EodhdIntradayService — récupère les bougies intraday OHLCV depuis EODHD
@@ -69,6 +70,13 @@ export class EodhdIntradayService {
   constructor(
     private readonly config: ConfigService,
     private readonly supabase: SupabaseService,
+    /**
+     * Bug #R10 — Optionnel pour rester compat avec les 100+ specs qui
+     * instancient `new EodhdIntradayService(config, supabase)` sans
+     * blacklist. Quand absent, les fetches procèdent normalement (legacy
+     * behavior). Quand présent, 404 enregistre un strike + check pré-fetch.
+     */
+    @Optional() private readonly blacklist?: TickerBlacklistService,
   ) {
     // P19j — Boot log to confirm key configuration in prod (essential debug
     // signal when fallback chain doesn't seem to fire). Mask all but last 4
@@ -220,6 +228,14 @@ export class EodhdIntradayService {
     // P19k — Normaliser le suffix avant cache key + URL pour cohérence.
     const normalized = this.normalizeForEodhdIntraday(eodhdTicker);
 
+    // Bug #R10 — Short-circuit si ticker blacklisté (statique ou auto). Évite
+    // les calls EODHD certains de retourner 404 / empty. Le caller obtient
+    // `null` (même contrat qu'un fetch raté), comportement transparent.
+    if (this.blacklist?.isBlacklisted(eodhdTicker)) {
+      this.logger.debug(`[eodhd] ${eodhdTicker} skipped (blacklist)`);
+      return null;
+    }
+
     // PR #284 — Mode range explicite : skip cache (range-specific), guard
     // retention 5 jours, désactive le slice(-count) (on prend tout le range).
     const useRange = options?.fromTs != null || options?.toTs != null;
@@ -275,6 +291,10 @@ export class EodhdIntradayService {
         const body = await res.text().catch(() => '');
         this.logger.warn(`[eodhd] ${eodhdTicker} HTTP ${res.status} (${latencyMs}ms) body=${body.slice(0, 100)}`);
         this.logCall({ ticker: eodhdTicker, success: false, statusCode: res.status, latencyMs, errorMessage: `HTTP_${res.status}` });
+        // Bug #R10 — Enregistre un strike 404 pour auto-blacklist (3 strikes / 24h).
+        if (res.status === 404) {
+          this.blacklist?.recordStrike(eodhdTicker, 'HTTP_404');
+        }
         return null;
       }
 

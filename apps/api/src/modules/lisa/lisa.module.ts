@@ -13,6 +13,7 @@ import { RealtimePriceService } from './services/realtime-price.service';
 import { EodhdEnrichmentService } from './services/eodhd-enrichment.service';
 import { EodhdTechnicalService } from './services/eodhd-technical.service';
 import { EodhdIntradayService } from './services/eodhd-intraday.service';
+import { TickerBlacklistService } from './services/ticker-blacklist.service';
 import { ExchangeHoursService } from './services/exchange-hours.service';
 import { BinanceMarketService } from './services/binance-market.service';
 import { EodhdMacroService } from './services/eodhd-macro.service';
@@ -74,6 +75,8 @@ import { SignalForwardTrackerService } from '../gainers-scanner/automations/sign
     EodhdEnrichmentService,
     EodhdTechnicalService,
     EodhdIntradayService,
+    // Bug #R9 / #R10 — Universe pre-filter + auto-blacklist 404 strikes
+    TickerBlacklistService,
     ExchangeHoursService,
     BinanceMarketService,
     EodhdMacroService,
