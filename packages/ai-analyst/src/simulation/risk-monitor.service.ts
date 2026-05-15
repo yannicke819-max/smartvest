@@ -19,6 +19,7 @@ import Decimal from 'decimal.js';
 import { createHash } from 'node:crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { RiskConstraints } from '../types';
+import { evaluateWarmup, formatWarmupLog } from './sl-warmup.helper';
 import type { PaperBrokerService } from './paper-broker.service';
 import type { PaperPosition, PortfolioSnapshot } from './types';
 
@@ -213,6 +214,40 @@ export class RiskMonitorService {
         ? livePrice.lessThanOrEqualTo(stopPx)
         : livePrice.greaterThanOrEqualTo(stopPx);
       if (triggered) {
+        // 🛡️ Bug #R6 — applique le warmup SL via le helper partagé. Avant ce
+        // fix, ce chemin (risk-monitor) court-circuitait le warmup R1 qui ne
+        // vivait que dans mechanical-trading.checkStopTarget → 3 leaks
+        // asia_equity observés la nuit 14→15/05 (-$110, format de exit_reason
+        // distinct : "Stop-loss X triggered at live price Y").
+        const warmup = evaluateWarmup(
+          pos.entryTimestamp,
+          Number(pos.entryPrice),
+          livePrice.toNumber(),
+          isLong,
+          { logger: console },
+        );
+        if (!warmup.shouldHonorStop) {
+          console.log(
+            formatWarmupLog(warmup, {
+              symbol: pos.symbol,
+              positionId: pos.id,
+              service: 'risk-monitor',
+              slPrice: pos.stopLossPrice,
+            }) + ' — SL ignoré (position fraîche, perte modérée)',
+          );
+          return;  // skip ce cycle, retry au prochain
+        }
+        const log = formatWarmupLog(warmup, {
+          symbol: pos.symbol,
+          positionId: pos.id,
+          service: 'risk-monitor',
+          slPrice: pos.stopLossPrice,
+        });
+        if (warmup.reason === 'warmup_override_severe_loss') {
+          console.warn(log + ' — garde-fou catastrophique : SL honoré malgré warmup');
+        } else {
+          console.log(log);
+        }
         await this.paperBroker.closePosition({
           positionId: pos.id,
           reason: 'closed_stop',
