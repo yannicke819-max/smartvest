@@ -52,6 +52,8 @@ import { resolveTpSlPcts } from './tpsl-resolver';
 import { LisaCircuitBreakerService } from './circuit-breaker.service';
 import { SanityR5Service } from './sanity-r5.service';
 import { Qw3WarmupExtendedService } from '../quick-wins/qw-3-warmup-extended.service';
+// Phase 5 N2 — Kelly fractional sizing per asset_class
+import { AssetClassKellyConfigService } from './asset-class-kelly-config.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types internes
@@ -194,6 +196,7 @@ export class MechanicalTradingService {
     private readonly circuitBreaker: LisaCircuitBreakerService,
     private readonly sanityR5: SanityR5Service,
     private readonly qw3Warmup: Qw3WarmupExtendedService,
+    private readonly assetClassKelly: AssetClassKellyConfigService,
   ) {}
 
   /**
@@ -984,7 +987,23 @@ export class MechanicalTradingService {
 
       // Taille de position (trajectoire + momentum)
       // En hyper_active, effectiveMaxPositionPct cape à 25 % (cf. ci-dessus).
-      const maxNotional = capitalUsd.mul(effectiveMaxPositionPct).div(100).mul(sizingMultiplier).mul(qwSizingMultiplier);
+      //
+      // Phase 5 N2 — Kelly fractional sizing override par asset_class :
+      // si la matrice Kelly retourne un notional pour cette classe (edge positif
+      // détecté, sample_size >= 30), on l utilise comme BASE en lieu et place du
+      // calcul capital × pct. Les multipliers QW#15 / QW#18 / directive sizing
+      // s appliquent ENSUITE en aval pour booster / couper sur cette base.
+      const kellyNotional = this.assetClassKelly.getNotionalUsd(target.assetClass);
+      const baseNotional = kellyNotional !== null
+        ? new Decimal(kellyNotional)
+        : capitalUsd.mul(effectiveMaxPositionPct).div(100);
+      if (kellyNotional !== null) {
+        const defaultBase = capitalUsd.mul(effectiveMaxPositionPct).div(100);
+        this.logger.log(
+          `[Kelly] ${target.symbol} (${target.assetClass}) base notional override: $${kellyNotional.toFixed(0)} (vs default $${defaultBase.toFixed(0)})`,
+        );
+      }
+      const maxNotional = baseNotional.mul(sizingMultiplier).mul(qwSizingMultiplier);
       // Cap "first wave" : si on a déjà ouvert près de cycleNotionalCap
       // dans ce cycle, on réduit le notional restant pour ne pas dépasser.
       const remainingCycleBudget = cycleNotionalCap.minus(cycleNotionalUsed);

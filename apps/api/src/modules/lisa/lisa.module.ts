@@ -86,6 +86,9 @@ import { AssetClassTpSlConfigService } from './services/asset-class-tpsl-config.
 // Phase 5 N1 PR-3+PR-4 — circuit breaker + sanity R5 hotfix
 import { LisaCircuitBreakerService } from './services/circuit-breaker.service';
 import { SanityR5Service } from './services/sanity-r5.service';
+// Phase 5 N2 — Kelly fractional sizing per asset_class
+import { AssetClassKellyConfigService } from './services/asset-class-kelly-config.service';
+import { KellyRecomputeService } from './services/kelly-recompute.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule, BotLabModule, GainersModule],
@@ -192,6 +195,9 @@ import { SanityR5Service } from './services/sanity-r5.service';
     Qw47LseSkipService,
     LisaCircuitBreakerService,
     SanityR5Service,
+    // Phase 5 N2 — Kelly fractional sizing (lecture cache + worker cron horaire)
+    AssetClassKellyConfigService,
+    KellyRecomputeService,
   ],
   exports: [
     LisaService,
