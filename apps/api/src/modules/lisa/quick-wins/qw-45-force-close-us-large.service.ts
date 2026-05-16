@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
 import { SupabaseService } from '../../supabase/supabase.service';
@@ -36,6 +36,13 @@ export class Qw45ForceCloseUsLargeService {
   constructor(
     private readonly config: ConfigService,
     private readonly supabase: SupabaseService,
+    // forwardRef pour casser le cycle DI : MechanicalTradingService transite par
+    // LisaService → ... → re-touche un provider du même module à l'init.
+    // Sans forwardRef, Nest reçoit undefined à l'index [2] et l'app crashe au boot
+    // (production crash loop observé sur PR #332). Le forwardRef diffère la
+    // résolution jusqu'au premier appel runtime, ce qui suffit (le cron @Cron
+    // ne tire forceClosePosition qu'à 19:45 UTC en Lun-Ven).
+    @Inject(forwardRef(() => MechanicalTradingService))
     private readonly mechanicalTrading: MechanicalTradingService,
   ) {
     this.enabled = (this.config.get<string>('QW45_FORCE_CLOSE_US_LARGE_ENABLED') ?? 'true') === 'true';
