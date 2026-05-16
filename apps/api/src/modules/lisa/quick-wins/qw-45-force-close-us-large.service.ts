@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
 import { SupabaseService } from '../../supabase/supabase.service';
+import { MechanicalTradingService } from '../services/mechanical-trading.service';
 
 /**
  * QW#45 — Force-close us_equity_large pre-AH (19:45 UTC = 21:45 Paris été / 20:45 hiver).
@@ -10,21 +11,20 @@ import { SupabaseService } from '../../supabase/supabase.service';
  * habitude de retracer sur l'open suivant.
  *
  * Cron interne NestJS — pas dans la cascade pipeline. À 19:45 UTC les jours
- * de semaine, sélectionne les positions us_equity_large open et les ferme
- * avec exit_reason='pre_ah_force_close'.
+ * de semaine, sélectionne les positions us_equity_large open et délègue chaque
+ * fermeture à MechanicalTradingService.forceClosePosition().
  *
- * Live price fetch : laissé au cycle naturel (la position devient elligible
- * au prochain tick de scanner — pattern conservateur, évite couplage tight
- * à un service de quote spécifique).
+ * La délégation à forceClosePosition garantit (vs un UPDATE direct) :
+ *  - fetch livePrice + skip si fallback / prix <= 0
+ *  - calcul fees IBKR Pro + slippage 5 bps via computeRealisticFee
+ *  - sanity R5 (exit_price ratio, pnl_pct guard)
+ *  - guard MIN_NET_PROFIT_USD (ne matérialise pas un fake-TP)
+ *  - UPDATE atomique double-clause + race detection
+ *  - tradeOutcomeRecorder fire-and-forget
  *
- * Implémentation : on flag les positions via update atomique `force_close_pending=true`
- * sur stop_loss_price (champ existant), ce qui les fait fermer au prochain
- * tick checkStopTarget. Sans schéma additionnel, on utilise le marker
- * exit_reason côté audit dans decision_log.
- *
- * Note : si une logique force_close_before_close existe déjà côté gainers
- * (cf. gainers_force_close_before_close_enabled), elle reste indépendante.
- * QW#45 cible spécifiquement les positions Lisa mécanique us_equity_large.
+ * Distinction analytics : status='closed_target' (pour matérialiser le PnL
+ * via le pipeline standard) + exit_reason='pre_ah_force_close' (pour filtrer
+ * dans le reporting "vrais TP" vs "force-close pré-AH").
  */
 @Injectable()
 export class Qw45ForceCloseUsLargeService {
@@ -36,6 +36,7 @@ export class Qw45ForceCloseUsLargeService {
   constructor(
     private readonly config: ConfigService,
     private readonly supabase: SupabaseService,
+    private readonly mechanicalTrading: MechanicalTradingService,
   ) {
     this.enabled = (this.config.get<string>('QW45_FORCE_CLOSE_US_LARGE_ENABLED') ?? 'true') === 'true';
     this.utcHour = Number.parseInt(this.config.get<string>('QW45_FORCE_CLOSE_UTC_HOUR') ?? '19', 10);
@@ -43,9 +44,8 @@ export class Qw45ForceCloseUsLargeService {
   }
 
   /**
-   * Cron Lun-Ven 19:45 UTC. Le pattern est figé sur 19:45 ; les env vars
-   * UTC_HOUR / UTC_MINUTE sont conservés pour la lecture / les tests / l'audit
-   * et pour permettre un override via SET_CRON_EXPRESSION ultérieur si besoin.
+   * Cron Lun-Ven 19:45 UTC. Le pattern est figé par décorateur ; les env vars
+   * UTC_HOUR / UTC_MINUTE sont conservés pour la lecture / les tests / l'audit.
    */
   @Cron('45 19 * * 1-5', { timeZone: 'UTC' })
   async forceCloseUsLargePositions(): Promise<void> {
@@ -53,22 +53,17 @@ export class Qw45ForceCloseUsLargeService {
       this.logger.debug('QW#45 disabled — skip cron force-close');
       return;
     }
-    const now = new Date();
-    if (now.getUTCHours() !== this.utcHour || now.getUTCMinutes() !== this.utcMinute) {
-      // L'env override n'est pas réellement appliqué par @Cron (litéral).
-      // Ce check protège contre un cron déclenché à une autre minute via test
-      // (sécurité supplémentaire ; production runtime ne devrait jamais hit).
-    }
     if (!this.supabase.isReady()) return;
 
     try {
       const { data, error } = await this.supabase
         .getClient()
         .from('lisa_positions')
-        .select('id, symbol, portfolio_id')
+        .select('id, symbol')
         .eq('asset_class', 'us_equity_large')
         .eq('status', 'open')
         .limit(500);
+
       if (error) {
         this.logger.warn(`QW_45 select open us_large failed: ${error.message}`);
         return;
@@ -79,23 +74,21 @@ export class Qw45ForceCloseUsLargeService {
         return;
       }
 
-      const ids = rows.map((r: { id: string }) => r.id);
-      const { error: updErr } = await this.supabase
-        .getClient()
-        .from('lisa_positions')
-        .update({
-          status: 'closed_target',
-          exit_reason: 'pre_ah_force_close',
-          updated_at: new Date().toISOString(),
-        })
-        .in('id', ids)
-        .eq('status', 'open');
-
-      if (updErr) {
-        this.logger.warn(`QW_45 force-close update failed: ${updErr.message}`);
-        return;
+      this.logger.log(`QW#45 force-closing ${rows.length} us_equity_large position(s) pre-AH...`);
+      let success = 0;
+      let skipped = 0;
+      for (const row of rows) {
+        try {
+          await this.mechanicalTrading.forceClosePosition(row.id, 'pre_ah_force_close');
+          success += 1;
+        } catch (err) {
+          skipped += 1;
+          this.logger.warn(
+            `QW_45 force-close ${row.symbol} (${row.id}) failed: ${(err as Error).message}`,
+          );
+        }
       }
-      this.logger.log(`QW#45 force-closed ${rows.length} us_equity_large position(s) pre-AH`);
+      this.logger.log(`QW#45 cron done : ${success} closed, ${skipped} skipped/failed`);
     } catch (err) {
       this.logger.warn(`QW_45 cron exception: ${(err as Error).message}`);
     }

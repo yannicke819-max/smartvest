@@ -2381,6 +2381,7 @@ export class MechanicalTradingService {
     livePrice: string,
     reason: 'closed_stop' | 'closed_target' | 'closed_invalidated',
     rationale: string,
+    exitReasonOverride?: string,
   ): Promise<void> {
     const { data: pos } = await this.supabase.getClient()
       .from('lisa_positions')
@@ -2523,7 +2524,7 @@ export class MechanicalTradingService {
         status: reason,
         exit_price: exitPrice.toFixed(10),
         exit_timestamp: now,
-        exit_reason: reason,
+        exit_reason: exitReasonOverride ?? reason,
         realized_pnl_usd: realizedPnl.toFixed(2),
         realized_pnl_pct: pnlPct,
         updated_at: now,
@@ -2592,6 +2593,61 @@ export class MechanicalTradingService {
     }).catch(() => { /* non-blocking */ });
 
     this.logger.log(`[MÉCANIQUE] ${(pos.portfolio_id as string).slice(0, 8)} — CLOSE ${pos.direction} ${pos.symbol} @ ${exitPrice.toFixed(4)} · PnL ${realizedPnl.toFixed(2)} USD (${pnlPct.toFixed(2)}%)`);
+  }
+
+  /**
+   * QW#45 — Force-close publique appelée par cron quick-wins/qw-45-force-close-us-large.
+   *
+   * Réutilise toute la chaîne de closePosition (fees IBKR + sanity R5 + race
+   * detection + outcome recorder) en injectant un exit_reason custom. Si live
+   * price indisponible, fallback source détectée, ou prix <= 0 : SKIP la
+   * position (log warn, pas de fermeture aveugle).
+   *
+   * Sécurité : la guard MIN_NET_PROFIT_USD de closePosition s'applique aussi
+   * ici. Si le net PnL prévu est négatif sous seuil, la position est gardée
+   * ouverte et re-évaluée au prochain cycle (comportement voulu : ne jamais
+   * matérialiser une perte sur un fake-TP, même en force-close).
+   */
+  async forceClosePosition(positionId: string, exitReasonOverride: string): Promise<void> {
+    const { data: pos, error } = await this.supabase.getClient()
+      .from('lisa_positions')
+      .select('id, symbol, status')
+      .eq('id', positionId)
+      .eq('status', 'open')
+      .maybeSingle();
+
+    if (error) {
+      this.logger.warn(`[QW#45_FORCE_CLOSE] select failed for ${positionId}: ${error.message}`);
+      return;
+    }
+    if (!pos) {
+      this.logger.debug(`[QW#45_FORCE_CLOSE] ${positionId} already closed or not found — skip`);
+      return;
+    }
+
+    const symbol = pos.symbol as string;
+    const quote = await this.lisa.getLivePrice(symbol).catch(() => null);
+
+    if (!quote || Number(quote.price) <= 0) {
+      this.logger.warn(
+        `[QW#45_FORCE_CLOSE] ${symbol} positionId=${positionId} — livePrice null or <=0 (${quote?.price}), skip force-close`,
+      );
+      return;
+    }
+    if (this.isFallbackSource(quote.source)) {
+      this.logger.warn(
+        `[QW#45_FORCE_CLOSE] ${symbol} positionId=${positionId} — fallback source=${quote.source}, skip force-close (prix non fiable)`,
+      );
+      return;
+    }
+
+    await this.closePosition(
+      positionId,
+      quote.price,
+      'closed_target',
+      `[QW#45] ${exitReasonOverride}`,
+      exitReasonOverride,
+    );
   }
 
   /**
