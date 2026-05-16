@@ -97,7 +97,7 @@ export class EodhdIntradayService {
     return k && k !== 'demo' ? k : null;
   }
 
-  private logCall(row: { ticker: string; success: boolean; statusCode?: number; latencyMs?: number; errorMessage?: string }): void {
+  private logCall(row: { ticker: string; success: boolean; statusCode?: number; latencyMs?: number; errorMessage?: string; priceUsd?: number | null }): void {
     (async () => {
       try {
         await this.supabase.getClient().from('eodhd_request_log').insert({
@@ -107,6 +107,9 @@ export class EodhdIntradayService {
           success: row.success,
           status_code: row.statusCode ?? null,
           latency_ms: row.latencyMs ?? null,
+          // Bug #R12 — record parsed price for prix-vs-PnL audits.
+          // Aligned with lisa.service.ts logger (live_price/market_snapshot/yahoo).
+          price_usd: row.priceUsd ?? null,
           called_by: 'intraday',
           error_message: row.errorMessage ?? null,
         });
@@ -299,10 +302,12 @@ export class EodhdIntradayService {
       }
 
       const data = await res.json() as Array<Record<string, unknown>>;
-      this.logCall({ ticker: eodhdTicker, success: true, statusCode: res.status, latencyMs });
 
       if (!Array.isArray(data) || data.length === 0) {
         this.logger.debug(`[eodhd] ${eodhdTicker} empty response (${latencyMs}ms)`);
+        // Bug #R12 — log empty response with success=true (HTTP 200, no payload)
+        // distinguishable from parsed-price rows by price_usd IS NULL.
+        this.logCall({ ticker: eodhdTicker, success: true, statusCode: res.status, latencyMs });
         return null;
       }
 
@@ -322,6 +327,17 @@ export class EodhdIntradayService {
       // les candles utiles au caller). Le serveur EODHD a déjà restreint via
       // les query params from/to.
       const candles = useRange ? allCandles : allCandles.slice(-count);
+
+      // Bug #R12 — log AFTER parse so price_usd carries the last close
+      // (debloque C45 mesure "réponse vide intraday non-404" + audit prix vs PnL).
+      const lastClose = candles.length > 0 ? candles[candles.length - 1].close : null;
+      this.logCall({
+        ticker: eodhdTicker,
+        success: true,
+        statusCode: res.status,
+        latencyMs,
+        priceUsd: lastClose != null && Number.isFinite(lastClose) && lastClose > 0 ? lastClose : null,
+      });
 
       // PR #285 — rawCount = nb candles AVANT filter close>0 ; requestedSymbol
       // = ticker effectivement envoyé dans l'URL EODHD (peut différer de
@@ -440,9 +456,11 @@ export class EodhdIntradayService {
         return null;
       }
       const data = (await res.json()) as Array<Record<string, unknown>>;
-      this.logCall({ ticker: normalized, success: true, statusCode: res.status, latencyMs });
-      if (!Array.isArray(data) || data.length === 0) return null;
-      return data
+      if (!Array.isArray(data) || data.length === 0) {
+        this.logCall({ ticker: normalized, success: true, statusCode: res.status, latencyMs });
+        return null;
+      }
+      const ticks = data
         .map<RawTick>((d) => {
           const tick: RawTick = {
             timestamp: typeof d.timestamp === 'number' ? d.timestamp : Number(d.timestamp ?? 0),
@@ -456,6 +474,16 @@ export class EodhdIntradayService {
           return tick;
         })
         .filter((t) => t.price > 0 && t.timestamp > 0);
+      // Bug #R12 — log AFTER parse so price_usd carries the last tick price.
+      const lastTickPrice = ticks.length > 0 ? ticks[ticks.length - 1].price : null;
+      this.logCall({
+        ticker: normalized,
+        success: true,
+        statusCode: res.status,
+        latencyMs,
+        priceUsd: lastTickPrice != null && Number.isFinite(lastTickPrice) && lastTickPrice > 0 ? lastTickPrice : null,
+      });
+      return ticks;
     } catch (e) {
       this.logger.debug(`[eodhd:ticks] ${normalized} fetch error: ${String(e).slice(0, 80)}`);
       return null;
