@@ -48,6 +48,10 @@ import { QuickWinsPipelineService } from '../quick-wins';
 // Phase 5 N1 PR-2 — matrice TP/SL par asset_class
 import { AssetClassTpSlConfigService } from './asset-class-tpsl-config.service';
 import { resolveTpSlPcts } from './tpsl-resolver';
+// Phase 5 N1 PR-3+PR-4 — circuit breaker + sanity R5 + warmup asymétrique
+import { LisaCircuitBreakerService } from './circuit-breaker.service';
+import { SanityR5Service } from './sanity-r5.service';
+import { Qw3WarmupExtendedService } from '../quick-wins/qw-3-warmup-extended.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types internes
@@ -187,6 +191,9 @@ export class MechanicalTradingService {
     private readonly enrichment: EodhdEnrichmentService,
     private readonly quickWins: QuickWinsPipelineService,
     private readonly tpSlConfig: AssetClassTpSlConfigService,
+    private readonly circuitBreaker: LisaCircuitBreakerService,
+    private readonly sanityR5: SanityR5Service,
+    private readonly qw3Warmup: Qw3WarmupExtendedService,
   ) {}
 
   /**
@@ -890,14 +897,15 @@ export class MechanicalTradingService {
       );
       if (alreadyOpen) continue;
 
-      // Phase 5 N1 PR-1 — Quick Wins gate (no-op si QUICK_WINS_PIPELINE_ENABLED=false).
-      // QW#1 sessions / #6 blacklist / #11 class-pause / #17 repeat-cap / #18 exchange-mult.
+      // Phase 5 N1 PR-1+PR-3+PR-4 — Quick Wins gate (no-op si QUICK_WINS_PIPELINE_ENABLED=false).
+      // Cascade : CircuitBreaker → QW#46 → #47 → #1 → #6 → #11 → #9 → #27 → #4 → #17 → #15 → #18.
       let qwSizingMultiplier = 1.0;
       const qwResult = await this.quickWins.evaluate({
         symbol: target.symbol,
         assetClass: target.assetClass,
         timestamp: new Date().toISOString(),
         score: target.convictionScore,
+        portfolioId,
       });
       if (qwResult.decision === 'block') {
         this.logger.debug(
@@ -1849,6 +1857,22 @@ export class MechanicalTradingService {
           this.logger.warn(log + ' — garde-fou catastrophique : SL honoré malgré warmup');
         } else {
           this.logger.log(log + ' — warmup terminé, SL classique appliqué');
+
+          // QW#3 warmup asymétrique par classe (PR-3+PR-4) — couche optionnelle
+          // au-dessus du warmup standard pour étendre la fenêtre 15→30 min sur
+          // toutes les classes SAUF asia_equity (data 30j : asia=15min reste
+          // optimal, étendre coûte -$19 de TP perdus).
+          const entryTsStr = (pos as unknown as Record<string, unknown>)['entry_timestamp'] as string | undefined;
+          if (entryTsStr) {
+            const ageMin = (Date.now() - new Date(entryTsStr).getTime()) / 60_000;
+            const realizedPnlPct = livePx.minus(entryPx).div(entryPx).toNumber();
+            if (this.qw3Warmup.shouldBlockSlClose(pos.assetClass as string, ageMin, realizedPnlPct)) {
+              this.logger.log(
+                `[QW3_WARMUP_EXTENDED] ${pos.symbol} class=${pos.assetClass} age=${ageMin.toFixed(1)}min pnl_pct=${realizedPnlPct.toFixed(4)} — SL différé (extended warmup)`,
+              );
+              return;
+            }
+          }
         }
         await this.closePosition(pos.id, quote.price, 'closed_stop',
           `[MÉCANIQUE] Stop-loss atteint ${pos.symbol} @ ${currentPrice.toFixed(4)} (stop=${pos.stopLossPrice})`);
@@ -2468,6 +2492,24 @@ export class MechanicalTradingService {
       `entry_cost=$${pos.estimated_entry_cost_usd ?? '?'}`,
     );
     const pnlPct = realizedPnl.div(notional).mul(100).toNumber();
+
+    // R5 sanity hotfix (PR-3+PR-4) — refuse les fermetures avec exit_price
+    // aberrant qui auraient bypassé les autres garde-fous (incident SEE.LSE
+    // 14 mai : exit_price 0.0000 → pnl_pct -99.948 %).
+    const sanity = await this.sanityR5.validateExit({
+      entryPrice: entryPrice.toNumber(),
+      exitPrice: exitPrice.toNumber(),
+      realizedPnlPct: pnlPct,
+      positionId,
+      symbol: pos.symbol as string,
+      assetClass: (pos.asset_class as string) ?? 'unknown',
+    });
+    if (!sanity.ok) {
+      this.logger.error(
+        `[R5_SANITY_BLOCK] ${pos.symbol} positionId=${positionId} raison=${sanity.raison} ${sanity.detail ?? ''} — position kept open`,
+      );
+      return; // ⚠️ Position reste ouverte
+    }
 
     const now = new Date().toISOString();
     // Bug #314 #M1 — UPDATE atomique double-clause. Le SELECT initial (haut de
