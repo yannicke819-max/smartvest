@@ -45,6 +45,9 @@ import { PatternAdoptionService } from '../../bot-lab/services/pattern-adoption.
 import { EodhdEnrichmentService } from './eodhd-enrichment.service';
 // Phase 5 N1 PR-1 — Quick Wins gate (sessions/blacklist/class-pause/repeat-cap/exchange-mult)
 import { QuickWinsPipelineService } from '../quick-wins';
+// Phase 5 N1 PR-2 — matrice TP/SL par asset_class
+import { AssetClassTpSlConfigService } from './asset-class-tpsl-config.service';
+import { resolveTpSlPcts } from './tpsl-resolver';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types internes
@@ -183,6 +186,7 @@ export class MechanicalTradingService {
     private readonly patternAdoption: PatternAdoptionService,
     private readonly enrichment: EodhdEnrichmentService,
     private readonly quickWins: QuickWinsPipelineService,
+    private readonly tpSlConfig: AssetClassTpSlConfigService,
   ) {}
 
   /**
@@ -1090,10 +1094,24 @@ export class MechanicalTradingService {
       // thesis.kind (qui ferait 1×-2.2×). Plancher 0.3% identique au flow
       // nominal. Si ATR indispo (atr14Pct null), on tombe sur le calcul
       // habituel — pas de fail-soft trompeur en degraded mode.
-      const stopPct = degradedActive && atrDerived.atr14Pct != null
-        ? Math.max(atrDerived.atr14Pct * 0.5, 0.3)
-        : Math.max(atrDerived.stopPct * stopsMult, 0.3);
-      const tpPct = Math.max(target.takeProfitPct ?? Math.max(atrDerived.stopPct * 2, 4), 0.5);
+      // PR-2 v2 — matrice TP/SL par asset_class (priorité 2, après override Lisa).
+      // Décimal en DB (0.030 = 3 %) → conversion ×100 pour scale local (% ; floor 0.3 / 0.5).
+      // Master flag QW_TPSL_MATRIX_ENABLED (default true). DEGRADED_OPEN ignore la
+      // matrice : son SL serré 0.5×ATR a sa propre logique apprentissage micro-position.
+      const matrixEnabled = (process.env.QW_TPSL_MATRIX_ENABLED ?? 'true') === 'true';
+      const matrixTpDecimal = matrixEnabled ? this.tpSlConfig.getTpPct(target.assetClass) : null;
+      const matrixSlDecimal = matrixEnabled ? this.tpSlConfig.getSlPct(target.assetClass) : null;
+      const tpSlResolved = resolveTpSlPcts({
+        targetTakeProfitPct: target.takeProfitPct,
+        matrixTpPct: matrixTpDecimal != null ? matrixTpDecimal * 100 : null,
+        matrixSlPct: matrixSlDecimal != null ? Math.abs(matrixSlDecimal) * 100 : null,
+        atrStopPct: atrDerived.stopPct,
+        stopsMult,
+        degradedActive,
+        degradedAtr14Pct: atrDerived.atr14Pct,
+      });
+      const stopPct = tpSlResolved.stopPct;
+      const tpPct = tpSlResolved.tpPct;
 
       const stopPrice = target.direction === 'long'
         ? price.mul(1 - stopPct / 100).toFixed(6)
