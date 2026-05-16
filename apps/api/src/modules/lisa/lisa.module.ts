@@ -73,6 +73,8 @@ import {
   Qw17RepeatSymbolCapService,
   Qw18ExchangeMultiplierService,
 } from './quick-wins';
+// Phase 5 N1 PR-2 — matrice TP/SL par asset_class
+import { AssetClassTpSlConfigService } from './services/asset-class-tpsl-config.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule, BotLabModule, GainersModule],
@@ -166,6 +168,8 @@ import {
     Qw17RepeatSymbolCapService,
     Qw18ExchangeMultiplierService,
     QuickWinsPipelineService,
+    // Phase 5 N1 PR-2 — matrice TP/SL DB-driven (read-only, cache 60s, fail-open)
+    AssetClassTpSlConfigService,
   ],
   exports: [
     LisaService,
