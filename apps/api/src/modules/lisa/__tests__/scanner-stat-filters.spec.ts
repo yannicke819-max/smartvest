@@ -7,6 +7,8 @@
  */
 
 describe('PR Phase 1 — Earnings filter logic', () => {
+  const now = Date.now();
+
   it('threshold 0 (default) → filter disabled, no skip', () => {
     const envValue: string | undefined = undefined;
     const earningsFilterDays = Number(envValue ?? '0');
@@ -16,30 +18,26 @@ describe('PR Phase 1 — Earnings filter logic', () => {
 
   it('threshold 1 → skip si earnings dans 1 jour', () => {
     const earningsFilterDays = 1;
-    const nextEarnings = new Date(Date.now() + 12 * 3600 * 1000).toISOString();
-    const daysUntil = Math.floor(
-      (new Date(nextEarnings).getTime() - Date.now()) / 86_400_000,
-    );
+    const nextEarnings = now + 12 * 3600 * 1000;
+    const daysUntil = Math.floor((nextEarnings - now) / 86_400_000);
     expect(daysUntil >= 0 && daysUntil <= earningsFilterDays).toBe(true);  // skip
   });
 
   it('threshold 1 → no skip si earnings dans 3 jours', () => {
     const earningsFilterDays = 1;
-    const nextEarnings = new Date(Date.now() + 3 * 86_400_000).toISOString();
-    const daysUntil = Math.floor(
-      (new Date(nextEarnings).getTime() - Date.now()) / 86_400_000,
-    );
+    const nextEarnings = now + 3 * 86_400_000;
+    const daysUntil = Math.floor((nextEarnings - now) / 86_400_000);
     expect(daysUntil >= 0 && daysUntil <= earningsFilterDays).toBe(false);  // proceed
   });
 
   it('threshold 2 → skip si earnings dans 1 ou 2 jours', () => {
     const earningsFilterDays = 2;
-    const t1 = new Date(Date.now() + 1 * 86_400_000).toISOString();
-    const t2 = new Date(Date.now() + 2 * 86_400_000).toISOString();
-    const t3 = new Date(Date.now() + 3 * 86_400_000).toISOString();
-    const daysUntil1 = Math.floor((new Date(t1).getTime() - Date.now()) / 86_400_000);
-    const daysUntil2 = Math.floor((new Date(t2).getTime() - Date.now()) / 86_400_000);
-    const daysUntil3 = Math.floor((new Date(t3).getTime() - Date.now()) / 86_400_000);
+    const t1 = now + 1 * 86_400_000;
+    const t2 = now + 2 * 86_400_000;
+    const t3 = now + 3 * 86_400_000;
+    const daysUntil1 = Math.floor((t1 - now) / 86_400_000);
+    const daysUntil2 = Math.floor((t2 - now) / 86_400_000);
+    const daysUntil3 = Math.floor((t3 - now) / 86_400_000);
 
     expect(daysUntil1 >= 0 && daysUntil1 <= earningsFilterDays).toBe(true);   // skip
     expect(daysUntil2 >= 0 && daysUntil2 <= earningsFilterDays).toBe(true);   // skip
@@ -48,10 +46,8 @@ describe('PR Phase 1 — Earnings filter logic', () => {
 
   it('past earnings ignored (daysUntil < 0)', () => {
     const earningsFilterDays = 1;
-    const pastEarnings = new Date(Date.now() - 86_400_000).toISOString();
-    const daysUntil = Math.floor(
-      (new Date(pastEarnings).getTime() - Date.now()) / 86_400_000,
-    );
+    const pastEarnings = now - 86_400_000;
+    const daysUntil = Math.floor((pastEarnings - now) / 86_400_000);
     expect(daysUntil < 0).toBe(true);  // past earnings = skip filter
   });
 });
