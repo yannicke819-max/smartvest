@@ -1,9 +1,9 @@
 /**
  * Phase 5 N1 — Quick Wins pipeline shared types.
  *
- * Cascade ordre (PR-1 puis PR-3) :
+ * Cascade ordre (PR-1 puis PR-3 puis QW#14a) :
  *   CircuitBreaker → QW_46 → QW_47 → QW_1 → QW_6 → QW_11 →
- *   QW_9 → QW_27 → QW_4 → QW_17 → QW_15 → QW_18
+ *   QW_9 → QW_27 → QW_4 → QW_17 → QW_15 → QW_18 → QW_14A
  *
  * QW_3 (warmup asymétrique) et QW_45 (force-close pre-AH) ne sont PAS dans
  * la cascade : QW_3 s'applique sur fermeture SL, QW_45 est un cron interne.
@@ -22,6 +22,7 @@ export type QwId =
   | 'QW_6'
   | 'QW_9'
   | 'QW_11'
+  | 'QW_14A'
   | 'QW_15'
   | 'QW_17'
   | 'QW_18'

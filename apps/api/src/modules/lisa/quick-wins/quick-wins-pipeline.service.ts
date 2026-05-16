@@ -8,6 +8,7 @@ import { Qw9ScoreFloorService } from './qw-9-score-floor.service';
 import { Qw11AssetClassGateService } from './qw-11-asset-class-gate.service';
 import { Qw15FirstTradeBoostService } from './qw-15-first-trade-boost.service';
 import { Qw17RepeatSymbolCapService } from './qw-17-repeat-symbol-cap.service';
+import { Qw14aFridayEuBoostService } from './qw-14a-friday-eu-boost.service';
 import { Qw18ExchangeMultiplierService } from './qw-18-exchange-multiplier.service';
 import { Qw27PathEffFloorService } from './qw-27-path-eff-floor.service';
 import { Qw46AsiaDowSkipService } from './qw-46-asia-dow-skip.service';
@@ -53,6 +54,7 @@ export class QuickWinsPipelineService {
     private readonly qw27: Qw27PathEffFloorService,
     private readonly qw46: Qw46AsiaDowSkipService,
     private readonly qw47: Qw47LseSkipService,
+    private readonly qw14a: Qw14aFridayEuBoostService,
   ) {
     this.masterEnabled = (this.config.get<string>('QUICK_WINS_PIPELINE_ENABLED') ?? 'false') === 'true';
     if (this.masterEnabled) {
@@ -106,6 +108,7 @@ export class QuickWinsPipelineService {
       () => this.qw17.check(signal),
       () => this.qw15.check(signal),
       () => Promise.resolve(this.qw18.check(signal)),
+      () => Promise.resolve(this.qw14a.check(signal)),
     ];
 
     for (const step of ordered) {

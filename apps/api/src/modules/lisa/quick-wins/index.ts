@@ -6,6 +6,7 @@ export { Qw4RegimeFilterService } from './qw-4-regime-filter.service';
 export { Qw6SymbolBlacklistService } from './qw-6-symbol-blacklist.service';
 export { Qw9ScoreFloorService } from './qw-9-score-floor.service';
 export { Qw11AssetClassGateService } from './qw-11-asset-class-gate.service';
+export { Qw14aFridayEuBoostService } from './qw-14a-friday-eu-boost.service';
 export { Qw15FirstTradeBoostService } from './qw-15-first-trade-boost.service';
 export { Qw17RepeatSymbolCapService } from './qw-17-repeat-symbol-cap.service';
 export { Qw18ExchangeMultiplierService } from './qw-18-exchange-multiplier.service';

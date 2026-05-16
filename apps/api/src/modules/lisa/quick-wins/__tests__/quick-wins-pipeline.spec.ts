@@ -5,6 +5,7 @@ import { Qw4RegimeFilterService } from '../qw-4-regime-filter.service';
 import { Qw6SymbolBlacklistService } from '../qw-6-symbol-blacklist.service';
 import { Qw9ScoreFloorService } from '../qw-9-score-floor.service';
 import { Qw11AssetClassGateService } from '../qw-11-asset-class-gate.service';
+import { Qw14aFridayEuBoostService } from '../qw-14a-friday-eu-boost.service';
 import { Qw15FirstTradeBoostService } from '../qw-15-first-trade-boost.service';
 import { Qw17RepeatSymbolCapService } from '../qw-17-repeat-symbol-cap.service';
 import { Qw18ExchangeMultiplierService } from '../qw-18-exchange-multiplier.service';
@@ -68,6 +69,7 @@ function makePipeline(
     new Qw27PathEffFloorService(cfg, logger),
     new Qw46AsiaDowSkipService(cfg, logger),
     new Qw47LseSkipService(cfg, logger),
+    new Qw14aFridayEuBoostService(cfg, logger),
   );
 }
 
@@ -222,6 +224,23 @@ describe('QuickWinsPipelineService — cascade unifiée PR-1+PR-3+PR-4', () => {
     expect(r.decision).toBe('block');
     if (r.decision === 'block') {
       expect(r.blockedBy).toBe('QW_6');
+    }
+  });
+
+  it('eu_equity Friday 08h UTC → multiplier final inclut ×1.3 (QW#14A appliqué)', async () => {
+    const pipeline = makePipeline();
+    // Vendredi 22 mai 2026 08:30 UTC = vendredi 10:30 Paris (dow=5)
+    // QW#1 exception eu_friday_pass laisse passer, QW#14A boost ×1.3 ensuite.
+    const r = await pipeline.evaluate({
+      symbol: 'MC.PA',
+      assetClass: 'eu_equity',
+      timestamp: '2026-05-22T08:30:00Z',
+      score: 1.5,
+    });
+    expect(r.decision).toBe('modify');
+    if (r.decision === 'modify') {
+      expect(r.sizingMultiplier).toBeCloseTo(1.3, 10);
+      expect(r.modifications.some((m) => m.includes('QW_14A'))).toBe(true);
     }
   });
 });
