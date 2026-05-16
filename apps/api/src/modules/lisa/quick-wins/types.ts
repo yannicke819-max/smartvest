@@ -1,8 +1,12 @@
 /**
- * Phase 5 N1 PR-1 — Quick Wins pipeline shared types.
+ * Phase 5 N1 — Quick Wins pipeline shared types.
  *
- * Cascade ordre : QW#1 → QW#6 → QW#11 → QW#17 → QW#18.
- * Chaque QW retourne un QwTrace. La pipeline aggrège en QwResult.
+ * Cascade ordre (PR-1 puis PR-3) :
+ *   CircuitBreaker → QW_46 → QW_47 → QW_1 → QW_6 → QW_11 →
+ *   QW_9 → QW_27 → QW_4 → QW_17 → QW_15 → QW_18
+ *
+ * QW_3 (warmup asymétrique) et QW_45 (force-close pre-AH) ne sont PAS dans
+ * la cascade : QW_3 s'applique sur fermeture SL, QW_45 est un cron interne.
  *
  * Asset classes attendues (valeurs granulaires Lisa déjà en base) :
  *   - 'crypto_major' / 'crypto_alt'
@@ -11,7 +15,21 @@
  *   - 'asia_equity'
  */
 
-export type QwId = 'QW_1' | 'QW_6' | 'QW_11' | 'QW_17' | 'QW_18';
+export type QwId =
+  | 'QW_1'
+  | 'QW_3'
+  | 'QW_4'
+  | 'QW_6'
+  | 'QW_9'
+  | 'QW_11'
+  | 'QW_15'
+  | 'QW_17'
+  | 'QW_18'
+  | 'QW_27'
+  | 'QW_45'
+  | 'QW_46'
+  | 'QW_47'
+  | 'CIRCUIT_BREAKER';
 
 export type QwDecision = 'pass' | 'block' | 'modify';
 
@@ -22,6 +40,10 @@ export interface QwSignal {
   timestamp: string;
   /** Score composite (conviction / persistence / autre). null si non applicable. */
   score?: number | null;
+  /** Path efficiency [0,1] si fourni par le caller. Null sinon → QWs path-based no-op. */
+  pathEff?: number | null;
+  /** Portfolio cible (pour QW#15 first-trade-of-day query Supabase). */
+  portfolioId?: string | null;
 }
 
 export interface QwTrace {
