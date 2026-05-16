@@ -43,6 +43,8 @@ import { TradeOutcomeRecorderService } from './trade-outcome-recorder.service';
 import { DailyProfitGovernor } from './daily-profit-governor.service';
 import { PatternAdoptionService } from '../../bot-lab/services/pattern-adoption.service';
 import { EodhdEnrichmentService } from './eodhd-enrichment.service';
+// Phase 5 N1 PR-1 — Quick Wins gate (sessions/blacklist/class-pause/repeat-cap/exchange-mult)
+import { QuickWinsPipelineService } from '../quick-wins';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types internes
@@ -180,6 +182,7 @@ export class MechanicalTradingService {
     private readonly dailyProfitGovernor: DailyProfitGovernor,
     private readonly patternAdoption: PatternAdoptionService,
     private readonly enrichment: EodhdEnrichmentService,
+    private readonly quickWins: QuickWinsPipelineService,
   ) {}
 
   /**
@@ -883,6 +886,28 @@ export class MechanicalTradingService {
       );
       if (alreadyOpen) continue;
 
+      // Phase 5 N1 PR-1 — Quick Wins gate (no-op si QUICK_WINS_PIPELINE_ENABLED=false).
+      // QW#1 sessions / #6 blacklist / #11 class-pause / #17 repeat-cap / #18 exchange-mult.
+      let qwSizingMultiplier = 1.0;
+      const qwResult = await this.quickWins.evaluate({
+        symbol: target.symbol,
+        assetClass: target.assetClass,
+        timestamp: new Date().toISOString(),
+        score: target.convictionScore,
+      });
+      if (qwResult.decision === 'block') {
+        this.logger.debug(
+          `[QW] skip ${target.symbol} — blocked by ${qwResult.blockedBy}: ${qwResult.reason}`,
+        );
+        continue;
+      }
+      if (qwResult.decision === 'modify') {
+        qwSizingMultiplier = qwResult.sizingMultiplier;
+        this.logger.debug(
+          `[QW] ${target.symbol} sizing ×${qwSizingMultiplier.toFixed(2)} (${qwResult.modifications.join(', ')})`,
+        );
+      }
+
       // Skip si le marché n'est pas ouvert — évite les ouvertures à prix
       // stale en afterhours/weekend/holiday qui gappent au réveil.
       const marketState = this.exchangeHours.getMarketState(target.symbol, target.assetClass);
@@ -947,7 +972,7 @@ export class MechanicalTradingService {
 
       // Taille de position (trajectoire + momentum)
       // En hyper_active, effectiveMaxPositionPct cape à 25 % (cf. ci-dessus).
-      const maxNotional = capitalUsd.mul(effectiveMaxPositionPct).div(100).mul(sizingMultiplier);
+      const maxNotional = capitalUsd.mul(effectiveMaxPositionPct).div(100).mul(sizingMultiplier).mul(qwSizingMultiplier);
       // Cap "first wave" : si on a déjà ouvert près de cycleNotionalCap
       // dans ce cycle, on réduit le notional restant pour ne pas dépasser.
       const remainingCycleBudget = cycleNotionalCap.minus(cycleNotionalUsed);

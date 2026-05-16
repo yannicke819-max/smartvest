@@ -63,6 +63,16 @@ import { MacroVetoService } from './services/macro-veto.service';
 import { ProbabilityRefitCronService } from '../gainers-scanner/automations/probability-refit-cron.service';
 // PR6.8 RCFT — Cron daily 00:30 UTC qui suit forward returns des shadow signals
 import { SignalForwardTrackerService } from '../gainers-scanner/automations/signal-forward-tracker.service';
+// Phase 5 N1 PR-1 — Quick Wins (sessions + symbols + cleanup)
+import {
+  QuickWinsPipelineService,
+  QwDecisionLoggerService,
+  Qw1SessionFilterService,
+  Qw6SymbolBlacklistService,
+  Qw11AssetClassGateService,
+  Qw17RepeatSymbolCapService,
+  Qw18ExchangeMultiplierService,
+} from './quick-wins';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule, BotLabModule, GainersModule],
@@ -148,6 +158,14 @@ import { SignalForwardTrackerService } from '../gainers-scanner/automations/sign
     // PR6.8 RCFT — Cron daily 00:30 UTC qui suit forward returns shadow signals
     // (T+24h + T+72h) et compute outcome (champion/failure/neutral) pour FP-rate.
     SignalForwardTrackerService,
+    // Phase 5 N1 PR-1 — Quick Wins (sessions + symbols + repeat caps + exchange mult)
+    QwDecisionLoggerService,
+    Qw1SessionFilterService,
+    Qw6SymbolBlacklistService,
+    Qw11AssetClassGateService,
+    Qw17RepeatSymbolCapService,
+    Qw18ExchangeMultiplierService,
+    QuickWinsPipelineService,
   ],
   exports: [
     LisaService,
