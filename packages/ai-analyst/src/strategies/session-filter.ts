@@ -75,12 +75,19 @@ export function marketForSymbol(symbol: string): MarketSessionClass | null {
 }
 
 /**
- * Bug #R10 — Blacklist statique de tickers .NSE morts confirmés HTTP 404
- * depuis 7+ jours (mesure 15/05/2026, ~81 000 calls EODHD gaspillés sur cette
- * fenêtre seule). Ces tickers ne reviennent pas — soit délistés EODHD, soit
- * symbol convention NSE différente. À retirer si EODHD republie la data.
+ * Bug #R10 + PR #337 — Blacklist statique de tickers EODHD confirmés inutiles :
+ *   1. .NSE morts (HTTP 404 persistant ≥ 7j, mesure 15/05/2026, ~81k calls/7j gaspillés)
+ *   2. Asia empty-response permanents (HTTP 200 + body vide, ~62k calls/7j gaspillés,
+ *      0 prix jamais retourné sur 7j, 0 accept sur 30j) — mesure 17/05/2026
+ *   3. Saigneur asia (222420.KQ : 102 SL / 0 TP sur 30j, PnL -$3582 = -$119/j) —
+ *      blacklist proactive pour arrêt hémorragie immédiat
+ *
+ * À retirer si EODHD republie la data ou si un ticker prouve de la valeur via
+ * audit manuel. Le `002900.KO` reste autorisé (seul .KO/.KQ rentable mesuré
+ * sur 30j : +$177.51 / 33 % WR).
  */
-export const DEAD_NSE_TICKERS: ReadonlySet<string> = new Set<string>([
+export const DEAD_TICKERS_STATIC: ReadonlySet<string> = new Set<string>([
+  // --- .NSE morts (R10 original, 9 tickers) ---
   'BHEL.NSE',
   'CESC.NSE',
   'GHCL.NSE',
@@ -90,7 +97,33 @@ export const DEAD_NSE_TICKERS: ReadonlySet<string> = new Set<string>([
   'NITCO.NSE',
   'NOCIL.NSE',
   'SOTL.NSE',
+
+  // --- Asia empty-response permanents (PR #337, 13 tickers) ---
+  // Mesure 17/05/2026 : 4000-4750 calls/7j chacun, 100 % empty, 0 accept sur 30j.
+  '000500.KO',
+  '003550.KO',
+  '005070.KO',
+  '005300.KO',
+  '016360.KO',
+  '093370.KO',
+  '039830.KQ',
+  '045390.KQ',
+  '047770.KQ',
+  '059120.KQ',
+  '088800.KQ',
+  '094360.KQ',
+  '200710.KQ',
+
+  // --- Asia saigneur (PR #337, 1 ticker) ---
+  // 222420.KQ : 102 SL / 0 TP sur 30j, PnL -$3582 (-$119/j). Arrêt hémorragie.
+  '222420.KQ',
 ]);
+
+/**
+ * @deprecated Utiliser `DEAD_TICKERS_STATIC`. Alias gardé pour backward-compat
+ *   avec les callers existants (TickerBlacklistService, tests).
+ */
+export const DEAD_NSE_TICKERS: ReadonlySet<string> = DEAD_TICKERS_STATIC;
 
 export interface FilterOptions {
   now: Date;

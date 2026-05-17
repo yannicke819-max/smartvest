@@ -93,16 +93,43 @@ describe('session-filter helpers', () => {
     });
   });
 
-  describe('DEAD_NSE_TICKERS', () => {
-    it('contains exactly 9 tickers (R10 confirmed dead set)', () => {
-      expect(DEAD_NSE_TICKERS.size).toBe(9);
+  describe('DEAD_NSE_TICKERS (alias) + DEAD_TICKERS_STATIC', () => {
+    it('total = 23 tickers (9 NSE legacy + 13 asia empty + 1 saigneur)', () => {
+      expect(DEAD_NSE_TICKERS.size).toBe(23);
     });
 
     it.each([
       'BHEL.NSE', 'CESC.NSE', 'GHCL.NSE', 'HEG.NSE', 'IGPL.NSE',
       'NESCO.NSE', 'NITCO.NSE', 'NOCIL.NSE', 'SOTL.NSE',
-    ])('contains %s', (ticker) => {
+    ])('contains legacy .NSE %s', (ticker) => {
       expect(DEAD_NSE_TICKERS.has(ticker)).toBe(true);
+    });
+
+    it.each([
+      '000500.KO', '003550.KO', '005070.KO', '005300.KO', '016360.KO',
+      '093370.KO', '039830.KQ', '045390.KQ', '047770.KQ', '059120.KQ',
+      '088800.KQ', '094360.KQ', '200710.KQ',
+    ])('contains asia empty-response %s (PR #337)', (ticker) => {
+      expect(DEAD_NSE_TICKERS.has(ticker)).toBe(true);
+    });
+
+    it('contient le saigneur 222420.KQ (PR #337)', () => {
+      expect(DEAD_NSE_TICKERS.has('222420.KQ')).toBe(true);
+    });
+
+    it('NE contient PAS 002900.KO (seul .KO rentable +$177/30j)', () => {
+      expect(DEAD_NSE_TICKERS.has('002900.KO')).toBe(false);
+    });
+
+    it('NE contient PAS 005930.KO (Samsung, contrôle)', () => {
+      expect(DEAD_NSE_TICKERS.has('005930.KO')).toBe(false);
+    });
+
+    it('alias DEAD_NSE_TICKERS pointe vers DEAD_TICKERS_STATIC (backward-compat)', () => {
+      // Vérification de l'alias deprecated : même référence d'objet
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { DEAD_TICKERS_STATIC } = require('../session-filter');
+      expect(DEAD_NSE_TICKERS).toBe(DEAD_TICKERS_STATIC);
     });
   });
 });
@@ -110,13 +137,15 @@ describe('session-filter helpers', () => {
 describe('filterTickersForFetch — R9/R10 spec cases', () => {
   it('Asia closed at 11:40 UTC → 0 fetch for .KQ/.KO/.SHE (US still pre-RTH)', () => {
     const r = filterTickersForFetch(
-      ['002371.SHE', '000500.KO', '045390.KQ', 'AAPL', 'BTCUSDT'],
+      // PR #337 : `005930.KO` (Samsung) + `002900.KO` (seul rentable) hors static
+      // blacklist, donc bien droppés en session_closed et non en nse_blacklisted.
+      ['002371.SHE', '005930.KO', '002900.KO', 'AAPL', 'BTCUSDT'],
       { now: utcOn(11, 40) },
     );
     // 11:40 UTC : Asia fermé (after 08:00), US pre-RTH (14:30 only), seul crypto ouvert
     expect(r.kept).toEqual(['BTCUSDT']);
     expect(r.droppedSessionClosed.asia).toEqual([
-      '002371.SHE', '000500.KO', '045390.KQ',
+      '002371.SHE', '005930.KO', '002900.KO',
     ]);
     expect(r.droppedSessionClosed.us).toEqual(['AAPL']);
   });
@@ -170,9 +199,12 @@ describe('filterTickersForFetch — R9/R10 spec cases', () => {
   });
 
   it('R9 prod scenario reproduction : 11:40 UTC, mix universe', () => {
-    // Reproduit la séquence prod 15/05/2025 11:40 UTC (Asia closed, US pre-RTH, EU open)
+    // Reproduit la séquence prod 15/05/2025 11:40 UTC (Asia closed, US pre-RTH, EU open).
+    // PR #337 : substitution des tickers asia par des entrées hors static blacklist
+    // (`005930.KO` Samsung, `002900.KO` rentable) — sinon ils tombent en
+    // droppedNseBlacklist au lieu de droppedSessionClosed.asia.
     const symbols = [
-      '002371.SHE', '000500.KO', '045390.KQ', // 3 Asia → drop
+      '002371.SHE', '005930.KO', '002900.KO', // 3 Asia → drop
       'MC.PA', 'BMW.DE',                        // 2 EU → keep (open)
       'AAPL',                                   // US closed pre-RTH → drop
       'BTCUSDT', 'ETHUSDT',                     // 2 crypto → keep
@@ -252,7 +284,10 @@ describe('filterTickersForFetch — R9/R10 spec cases', () => {
 describe('formatFilterLog', () => {
   it('formats counts with multiplier (R9 example : 17 Asia × 1 = 17 saved)', () => {
     const symbols = [
-      '002371.SHE', '000500.KO', '045390.KQ',
+      // PR #337 : `000500.KO` et `045390.KQ` désormais dans static blacklist —
+      // substitution par des tickers hors blacklist pour que le comptage reste
+      // `3 asia` et non `1 asia, 2 nse_blacklisted`.
+      '002371.SHE', '005930.KO', '002900.KO',
       'AAPL',
     ];
     const r = filterTickersForFetch(symbols, { now: new Date(Date.UTC(2025, 4, 12, 11, 40)) });

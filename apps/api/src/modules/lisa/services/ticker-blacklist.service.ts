@@ -3,25 +3,31 @@ import { ConfigService } from '@nestjs/config';
 import { DEAD_NSE_TICKERS } from '@smartvest/ai-analyst';
 
 /**
- * Bug #R10 — Blacklist tickers EODHD morts (HTTP 404 persistant).
+ * Bug #R10 + PR #337 — Blacklist tickers EODHD confirmés inutiles.
  *
  * Deux niveaux :
- *   1. Statique : 9 tickers `.NSE` confirmés morts depuis ≥ 7 jours (mesure
- *      15/05/2026, ~81k calls EODHD gaspillés sur la fenêtre). Liste exportée
- *      par `@smartvest/ai-analyst` (DEAD_NSE_TICKERS).
+ *   1. Statique : 23 tickers (.NSE morts 404 + .KO/.KQ empty-response + saigneur).
+ *      Liste exportée par `@smartvest/ai-analyst` (DEAD_TICKERS_STATIC, alias
+ *      DEAD_NSE_TICKERS conservé pour backward-compat).
+ *      Mesure 17/05/2026 : ~143k calls EODHD gaspillés sur 7j + hémorragie -$119/j.
  *   2. Dynamique : compteur de strikes 404 par ticker sur fenêtre glissante 24h.
  *      Au-delà du seuil (`GAINERS_AUTO_BLACKLIST_404_STRIKES`, default 3) → ban
  *      pour `GAINERS_AUTO_BLACKLIST_TTL_HOURS` heures (default 24).
  *
- * Stockage MVP : in-memory Map. Phase MESURE active jusqu'au 17/05 — pas
- * d'ALTER TABLE Supabase ce sprint. La perte de l'état au restart Fly est
- * tolérable : la liste statique des 9 tickers évite les 9 leaks de référence,
- * et un strike-counter en mémoire reconverge en quelques cycles.
+ * Stockage MVP : in-memory Map pour la partie dynamique. Pas d'ALTER TABLE
+ * Supabase à ce sprint. La perte de l'état au restart Fly est tolérable :
+ * la liste statique couvre les leaks majeurs, et un strike-counter en mémoire
+ * reconverge en quelques cycles.
  *
  * Env vars :
- *   - GAINERS_NSE_BLACKLIST_ENABLED       (default true)
+ *   - GAINERS_NSE_BLACKLIST_ENABLED       (default true) — couvre TOUT le static
  *   - GAINERS_AUTO_BLACKLIST_404_STRIKES  (default 3)
  *   - GAINERS_AUTO_BLACKLIST_TTL_HOURS    (default 24)
+ *
+ * Note : `GAINERS_NSE_BLACKLIST_ENABLED=false` désactive AUSSI la blacklist asia
+ * (même flag par simplicité — flag par catégorie n'apporte rien tant qu'on ne
+ * fait pas de rollback partiel). Si rollback urgent sur asia uniquement, retirer
+ * les lignes asia du Set DEAD_TICKERS_STATIC et redeploy.
  *
  * Pour les tests : injection ConfigService partiel suffit, pas de DB.
  */

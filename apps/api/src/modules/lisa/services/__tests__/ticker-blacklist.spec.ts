@@ -52,6 +52,45 @@ describe('TickerBlacklistService', () => {
     });
   });
 
+  describe('PR #337 — asia empty-response + saigneur', () => {
+    it('blackliste 222420.KQ par défaut (saigneur -$3582/30j)', () => {
+      const svc = makeService();
+      expect(svc.isBlacklisted('222420.KQ')).toBe(true);
+    });
+
+    it('blackliste 000500.KO par défaut (empty response permanent)', () => {
+      const svc = makeService();
+      expect(svc.isBlacklisted('000500.KO')).toBe(true);
+    });
+
+    it.each([
+      '000500.KO', '003550.KO', '005070.KO', '005300.KO', '016360.KO',
+      '093370.KO', '039830.KQ', '045390.KQ', '047770.KQ', '059120.KQ',
+      '088800.KQ', '094360.KQ', '200710.KQ', '222420.KQ',
+    ])('blackliste %s (case-insensitive)', (ticker) => {
+      const svc = makeService();
+      expect(svc.isBlacklisted(ticker)).toBe(true);
+      expect(svc.isBlacklisted(ticker.toLowerCase())).toBe(true);
+    });
+
+    it('NE blackliste PAS 002900.KO (seul .KO rentable +$177/30j)', () => {
+      const svc = makeService();
+      expect(svc.isBlacklisted('002900.KO')).toBe(false);
+    });
+
+    it('NE blackliste PAS 005930.KO (Samsung, contrôle)', () => {
+      const svc = makeService();
+      expect(svc.isBlacklisted('005930.KO')).toBe(false);
+    });
+
+    it('respecte le flag GAINERS_NSE_BLACKLIST_ENABLED=false (rollback global asia + NSE)', () => {
+      const svc = makeService({ GAINERS_NSE_BLACKLIST_ENABLED: 'false' });
+      expect(svc.isBlacklisted('222420.KQ')).toBe(false);
+      expect(svc.isBlacklisted('BHEL.NSE')).toBe(false);
+      expect(svc.isBlacklisted('000500.KO')).toBe(false);
+    });
+  });
+
   describe('auto-blacklist on strikes', () => {
     it('3 strikes 404 in 24h → blacklisted', () => {
       const svc = makeService();
@@ -159,7 +198,7 @@ describe('TickerBlacklistService', () => {
       const t0 = Date.now();
       const stats = svc.getStats();
       expect(stats.staticEnabled).toBe(true);
-      expect(stats.staticSize).toBe(9);
+      expect(stats.staticSize).toBe(23); // PR #337 : 9 NSE + 13 asia empty + 1 saigneur
       expect(stats.dynamicCount).toBe(0);
 
       // Add a dynamic blacklist
