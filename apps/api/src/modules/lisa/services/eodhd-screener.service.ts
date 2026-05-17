@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../supabase/supabase.service';
+import { EodhdLoggerService } from './eodhd-logger.service';
 
 /**
  * EodhdScreenerService — wrap /api/screener pour que Lisa découvre
@@ -80,6 +81,7 @@ export class EodhdScreenerService {
   constructor(
     private readonly config: ConfigService,
     private readonly supabase: SupabaseService,
+    private readonly eodhdLogger: EodhdLoggerService,
   ) {}
 
   private apiKey(): string | null {
@@ -87,21 +89,38 @@ export class EodhdScreenerService {
     return k && k !== 'demo' ? k : null;
   }
 
-  private logCall(row: { ticker: string; success: boolean; statusCode?: number; latencyMs?: number; errorMessage?: string }): void {
-    (async () => {
-      try {
-        await this.supabase.getClient().from('eodhd_request_log').insert({
-          ticker: row.ticker,
-          eodhd_ticker: row.ticker,
-          source: 'eodhd',
-          success: row.success,
-          status_code: row.statusCode ?? null,
-          latency_ms: row.latencyMs ?? null,
-          called_by: 'screener',
-          error_message: row.errorMessage ?? null,
-        });
-      } catch { /* swallow */ }
-    })();
+  /**
+   * PR #344 — délégué au service partagé EodhdLoggerService. Inclut désormais
+   * `endpoint='screener'` + `extras` (preset, n_symbols_returned, credits_estimes,
+   * exchange) pour l'audit quota EODHD.
+   */
+  private logCall(row: {
+    ticker: string;
+    success: boolean;
+    statusCode?: number;
+    latencyMs?: number;
+    errorMessage?: string;
+    nSymbolsReturned?: number;
+    preset?: string;
+  }): void {
+    const extras: Record<string, unknown> = {};
+    if (row.preset != null) extras.preset = row.preset;
+    if (row.nSymbolsReturned != null) extras.n_symbols_returned = row.nSymbolsReturned;
+    extras.credits_estimes = EodhdLoggerService.estimateCredits('screener', {
+      n_symbols_returned: row.nSymbolsReturned ?? 0,
+    });
+    this.eodhdLogger.log({
+      ticker: row.ticker,
+      eodhdTicker: row.ticker,
+      source: 'eodhd',
+      success: row.success,
+      statusCode: row.statusCode,
+      latencyMs: row.latencyMs,
+      calledBy: 'screener',
+      endpoint: 'screener',
+      extras,
+      errorMessage: row.errorMessage,
+    });
   }
 
   async runScan(preset: ScreenerPreset, limit = 10): Promise<ScreenerResult[]> {
@@ -131,12 +150,21 @@ export class EodhdScreenerService {
           statusCode: res.status,
           latencyMs,
           errorMessage: `HTTP_${res.status} · ${bodySnippet || 'no body'}`,
+          preset,
         });
         return [];
       }
       const body = await res.json() as Record<string, unknown>;
       const data = (body.data ?? body) as Array<Record<string, unknown>>;
-      this.logCall({ ticker: `screener_${preset}`, success: true, statusCode: res.status, latencyMs });
+      const nSymbolsReturned = Array.isArray(data) ? data.length : 0;
+      this.logCall({
+        ticker: `screener_${preset}`,
+        success: true,
+        statusCode: res.status,
+        latencyMs,
+        preset,
+        nSymbolsReturned,
+      });
 
       if (!Array.isArray(data)) return [];
       const results: ScreenerResult[] = data.slice(0, limit).map((r) => ({
@@ -157,7 +185,7 @@ export class EodhdScreenerService {
       return results;
     } catch (e) {
       this.logger.warn(`Screener ${preset} failed: ${String(e).slice(0, 80)}`);
-      this.logCall({ ticker: `screener_${preset}`, success: false, latencyMs: Date.now() - tStart, errorMessage: String(e).slice(0, 200) });
+      this.logCall({ ticker: `screener_${preset}`, success: false, latencyMs: Date.now() - tStart, errorMessage: String(e).slice(0, 200), preset });
       return [];
     }
   }

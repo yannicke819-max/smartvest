@@ -20,8 +20,10 @@
  *   - Multi-currency portfolio (paperBroker actuel = USD only)
  */
 
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import { SchedulerRegistry } from '@nestjs/schedule';
+// PR #344 P1 — logger EODHD partagé pour instrumenter les screener calls
+import { EodhdLoggerService } from './eodhd-logger.service';
 import { CronJob } from 'cron';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../supabase/supabase.service';
@@ -531,6 +533,11 @@ export class TopGainersScannerService implements OnModuleInit {
      * (toujours bénéfique), pas d'auto-blacklist dynamique.
      */
     private readonly tickerBlacklist?: TickerBlacklistService,
+    /**
+     * PR #344 P1 — logger EODHD partagé. Optional pour préserver compat tests
+     * existants qui instancient le scanner avec un sous-ensemble de dépendances.
+     */
+    @Optional() private readonly eodhdLogger?: EodhdLoggerService,
   ) {}
 
   /**
@@ -1280,8 +1287,10 @@ export class TopGainersScannerService implements OnModuleInit {
     const filters = encodeURIComponent(JSON.stringify(filtersList));
     const url = `https://eodhd.com/api/screener?api_token=${encodeURIComponent(apiKey)}&filters=${filters}&limit=100&offset=0&fmt=json`;
     this.logger.debug(`[top-gainers] EODHD screener exchange=${exUpper} filters=${filtersList.length}`);
+    const tStart = Date.now();
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+      const latencyMs = Date.now() - tStart;
       if (!res.ok) {
         // P18c — log le body pour diagnostic (422 = champ filter invalide,
         // 401 = token expiré, 403 = plan insuffisant). Tronqué à 200 char.
@@ -1289,6 +1298,23 @@ export class TopGainersScannerService implements OnModuleInit {
         this.logger.warn(
           `[top-gainers] eodhd ${exUpper} HTTP ${res.status} — body: ${body.slice(0, 200)}`,
         );
+        // PR #344 P1 — instrumentation log EODHD screener (error path).
+        this.eodhdLogger?.log({
+          ticker: `gainers_screener_${exUpper}`,
+          eodhdTicker: `gainers_screener_${exUpper}`,
+          source: 'eodhd',
+          success: false,
+          statusCode: res.status,
+          latencyMs,
+          calledBy: 'gainers_screener',
+          endpoint: 'screener',
+          extras: {
+            exchange: exUpper,
+            filters_count: filtersList.length,
+            credits_estimes: 5, // base only, pas de symboles retournés
+          },
+          errorMessage: `HTTP_${res.status} · ${body.slice(0, 200)}`,
+        });
         return [];
       }
       const json = await res.json() as { data?: EodhdScreenerRow[] } | EodhdScreenerRow[];
@@ -1301,9 +1327,46 @@ export class TopGainersScannerService implements OnModuleInit {
       if (!isUs) {
         mapped = mapped.filter((c) => (c.changePct ?? 0) > 3);
       }
+      // PR #344 P1 — instrumentation log EODHD screener (success path).
+      // Coût EODHD réel = 5 (base call) + N symboles retournés (cf. pricing-and-plans.md).
+      this.eodhdLogger?.log({
+        ticker: `gainers_screener_${exUpper}`,
+        eodhdTicker: `gainers_screener_${exUpper}`,
+        source: 'eodhd',
+        success: true,
+        statusCode: res.status,
+        latencyMs,
+        calledBy: 'gainers_screener',
+        endpoint: 'screener',
+        extras: {
+          exchange: exUpper,
+          filters_count: filtersList.length,
+          n_symbols_returned: rows.length,
+          n_symbols_mapped: mapped.length,
+          credits_estimes: EodhdLoggerService.estimateCredits('screener', {
+            n_symbols_returned: rows.length,
+          }),
+        },
+      });
       return mapped;
     } catch (e) {
       this.logger.debug(`[top-gainers] eodhd ${exUpper} fetch error: ${String(e).slice(0, 120)}`);
+      // PR #344 P1 — instrumentation log EODHD screener (exception path).
+      this.eodhdLogger?.log({
+        ticker: `gainers_screener_${exUpper}`,
+        eodhdTicker: `gainers_screener_${exUpper}`,
+        source: 'eodhd',
+        success: false,
+        latencyMs: Date.now() - tStart,
+        calledBy: 'gainers_screener',
+        endpoint: 'screener',
+        extras: {
+          exchange: exUpper,
+          filters_count: filtersList.length,
+          credits_estimes: 0, // exception → call probablement non-débité
+        },
+        errorMessage: String(e).slice(0, 200),
+      });
       return [];
     }
   }
