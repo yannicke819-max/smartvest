@@ -30,7 +30,9 @@ export type QwId =
   | 'QW_45'
   | 'QW_46'
   | 'QW_47'
-  | 'CIRCUIT_BREAKER';
+  | 'CIRCUIT_BREAKER'
+  | 'TD_SUPERTREND_US'   // PR #345 — filtre TwelveData Supertrend US equity
+  | 'TD_RSI_CRYPTO';     // PR #345 — filtre TwelveData RSI crypto overbought
 
 export type QwDecision = 'pass' | 'block' | 'modify';
 
