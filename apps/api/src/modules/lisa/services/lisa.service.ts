@@ -3053,7 +3053,12 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
    * Visible (public) pour tests unitaires Jest.
    */
   isCascadeFullyClosed(
-    attempts: Array<{ ticker: string; source?: 'eodhd' | 'yahoo' | 'stooq' | 'fred' }>,
+    attempts: Array<{
+      ticker: string;
+      source?: 'eodhd' | 'yahoo' | 'stooq' | 'fred';
+      multiplier?: number;
+      quality?: 'live' | 'proxy';
+    }>,
     now: Date = new Date(),
   ): boolean {
     if (attempts.length === 0) return false;
