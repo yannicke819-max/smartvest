@@ -2993,6 +2993,111 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
   }
 
   /**
+   * Refactor market_snapshot tâche B (17/05) — détermine si le marché d un
+   * ticker macro est ouvert à l instant t.
+   *
+   * - FOREX (.FOREX)         : ouvert dimanche 22h UTC → vendredi 22h UTC
+   * - Commodities (.COMM)    : suivent forex (24/5)
+   * - US equities (.US)      : lun-ven 13h-21h UTC (tolère pre/post market)
+   * - Crypto (.CC)           : toujours ouvert (24/7)
+   * - Indices Yahoo (^TNX, ^IRX, ^VIX) et DX-Y.NYB : pas de filtre weekend ici
+   *
+   * Si fermé : le caller doit retourner null sans appel HTTP ni log d erreur,
+   * pour économiser ~2300 calls EODHD/jour (mesuré 17 mai dimanche matin).
+   * Visible (public) pour les tests unitaires Jest.
+   */
+  isMacroTickerMarketOpen(ticker: string, now: Date = new Date()): boolean {
+    const day = now.getUTCDay(); // 0=dimanche, 6=samedi
+    const minuteOfDay = now.getUTCHours() * 60 + now.getUTCMinutes();
+
+    // Crypto et indices Yahoo : pas de filtre weekend ici
+    if (ticker.endsWith('.CC')) return true;
+    if (ticker.startsWith('^') || ticker === 'DX-Y.NYB') return true;
+
+    // FOREX : ouvert dimanche 22h UTC → vendredi 22h UTC
+    if (ticker.endsWith('.FOREX')) {
+      if (day === 6) return false; // samedi fermé toute la journée
+      if (day === 0 && minuteOfDay < 22 * 60) return false; // dimanche avant 22h UTC
+      if (day === 5 && minuteOfDay >= 22 * 60) return false; // vendredi après 22h UTC
+      return true;
+    }
+
+    // Commodities : même règle que forex
+    if (ticker.endsWith('.COMM')) {
+      if (day === 6) return false;
+      if (day === 0 && minuteOfDay < 22 * 60) return false;
+      if (day === 5 && minuteOfDay >= 22 * 60) return false;
+      return true;
+    }
+
+    // US equities (.US) : lun-ven 13h-21h UTC (tolère pre/post market étendu)
+    if (ticker.endsWith('.US')) {
+      if (day === 0 || day === 6) return false; // weekend
+      if (minuteOfDay < 13 * 60 || minuteOfDay >= 21 * 60) return false;
+      return true;
+    }
+
+    // Par défaut : considérer ouvert (ne pas filtrer agressivement)
+    return true;
+  }
+
+  /**
+   * Refactor market_snapshot tâche C (17/05) — fetch dédié crypto via
+   * endpoint live (/api/real-time) avec timeout long (5s) et SANS retry.
+   *
+   * Constat 17/05 sur 7j : BTC-USD.CC et ETH-USD.CC ont 40-50 % d erreurs
+   * timeout via `fetchWithRetry` (1500ms × 3) — l endpoint /real-time est
+   * stable mais répond parfois lentement sur les CC. Un seul fetch avec 5s
+   * de tolérance suffit. Log conservé sous `calledBy='market_snapshot'`
+   * pour permettre la mesure du gain post-deploy.
+   */
+  private async fetchLivePriceForMacro(ticker: string, eodhKey: string): Promise<number | null> {
+    const url = `https://eodhd.com/api/real-time/${encodeURIComponent(ticker)}?api_token=${eodhKey}&fmt=json`;
+    const tStart = Date.now();
+    let statusCode: number | null = null;
+    let priceUsd: number | null = null;
+
+    try {
+      const controller = new AbortController();
+      const tid = setTimeout(() => controller.abort(), 5000);
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(tid);
+      statusCode = res.status;
+      if (!res.ok) {
+        this.logEodhdCall({
+          ticker, eodhdTicker: ticker, source: 'eodhd', success: false,
+          statusCode, latencyMs: Date.now() - tStart, calledBy: 'market_snapshot',
+          errorMessage: `HTTP_${statusCode}`,
+        });
+        return null;
+      }
+      const d = await res.json() as Record<string, unknown>;
+      const v = Number(d['close'] ?? d['previousClose'] ?? d['open'] ?? d['last']);
+      if (Number.isFinite(v) && v > 0) {
+        priceUsd = v;
+        this.logEodhdCall({
+          ticker, eodhdTicker: ticker, source: 'eodhd', success: true,
+          statusCode, latencyMs: Date.now() - tStart, priceUsd, calledBy: 'market_snapshot',
+        });
+        return v;
+      }
+      this.logEodhdCall({
+        ticker, eodhdTicker: ticker, source: 'eodhd', success: false,
+        statusCode, latencyMs: Date.now() - tStart, calledBy: 'market_snapshot',
+        errorMessage: 'empty_price_field',
+      });
+      return null;
+    } catch (e) {
+      this.logEodhdCall({
+        ticker, eodhdTicker: ticker, source: 'eodhd', success: false,
+        latencyMs: Date.now() - tStart, calledBy: 'market_snapshot',
+        errorMessage: String(e).slice(0, 200),
+      });
+      return null;
+    }
+  }
+
+  /**
    * Fetch live market snapshot via EODHD avec **fallback chain à 3 niveaux** :
    *
    *   1. LIVE   : ticker primaire EODHD
@@ -3053,7 +3158,23 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       this.quoteSourceCounters.set(key, (this.quoteSourceCounters.get(key) ?? 0) + 1);
     };
 
+    // Refactor market_snapshot 17/05 — flags rollback en moins de 30s via Fly secrets.
+    const weekendSkipEnabled = process.env.MARKET_SNAPSHOT_WEEKEND_SKIP_ENABLED !== 'false';
+    const cryptoViaLivePrice = process.env.MARKET_SNAPSHOT_CRYPTO_VIA_LIVE_PRICE !== 'false';
+
     const fetchNum = async (ticker: string): Promise<number | null> => {
+      // Tâche B — skip silencieux si marché fermé (forex/commodities/.US le weekend).
+      // Pas de HTTP, pas d entrée eodhd_request_log : c est le coeur de l économie.
+      if (weekendSkipEnabled && !this.isMacroTickerMarketOpen(ticker)) {
+        return null;
+      }
+      // Tâche C — crypto via /real-time avec timeout long sans retry (40-50 % moins d erreurs).
+      if (cryptoViaLivePrice && ticker.endsWith('.CC')) {
+        this.realtimePrice.recordEodhdCall();
+        const cv = await this.fetchLivePriceForMacro(ticker, eodhKey);
+        incCounter(ticker, 'eodhd', cv != null ? 'ok' : 'fail');
+        return cv;
+      }
       // P0-B — wrapping fetchWithRetry : timeout 1500ms, retry 2x, backoff 250ms.
       this.realtimePrice.recordEodhdCall();
       const v = await fetchWithRetry(async (signal) => {
@@ -3303,9 +3424,9 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         { ticker: 'IRX.INDX', source: 'eodhd', quality: 'live' },
         { ticker: 'DGS2', source: 'fred', quality: 'live' },
       ]),
-      // Brent : .COMM 404 → ETF USO proxy (× 1.05 ≈ proche WTI/Brent)
+      // Brent : .COMM 404 systématique côté EODHD → retiré (refactor A 17/05).
+      // Cascade conservée avec USO ETF proxy (× 1.05 ≈ proche WTI/Brent).
       fetchCascade('brent', [
-        { ticker: 'BRENT.COMM', quality: 'live' },
         { ticker: 'USO.US', multiplier: 1.05, quality: 'proxy' },
       ]),
       // Crypto : OK
