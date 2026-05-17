@@ -94,6 +94,8 @@ import { SanityR5Service } from './services/sanity-r5.service';
 // Phase 5 N2 — Kelly fractional sizing per asset_class
 import { AssetClassKellyConfigService } from './services/asset-class-kelly-config.service';
 import { KellyRecomputeService } from './services/kelly-recompute.service';
+// PR #342 POC — TwelveData service (lecture seule, indicateurs Supertrend/RSI/ATR)
+import { TwelveDataService } from './services/twelve-data.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule, BotLabModule, GainersModule],
@@ -208,6 +210,8 @@ import { KellyRecomputeService } from './services/kelly-recompute.service';
     // Phase 5 N2 — Kelly fractional sizing (lecture cache + worker cron horaire)
     AssetClassKellyConfigService,
     KellyRecomputeService,
+    // PR #342 POC — TwelveData (flags consumer OFF par défaut, aucun impact runtime)
+    TwelveDataService,
   ],
   exports: [
     LisaService,
