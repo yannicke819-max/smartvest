@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Sparkles, Target, ShieldAlert, TrendingUp, Activity, ChevronDown, ChevronUp } from 'lucide-react';
+import Link from 'next/link';
+import { Sparkles, Target, ShieldAlert, TrendingUp, Activity, ChevronDown, ChevronUp, SlidersHorizontal } from 'lucide-react';
 import { usePortfolios } from '@/hooks/use-portfolio';
 import { deduplicateSimulationPortfolios } from '@/app/actions/paper-portfolio';
 import { useQueryClient } from '@tanstack/react-query';
@@ -578,6 +579,22 @@ export default function LisaPage() {
           <AutopilotBudgetBadge portfolioId={selectedPortfolioId} />
         </div>
       )}
+
+      {/* PR #340 — Lien permanent vers la page Paramètres adaptatifs (Phase 5 N1+N2) */}
+      <div className="flex items-center justify-between rounded-md border bg-muted/30 px-4 py-2">
+        <div className="flex items-center gap-2 text-sm">
+          <SlidersHorizontal className="h-4 w-4 text-muted-foreground" />
+          <span className="text-muted-foreground">
+            Matrice TP/SL par classe d&apos;actif, dashboard Quick Wins, état Risk en temps réel
+          </span>
+        </div>
+        <Link
+          href="/lisa/parameters"
+          className="text-sm font-medium text-primary hover:underline"
+        >
+          Paramètres adaptatifs →
+        </Link>
+      </div>
 
       {/* PR #338 — bandeau état de risque (circuit breaker + sanity rejections + flags Fly) */}
       {selectedPortfolioId && <RiskStateBanner portfolioId={selectedPortfolioId} />}
