@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Cron } from '@nestjs/schedule';
 import WebSocket from 'ws';
 import { SupabaseService } from '../../supabase/supabase.service';
 
@@ -35,6 +36,11 @@ export class RealtimePriceService implements OnModuleDestroy {
   private subscribedStreams = new Set<string>();
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // PR #343 — observability WS Binance (Option C, snapshot 5 min).
+  // Compteurs alimentés par le handler `message` ; reset après chaque snapshot.
+  private msgCounter5min = 0;
+  private lastMsgTs: number | null = null;
 
   /** Cache de prix : ticker uppercase → { price, source, asOf } */
   private cache = new Map<string, { price: string; source: 'binance_ws' | 'eodhd'; asOf: string }>();
@@ -203,6 +209,10 @@ export class RealtimePriceService implements OnModuleDestroy {
       });
 
       this.ws.on('message', (data: WebSocket.RawData) => {
+        // PR #343 — comptage messages pour snapshot santé (cron 5 min).
+        // Tout message reçu compte, même un parse-error (preuve d activité réseau).
+        this.msgCounter5min += 1;
+        this.lastMsgTs = Date.now();
         try {
           const raw = data.toString('utf8');
           const msg = JSON.parse(raw);
@@ -397,5 +407,101 @@ export class RealtimePriceService implements OnModuleDestroy {
       callsLastMinute,
       rateLimitPerMinute: EODHD_RATE_LIMIT_PER_MINUTE,
     };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // PR #343 — Observability snapshot Binance WS (Option C, sans changer le
+  // comportement runtime). Logue toutes les 5 min un JSON structuré pour
+  // permettre grep VictoriaLogs + alerting silent-failure futur.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** Map WebSocket readyState → label lisible. Visible pour tests. */
+  mapWsState(readyState: number | undefined | null): string {
+    if (readyState === undefined || readyState === null) return 'NOT_INITIALIZED';
+    const states = ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'];
+    return states[readyState] ?? 'UNKNOWN';
+  }
+
+  /**
+   * Détecte une "silent failure" : WS rapporte OPEN mais aucun message
+   * reçu sur les 5 dernières minutes alors que des symboles sont abonnés.
+   * Visible pour tests unitaires.
+   */
+  static computeSilentFailureSuspected(
+    wsState: string,
+    symbolsSubscribedCount: number,
+    msgCount5min: number,
+  ): boolean {
+    return wsState === 'OPEN' && symbolsSubscribedCount > 0 && msgCount5min === 0;
+  }
+
+  /**
+   * Compte les positions crypto ouvertes du portfolio principal.
+   * Lecture-seule Supabase. Fail-open : retourne null si erreur (pas de crash cron).
+   */
+  async getOpenCryptoPositionsCount(): Promise<number | null> {
+    if (!this.supabase.isReady()) return null;
+    const portfolioId =
+      this.config.get<string>('PORTFOLIO_ID') ?? '58439d86-3f20-4a60-82a4-307f3f252bc2';
+    try {
+      const { count, error } = await this.supabase
+        .getClient()
+        .from('lisa_positions')
+        .select('id', { count: 'exact', head: true })
+        .eq('portfolio_id', portfolioId)
+        .in('asset_class', ['crypto_major', 'crypto_alt'])
+        .eq('status', 'open');
+      if (error) {
+        this.logger.warn(`[binance-ws-health] crypto positions query failed: ${error.message}`);
+        return null;
+      }
+      return count ?? 0;
+    } catch (err) {
+      this.logger.warn(`[binance-ws-health] crypto positions exception: ${(err as Error).message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Cron 5 min : snapshot santé Binance WS en JSON structuré.
+   * Désactivable via `BINANCE_WS_HEALTH_LOG_ENABLED=false` (default true).
+   */
+  @Cron('*/5 * * * *', { name: 'binance-ws-health-snapshot' })
+  async logBinanceWsHealthSnapshot(): Promise<void> {
+    const flag = this.config.get<string>('BINANCE_WS_HEALTH_LOG_ENABLED') ?? 'true';
+    if (flag !== 'true') return;
+
+    const now = Date.now();
+    const wsState = this.mapWsState(this.ws?.readyState);
+    const symbolsSubscribed = Array.from(this.subscribedStreams);
+    const lastMsgAgeSeconds = this.lastMsgTs ? (now - this.lastMsgTs) / 1000 : null;
+    const openCryptoPositions = await this.getOpenCryptoPositionsCount();
+    const silentFailureSuspected = RealtimePriceService.computeSilentFailureSuspected(
+      wsState,
+      symbolsSubscribed.length,
+      this.msgCounter5min,
+    );
+
+    const snapshot = {
+      event: 'binance_ws_health',
+      ts_utc: new Date(now).toISOString(),
+      ws_state: wsState,
+      symbols_subscribed_count: symbolsSubscribed.length,
+      symbols_subscribed: symbolsSubscribed,
+      msg_count_last_5min: this.msgCounter5min,
+      last_msg_age_seconds: lastMsgAgeSeconds,
+      open_crypto_positions: openCryptoPositions,
+      silent_failure_suspected: silentFailureSuspected,
+    };
+
+    this.logger.log(`[binance-ws-health] ${JSON.stringify(snapshot)}`);
+    if (silentFailureSuspected) {
+      this.logger.warn(
+        `[binance-ws-health] SILENT FAILURE SUSPECTED: ws=OPEN, ${symbolsSubscribed.length} symbols, 0 msg in 5min`,
+      );
+    }
+
+    // Reset compteur fenêtre 5 min.
+    this.msgCounter5min = 0;
   }
 }
