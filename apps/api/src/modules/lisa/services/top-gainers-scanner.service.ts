@@ -24,6 +24,10 @@ import { Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import { SchedulerRegistry } from '@nestjs/schedule';
 // PR #344 P1 — logger EODHD partagé pour instrumenter les screener calls
 import { EodhdLoggerService } from './eodhd-logger.service';
+// PR #345 — filtres TwelveData (Supertrend US + RSI crypto)
+import { TwelveDataService } from './twelve-data.service';
+import { evaluateTwelveDataFilters } from './twelve-data-scanner-filters';
+import { QwDecisionLoggerService } from '../quick-wins/qw-decision-logger.service';
 import { CronJob } from 'cron';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../supabase/supabase.service';
@@ -538,6 +542,12 @@ export class TopGainersScannerService implements OnModuleInit {
      * existants qui instancient le scanner avec un sous-ensemble de dépendances.
      */
     @Optional() private readonly eodhdLogger?: EodhdLoggerService,
+    /**
+     * PR #345 — TwelveData service pour filtres Supertrend US + RSI crypto.
+     * Optional : si non injecté OU flags OFF, filtres no-op (signal passe normalement).
+     */
+    @Optional() private readonly twelveData?: TwelveDataService,
+    @Optional() private readonly qwLogger?: QwDecisionLoggerService,
   ) {}
 
   /**
@@ -2211,6 +2221,39 @@ export class TopGainersScannerService implements OnModuleInit {
           recordShadowDecision(cand, 'reject_path_eff', persistence);
           continue;
         }
+        // PR #345 — Filtres TwelveData (Supertrend US + RSI crypto). No-op si
+        // flags OFF ou service non injecté. Fail-open total (null TD = pass).
+        if (this.twelveData) {
+          const supertrendEnabled =
+            (this.config.get<string>('TWELVEDATA_FILTER_US_SUPERTREND_ENABLED') ?? 'false') === 'true';
+          const cryptoRsiEnabled =
+            (this.config.get<string>('TWELVEDATA_FILTER_CRYPTO_RSI_ENABLED') ?? 'false') === 'true';
+          if (supertrendEnabled || cryptoRsiEnabled) {
+            const tdFilter = await evaluateTwelveDataFilters({
+              symbol: cand.symbol,
+              assetClass: cand.assetClass,
+              supertrendEnabled,
+              cryptoRsiEnabled,
+              twelveData: this.twelveData,
+            });
+            if (tdFilter.decision !== 'accept') {
+              this.logger.log(
+                `[top-gainers] ${cand.symbol} TwelveData filter ${tdFilter.decision}: ${tdFilter.reason}`,
+              );
+              this.qwLogger?.log({
+                qwId: tdFilter.decision === 'reject_supertrend_down' ? 'TD_SUPERTREND_US' : 'TD_RSI_CRYPTO',
+                symbol: cand.symbol,
+                assetClass: cand.assetClass,
+                decision: 'block',
+                reason: tdFilter.reason,
+                wouldHavePassedWithoutFlag: true,
+              });
+              recordShadowDecision(cand, tdFilter.decision, persistence);
+              continue;
+            }
+          }
+        }
+
         this.logger.log(
           `[top-gainers] ${cand.symbol} persistence=${persistence.persistenceCount} score=${persistence.persistenceScore.toFixed(2)} pathEff=${persistence.pathQuality?.overallEfficiency?.toFixed(2) ?? 'n/a'} (${persistence.pathQuality?.overallSmoothness ?? 'n/a'}) → OPEN`,
         );

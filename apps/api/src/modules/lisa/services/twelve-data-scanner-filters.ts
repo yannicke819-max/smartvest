@@ -1,0 +1,91 @@
+/**
+ * PR #345 — helpers purs pour les filtres TwelveData branchés sur le scanner gainers.
+ *
+ * Logique extraite en module pour tester unitairement sans booter le scanner
+ * (TopGainersScannerService = 2700 LOC, dépendances DI lourdes).
+ *
+ * Filtres :
+ *   1. Supertrend US equity 30m   : reject si direction='down' (us_equity_large/small_mid)
+ *   2. RSI crypto 5m surachat     : reject si value > 75 (crypto_major)
+ *
+ * Le filtre ne court PAS si :
+ *   - le flag d'env est désactivé (default OFF)
+ *   - asset_class ne correspond pas
+ *   - TwelveData retourne null (fail-open : signal passe)
+ *   - le symbole n'est pas mappable (crypto seulement)
+ */
+
+import type { TwelveDataService } from './twelve-data.service';
+
+export type ScannerFilterDecision =
+  | { decision: 'accept' }
+  | { decision: 'reject_supertrend_down'; reason: string }
+  | { decision: 'reject_rsi_overbought'; reason: string };
+
+const US_CLASSES = new Set(['us_equity_large', 'us_equity_small_mid']);
+const CRYPTO_CLASSES = new Set(['crypto_major']);
+const RSI_OVERBOUGHT_THRESHOLD = 75;
+
+export interface FilterContext {
+  symbol: string;
+  assetClass: string;
+  supertrendEnabled: boolean;
+  cryptoRsiEnabled: boolean;
+  twelveData: TwelveDataService;
+}
+
+/**
+ * Applique les filtres TwelveData dans l'ordre :
+ *   1. Supertrend US (si flag ON + asset_class US)
+ *   2. RSI crypto (si flag ON + asset_class crypto)
+ *
+ * Retourne `{ decision: 'accept' }` si tous les filtres passent (ou sont OFF).
+ * Sinon, le 1er filtre qui bloque renvoie son decision + reason.
+ *
+ * Fail-open : tout retour `null` de TwelveData (clé absente, rate limit, etc.)
+ * est traité comme "info indisponible → on laisse passer".
+ */
+export async function evaluateTwelveDataFilters(
+  ctx: FilterContext,
+): Promise<ScannerFilterDecision> {
+  // Filtre 1 — Supertrend US 30m
+  if (ctx.supertrendEnabled && US_CLASSES.has(ctx.assetClass)) {
+    const st = await ctx.twelveData.getSupertrendSignal(ctx.symbol, '30min', 10, 3, 'scanner_us_supertrend');
+    if (st !== null && st.direction === 'down') {
+      return {
+        decision: 'reject_supertrend_down',
+        reason: `supertrend direction=down at ${st.timestamp} value=${st.value.toFixed(4)}`,
+      };
+    }
+  }
+
+  // Filtre 2 — RSI crypto 5m overbought
+  if (ctx.cryptoRsiEnabled && CRYPTO_CLASSES.has(ctx.assetClass)) {
+    const tdSymbol = TwelveDataServiceStaticMapper(ctx.symbol, ctx.twelveData);
+    if (tdSymbol !== null) {
+      const rsi = await ctx.twelveData.getRsi(tdSymbol, '5min', 14, 'scanner_crypto_rsi');
+      if (rsi !== null && rsi.value > RSI_OVERBOUGHT_THRESHOLD) {
+        return {
+          decision: 'reject_rsi_overbought',
+          reason: `RSI ${rsi.value.toFixed(2)} > ${RSI_OVERBOUGHT_THRESHOLD} (overbought) at ${rsi.timestamp}`,
+        };
+      }
+    }
+  }
+
+  return { decision: 'accept' };
+}
+
+/**
+ * Helper pour appeler le mapper static depuis le service injecté (le TypeScript
+ * d'instance ne voit pas les méthodes static — on accède via la classe).
+ */
+function TwelveDataServiceStaticMapper(symbol: string, instance: TwelveDataService): string | null {
+  const ctor = instance.constructor as unknown as {
+    binanceToTwelveDataCrypto?: (pair: string) => string | null;
+  };
+  if (typeof ctor.binanceToTwelveDataCrypto === 'function') {
+    return ctor.binanceToTwelveDataCrypto(symbol);
+  }
+  return null;
+}
