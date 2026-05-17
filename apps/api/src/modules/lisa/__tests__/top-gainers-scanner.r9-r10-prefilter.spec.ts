@@ -38,6 +38,7 @@ function makeConfig(env: Record<string, string> = {}): ConfigService {
     get: (key: string) => {
       if (key === 'SCAN_INTERVAL_MINUTES') return '15';
       if (key === 'EODHD_API_KEY') return 'test-key';
+      if (key === 'EODHD_WEEKEND_FILTER_ENABLED') return env[key] ?? 'false';
       return env[key];
     },
   } as unknown as ConfigService;

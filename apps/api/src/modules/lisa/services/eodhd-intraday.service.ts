@@ -2,6 +2,8 @@ import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { TickerBlacklistService } from './ticker-blacklist.service';
+// PR #339 — Weekend / session-closed filter sur getCandles (couche basse).
+import { isMarketOpenForClass, marketForSymbol } from '@smartvest/ai-analyst';
 
 /**
  * EodhdIntradayService — récupère les bougies intraday OHLCV depuis EODHD
@@ -65,6 +67,8 @@ export interface RawTick {
 @Injectable()
 export class EodhdIntradayService {
   private readonly logger = new Logger(EodhdIntradayService.name);
+  /** PR #339 — Weekend / session-closed filter (default ON, kill-switch via env). */
+  private readonly weekendFilterEnabled: boolean;
   private cache = new Map<string, CandleSeries>();
 
   constructor(
@@ -90,6 +94,12 @@ export class EodhdIntradayService {
       const tail = k.length >= 4 ? k.slice(-4) : '****';
       this.logger.log(`[eodhd] provider initialized, key=***${tail} (length=${k.length})`);
     }
+
+    // PR #339 — Weekend filter sur getCandles (kill-switch via env, default ON).
+    // Si EODHD_WEEKEND_FILTER_ENABLED=false → désactive le filtre, retour comportement legacy.
+    const weekendFlag = this.config.get<string>('EODHD_WEEKEND_FILTER_ENABLED');
+    this.weekendFilterEnabled = weekendFlag !== 'false';
+    this.logger.log(`[eodhd] weekend filter ${this.weekendFilterEnabled ? 'ENABLED' : 'DISABLED'}`);
   }
 
   private apiKey(): string | null {
@@ -237,6 +247,27 @@ export class EodhdIntradayService {
     if (this.blacklist?.isBlacklisted(eodhdTicker)) {
       this.logger.debug(`[eodhd] ${eodhdTicker} skipped (blacklist)`);
       return null;
+    }
+
+    // PR #339 — Skip fetch si session/weekend fermé pour la classe marché du ticker.
+    // Source bug 17/05/2026 : 5242 calls intraday asia en 12h weekend (100 % empty,
+    // 26k API calls EODHD gaspillés). Protège TOUS les callers (multi-tf,
+    // shadow-signals, lisa.service, etc.) d un coup à la couche basse.
+    //
+    // Crypto exempté (24/7). Unknown market = passe (conservateur, on ne casse
+    // rien pour forex/commodities/indices futurs).
+    if (this.weekendFilterEnabled) {
+      const cls = marketForSymbol(eodhdTicker);
+      if (cls && cls !== 'crypto' && !isMarketOpenForClass(cls, new Date())) {
+        this.logger.debug(`[eodhd] ${eodhdTicker} skipped (session closed for ${cls})`);
+        this.logCall({
+          ticker: eodhdTicker,
+          success: false,
+          statusCode: 0,
+          errorMessage: 'SKIP_SESSION_CLOSED',
+        });
+        return null;
+      }
     }
 
     // PR #284 — Mode range explicite : skip cache (range-specific), guard

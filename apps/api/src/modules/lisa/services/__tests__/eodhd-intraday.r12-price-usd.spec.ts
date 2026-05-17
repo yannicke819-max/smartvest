@@ -23,7 +23,11 @@ jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
 
 function makeServiceWithCapture() {
   const config = {
-    get: jest.fn((k: string) => (k === 'EODHD_API_KEY' ? 'test-key' : undefined)),
+    get: jest.fn((k: string) => {
+      if (k === 'EODHD_API_KEY') return 'test-key';
+      if (k === 'EODHD_WEEKEND_FILTER_ENABLED') return 'false';
+      return undefined;
+    }),
   } as unknown as ConfigService;
   const inserted: Array<Record<string, unknown>> = [];
   const insertMock = jest.fn().mockImplementation((row: Record<string, unknown>) => {
