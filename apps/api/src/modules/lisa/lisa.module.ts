@@ -18,6 +18,8 @@ import { ExchangeHoursService } from './services/exchange-hours.service';
 import { BinanceMarketService } from './services/binance-market.service';
 import { EodhdMacroService } from './services/eodhd-macro.service';
 import { EodhdScreenerService } from './services/eodhd-screener.service';
+// PR #344 P1 — logger EODHD partagé (instrumentation quota)
+import { EodhdLoggerService } from './services/eodhd-logger.service';
 import { EodhdInsiderService } from './services/eodhd-insider.service';
 import { EodhdOptionsService } from './services/eodhd-options.service';
 import { BinanceLiquidationsService } from './services/binance-liquidations.service';
@@ -114,6 +116,8 @@ import { TwelveDataService } from './services/twelve-data.service';
     BinanceMarketService,
     EodhdMacroService,
     EodhdScreenerService,
+    // PR #344 P1 — logger EODHD partagé (instrumentation quota)
+    EodhdLoggerService,
     EodhdInsiderService,
     EodhdOptionsService,
     BinanceLiquidationsService,
