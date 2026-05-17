@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Headers, HttpCode, Param, Post, Query } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Headers, HttpCode, Param, Patch, Post, Query } from '@nestjs/common';
 import { extractUserId } from '../../common/extract-user-id';
 import { LisaService } from './services/lisa.service';
 import { DecisionLogService } from './services/decision-log.service';
@@ -8,6 +8,10 @@ import { NewsRankerService } from './services/news-ranker.service';
 import { EodhdEnrichmentService } from './services/eodhd-enrichment.service';
 import { NewsAggregatorService } from './services/news-aggregator.service';
 import { SupabaseService } from '../supabase/supabase.service';
+// PR #338 — UI Phase 5 N1+N2 (matrice TP/SL, QW activity, risk state)
+import { AssetClassTpslService } from './services/asset-class-tpsl.service';
+import { QuickWinsStatsService } from './services/quick-wins-stats.service';
+import { RiskStateService } from './services/risk-state.service';
 import { DailySessionService } from './services/daily-session.service';
 import { ProfitSweepService } from './services/profit-sweep.service';
 import { MacroModeService, type MacroMode } from './services/macro-mode.service';
@@ -50,7 +54,52 @@ export class LisaController {
     private readonly gainersUserShadow: GainersUserShadowService,
     private readonly gainersAutoRelax: GainersAutoRelaxService,
     private readonly postSlBackfill: PostSlBackfillService,
+    private readonly assetClassTpsl: AssetClassTpslService,
+    private readonly qwStats: QuickWinsStatsService,
+    private readonly riskState: RiskStateService,
   ) {}
+
+  // ─────────────────────────────────────────────────────────────────
+  // PR #338 — UI Phase 5 N1+N2 endpoints
+  // ─────────────────────────────────────────────────────────────────
+
+  @Get('asset-class-tpsl')
+  listAssetClassTpsl(@Headers() headers: Record<string, string>) {
+    extractUserId(headers);
+    return this.assetClassTpsl.list();
+  }
+
+  @Patch('asset-class-tpsl/:assetClass')
+  updateAssetClassTpsl(
+    @Headers() headers: Record<string, string>,
+    @Param('assetClass') assetClass: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    extractUserId(headers);
+    return this.assetClassTpsl.update(assetClass, body);
+  }
+
+  @Get('quick-wins/stats')
+  qwStats24h(@Headers() headers: Record<string, string>) {
+    extractUserId(headers);
+    return this.qwStats.stats24h();
+  }
+
+  @Get('quick-wins/recent')
+  qwRecent(@Headers() headers: Record<string, string>, @Query('limit') limit?: string) {
+    extractUserId(headers);
+    const parsed = parseInt(limit ?? '50', 10);
+    return this.qwStats.recent(Number.isFinite(parsed) ? parsed : 50);
+  }
+
+  @Get('risk-state/:portfolioId')
+  getRiskState(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    extractUserId(headers);
+    return this.riskState.portfolioRiskState(portfolioId);
+  }
 
   // ─────────────────────────────────────────────────────────────────
   // MACRO MODE — INVESTMENT vs HARVEST
