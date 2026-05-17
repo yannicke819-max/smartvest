@@ -22,7 +22,7 @@ jest.spyOn(Logger.prototype, 'debug').mockImplementation(() => undefined);
 jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
 jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
 
-function makeService(envMap: Record<string, string | undefined> = { EODHD_API_KEY: 'test-key' }) {
+function makeService(envMap: Record<string, string | undefined> = { EODHD_API_KEY: 'test-key', EODHD_WEEKEND_FILTER_ENABLED: 'false' }) {
   const config = { get: jest.fn((k: string) => envMap[k]) } as unknown as ConfigService;
   const supabase = {
     isReady: () => true,

@@ -22,6 +22,7 @@ const mockApiCostTracker = {
 const mockConfig = {
   get: jest.fn((key: string) => {
     if (key === 'EODHD_API_KEY') return 'test-api-key';
+    if (key === 'EODHD_WEEKEND_FILTER_ENABLED') return 'false';
     return undefined;
   }),
 } as unknown as { get: jest.Mock };
