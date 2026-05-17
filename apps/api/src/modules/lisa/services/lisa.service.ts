@@ -3042,6 +3042,36 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
   }
 
   /**
+   * PR #341 — détermine si TOUS les `attempts` d'une cascade ciblent des
+   * marchés fermés (.US/.FOREX/.COMM hors session). Si oui, le caller skip
+   * silencieusement les calls HTTP.
+   *
+   * Exemptions : FRED (EOD officiel servi 24/7), Yahoo indices (^VIX, ^TNX,
+   * ^IRX), DX-Y.NYB, crypto (.CC) — ces sources renvoient un last-close
+   * acceptable même hors session.
+   *
+   * Visible (public) pour tests unitaires Jest.
+   */
+  isCascadeFullyClosed(
+    attempts: Array<{
+      ticker: string;
+      source?: 'eodhd' | 'yahoo' | 'stooq' | 'fred';
+      multiplier?: number;
+      quality?: 'live' | 'proxy';
+    }>,
+    now: Date = new Date(),
+  ): boolean {
+    if (attempts.length === 0) return false;
+    return attempts.every((a) => {
+      const src = a.source ?? 'eodhd';
+      if (src === 'fred') return false;
+      if (a.ticker.startsWith('^') || a.ticker === 'DX-Y.NYB') return false;
+      if (a.ticker.endsWith('.CC')) return false;
+      return !this.isMacroTickerMarketOpen(a.ticker, now);
+    });
+  }
+
+  /**
    * Refactor market_snapshot tâche C (17/05) — fetch dédié crypto via
    * endpoint live (/api/real-time) avec timeout long (5s) et SANS retry.
    *
@@ -3326,6 +3356,38 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         quality: 'live' | 'proxy';
       }>,
     ): Promise<number | null> => {
+      // PR #341 — early-return silencieux si TOUS les tickers de la cascade
+      // ciblent des marchés fermés (.US/.FOREX/.COMM hors session). Évite 9
+      // ERROR logs/heure le weekend sur cron market_snapshot (silver, gold,
+      // lqd, hyg, usdjpy, eurusd, qqq, spy, brent) en short-circuitant avant
+      // tout call HTTP qui retournerait null de toute façon.
+      //
+      // Exemptions :
+      //   - source 'fred' : sert l'EOD officiel même le weekend
+      //   - ticker '^...' ou 'DX-Y.NYB' (Yahoo) : last-close servi 24/7
+      //   - ticker '.CC' (crypto) : 24/7
+      //
+      // Kill-switch : LISA_MACRO_WEEKEND_FILTER_ENABLED=false (default ON).
+      const macroWeekendFilterEnabled =
+        process.env.LISA_MACRO_WEEKEND_FILTER_ENABLED !== 'false';
+      if (macroWeekendFilterEnabled && this.isCascadeFullyClosed(attempts)) {
+        const cached = this.lastKnownMacroValues.get(indicator);
+        if (cached && Date.now() - cached.timestamp < this.LAST_KNOWN_TTL_MS) {
+          dataQuality.stale.push(
+            `${indicator}(last_known_age=${Math.round((Date.now() - cached.timestamp) / 60_000)}min, weekend_skip)`,
+          );
+          this.logger.debug(
+            `[macro] ${indicator} weekend skip — serving last-known $${cached.value.toFixed(2)} (age ${Math.round((Date.now() - cached.timestamp) / 60_000)}min)`,
+          );
+          return cached.value;
+        }
+        dataQuality.fallback.push(indicator);
+        this.logger.debug(
+          `[macro] ${indicator} weekend skip — all sources closed, falling through to hardcoded default (silent)`,
+        );
+        return null;
+      }
+
       for (const a of attempts) {
         const source = a.source ?? 'eodhd';
         let v: number | null = null;
