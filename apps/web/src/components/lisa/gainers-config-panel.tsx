@@ -257,9 +257,12 @@ export function GainersConfigPanel({ portfolioId }: Props) {
       <section className="space-y-3">
         <div className="text-xs uppercase tracking-wider text-foreground font-semibold">
           2. Take-profit / Stop-loss
+          <span className="ml-2 normal-case text-[10px] font-normal text-amber-400">
+            Override matrice par classe actif (5 classes seedées)
+          </span>
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Take-profit défaut (%)" hint="(0, 50]">
+          <Field label="Take-profit défaut (%)" hint="(0, 50] — override matrice TP/SL prend le pas par classe">
             <input
               type="number"
               min={0.1}
@@ -270,7 +273,7 @@ export function GainersConfigPanel({ portfolioId }: Props) {
               className="h-8 w-full rounded-md border bg-background px-2 text-xs"
             />
           </Field>
-          <Field label="Stop-loss défaut (%)" hint="(0, 20]">
+          <Field label="Stop-loss défaut (%)" hint="(0, 20] — override matrice TP/SL prend le pas par classe">
             <input
               type="number"
               min={0.1}
@@ -282,6 +285,12 @@ export function GainersConfigPanel({ portfolioId }: Props) {
             />
           </Field>
         </div>
+        <a
+          href="/lisa/parameters"
+          className="inline-block text-xs text-blue-400 hover:text-blue-300 hover:underline"
+        >
+          Configurer TP/SL par classe d&apos;actif →
+        </a>
       </section>
 
       {/* 3. Cooldown */}

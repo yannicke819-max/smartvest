@@ -84,6 +84,10 @@ import {
 } from './quick-wins';
 // Phase 5 N1 PR-2 — matrice TP/SL par asset_class
 import { AssetClassTpSlConfigService } from './services/asset-class-tpsl-config.service';
+// PR #338 — UI Phase 5 N1+N2
+import { AssetClassTpslService } from './services/asset-class-tpsl.service';
+import { QuickWinsStatsService } from './services/quick-wins-stats.service';
+import { RiskStateService } from './services/risk-state.service';
 // Phase 5 N1 PR-3+PR-4 — circuit breaker + sanity R5 hotfix
 import { LisaCircuitBreakerService } from './services/circuit-breaker.service';
 import { SanityR5Service } from './services/sanity-r5.service';
@@ -186,6 +190,10 @@ import { KellyRecomputeService } from './services/kelly-recompute.service';
     QuickWinsPipelineService,
     // Phase 5 N1 PR-2 — matrice TP/SL DB-driven (read-only, cache 60s, fail-open)
     AssetClassTpSlConfigService,
+    // PR #338 — UI Phase 5 N1+N2 (lecture/écriture matrice TP/SL, agrégation QW stats, état de risque)
+    AssetClassTpslService,
+    QuickWinsStatsService,
+    RiskStateService,
     // Phase 5 N1 PR-3+PR-4 — nouveaux QWs + circuit breaker + sanity R5
     Qw3WarmupExtendedService,
     Qw4RegimeFilterService,

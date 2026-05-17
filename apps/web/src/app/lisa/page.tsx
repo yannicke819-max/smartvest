@@ -36,6 +36,7 @@ import { LiveTradingStatusPanel } from '@/components/lisa/live-trading-status-pa
 import { LiveTradingWizard } from '@/components/lisa/live-trading-wizard';
 import { useOperatingMode } from '@/hooks/use-operating-mode';
 import { AutopilotBudgetBadge } from '@/components/lisa/autopilot-budget-badge';
+import { RiskStateBanner } from '@/components/lisa/risk-state-banner';
 import { LisaDecisionLog } from '@/components/lisa/decision-log';
 import { MechanicalAgentCard } from '@/components/lisa/mechanical-agent-card';
 import { OptionPositionsCard } from '@/components/lisa/option-positions-card';
@@ -577,6 +578,9 @@ export default function LisaPage() {
           <AutopilotBudgetBadge portfolioId={selectedPortfolioId} />
         </div>
       )}
+
+      {/* PR #338 — bandeau état de risque (circuit breaker + sanity rejections + flags Fly) */}
+      {selectedPortfolioId && <RiskStateBanner portfolioId={selectedPortfolioId} />}
 
       {/* Phase G LIVE — Status panel (auto-shown si LIVE flags activés) */}
       <LiveTradingStatusPanel />
