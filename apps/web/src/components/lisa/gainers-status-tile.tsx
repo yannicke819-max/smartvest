@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Rocket, TrendingUp, TrendingDown, Settings2, Calendar, CalendarDays, CalendarRange, Activity } from 'lucide-react';
+import { Rocket, TrendingUp, TrendingDown, Settings2, Calendar, CalendarDays, CalendarRange, Activity, RotateCcw } from 'lucide-react';
 import {
   useGainersStatus,
   useGainersConfig,
@@ -15,6 +15,8 @@ import {
   type PersistenceCandidate,
   type GainersStatus,
 } from '@/hooks/use-operating-mode';
+import { useHarvestDisplayOffset, type HarvestOffset } from '@/hooks/use-harvest-display-offset';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 
 /**
  * P19y (29/04/2026) — Inférence cause cellule "—" pour badge UI.
@@ -148,9 +150,30 @@ export function GainersStatusTile({ portfolioId }: { portfolioId: string }) {
     return () => clearInterval(id);
   }, []);
 
+  // PR #348 — rebase localStorage des 3 cartes Gains du jour/mois/année.
+  // Réutilise le hook créé en PR #347 ; mapping des champs spécifique au mode
+  // Gainers (pas de vault sécurisé → securedToday/securedDaily/... = 0).
+  const { offset, setRebase, clearRebase } = useHarvestDisplayOffset(portfolioId);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
   if (!isGainersMode) return null;
 
   const data = statusQuery.data;
+
+  const handleRebaseConfirm = () => {
+    if (!data) return;
+    setRebase({
+      realizedToday: data.closedTodayPnlUsd,
+      securedToday: 0,
+      dailyRealized: data.closedTodayPnlUsd,
+      dailySecured: 0,
+      mtdRealized: data.mtdPnlUsd ?? 0,
+      mtdSecured: 0,
+      ytdRealized: data.ytdPnlUsd ?? 0,
+      ytdSecured: 0,
+    });
+    setConfirmOpen(false);
+  };
 
   return (
     <div className="rounded-lg border border-orange-200 dark:border-orange-900/40 bg-orange-50/40 dark:bg-orange-950/10 p-4 space-y-3">
@@ -207,12 +230,57 @@ export function GainersStatusTile({ portfolioId }: { portfolioId: string }) {
           </div>
 
           {/* PR #246 — Cartes Gains du jour / Gains du mois (mode-agnostique).
-              Source : paper_trades closed strategy='top_gainers_v1'. */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <DailyGainsCard data={data} />
-            <MonthlyGainsCard data={data} />
-            <YearlyGainsCard data={data} />
+              Source : paper_trades closed strategy='top_gainers_v1'.
+              PR #348 — barre de remise à zéro affichage (offset localStorage). */}
+          <div className="flex items-center justify-end gap-2">
+            {offset && (
+              <span className="text-[10px] text-amber-700 dark:text-amber-300 font-mono">
+                Rebasé depuis{' '}
+                {new Date(offset.rebasedAt).toLocaleString('fr-FR', {
+                  day: '2-digit',
+                  month: '2-digit',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </span>
+            )}
+            {offset ? (
+              <button
+                type="button"
+                onClick={clearRebase}
+                title="Annuler la remise à zéro de l'affichage"
+                className="inline-flex items-center gap-1 h-7 px-2 rounded border text-[11px] hover:bg-muted/50"
+              >
+                <RotateCcw className="h-3 w-3" />
+                Annuler rebase
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmOpen(true)}
+                title="Remettre à zéro l'affichage des gains (jour, mois, année) sans toucher à la DB"
+                className="inline-flex items-center gap-1 h-7 px-2 rounded border text-[11px] hover:bg-muted/50"
+              >
+                <RotateCcw className="h-3 w-3" />
+                Remise à zéro affichage
+              </button>
+            )}
           </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <DailyGainsCard data={data} offset={offset} />
+            <MonthlyGainsCard data={data} offset={offset} />
+            <YearlyGainsCard data={data} offset={offset} />
+          </div>
+
+          <ConfirmDialog
+            open={confirmOpen}
+            title="Remettre à zéro l'affichage des gains ?"
+            description="Cette action capture les valeurs courantes des 3 cartes (jour, mois, année) comme baseline locale. L'affichage soustraira ensuite cette baseline tant qu'elle est active. AUCUNE modification de la base de données : les crons, l'historique paper_trades et les KPIs backend ne sont pas impactés. Tu peux annuler ce rebase en un clic à tout moment."
+            onConfirm={handleRebaseConfirm}
+            onCancel={() => setConfirmOpen(false)}
+            confirmLabel="Remettre à zéro l'affichage"
+            cancelLabel="Annuler"
+          />
 
           {/* PR #258 — Indicateur quota EODHD (auto-pause à 85% / 95%) */}
           <EodhdQuotaIndicator />
@@ -1177,8 +1245,8 @@ function TrajectoryBandeau({ status }: { status: GainersStatus }) {
 // Harvest (mode 'harvest'), désormais visible aussi en mode 'gainers'.
 // ═══════════════════════════════════════════════════════════════════
 
-function DailyGainsCard({ data }: { data: GainersStatus }) {
-  const total = data.closedTodayPnlUsd;
+function DailyGainsCard({ data, offset }: { data: GainersStatus; offset: HarvestOffset | null }) {
+  const total = data.closedTodayPnlUsd - (offset?.dailyRealized ?? 0);
   const isPositive = total >= 0;
   const sign = isPositive ? '+' : '';
   return (
@@ -1216,8 +1284,8 @@ function DailyGainsCard({ data }: { data: GainersStatus }) {
   );
 }
 
-function MonthlyGainsCard({ data }: { data: GainersStatus }) {
-  const total = data.mtdPnlUsd ?? 0;
+function MonthlyGainsCard({ data, offset }: { data: GainersStatus; offset: HarvestOffset | null }) {
+  const total = (data.mtdPnlUsd ?? 0) - (offset?.mtdRealized ?? 0);
   const isPositive = total >= 0;
   const sign = isPositive ? '+' : '';
   const monthLabel = new Date().toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
@@ -1295,8 +1363,8 @@ function MonthlyGainsCard({ data }: { data: GainersStatus }) {
 // de la fin de mois. Reset uniquement au 1er janvier UTC.
 // ═══════════════════════════════════════════════════════════════════
 
-function YearlyGainsCard({ data }: { data: GainersStatus }) {
-  const total = data.ytdPnlUsd ?? 0;
+function YearlyGainsCard({ data, offset }: { data: GainersStatus; offset: HarvestOffset | null }) {
+  const total = (data.ytdPnlUsd ?? 0) - (offset?.ytdRealized ?? 0);
   const isPositive = total >= 0;
   const sign = isPositive ? '+' : '';
   const yearLabel = new Date().getUTCFullYear();
