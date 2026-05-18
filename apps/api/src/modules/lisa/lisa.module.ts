@@ -98,6 +98,8 @@ import { AssetClassKellyConfigService } from './services/asset-class-kelly-confi
 import { KellyRecomputeService } from './services/kelly-recompute.service';
 // PR #342 POC — TwelveData service (lecture seule, indicateurs Supertrend/RSI/ATR)
 import { TwelveDataService } from './services/twelve-data.service';
+// PR #352 — Router intraday TD-first avec fallback EODHD (flag-gated)
+import { IntradayProviderRouter } from './services/intraday-provider-router.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule, BotLabModule, GainersModule],
@@ -216,6 +218,8 @@ import { TwelveDataService } from './services/twelve-data.service';
     KellyRecomputeService,
     // PR #342 POC — TwelveData (flags consumer OFF par défaut, aucun impact runtime)
     TwelveDataService,
+    // PR #352 — Router intraday TD-first (flag OFF par défaut → passthrough EODHD)
+    IntradayProviderRouter,
   ],
   exports: [
     LisaService,

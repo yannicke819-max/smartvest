@@ -57,7 +57,15 @@ const mockIntradayCache = {
 const mockConfig = { get: jest.fn().mockReturnValue(undefined) } as any;
 
 function makeService(): MultiTimeframePersistenceService {
-  return new MultiTimeframePersistenceService(mockBinance, mockEodhd, mockYahoo, mockIntradayCache, mockConfig, { getStatus: () => ({ throttle: { multitfPaused: false } }) } as any);
+  // PR #352 — IntradayProviderRouter ajouté au constructor. Mock passthrough
+  // EODHD (préserve les fixtures p18e).
+  const mockRouter = {
+    getCandles: (ticker: string, interval: '1m' | '5m' | '1h', count: number) =>
+      mockEodhd.getCandles(ticker, interval, count).then((r: unknown) =>
+        r ? { ...(r as Record<string, unknown>), provider: 'eodhd' } : null,
+      ),
+  } as any;
+  return new MultiTimeframePersistenceService(mockBinance, mockEodhd, mockYahoo, mockIntradayCache, mockConfig, { getStatus: () => ({ throttle: { multitfPaused: false } }) } as any, mockRouter);
 }
 
 // ── 1. Aggregated log — single line for N misses ─────────────────────────────

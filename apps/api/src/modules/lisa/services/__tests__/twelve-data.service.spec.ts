@@ -167,7 +167,7 @@ describe('TwelveDataService — PR #342 POC', () => {
     });
   });
 
-  describe('rate limit minute (7 credits/min)', () => {
+  describe('rate limit minute (Basic plan override 7 credits/min)', () => {
     it('8e appel consécutif → null sans HTTP', async () => {
       const fetchMock = jest.fn().mockResolvedValue({
         ok: true,
@@ -176,7 +176,13 @@ describe('TwelveDataService — PR #342 POC', () => {
       });
       (global as { fetch?: unknown }).fetch = fetchMock;
 
-      const svc = makeService();
+      // PR #352 — defaults Pro (8000/min) ; ce test cible la logique rate-limit
+      // via un override Basic explicite.
+      const svc = makeService({
+        TWELVEDATA_API_KEY: 'test-key',
+        TWELVEDATA_PER_MINUTE_LIMIT: '7',
+        TWELVEDATA_PER_DAY_LIMIT: '750',
+      });
       for (let i = 0; i < 7; i++) {
         const r = await svc.getRsi('BTC/USD');
         expect(r).not.toBeNull();
@@ -190,9 +196,13 @@ describe('TwelveDataService — PR #342 POC', () => {
     });
   });
 
-  describe('rate limit jour (750 credits/jour)', () => {
+  describe('rate limit jour (Basic plan override 750 credits/jour)', () => {
     it('au-delà de 750 daily_usage → null silencieux', async () => {
-      const svc = makeService();
+      const svc = makeService({
+        TWELVEDATA_API_KEY: 'test-key',
+        TWELVEDATA_PER_MINUTE_LIMIT: '7',
+        TWELVEDATA_PER_DAY_LIMIT: '750',
+      });
       // Force le tracker à 750 via 750 appels mockés successifs serait trop lent ;
       // on accède au tracker via reflection minimale.
       type Internals = { creditTracker: { consume: (n: number) => void } };
@@ -342,6 +352,177 @@ describe('TwelveDataService — PR #342 POC', () => {
       expect(svc.getDailyUsage()).toBe(0);
       await svc.getRsi('BTC/USD');
       expect(svc.getDailyUsage()).toBe(1);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // PR #352 — méthodes intraday getQuote + getCandles
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('getQuote', () => {
+    it('happy path → parse price + percent_change + timestamp', async () => {
+      mockFetchOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          symbol: 'AAPL',
+          close: '180.45',
+          percent_change: '1.25',
+          timestamp: 1747353600,
+        }),
+      });
+      const svc = makeService();
+      const q = await svc.getQuote('AAPL');
+      expect(q).not.toBeNull();
+      expect(q!.price).toBe(180.45);
+      expect(q!.changePct).toBe(1.25);
+      expect(q!.timestamp).toBe(1747353600 * 1000);
+    });
+
+    it('réponse sans champ close → null', async () => {
+      mockFetchOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ symbol: 'AAPL' }),
+      });
+      const svc = makeService();
+      expect(await svc.getQuote('AAPL')).toBeNull();
+    });
+
+    it('réponse status=error → null', async () => {
+      mockFetchOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ status: 'error', message: 'symbol not found' }),
+      });
+      const svc = makeService();
+      expect(await svc.getQuote('UNKNOWN')).toBeNull();
+    });
+
+    it('clé manquante → null sans HTTP', async () => {
+      const fetchSpy = jest.fn();
+      (global as { fetch?: unknown }).fetch = fetchSpy;
+      const svc = makeService({});
+      expect(await svc.getQuote('AAPL')).toBeNull();
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('price invalide (négatif) → null', async () => {
+      mockFetchOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ close: '-1.5' }),
+      });
+      const svc = makeService();
+      expect(await svc.getQuote('AAPL')).toBeNull();
+    });
+
+    it('HTTP 500 → null + 1 credit consommé', async () => {
+      mockFetchOnce({ ok: false, status: 500, json: async () => ({}) });
+      const svc = makeService();
+      const q = await svc.getQuote('AAPL');
+      expect(q).toBeNull();
+      expect(svc.getDailyUsage()).toBe(1);
+    });
+  });
+
+  describe('getCandles', () => {
+    it('happy path 1min count=20 → 20 candles asc, 4 credits', async () => {
+      const values = Array.from({ length: 20 }, (_, i) => ({
+        datetime: `2026-05-18 14:${String(i).padStart(2, '0')}:00`,
+        open: '180.0',
+        high: '181.0',
+        low: '179.5',
+        close: `${180 + i * 0.1}`,
+        volume: '100000',
+      }));
+      mockFetchOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ values, status: 'ok' }),
+      });
+      const svc = makeService();
+      const r = await svc.getCandles('AAPL', '1min', 20);
+      expect(r).not.toBeNull();
+      expect(r!.candles).toHaveLength(20);
+      // TD renvoie desc, le service doit retourner asc → le premier est i=19 dans la source
+      expect(r!.candles[0].close).toBeCloseTo(180 + 19 * 0.1);
+      expect(r!.candles[19].close).toBe(180);
+      // Forfait : ceil(20/5) = 4 credits
+      expect(svc.getDailyUsage()).toBe(4);
+    });
+
+    it('réponse status=error → null', async () => {
+      mockFetchOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ status: 'error', message: 'no data' }),
+      });
+      const svc = makeService();
+      expect(await svc.getCandles('UNKNOWN')).toBeNull();
+    });
+
+    it('values vide → candles=[] + success log', async () => {
+      mockFetchOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ values: [] }),
+      });
+      const svc = makeService();
+      const r = await svc.getCandles('AAPL');
+      expect(r).not.toBeNull();
+      expect(r!.candles).toHaveLength(0);
+    });
+
+    it('candle avec close invalide → filtrée', async () => {
+      mockFetchOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          values: [
+            { datetime: '2026-05-18 14:00:00', open: '1', high: '1', low: '1', close: '1.5', volume: '100' },
+            { datetime: '2026-05-18 14:01:00', open: '1', high: '1', low: '1', close: 'NaN', volume: '0' },
+          ],
+        }),
+      });
+      const svc = makeService();
+      const r = await svc.getCandles('AAPL');
+      expect(r!.candles).toHaveLength(1);
+      expect(r!.candles[0].close).toBe(1.5);
+    });
+
+    it('clé manquante → null sans HTTP', async () => {
+      const fetchSpy = jest.fn();
+      (global as { fetch?: unknown }).fetch = fetchSpy;
+      const svc = makeService({});
+      expect(await svc.getCandles('AAPL')).toBeNull();
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('rate limit (override Basic 750/day) → null sans HTTP', async () => {
+      const svc = makeService({
+        TWELVEDATA_API_KEY: 'test-key',
+        TWELVEDATA_PER_MINUTE_LIMIT: '8000',
+        TWELVEDATA_PER_DAY_LIMIT: '750',
+      });
+      type Internals = { creditTracker: { consume: (n: number) => void } };
+      (svc as unknown as Internals).creditTracker.consume(749);
+      const fetchSpy = jest.fn();
+      (global as { fetch?: unknown }).fetch = fetchSpy;
+      // outputsize=20 → 4 credits ; 749 + 4 > 750 → block
+      const r = await svc.getCandles('AAPL', '1min', 20);
+      expect(r).toBeNull();
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('PR #352 — Pro plan defaults', () => {
+    it('sans override env → limits 8000/min, 1M/day', () => {
+      const svc = makeService();
+      type Internals = { creditTracker: { canConsume: (n: number) => boolean } };
+      // Conservatively probe: 8000 doit passer, 8001 non
+      expect((svc as unknown as Internals).creditTracker.canConsume(8000)).toBe(true);
+      expect((svc as unknown as Internals).creditTracker.canConsume(8001)).toBe(false);
     });
   });
 });

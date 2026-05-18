@@ -25,6 +25,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { BinanceMarketService } from './binance-market.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
+import { IntradayProviderRouter } from './intraday-provider-router.service';
 import { YahooIntradayService } from './yahoo-intraday.service';
 import { IntradayCacheService, CachedCandle } from './intraday-cache.service';
 import { EodhdQuotaService } from './eodhd-quota.service';
@@ -149,6 +150,13 @@ export class MultiTimeframePersistenceService {
      * `multitfPaused` flag actif.
      */
     private readonly quotaService: EodhdQuotaService,
+    /**
+     * PR #352 — Router intraday TD-first avec fallback EODHD. Quand le flag
+     * TWELVEDATA_INTRADAY_SCANNER_ENABLED=true, les fetch candles 1m/5m du
+     * scanner intraday (hot path persistence MTF) passent par TwelveData
+     * avec fallback EODHD obligatoire si null. Flag OFF → 100% EODHD.
+     */
+    private readonly intradayRouter: IntradayProviderRouter,
   ) {}
 
   /** P18e — Métriques cumulatives pour observability. */
@@ -406,7 +414,10 @@ export class MultiTimeframePersistenceService {
     //
     // Quota impact : ~+19k calls/jour worst-case (1 call/ticker × 20 × 6
     // cycles/h × 16h). Plan ALL-IN-ONE = 100k/jour, on reste à ~38k total.
-    const oneMinSeries = await this.eodhd.getCandles(eodhdTicker, '1m', 65).catch(() => null);
+    // PR #352 — Routage TD-first via IntradayProviderRouter (flag-gated).
+    // Flag OFF (défaut) → passthrough EODHD identique. Flag ON → TD avec
+    // fallback EODHD automatique.
+    const oneMinSeries = await this.intradayRouter.getCandles(eodhdTicker, '1m', 65).catch(() => null);
     if (oneMinSeries && oneMinSeries.candles.length >= 60) {
       const prices = extractPricesFromOneMinSeries(oneMinSeries.candles);
       const persistence = evaluatePersistence(c.currentPrice, prices);
@@ -428,7 +439,8 @@ export class MultiTimeframePersistenceService {
     );
 
     // 2bis. EODHD intraday 5m (fallback dégradé — tf1m=null mais 5 TFs OK)
-    const series = await this.eodhd.getCandles(eodhdTicker, '5m', 13).catch(() => null);
+    // PR #352 — routé via IntradayProviderRouter (TD-first si flag ON)
+    const series = await this.intradayRouter.getCandles(eodhdTicker, '5m', 13).catch(() => null);
     if (series && series.candles.length > 0) {
       const prices = extractPricesFromFiveMinSeries(series.candles);
       const persistence = evaluatePersistence(c.currentPrice, prices);
@@ -542,7 +554,8 @@ export class MultiTimeframePersistenceService {
     // EODHD ticker convention : SYMBOL.EXCHANGE
     const eodhdTicker = this.toEodhdTicker(c);
     // 13 candles 5-min couvre 1h05 — assez pour les TFs 5m..1h
-    const series = await this.eodhd.getCandles(eodhdTicker, '5m', 13);
+    // PR #352 — routé via IntradayProviderRouter (TD-first si flag ON)
+    const series = await this.intradayRouter.getCandles(eodhdTicker, '5m', 13);
     if (!series || series.candles.length === 0) {
       this.logger.debug(`[mtf-persist] ${c.symbol} no eodhd intraday`);
       return null;

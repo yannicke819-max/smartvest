@@ -100,10 +100,7 @@ const RETRY_5XX_DELAY_MS = 2000;
 export class TwelveDataService {
   private readonly logger = new Logger(TwelveDataService.name);
   private readonly apiKey: string | null;
-  private readonly creditTracker = new CreditTracker({
-    perMinuteLimit: 7,
-    perDayLimit: 750,
-  });
+  private readonly creditTracker: CreditTracker;
 
   constructor(
     private readonly config: ConfigService,
@@ -118,6 +115,12 @@ export class TwelveDataService {
       const tail = key.length >= 4 ? key.slice(-4) : '****';
       this.logger.log(`[twelvedata] provider initialized, key=***${tail} (length=${key.length})`);
     }
+    // PR #352 — Pro plan defaults (8000/min, ~1M/jour). Override via env si
+    // downgrade (Basic=7/750). Précédemment hardcodé Basic, sous-utilisait Pro.
+    const perMinuteLimit = Number(this.config.get<string>('TWELVEDATA_PER_MINUTE_LIMIT') ?? '8000');
+    const perDayLimit = Number(this.config.get<string>('TWELVEDATA_PER_DAY_LIMIT') ?? '1000000');
+    this.creditTracker = new CreditTracker({ perMinuteLimit, perDayLimit });
+    this.logger.log(`[twelvedata] credit tracker init: ${perMinuteLimit}/min, ${perDayLimit}/day`);
   }
 
   /** Convertit Binance pair (POLUSDT) → TwelveData crypto symbol (POL/USD). */
@@ -246,6 +249,233 @@ export class TwelveDataService {
   }
 
   /**
+   * PR #352 — Quote temps réel (1 credit). Endpoint : GET /quote.
+   * Doc : https://twelvedata.com/docs#real-time-quote
+   * Retourne null si rate limit / erreur / champ close manquant.
+   */
+  async getQuote(
+    symbol: string,
+    calledBy = 'intraday',
+  ): Promise<{ price: number; changePct: number; timestamp: number } | null> {
+    if (!this.apiKey) return null;
+    if (!this.creditTracker.canConsume(1)) {
+      this.logger.warn(
+        `[twelvedata] rate limit hit for getQuote(${symbol}) — daily=${this.creditTracker.getDailyUsage()}`,
+      );
+      void this.logCall({
+        endpoint: 'quote',
+        symbol,
+        interval: null,
+        success: false,
+        statusCode: 0,
+        creditsUsed: 0,
+        latencyMs: 0,
+        errorMessage: 'rate_limit_internal',
+        calledBy,
+      });
+      return null;
+    }
+    const tStart = Date.now();
+    try {
+      const params = new URLSearchParams({ symbol, apikey: this.apiKey });
+      const url = `${BASE_URL}/quote?${params.toString()}`;
+      const res = await this.fetchWithTimeout(url);
+      const latencyMs = Date.now() - tStart;
+      this.creditTracker.consume(1);
+      if (!res.ok) {
+        void this.logCall({
+          endpoint: 'quote',
+          symbol,
+          interval: null,
+          success: false,
+          statusCode: res.status,
+          creditsUsed: 1,
+          latencyMs,
+          errorMessage: `HTTP_${res.status}`,
+          calledBy,
+        });
+        return null;
+      }
+      const data = (await res.json()) as Record<string, unknown>;
+      if (data?.status === 'error' || data?.close == null) {
+        void this.logCall({
+          endpoint: 'quote',
+          symbol,
+          interval: null,
+          success: false,
+          statusCode: res.status,
+          creditsUsed: 1,
+          latencyMs,
+          errorMessage: String(data?.message ?? 'no_close_field').slice(0, 200),
+          calledBy,
+        });
+        return null;
+      }
+      const price = Number(data.close);
+      const changePct = Number(data.percent_change ?? 0);
+      const timestamp = data.timestamp ? Number(data.timestamp) * 1000 : Date.now();
+      if (!Number.isFinite(price) || price <= 0) {
+        void this.logCall({
+          endpoint: 'quote',
+          symbol,
+          interval: null,
+          success: false,
+          statusCode: res.status,
+          creditsUsed: 1,
+          latencyMs,
+          errorMessage: `invalid_price=${String(data.close)}`,
+          calledBy,
+        });
+        return null;
+      }
+      this.logStructured('quote', symbol, '', 'ok', 1, latencyMs);
+      void this.logCall({
+        endpoint: 'quote',
+        symbol,
+        interval: null,
+        success: true,
+        statusCode: res.status,
+        creditsUsed: 1,
+        latencyMs,
+        calledBy,
+      });
+      return { price, changePct, timestamp };
+    } catch (err) {
+      const latencyMs = Date.now() - tStart;
+      void this.logCall({
+        endpoint: 'quote',
+        symbol,
+        interval: null,
+        success: false,
+        statusCode: null,
+        creditsUsed: 1,
+        latencyMs,
+        errorMessage: String((err as Error).message).slice(0, 200),
+        calledBy,
+      });
+      return null;
+    }
+  }
+
+  /**
+   * PR #352 — Time series intraday. Endpoint : GET /time_series.
+   * Doc : https://twelvedata.com/docs#time-series
+   * Coût forfaitisé : ceil(outputsize / 5) credits (1m count=20 = 4 credits).
+   * Renvoie les candles en ordre chronologique asc (TD renvoie desc).
+   */
+  async getCandles(
+    symbol: string,
+    interval: '1min' | '5min' | '15min' | '1h' = '1min',
+    outputsize = 20,
+    calledBy = 'intraday',
+  ): Promise<{
+    symbol: string;
+    interval: string;
+    candles: Array<{ timestamp: number; open: number; high: number; low: number; close: number; volume: number }>;
+    asOf: number;
+  } | null> {
+    if (!this.apiKey) return null;
+    const credits = Math.max(1, Math.ceil(outputsize / 5));
+    if (!this.creditTracker.canConsume(credits)) {
+      this.logger.warn(
+        `[twelvedata] rate limit hit for getCandles(${symbol}) credits=${credits} daily=${this.creditTracker.getDailyUsage()}`,
+      );
+      void this.logCall({
+        endpoint: 'time_series',
+        symbol,
+        interval,
+        success: false,
+        statusCode: 0,
+        creditsUsed: 0,
+        latencyMs: 0,
+        errorMessage: 'rate_limit_internal',
+        calledBy,
+      });
+      return null;
+    }
+    const tStart = Date.now();
+    try {
+      const params = new URLSearchParams({
+        symbol,
+        interval,
+        outputsize: String(outputsize),
+        apikey: this.apiKey,
+      });
+      const url = `${BASE_URL}/time_series?${params.toString()}`;
+      const res = await this.fetchWithTimeout(url);
+      const latencyMs = Date.now() - tStart;
+      this.creditTracker.consume(credits);
+      if (!res.ok) {
+        void this.logCall({
+          endpoint: 'time_series',
+          symbol,
+          interval,
+          success: false,
+          statusCode: res.status,
+          creditsUsed: credits,
+          latencyMs,
+          errorMessage: `HTTP_${res.status}`,
+          calledBy,
+        });
+        return null;
+      }
+      const data = (await res.json()) as Record<string, unknown>;
+      const values = data?.values;
+      if (data?.status === 'error' || !Array.isArray(values)) {
+        void this.logCall({
+          endpoint: 'time_series',
+          symbol,
+          interval,
+          success: false,
+          statusCode: res.status,
+          creditsUsed: credits,
+          latencyMs,
+          errorMessage: String(data?.message ?? 'no_values').slice(0, 200),
+          calledBy,
+        });
+        return null;
+      }
+      const candles = (values as Array<Record<string, string>>)
+        .map((v) => ({
+          timestamp: Math.floor(new Date(v.datetime).getTime() / 1000),
+          open: Number(v.open),
+          high: Number(v.high),
+          low: Number(v.low),
+          close: Number(v.close),
+          volume: Number(v.volume ?? 0),
+        }))
+        .filter((c) => Number.isFinite(c.close) && c.close > 0)
+        .reverse(); // TD renvoie desc, on veut asc
+      this.logStructured('time_series', symbol, interval, 'ok', credits, latencyMs);
+      void this.logCall({
+        endpoint: 'time_series',
+        symbol,
+        interval,
+        success: true,
+        statusCode: res.status,
+        creditsUsed: credits,
+        latencyMs,
+        calledBy,
+      });
+      return { symbol, interval, candles, asOf: Date.now() };
+    } catch (err) {
+      const latencyMs = Date.now() - tStart;
+      void this.logCall({
+        endpoint: 'time_series',
+        symbol,
+        interval,
+        success: false,
+        statusCode: null,
+        creditsUsed: credits,
+        latencyMs,
+        errorMessage: String((err as Error).message).slice(0, 200),
+        calledBy,
+      });
+      return null;
+    }
+  }
+
+  /**
    * Cœur HTTP partagé : rate-limit check + 1 retry sur 429/5xx + log structuré
    * + insert Supabase.
    */
@@ -259,7 +489,7 @@ export class TwelveDataService {
     if (!this.apiKey) return null;
     if (!this.creditTracker.canConsume(1)) {
       this.logger.warn(
-        `[twelvedata] rate limit reached (minute=${this.creditTracker.getMinuteWindowSize()}/7, daily=${this.creditTracker.getDailyUsage()}/750) — skip ${endpoint} ${symbol}`,
+        `[twelvedata] rate limit reached (minute=${this.creditTracker.getMinuteWindowSize()}, daily=${this.creditTracker.getDailyUsage()}) — skip ${endpoint} ${symbol}`,
       );
       void this.logCall({
         endpoint,

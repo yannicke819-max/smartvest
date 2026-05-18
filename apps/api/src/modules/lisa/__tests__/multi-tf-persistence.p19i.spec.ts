@@ -34,7 +34,15 @@ beforeEach(() => {
 const mockConfig = { get: jest.fn().mockReturnValue(undefined) } as any;
 
 function makeService() {
-  return new MultiTimeframePersistenceService(mockBinance, mockEodhd, mockYahoo, mockCache, mockConfig, { getStatus: () => ({ throttle: { multitfPaused: false } }) } as any);
+  // PR #352 — IntradayProviderRouter ajouté au constructor. Mock passthrough
+  // EODHD pour préserver les fixtures p19i.
+  const mockRouter = {
+    getCandles: (ticker: string, interval: '1m' | '5m' | '1h', count: number) =>
+      mockEodhd.getCandles(ticker, interval, count).then((r: unknown) =>
+        r ? { ...(r as Record<string, unknown>), provider: 'eodhd' } : null,
+      ),
+  } as any;
+  return new MultiTimeframePersistenceService(mockBinance, mockEodhd, mockYahoo, mockCache, mockConfig, { getStatus: () => ({ throttle: { multitfPaused: false } }) } as any, mockRouter);
 }
 
 function fakeYahooCandles(n = 13) {
