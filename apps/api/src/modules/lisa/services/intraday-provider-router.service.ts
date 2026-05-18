@@ -53,6 +53,11 @@ export interface IntradayCandlesOptions {
 @Injectable()
 export class IntradayProviderRouter {
   private readonly logger = new Logger(IntradayProviderRouter.name);
+  // PR #354 — first-call witness pour confirmer que le router est invoqué.
+  // Loggue un événement unique au premier passage dans getCandles/getQuote
+  // après le boot. Si jamais loggué post-deploy → cron scanner ne fait pas
+  // d'intraday du tout (donc TD inactif par construction).
+  private firstCallLogged = false;
 
   constructor(
     private readonly config: ConfigService,
@@ -100,6 +105,21 @@ export class IntradayProviderRouter {
   }
 
   /**
+   * PR #354 — Loggue une seule fois le premier passage dans le router
+   * post-boot. Si on n'observe jamais ce log → confirme que le cron
+   * scanner ne traverse pas le router (ex : pas de cycle, pas de candidat
+   * filteredTop, mtfPersistence pas appelée). Différent du log dual_call
+   * qui peut être noyé sous la masse — celui-ci sort UNE seule fois.
+   */
+  private logFirstCallOnce(endpoint: 'quote' | 'time_series', symbol: string, calledBy: string): void {
+    if (this.firstCallLogged) return;
+    this.firstCallLogged = true;
+    this.logger.log(
+      `[intraday-router] first_call endpoint=${endpoint} symbol=${symbol} called_by=${calledBy} enabled=${this.isEnabled()} ratio=${this.getRatio()} td=${this.td ? 'available' : 'unavailable'}`,
+    );
+  }
+
+  /**
    * Calcule la raison pour laquelle TD n'est PAS attempted, pour logs.
    * Retourne null si TD doit être tenté (eligible).
    *
@@ -128,6 +148,7 @@ export class IntradayProviderRouter {
    * `005930.KO`). Dual-call EODHD+TD si éligible.
    */
   async getQuote(eodhdTicker: string, calledBy = 'intraday_router'): Promise<IntradayQuote | null> {
+    this.logFirstCallOnce('quote', eodhdTicker, calledBy);
     const tdSkipReason = this.computeTdSkipReason(eodhdTicker, false);
     const tdSymbol = tdSkipReason === null ? this.convertToTdSymbol(eodhdTicker) : null;
     const tdEligible = tdSymbol !== null && this.td !== null;
@@ -181,6 +202,7 @@ export class IntradayProviderRouter {
     options: IntradayCandlesOptions = {},
   ): Promise<IntradayCandleSeries | null> {
     const calledBy = options.calledBy ?? 'intraday_router';
+    this.logFirstCallOnce('time_series', eodhdTicker, calledBy);
     const hasTimeWindow = options.fromTs != null || options.toTs != null;
     const tdSkipReason = this.computeTdSkipReason(eodhdTicker, hasTimeWindow);
     const tdSymbol = tdSkipReason === null ? this.convertToTdSymbol(eodhdTicker) : null;
