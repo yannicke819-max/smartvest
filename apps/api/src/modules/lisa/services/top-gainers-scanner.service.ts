@@ -3212,9 +3212,14 @@ export class TopGainersScannerService implements OnModuleInit {
     // Sample 10 filtered candidates pour audit
     const filtered = allCandidates.filter((c) => !topSet.has(c.symbol)).slice(0, 10);
     for (const c of filtered) {
+      // PR #350 — fix log detected_asset_class : utiliser la classe portée par
+      // le candidat (parser EODHD/Binance) avec fallback sur detectAssetClass.
+      // Avant : `market` hardcodé 'us_equity_small_mid' + `detected_asset_class`
+      // absent → 70% des rows filtered en NULL/faux sur 14j.
+      const assetClass = c.assetClass ?? detectAssetClass(c.symbol, c.exchange ?? 'unknown', c.marketCap);
       rows.push({
         symbol: c.symbol,
-        market: 'us_equity_small_mid', // best-effort, asset class non recalculée pour log
+        market: assetClass,
         exchange: c.exchange ?? 'unknown',
         close_price: String(c.close),
         high_price: String(c.high),
@@ -3224,6 +3229,7 @@ export class TopGainersScannerService implements OnModuleInit {
         market_cap_usd: String(c.marketCap),
         score: '0',
         decision: 'filtered',
+        detected_asset_class: assetClass,
       });
     }
     if (rows.length === 0) {
