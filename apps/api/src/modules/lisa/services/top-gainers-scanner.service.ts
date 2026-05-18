@@ -49,6 +49,10 @@ import { CandidateRejectReason } from '../../gainers-scanner/domain/gainers-enum
 // PR6.4 — Enrichment helpers (ATR + EMA + persistence depuis ohlcv_cache_daily)
 import { enrichShadowCandidate } from './shadow-enrichment.helper';
 import {
+  calculateContinuousScore,
+  type ScoringAssetClass,
+} from '@smartvest/ai-analyst';
+import {
   detectAssetClass,
   selectTopGainers,
   type TopGainerCandidate,
@@ -3179,6 +3183,55 @@ export class TopGainersScannerService implements OnModuleInit {
   }
 
   /**
+   * PR #351 — Calcule les sub-scores continus pour un candidat et retourne
+   * un fragment d'objet à splat dans la row top_gainers_log. Retourne `{}`
+   * si la classe n'est pas dans le scope scoring (crypto_alt, fx_*, commodity).
+   * Logging-only : le flag décisionnel CONTINUOUS_SCORING_ENABLED reste à OFF
+   * tant que le backtest n'a pas validé les seuils par classe.
+   */
+  private computeContinuousScoreFragment(
+    assetClass: TopGainerAssetClass,
+    changePct: number,
+    volume: number,
+    avgVol50d: number,
+    marketCap: number,
+    persistenceMultiTf: number,
+  ): Record<string, unknown> {
+    const supported: ReadonlySet<string> = new Set([
+      'asia_equity',
+      'eu_equity',
+      'us_equity_large',
+      'us_equity_small_mid',
+      'crypto_major',
+    ]);
+    if (!supported.has(assetClass)) return {};
+    const rvol = avgVol50d > 0 ? volume / avgVol50d : 0;
+    const r = calculateContinuousScore(
+      {
+        changePctSnapshot: changePct,
+        rvol,
+        marketCapUsd: marketCap > 0 ? marketCap : null,
+        persistenceMultiTf,
+        // momentum 5m/15m/30m : pas reconstructibles depuis le scan top-N
+        // sans cache prix intraday dédié. Laissé null → composant neutre 0.5.
+        momentum5m: null,
+        momentum15m: null,
+        momentum30m: null,
+        atrNormalized: null,
+      },
+      assetClass as ScoringAssetClass,
+    );
+    return {
+      sub_amplitude_score: r.subScores.amplitudeScore,
+      sub_rvol_score: r.subScores.rvolScore,
+      sub_momentum_score: r.subScores.momentumScore,
+      sub_persistence_score: r.subScores.persistenceScore,
+      sub_cap_quality_score: r.subScores.capQualityScore,
+      continuous_score_total: Number(r.total.toFixed(2)),
+    };
+  }
+
+  /**
    * Persist log entries dans top_gainers_log.
    * Logge tous les top retenus (decision='passed') + sample de filtered (audit).
    */
@@ -3207,6 +3260,9 @@ export class TopGainersScannerService implements OnModuleInit {
         score: String(t.score),
         decision: 'passed',
         detected_asset_class: t.assetClass,
+        ...this.computeContinuousScoreFragment(
+          t.assetClass, t.changePct, t.volume, t.avgVol50d, t.marketCap, t.score,
+        ),
       });
     }
     // Sample 10 filtered candidates pour audit
@@ -3230,6 +3286,10 @@ export class TopGainersScannerService implements OnModuleInit {
         score: '0',
         decision: 'filtered',
         detected_asset_class: assetClass,
+        // PR #351 — persistenceMultiTf=0 (candidat n'a pas passé le filtre multi-TF).
+        ...this.computeContinuousScoreFragment(
+          assetClass, c.changePct, c.volume, c.avgVol50d, c.marketCap, 0,
+        ),
       });
     }
     if (rows.length === 0) {
