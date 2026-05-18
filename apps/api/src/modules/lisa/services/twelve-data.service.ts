@@ -109,11 +109,14 @@ export class TwelveDataService {
     const key = this.config.get<string>('TWELVEDATA_API_KEY');
     if (!key || key.trim() === '') {
       this.apiKey = null;
-      this.logger.warn('[twelvedata] TWELVEDATA_API_KEY not set — all methods will return null');
+      // PR #354 — format unifié `init apiKey=null|set` pour grep ops/observabilité.
+      this.logger.warn('[twelvedata] init apiKey=null — TWELVEDATA_API_KEY not set, all methods will return null');
     } else {
       this.apiKey = key;
       const tail = key.length >= 4 ? key.slice(-4) : '****';
-      this.logger.log(`[twelvedata] provider initialized, key=***${tail} (length=${key.length})`);
+      this.logger.log(
+        `[twelvedata] init apiKey=set key=***${tail} (length=${key.length})`,
+      );
     }
     // PR #352 — Pro plan defaults (8000/min, ~1M/jour). Override via env si
     // downgrade (Basic=7/750). Précédemment hardcodé Basic, sous-utilisait Pro.
