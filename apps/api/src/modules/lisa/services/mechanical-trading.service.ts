@@ -43,6 +43,7 @@ import { TradeOutcomeRecorderService } from './trade-outcome-recorder.service';
 import { DailyProfitGovernor } from './daily-profit-governor.service';
 import { PatternAdoptionService } from '../../bot-lab/services/pattern-adoption.service';
 import { EodhdEnrichmentService } from './eodhd-enrichment.service';
+import { isInExchangeSession } from './exchange-sessions.helper';
 // Phase 5 N1 PR-1 — Quick Wins gate (sessions/blacklist/class-pause/repeat-cap/exchange-mult)
 import { QuickWinsPipelineService } from '../quick-wins';
 // Phase 5 N1 PR-2 — matrice TP/SL par asset_class
@@ -1258,6 +1259,34 @@ export class MechanicalTradingService {
           }).catch(() => null);
           continue; // skip cette ouverture, passe au prochain target
         }
+      }
+
+      // PR #349 — Gate session exchange (defense en profondeur).
+      // Preuve empirique 14j : 10 entrées pré-marché Shanghai/Shenzhen
+      // (.SHG/.SHE) → 8 SL / 1 TP / 1 inval = -$289.47 net. Le gate amont
+      // getMarketState() ligne 928 a un trou pour asia. On verrouille ici
+      // contre EXCHANGE_SESSIONS (source de vérité EODHD, DST-safe).
+      // Crypto/forex/commodities passent via ALWAYS_ON_SUFFIXES.
+      const nowDate = new Date();
+      if (!isInExchangeSession(target.symbol, nowDate)) {
+        this.logger.warn(
+          `[MÉCANIQUE] Skip ${target.symbol} (${target.assetClass}) — off_exchange_session @ ${nowDate.toISOString()}`,
+        );
+        await this.decisionLog.append({
+          portfolioId,
+          kind: 'mechanical_skip',
+          summary: `[MÉCANIQUE] Skip ${target.symbol} — off_exchange_session`,
+          rationale: `Gate isInExchangeSession bloque ouverture pré/post-marché contre EXCHANGE_SESSIONS (source EODHD). asset_class=${target.assetClass} now=${nowDate.toISOString()}`,
+          payload: {
+            symbol: target.symbol,
+            assetClass: target.assetClass,
+            reason: 'off_exchange_session',
+            timestampUtc: nowDate.toISOString(),
+            directiveId: directive.id,
+          },
+          triggeredBy: 'mechanical_cron',
+        }).catch(() => null);
+        continue; // passe au prochain target
       }
 
       const positionId = randomUUID();
