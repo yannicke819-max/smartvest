@@ -429,4 +429,165 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
       expect(td.lastSymbol).toBe('600519:SSE');
     });
   });
+
+  // ───────────────────────────────────────────────────────────────────────
+  // PR #354 — td_skip_reason observability
+  //
+  // Diag prod 18/05 12h Paris : 100% des events `intraday_router_dual_call`
+  // avaient `td_symbol: null` et `td_attempted: false` → assumé à tort comme
+  // bug de mapping. Vrai cause = panier ~11 symbols récurrents .US/.TO qui
+  // hashent tous vers >= 20 avec ratio 0.2 (FNV-1a déterministe). Ces tests
+  // confirment (a) que .US/.TO sont bien mappés et (b) que td_skip_reason
+  // distingue désormais les 3 causes de skip.
+  // ───────────────────────────────────────────────────────────────────────
+  describe('PR #354 — convertToTdSymbol .US et .TO (anti-régression mapping)', () => {
+    const router = new IntradayProviderRouter(
+      makeConfig({}),
+      makeEodhdMock().service,
+      makeTdMock().service,
+    );
+
+    it('AAPL.US → AAPL (strip suffixe)', () => {
+      expect(router.convertToTdSymbol('AAPL.US')).toBe('AAPL');
+    });
+
+    it('DCBO.TO → DCBO:TSX', () => {
+      expect(router.convertToTdSymbol('DCBO.TO')).toBe('DCBO:TSX');
+    });
+
+    it('EACO.US, EOG.US, KOS.US, FDS.US, BLDP.US (tickers observés prod) → mappés', () => {
+      expect(router.convertToTdSymbol('EACO.US')).toBe('EACO');
+      expect(router.convertToTdSymbol('EOG.US')).toBe('EOG');
+      expect(router.convertToTdSymbol('KOS.US')).toBe('KOS');
+      expect(router.convertToTdSymbol('FDS.US')).toBe('FDS');
+      expect(router.convertToTdSymbol('BLDP.US')).toBe('BLDP');
+    });
+
+    it('KEI.TO, LCFS.TO, SDE.TO, TNZ.TO, MATR.TO (tickers observés prod) → mappés :TSX', () => {
+      expect(router.convertToTdSymbol('KEI.TO')).toBe('KEI:TSX');
+      expect(router.convertToTdSymbol('LCFS.TO')).toBe('LCFS:TSX');
+      expect(router.convertToTdSymbol('SDE.TO')).toBe('SDE:TSX');
+      expect(router.convertToTdSymbol('TNZ.TO')).toBe('TNZ:TSX');
+      expect(router.convertToTdSymbol('MATR.TO')).toBe('MATR:TSX');
+    });
+  });
+
+  describe('PR #354 — td_skip_reason dans logs intraday_router_dual_call', () => {
+    function captureLogs(): { calls: string[]; restore: () => void } {
+      const calls: string[] = [];
+      const spy = jest.spyOn(Logger.prototype, 'log').mockImplementation((msg: unknown) => {
+        if (typeof msg === 'string') calls.push(msg);
+        return undefined as never;
+      });
+      return { calls, restore: () => spy.mockRestore() };
+    }
+
+    function lastDualCall(calls: string[]): Record<string, unknown> | null {
+      for (let i = calls.length - 1; i >= 0; i--) {
+        try {
+          const parsed = JSON.parse(calls[i]);
+          if (parsed?.event === 'intraday_router_dual_call') return parsed;
+        } catch {
+          // not JSON, skip
+        }
+      }
+      return null;
+    }
+
+    it('flag OFF → td_skip_reason="flag_off"', async () => {
+      const { calls, restore } = captureLogs();
+      const router = new IntradayProviderRouter(
+        makeConfig({ TWELVEDATA_INTRADAY_SCANNER_ENABLED: 'false' }),
+        makeEodhdMock({ candles: EODHD_OK_CANDLES }).service,
+        makeTdMock({ candles: TD_OK_CANDLES }).service,
+      );
+      await router.getCandles('AAPL.US', '1m', 20);
+      const log = lastDualCall(calls);
+      restore();
+      expect(log).not.toBeNull();
+      expect(log!.td_skip_reason).toBe('flag_off');
+      expect(log!.td_attempted).toBe(false);
+    });
+
+    it('options.fromTs présent → td_skip_reason="time_window_present"', async () => {
+      const { calls, restore } = captureLogs();
+      const router = new IntradayProviderRouter(
+        makeConfig({
+          TWELVEDATA_INTRADAY_SCANNER_ENABLED: 'true',
+          TWELVEDATA_INTRADAY_AB_TEST_RATIO: '1.0',
+        }),
+        makeEodhdMock({ candles: EODHD_OK_CANDLES }).service,
+        makeTdMock({ candles: TD_OK_CANDLES }).service,
+      );
+      await router.getCandles('AAPL.US', '5m', 20, { fromTs: 1000, toTs: 2000 });
+      const log = lastDualCall(calls);
+      restore();
+      expect(log!.td_skip_reason).toBe('time_window_present');
+    });
+
+    it('ratio 0.0 → td_skip_reason="ab_test_sent_to_eodhd"', async () => {
+      const { calls, restore } = captureLogs();
+      const router = new IntradayProviderRouter(
+        makeConfig({
+          TWELVEDATA_INTRADAY_SCANNER_ENABLED: 'true',
+          TWELVEDATA_INTRADAY_AB_TEST_RATIO: '0.0',
+        }),
+        makeEodhdMock({ candles: EODHD_OK_CANDLES }).service,
+        makeTdMock({ candles: TD_OK_CANDLES }).service,
+      );
+      await router.getCandles('AAPL.US', '1m', 20);
+      const log = lastDualCall(calls);
+      restore();
+      expect(log!.td_skip_reason).toBe('ab_test_sent_to_eodhd');
+    });
+
+    it('suffixe .XYZ inconnu + ratio 1.0 → td_skip_reason="unsupported_suffix"', async () => {
+      const { calls, restore } = captureLogs();
+      const router = new IntradayProviderRouter(
+        makeConfig({
+          TWELVEDATA_INTRADAY_SCANNER_ENABLED: 'true',
+          TWELVEDATA_INTRADAY_AB_TEST_RATIO: '1.0',
+        }),
+        makeEodhdMock({ candles: EODHD_OK_CANDLES }).service,
+        makeTdMock({ candles: TD_OK_CANDLES }).service,
+      );
+      await router.getCandles('SOMETHING.XYZ', '1m', 20);
+      const log = lastDualCall(calls);
+      restore();
+      expect(log!.td_skip_reason).toBe('unsupported_suffix');
+    });
+
+    it('TD non injecté + flag ON → td_skip_reason="td_not_injected"', async () => {
+      const { calls, restore } = captureLogs();
+      const router = new IntradayProviderRouter(
+        makeConfig({
+          TWELVEDATA_INTRADAY_SCANNER_ENABLED: 'true',
+          TWELVEDATA_INTRADAY_AB_TEST_RATIO: '1.0',
+        }),
+        makeEodhdMock({ candles: EODHD_OK_CANDLES }).service,
+        null,
+      );
+      await router.getCandles('AAPL.US', '1m', 20);
+      const log = lastDualCall(calls);
+      restore();
+      expect(log!.td_skip_reason).toBe('td_not_injected');
+    });
+
+    it('TD éligible et appelé → td_skip_reason=null', async () => {
+      const { calls, restore } = captureLogs();
+      const router = new IntradayProviderRouter(
+        makeConfig({
+          TWELVEDATA_INTRADAY_SCANNER_ENABLED: 'true',
+          TWELVEDATA_INTRADAY_AB_TEST_RATIO: '1.0',
+        }),
+        makeEodhdMock({ candles: EODHD_OK_CANDLES }).service,
+        makeTdMock({ candles: TD_OK_CANDLES }).service,
+      );
+      await router.getCandles('AAPL.US', '1m', 20);
+      const log = lastDualCall(calls);
+      restore();
+      expect(log!.td_skip_reason).toBeNull();
+      expect(log!.td_attempted).toBe(true);
+    });
+  });
 });

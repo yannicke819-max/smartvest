@@ -100,11 +100,36 @@ export class IntradayProviderRouter {
   }
 
   /**
+   * Calcule la raison pour laquelle TD n'est PAS attempted, pour logs.
+   * Retourne null si TD doit être tenté (eligible).
+   *
+   * PR #354 — observabilité distinguant les 3 causes de `td_attempted: false`
+   * pour faciliter le diagnostic prod (ex : confondu avec un bug de mapping).
+   */
+  private computeTdSkipReason(
+    eodhdTicker: string,
+    hasTimeWindow: boolean,
+  ): 'flag_off' | 'td_not_injected' | 'time_window_present' | 'ab_test_sent_to_eodhd' | 'unsupported_suffix' | null {
+    if (!this.td) return 'td_not_injected';
+    if (
+      (this.config.get<string>('TWELVEDATA_INTRADAY_SCANNER_ENABLED') ?? 'false').toLowerCase() !==
+      'true'
+    ) {
+      return 'flag_off';
+    }
+    if (hasTimeWindow) return 'time_window_present';
+    if (!this.shouldRouteToTd(eodhdTicker)) return 'ab_test_sent_to_eodhd';
+    if (this.convertToTdSymbol(eodhdTicker) === null) return 'unsupported_suffix';
+    return null;
+  }
+
+  /**
    * Quote temps réel. Caller passe un ticker EODHD-style (ex `AAPL.US`,
    * `005930.KO`). Dual-call EODHD+TD si éligible.
    */
   async getQuote(eodhdTicker: string, calledBy = 'intraday_router'): Promise<IntradayQuote | null> {
-    const tdSymbol = this.shouldRouteToTd(eodhdTicker) ? this.convertToTdSymbol(eodhdTicker) : null;
+    const tdSkipReason = this.computeTdSkipReason(eodhdTicker, false);
+    const tdSymbol = tdSkipReason === null ? this.convertToTdSymbol(eodhdTicker) : null;
     const tdEligible = tdSymbol !== null && this.td !== null;
 
     const eodhdPromise = this.eodhd.getQuote(eodhdTicker);
@@ -125,6 +150,7 @@ export class IntradayProviderRouter {
         symbol: eodhdTicker,
         td_symbol: tdSymbol,
         td_attempted: tdEligible,
+        td_skip_reason: tdSkipReason, // PR #354 — null si attempted, sinon raison
         td_success: tdVal !== null,
         eodhd_success: eodhdVal !== null,
         called_by: calledBy,
@@ -156,9 +182,8 @@ export class IntradayProviderRouter {
   ): Promise<IntradayCandleSeries | null> {
     const calledBy = options.calledBy ?? 'intraday_router';
     const hasTimeWindow = options.fromTs != null || options.toTs != null;
-    const tdSymbol = !hasTimeWindow && this.shouldRouteToTd(eodhdTicker)
-      ? this.convertToTdSymbol(eodhdTicker)
-      : null;
+    const tdSkipReason = this.computeTdSkipReason(eodhdTicker, hasTimeWindow);
+    const tdSymbol = tdSkipReason === null ? this.convertToTdSymbol(eodhdTicker) : null;
     const tdEligible = tdSymbol !== null && this.td !== null;
 
     const eodhdPromise = this.eodhd.getCandles(
@@ -196,6 +221,7 @@ export class IntradayProviderRouter {
         symbol: eodhdTicker,
         td_symbol: tdSymbol,
         td_attempted: tdEligible,
+        td_skip_reason: tdSkipReason, // PR #354 — null si attempted, sinon raison
         td_success: tdVal !== null,
         eodhd_success: eodhdVal !== null,
         interval,
