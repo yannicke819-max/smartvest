@@ -23,6 +23,7 @@ import {
 } from '../../gainers-scanner/bloc4/trailing-engine';
 import { PositionState, ExitReason } from '../../gainers-scanner/domain/gainers-enums';
 import { EodhdIntradayService } from './eodhd-intraday.service';
+import { IntradayProviderRouter } from './intraday-provider-router.service';
 import { BinanceMarketService } from './binance-market.service';
 import { ensureEodhdSuffix } from './eodhd-symbol.util';
 import { isLikelyOtcForeignOrdinaryUS } from './otc-prefilter.helper';
@@ -58,6 +59,9 @@ export class ShadowExitSimulatorService {
     private readonly supabase: SupabaseService,
     private readonly eodhd: EodhdIntradayService,
     private readonly binance: BinanceMarketService,
+    // PR #353 — Router intraday : dual-call EODHD + TD si flag ON.
+    // Conserve eodhd pour helpers (summarize, getCandlesViaTicks).
+    private readonly intradayRouter: IntradayProviderRouter,
   ) {}
 
   /** Cron 5 min — replay state machine pour signals ACCEPT non encore simulés. */
@@ -212,7 +216,10 @@ export class ShadowExitSimulatorService {
     if (isLikelyOtcForeignOrdinaryUS(eodhdTicker)) {
       return null;
     }
-    const series = await this.eodhd.getCandles(eodhdTicker, '1m', count);
+    // PR #353 — router dual-call (TD + EODHD) si éligible, sinon EODHD-only.
+    const series = await this.intradayRouter.getCandles(eodhdTicker, '1m', count, {
+      calledBy: 'shadow_exit_sim',
+    });
     return series ? series.candles.map((c) => ({ close: c.close })) : null;
   }
 

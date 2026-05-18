@@ -42,6 +42,7 @@ import { PatternAdoptionService } from '../../bot-lab/services/pattern-adoption.
 import { LisaPerformanceAnalyticsService } from './lisa-performance-analytics.service';
 import { EodhdTechnicalService } from './eodhd-technical.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
+import { IntradayProviderRouter } from './intraday-provider-router.service';
 import { BinanceMarketService } from './binance-market.service';
 import { EodhdMacroService } from './eodhd-macro.service';
 import { EodhdScreenerService } from './eodhd-screener.service';
@@ -140,6 +141,8 @@ export class LisaService {
     // P1 PR E — direct access pour redditSpikeSigma (déjà injecté via newsAggregator
     // mais on a besoin du sigma rolling explicit, pas le résultat ranked)
     private readonly redditService: RedditService,
+    // PR #353 — Router intraday dual-call EODHD + TD pour summarizePositions.
+    private readonly intradayRouter: IntradayProviderRouter,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
     if (anthropicKey) {
@@ -1144,7 +1147,8 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
           );
         } else {
           tasks.push(
-            this.eodhdIntraday.getCandles(eodhdTicker, '5m', 20)
+            // PR #353 — router dual-call (TD + EODHD) si flag ON, EODHD only sinon.
+            this.intradayRouter.getCandles(eodhdTicker, '5m', 20, { calledBy: 'lisa_summarize' })
               .then((series) => {
                 if (series) intradayBySymbol[pos.symbol] = this.eodhdIntraday.summarize(series);
               })

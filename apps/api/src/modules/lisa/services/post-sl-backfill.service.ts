@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
+import { IntradayProviderRouter } from './intraday-provider-router.service';
 import {
   computePostSlAnalysis,
   type OhlcCandle,
@@ -29,6 +30,11 @@ export class PostSlBackfillService implements OnApplicationBootstrap {
   constructor(
     private readonly supabase: SupabaseService,
     private readonly eodhd: EodhdIntradayService,
+    // PR #353 — Router intraday. Tous les call sites de ce service utilisent
+    // fromTs/toTs → router branche EODHD-only (TD wrapper ne supporte pas
+    // time-range arbitraire), mais l'unification API permet logging structuré
+    // et bascule future si TD ajoute le support.
+    private readonly intradayRouter: IntradayProviderRouter,
   ) {}
 
   /**
@@ -103,8 +109,13 @@ export class PostSlBackfillService implements OnApplicationBootstrap {
     // Fetch 1m post-SL : window = [exitTs, exitTs + 30min + 60s buffer]
     const postFromTs = exitTs;
     const postToTs = exitTs + 30 * 60 + 60;
-    const seriesPost = await this.eodhd
-      .getCandles(String(pos.symbol), '1m', 35, { fromTs: postFromTs, toTs: postToTs })
+    // PR #353 — router (EODHD-only car fromTs/toTs présents, log structuré).
+    const seriesPost = await this.intradayRouter
+      .getCandles(String(pos.symbol), '1m', 35, {
+        fromTs: postFromTs,
+        toTs: postToTs,
+        calledBy: 'post_sl_backfill',
+      })
       .catch(() => null);
 
     if (!seriesPost || seriesPost.candles.length === 0) {
@@ -127,8 +138,13 @@ export class PostSlBackfillService implements OnApplicationBootstrap {
     // 14 ATR periods × 5min = 70min, +5min buffer
     const priorFromTs = exitTs - 75 * 60;
     const priorToTs = exitTs;
-    const seriesPrior = await this.eodhd
-      .getCandles(String(pos.symbol), '5m', 20, { fromTs: priorFromTs, toTs: priorToTs })
+    // PR #353 — router (EODHD-only car fromTs/toTs présents).
+    const seriesPrior = await this.intradayRouter
+      .getCandles(String(pos.symbol), '5m', 20, {
+        fromTs: priorFromTs,
+        toTs: priorToTs,
+        calledBy: 'post_sl_backfill',
+      })
       .catch(() => null);
 
     const candlesPriorAtr: OhlcCandle[] = seriesPrior?.candles

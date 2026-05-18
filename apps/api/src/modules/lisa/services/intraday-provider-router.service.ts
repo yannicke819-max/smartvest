@@ -4,21 +4,29 @@ import { TwelveDataService } from './twelve-data.service';
 import { EodhdIntradayService, type CandleSeries } from './eodhd-intraday.service';
 
 /**
- * PR #352 — Routeur intraday TwelveData-first avec fallback EODHD.
+ * PR #352 (original) — Routeur intraday TwelveData-first avec fallback EODHD.
+ * PR #353 (cette PR) — Cablage universel + asia mapping + dual-call.
  *
  * Activation :
  *   TWELVEDATA_INTRADAY_SCANNER_ENABLED  bool string  (default false)
  *   TWELVEDATA_INTRADAY_AB_TEST_RATIO    float [0..1] (default 1.0 = 100% TD)
  *
- * Routage :
- *   - Flag OFF → 100% EODHD passthrough
- *   - Flag ON  → hash(symbol) % 100 < ratio*100 → TD, sinon EODHD
- *   - TD null   → fallback EODHD obligatoire
- *   - Symbol non mappable TD (asia/HK exotiques) → fallback EODHD direct
+ * Architecture dual-call (PR #353) :
+ *   Quand TD est éligible (flag ON + ratio + symbol mappable + pas de
+ *   fenêtre historique fromTs/toTs), on appelle EODHD ET TD en parallèle
+ *   via Promise.allSettled — pas de fallback séquentiel.
  *
- * Fail-safe : si TwelveDataService non injecté (clé absente) OU flag OFF →
- * 100% EODHD. Le router est strictement additif, ne peut pas dégrader le
- * scanner existant.
+ *   - Préfère TD si retour non vide et valide
+ *   - Sinon EODHD comme source de vérité
+ *   - EODHD reste TOUJOURS appelé (contrainte user "ZERO offload")
+ *   - Log structuré `intraday_router_dual_call` sur chaque appel
+ *
+ * Branche EODHD-only (pas de TD) si :
+ *   - flag OFF / pas de TwelveDataService injecté
+ *   - symbol non mappable TD (suffixe inconnu)
+ *   - hash % 100 >= ratio*100 (A/B négatif sur ce symbol)
+ *   - options.fromTs ou options.toTs présent (TD ne supporte pas time-range
+ *     simple dans notre wrapper, historique = EODHD only)
  *
  * Kill-switch instantané :
  *   flyctl secrets set TWELVEDATA_INTRADAY_SCANNER_ENABLED=false --app smartvest
@@ -32,6 +40,15 @@ export interface IntradayQuote {
 }
 
 export type IntradayCandleSeries = CandleSeries & { provider: 'td' | 'eodhd' };
+
+export interface IntradayCandlesOptions {
+  /** Historical window start (epoch seconds). Si présent → EODHD only. */
+  fromTs?: number;
+  /** Historical window end (epoch seconds). Si présent → EODHD only. */
+  toTs?: number;
+  /** Étiquette du caller pour logs Supabase (twelve_data_request_log.called_by). */
+  calledBy?: string;
+}
 
 @Injectable()
 export class IntradayProviderRouter {
@@ -84,89 +101,156 @@ export class IntradayProviderRouter {
 
   /**
    * Quote temps réel. Caller passe un ticker EODHD-style (ex `AAPL.US`,
-   * `005930.KO`). Le router convertit pour TD si nécessaire.
+   * `005930.KO`). Dual-call EODHD+TD si éligible.
    */
-  async getQuote(eodhdTicker: string): Promise<IntradayQuote | null> {
-    if (this.shouldRouteToTd(eodhdTicker) && this.td) {
-      const tdSymbol = this.convertToTdSymbol(eodhdTicker);
-      if (tdSymbol !== null) {
-        const tdResult = await this.td.getQuote(tdSymbol, 'intraday_router');
-        if (tdResult) {
-          this.logger.debug(
-            `[intraday-router] ${eodhdTicker} provider=td source=primary price=${tdResult.price}`,
-          );
-          return { ...tdResult, provider: 'td' };
-        }
-        this.logger.debug(
-          `[intraday-router] ${eodhdTicker} provider=td source=fallback (td returned null)`,
-        );
-      } else {
-        this.logger.debug(
-          `[intraday-router] ${eodhdTicker} provider=eodhd source=fallback (td unmappable)`,
-        );
-      }
-    }
-    const eodhdResult = await this.eodhd.getQuote(eodhdTicker);
-    if (!eodhdResult) return null;
-    return { ...eodhdResult, provider: 'eodhd' };
+  async getQuote(eodhdTicker: string, calledBy = 'intraday_router'): Promise<IntradayQuote | null> {
+    const tdSymbol = this.shouldRouteToTd(eodhdTicker) ? this.convertToTdSymbol(eodhdTicker) : null;
+    const tdEligible = tdSymbol !== null && this.td !== null;
+
+    const eodhdPromise = this.eodhd.getQuote(eodhdTicker);
+    const tdPromise = tdEligible
+      ? this.td!.getQuote(tdSymbol!, calledBy)
+      : Promise.resolve(null);
+
+    const [eodhdResult, tdResult] = await Promise.allSettled([eodhdPromise, tdPromise]);
+    const eodhdVal =
+      eodhdResult.status === 'fulfilled' && eodhdResult.value !== null ? eodhdResult.value : null;
+    const tdVal =
+      tdResult.status === 'fulfilled' && tdResult.value !== null ? tdResult.value : null;
+
+    this.logger.log(
+      JSON.stringify({
+        event: 'intraday_router_dual_call',
+        endpoint: 'quote',
+        symbol: eodhdTicker,
+        td_symbol: tdSymbol,
+        td_attempted: tdEligible,
+        td_success: tdVal !== null,
+        eodhd_success: eodhdVal !== null,
+        called_by: calledBy,
+      }),
+    );
+
+    if (tdVal !== null) return { ...tdVal, provider: 'td' };
+    if (eodhdVal !== null) return { ...eodhdVal, provider: 'eodhd' };
+    return null;
   }
 
   /**
-   * Candles intraday au format CandleSeries (compat caller scanner). TD
-   * interval mapping : 1m → 1min, 5m → 5min, 1h → 1h.
+   * Candles intraday au format CandleSeries (compat caller scanner).
+   *
+   * Branches :
+   *   - options.fromTs / options.toTs présents → EODHD only (TD wrapper ne
+   *     supporte pas le time-range arbitraire)
+   *   - Symbol mappable TD + flag ON + ratio positif → dual-call parallèle,
+   *     préférer TD si non vide
+   *   - Sinon → EODHD only
+   *
+   * EODHD est TOUJOURS appelé (contrainte user "ZERO offload").
    */
   async getCandles(
     eodhdTicker: string,
     interval: '1m' | '5m' | '1h' = '1m',
     count = 20,
+    options: IntradayCandlesOptions = {},
   ): Promise<IntradayCandleSeries | null> {
-    if (this.shouldRouteToTd(eodhdTicker) && this.td) {
-      const tdSymbol = this.convertToTdSymbol(eodhdTicker);
-      if (tdSymbol !== null) {
-        const tdInterval = interval === '1m' ? '1min' : interval === '5m' ? '5min' : '1h';
-        const tdResult = await this.td.getCandles(tdSymbol, tdInterval, count, 'intraday_router');
-        if (tdResult && tdResult.candles.length > 0) {
-          this.logger.debug(
-            `[intraday-router] ${eodhdTicker} provider=td source=primary candles=${tdResult.candles.length}`,
-          );
-          return {
-            ticker: eodhdTicker,
-            interval,
-            candles: tdResult.candles,
-            asOf: tdResult.asOf,
-            rawCount: tdResult.candles.length,
-            provider: 'td',
-          };
-        }
-        this.logger.debug(
-          `[intraday-router] ${eodhdTicker} provider=td source=fallback (td empty/null)`,
-        );
-      } else {
-        this.logger.debug(
-          `[intraday-router] ${eodhdTicker} provider=eodhd source=fallback (td unmappable)`,
-        );
-      }
+    const calledBy = options.calledBy ?? 'intraday_router';
+    const hasTimeWindow = options.fromTs != null || options.toTs != null;
+    const tdSymbol = !hasTimeWindow && this.shouldRouteToTd(eodhdTicker)
+      ? this.convertToTdSymbol(eodhdTicker)
+      : null;
+    const tdEligible = tdSymbol !== null && this.td !== null;
+
+    const eodhdPromise = this.eodhd.getCandles(
+      eodhdTicker,
+      interval,
+      count,
+      hasTimeWindow
+        ? {
+            ...(options.fromTs != null ? { fromTs: options.fromTs } : {}),
+            ...(options.toTs != null ? { toTs: options.toTs } : {}),
+          }
+        : undefined,
+    );
+    const tdPromise = tdEligible
+      ? this.td!.getCandles(
+          tdSymbol!,
+          interval === '1m' ? '1min' : interval === '5m' ? '5min' : '1h',
+          count,
+          calledBy,
+        )
+      : Promise.resolve(null);
+
+    const [eodhdResult, tdResult] = await Promise.allSettled([eodhdPromise, tdPromise]);
+    const eodhdVal =
+      eodhdResult.status === 'fulfilled' && eodhdResult.value !== null ? eodhdResult.value : null;
+    const tdVal =
+      tdResult.status === 'fulfilled' && tdResult.value !== null && tdResult.value.candles.length > 0
+        ? tdResult.value
+        : null;
+
+    this.logger.log(
+      JSON.stringify({
+        event: 'intraday_router_dual_call',
+        endpoint: 'time_series',
+        symbol: eodhdTicker,
+        td_symbol: tdSymbol,
+        td_attempted: tdEligible,
+        td_success: tdVal !== null,
+        eodhd_success: eodhdVal !== null,
+        interval,
+        count,
+        time_window: hasTimeWindow,
+        called_by: calledBy,
+      }),
+    );
+
+    if (tdVal !== null) {
+      return {
+        ticker: eodhdTicker,
+        interval,
+        candles: tdVal.candles,
+        asOf: tdVal.asOf,
+        rawCount: tdVal.candles.length,
+        provider: 'td',
+      };
     }
-    const eodhdResult = await this.eodhd.getCandles(eodhdTicker, interval, count);
-    if (!eodhdResult) return null;
-    return { ...eodhdResult, provider: 'eodhd' };
+    if (eodhdVal !== null) return { ...eodhdVal, provider: 'eodhd' };
+    return null;
   }
 
   /**
    * Convertit ticker EODHD → symbol TwelveData.
-   *   EODHD : AAPL.US, 005930.KO, BMW.XETRA, BNP.PA, BARC.LSE
-   *   TD    : AAPL, (asia=null), BMW:XETR, BNP:Euronext, BARC:LSE
    *
-   * Conservateur : suffixe asia/HK/AU exotique → null → fallback EODHD direct.
-   * Évite signal pourri / symbol non reconnu côté TD.
+   * Mapping :
+   *   - Sans suffixe                  → ticker tel quel (US)
+   *   - .US                           → ticker nu (AAPL.US → AAPL)
+   *   - .L / .LSE                     → :LSE (London)
+   *   - .PA / .AS / .AMS              → :Euronext (Paris / Amsterdam)
+   *   - .XETRA / .DE                  → :XETR (Frankfurt)
+   *   - .SW                           → :SIX (Swiss)
+   *   - .MI                           → :MIL (Milan)
+   *   - .TO                           → :TSX (Toronto)
+   *
+   * PR #353 — extension asia (76% du trafic intraday actuel) :
+   *   - .KO  (KOSPI)                  → :KRX (Korea Exchange)
+   *   - .KQ  (KOSDAQ)                 → :KRX
+   *   - .SHG (Shanghai SSE)           → :SSE
+   *   - .SHE (Shenzhen SZSE)          → :SZSE
+   *   - .HK  (Hong Kong)              → :HKEX
+   *   - .T   (Tokyo)                  → :XTKS
+   *   - .AU  (ASX)                    → :XASX
+   *
+   * Suffixe inconnu → null → fallback EODHD direct (EODHD reste systématique
+   * de toute façon en dual-call).
    *
    * Visible pour tests.
    */
   convertToTdSymbol(eodhdTicker: string): string | null {
-    if (!eodhdTicker.includes('.')) return eodhdTicker; // US sans suffixe
+    if (!eodhdTicker.includes('.')) return eodhdTicker;
     const [base, suffix] = eodhdTicker.split('.');
     const map: Record<string, string> = {
-      US: '', // AAPL.US → AAPL
+      US: '',
       L: ':LSE',
       LSE: ':LSE',
       PA: ':Euronext',
@@ -177,8 +261,16 @@ export class IntradayProviderRouter {
       SW: ':SIX',
       MI: ':MIL',
       TO: ':TSX',
+      // PR #353 — asia mapping (TwelveData Pro)
+      KO: ':KRX',
+      KQ: ':KRX',
+      SHG: ':SSE',
+      SHE: ':SZSE',
+      HK: ':HKEX',
+      T: ':XTKS',
+      AU: ':XASX',
     };
-    if (!(suffix in map)) return null; // KO/KQ/SHG/SHE/HK/T/AU → fallback EODHD
+    if (!(suffix in map)) return null;
     return map[suffix] ? `${base}${map[suffix]}` : base;
   }
 }
