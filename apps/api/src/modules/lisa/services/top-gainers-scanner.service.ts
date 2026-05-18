@@ -676,7 +676,18 @@ export class TopGainersScannerService implements OnModuleInit {
       );
     }
     if (validated < 5) {
-      this.logger.warn('[top-gainers] interval <5min — risque rate-limit EODHD/Binance');
+      // PR #352 — Si le routage intraday TD-first est actif, on peut descendre
+      // sous 5min (plan Pro 8000 credits/min suffit largement pour 3000 tickers
+      // en 1min = 3000 quotes = 37% du plafond). On suppress le warn dans ce cas.
+      const tdScannerEnabled =
+        (this.config.get<string>('TWELVEDATA_INTRADAY_SCANNER_ENABLED') ?? 'false').toLowerCase() === 'true';
+      if (!tdScannerEnabled) {
+        this.logger.warn('[top-gainers] interval <5min — risque rate-limit EODHD/Binance');
+      } else {
+        this.logger.log(
+          `[top-gainers] interval ${validated}min autorisé (TWELVEDATA_INTRADAY_SCANNER_ENABLED=true)`,
+        );
+      }
     }
     if (validated > 60) {
       this.logger.warn('[top-gainers] interval >60min — opportunités intraday potentiellement ratées');
@@ -1299,71 +1310,117 @@ export class TopGainersScannerService implements OnModuleInit {
     }
     filtersList.push(['market_capitalization', '>', 50_000_000]);
     const filters = encodeURIComponent(JSON.stringify(filtersList));
-    const url = `https://eodhd.com/api/screener?api_token=${encodeURIComponent(apiKey)}&filters=${filters}&limit=100&offset=0&fmt=json`;
-    this.logger.debug(`[top-gainers] EODHD screener exchange=${exUpper} filters=${filtersList.length}`);
-    const tStart = Date.now();
+
+    // PR #352 — Pagination screener pour étendre l'univers à 3000 tickers.
+    //   SCANNER_SCREENER_PAGE_SIZE (default 100) : page size par appel EODHD
+    //   SCANNER_UNIVERSE_MAX_TICKERS (default 1500, max 3000) : cap global
+    // Cap par exchange = ceil(MAX / nbExchanges). Stop précoce si page < pageSize.
+    // Hard limit : 10 pages max par exchange (anti-runaway).
+    const pageSize = Math.max(
+      1,
+      Math.min(500, Number(this.config.get<string>('SCANNER_SCREENER_PAGE_SIZE') ?? '100')),
+    );
+    const universeMax = Math.max(
+      pageSize,
+      Math.min(3000, Number(this.config.get<string>('SCANNER_UNIVERSE_MAX_TICKERS') ?? '1500')),
+    );
+    const nbExchanges = Math.max(1, EU_EXCHANGES.length + NON_EU_EXCHANGES.length);
+    const perExchangeCap = Math.ceil(universeMax / nbExchanges);
+    const maxPages = 10;
+
+    this.logger.debug(
+      `[top-gainers] EODHD screener exchange=${exUpper} filters=${filtersList.length} pageSize=${pageSize} perExchangeCap=${perExchangeCap}`,
+    );
+
+    const allMapped: TopGainerCandidate[] = [];
+    let pagesFetched = 0;
+    let totalRowsReturned = 0;
+    let lastLatencyMs = 0;
+    let lastStatus: number | null = null;
+
+    const tStartAll = Date.now();
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
-      const latencyMs = Date.now() - tStart;
-      if (!res.ok) {
-        // P18c — log le body pour diagnostic (422 = champ filter invalide,
-        // 401 = token expiré, 403 = plan insuffisant). Tronqué à 200 char.
-        const body = await res.text().catch(() => '');
-        this.logger.warn(
-          `[top-gainers] eodhd ${exUpper} HTTP ${res.status} — body: ${body.slice(0, 200)}`,
-        );
-        // PR #344 P1 — instrumentation log EODHD screener (error path).
+      for (let page = 0; page < maxPages; page++) {
+        if (allMapped.length >= perExchangeCap) break;
+        const offset = page * pageSize;
+        const url = `https://eodhd.com/api/screener?api_token=${encodeURIComponent(apiKey)}&filters=${filters}&limit=${pageSize}&offset=${offset}&fmt=json`;
+        const tStart = Date.now();
+        const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+        lastLatencyMs = Date.now() - tStart;
+        lastStatus = res.status;
+        pagesFetched += 1;
+        if (!res.ok) {
+          // P18c — log le body pour diagnostic (422 = champ filter invalide,
+          // 401 = token expiré, 403 = plan insuffisant). Tronqué à 200 char.
+          const body = await res.text().catch(() => '');
+          this.logger.warn(
+            `[top-gainers] eodhd ${exUpper} page=${page} HTTP ${res.status} — body: ${body.slice(0, 200)}`,
+          );
+          // PR #344 P1 — instrumentation log EODHD screener (error path).
+          this.eodhdLogger?.log({
+            ticker: `gainers_screener_${exUpper}`,
+            eodhdTicker: `gainers_screener_${exUpper}`,
+            source: 'eodhd',
+            success: false,
+            statusCode: res.status,
+            latencyMs: lastLatencyMs,
+            calledBy: 'gainers_screener',
+            endpoint: 'screener',
+            extras: {
+              exchange: exUpper,
+              filters_count: filtersList.length,
+              page,
+              page_size: pageSize,
+              credits_estimes: 5, // base only, pas de symboles retournés
+            },
+            errorMessage: `HTTP_${res.status} · ${body.slice(0, 200)}`,
+          });
+          break; // stop pagination sur erreur, retour ce qu'on a déjà
+        }
+        const json = (await res.json()) as { data?: EodhdScreenerRow[] } | EodhdScreenerRow[];
+        const rows: EodhdScreenerRow[] = Array.isArray(json) ? json : (json.data ?? []);
+        totalRowsReturned += rows.length;
+        let pageMapped = rows
+          .map((r) => this.mapEodhdRow(r, exUpper))
+          .filter((c): c is TopGainerCandidate => c !== null);
+        // P19s++ — Post-filter client-side pour non-US (filter serveur dropped).
+        if (!isUs) {
+          pageMapped = pageMapped.filter((c) => (c.changePct ?? 0) > 3);
+        }
+        allMapped.push(...pageMapped);
+        // PR #344 P1 — log par page (cardinalité OK, max 10 pages/exchange).
         this.eodhdLogger?.log({
           ticker: `gainers_screener_${exUpper}`,
           eodhdTicker: `gainers_screener_${exUpper}`,
           source: 'eodhd',
-          success: false,
+          success: true,
           statusCode: res.status,
-          latencyMs,
+          latencyMs: lastLatencyMs,
           calledBy: 'gainers_screener',
           endpoint: 'screener',
           extras: {
             exchange: exUpper,
             filters_count: filtersList.length,
-            credits_estimes: 5, // base only, pas de symboles retournés
-          },
-          errorMessage: `HTTP_${res.status} · ${body.slice(0, 200)}`,
-        });
-        return [];
-      }
-      const json = await res.json() as { data?: EodhdScreenerRow[] } | EodhdScreenerRow[];
-      const rows: EodhdScreenerRow[] = Array.isArray(json) ? json : (json.data ?? []);
-      let mapped = rows
-        .map((r) => this.mapEodhdRow(r, exUpper))
-        .filter((c): c is TopGainerCandidate => c !== null);
-      // P19s++ — Post-filter client-side pour non-US (filter serveur dropped).
-      // Garde rows changePct > 3 cohérent avec filtre serveur côté US.
-      if (!isUs) {
-        mapped = mapped.filter((c) => (c.changePct ?? 0) > 3);
-      }
-      // PR #344 P1 — instrumentation log EODHD screener (success path).
-      // Coût EODHD réel = 5 (base call) + N symboles retournés (cf. pricing-and-plans.md).
-      this.eodhdLogger?.log({
-        ticker: `gainers_screener_${exUpper}`,
-        eodhdTicker: `gainers_screener_${exUpper}`,
-        source: 'eodhd',
-        success: true,
-        statusCode: res.status,
-        latencyMs,
-        calledBy: 'gainers_screener',
-        endpoint: 'screener',
-        extras: {
-          exchange: exUpper,
-          filters_count: filtersList.length,
-          n_symbols_returned: rows.length,
-          n_symbols_mapped: mapped.length,
-          credits_estimes: EodhdLoggerService.estimateCredits('screener', {
+            page,
+            page_size: pageSize,
             n_symbols_returned: rows.length,
-          }),
-        },
-      });
-      return mapped;
+            n_symbols_mapped: pageMapped.length,
+            credits_estimes: EodhdLoggerService.estimateCredits('screener', {
+              n_symbols_returned: rows.length,
+            }),
+          },
+        });
+        if (rows.length < pageSize) break; // fin de la liste exchange
+      }
+      if (allMapped.length > perExchangeCap) {
+        allMapped.length = perExchangeCap; // trim
+      }
+      this.logger.log(
+        `[top-gainers] screener ${exUpper} fetched ${allMapped.length} mapped in ${pagesFetched} pages (raw=${totalRowsReturned}, latency_last=${lastLatencyMs}ms)`,
+      );
+      return allMapped;
     } catch (e) {
+      void lastStatus; // référence conservée pour parité avec l'ancien log d'erreur
       this.logger.debug(`[top-gainers] eodhd ${exUpper} fetch error: ${String(e).slice(0, 120)}`);
       // PR #344 P1 — instrumentation log EODHD screener (exception path).
       this.eodhdLogger?.log({
@@ -1371,12 +1428,13 @@ export class TopGainersScannerService implements OnModuleInit {
         eodhdTicker: `gainers_screener_${exUpper}`,
         source: 'eodhd',
         success: false,
-        latencyMs: Date.now() - tStart,
+        latencyMs: Date.now() - tStartAll,
         calledBy: 'gainers_screener',
         endpoint: 'screener',
         extras: {
           exchange: exUpper,
           filters_count: filtersList.length,
+          pages_fetched: pagesFetched,
           credits_estimes: 0, // exception → call probablement non-débité
         },
         errorMessage: String(e).slice(0, 200),
