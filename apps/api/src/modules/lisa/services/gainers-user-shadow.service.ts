@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
+import { IntradayProviderRouter } from './intraday-provider-router.service';
 import { YahooIntradayService } from './yahoo-intraday.service';
 import { BinanceMarketService } from './binance-market.service';
 import { bootstrapMeanCI, verdictFromCI, GateVerdict } from '@smartvest/ai-analyst';
@@ -535,6 +536,9 @@ export class GainersUserShadowService {
      * Si non injecté OU flag off → short-circuit legacy crypto_not_supported préservé.
      */
     private readonly binance?: BinanceMarketService,
+    // PR #353 — Router intraday dual-call EODHD + TD. Optional pour back-compat
+    // avec tests qui n'injectent pas le router (fallback EODHD direct préservé).
+    private readonly intradayRouter?: IntradayProviderRouter,
   ) {}
 
   /**
@@ -921,30 +925,47 @@ export class GainersUserShadowService {
       fn: () => Promise<{ candles: Array<{ timestamp: number; open: number; high: number; low: number; close: number; volume: number }>; rawCount?: number; requestedSymbol?: string } | null>;
       rangeMode: boolean;
     };
+    // PR #353 — router quand injecté, fallback EODHD direct sinon. Pour les
+    // call sites range (fromTs/toTs) le router branche EODHD-only mais logge
+    // structuré ; pour le call default (947) le router peut router vers TD.
+    const router = this.intradayRouter;
     const stepDefs: StepDef[] = [
       {
         endpoint: 'eodhd_getCandles_5m_range',
         interval: '5m',
         rangeMode: true,
-        fn: () => this.eodhd.getCandles(eodhdTicker, '5m', candleCount, { fromTs, toTs }).catch(() => null),
+        fn: () =>
+          (router
+            ? router.getCandles(eodhdTicker, '5m', candleCount, { fromTs, toTs, calledBy: 'shadow_walkforward' })
+            : this.eodhd.getCandles(eodhdTicker, '5m', candleCount, { fromTs, toTs })
+          ).catch(() => null),
       },
       {
         endpoint: 'eodhd_ticks_5m_range',
         interval: '5m',
         rangeMode: true,
+        // getCandlesViaTicks reste EODHD direct (pas dans l'API router).
         fn: () => this.eodhd.getCandlesViaTicks(eodhdTicker, '5m', candleCount, { fromTs, toTs }).catch(() => null),
       },
       {
         endpoint: 'eodhd_getCandles_1m_range',
         interval: '1m',
         rangeMode: true,
-        fn: () => this.eodhd.getCandles(eodhdTicker, '1m', 65, { fromTs, toTs }).catch(() => null),
+        fn: () =>
+          (router
+            ? router.getCandles(eodhdTicker, '1m', 65, { fromTs, toTs, calledBy: 'shadow_walkforward' })
+            : this.eodhd.getCandles(eodhdTicker, '1m', 65, { fromTs, toTs })
+          ).catch(() => null),
       },
       {
         endpoint: 'eodhd_getCandles_5m_default',
         interval: '5m',
         rangeMode: false,
-        fn: () => this.eodhd.getCandles(eodhdTicker, '5m', candleCount).catch(() => null),
+        fn: () =>
+          (router
+            ? router.getCandles(eodhdTicker, '5m', candleCount, { calledBy: 'shadow_walkforward' })
+            : this.eodhd.getCandles(eodhdTicker, '5m', candleCount)
+          ).catch(() => null),
       },
     ];
 
