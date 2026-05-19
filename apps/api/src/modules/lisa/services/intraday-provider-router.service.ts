@@ -2,6 +2,7 @@ import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TwelveDataService } from './twelve-data.service';
 import { EodhdIntradayService, type CandleSeries } from './eodhd-intraday.service';
+import { TickerBlacklistService } from './ticker-blacklist.service';
 
 /**
  * PR #352 (original) — Routeur intraday TwelveData-first avec fallback EODHD.
@@ -63,11 +64,15 @@ export class IntradayProviderRouter {
     private readonly config: ConfigService,
     private readonly eodhd: EodhdIntradayService,
     @Optional() private readonly td: TwelveDataService | null = null,
+    // PR #355 — check blacklist avant TD pour ne pas reporter le gaspillage
+    // côté TD (avant : EODHD short-circuit dans this.eodhd.getCandles, mais
+    // TD était appelé en parallèle sans aucun check).
+    @Optional() private readonly blacklist: TickerBlacklistService | null = null,
   ) {
     const enabled = this.isEnabled();
     const ratio = this.getRatio();
     this.logger.log(
-      `[intraday-router] init enabled=${enabled} ratio=${ratio} td=${this.td ? 'available' : 'unavailable'}`,
+      `[intraday-router] init enabled=${enabled} ratio=${ratio} td=${this.td ? 'available' : 'unavailable'} blacklist=${this.blacklist ? 'available' : 'unavailable'}`,
     );
   }
 
@@ -129,7 +134,7 @@ export class IntradayProviderRouter {
   private computeTdSkipReason(
     eodhdTicker: string,
     hasTimeWindow: boolean,
-  ): 'flag_off' | 'td_not_injected' | 'time_window_present' | 'ab_test_sent_to_eodhd' | 'unsupported_suffix' | null {
+  ): 'flag_off' | 'td_not_injected' | 'time_window_present' | 'ab_test_sent_to_eodhd' | 'unsupported_suffix' | 'ticker_blacklisted' | null {
     if (!this.td) return 'td_not_injected';
     if (
       (this.config.get<string>('TWELVEDATA_INTRADAY_SCANNER_ENABLED') ?? 'false').toLowerCase() !==
@@ -137,6 +142,10 @@ export class IntradayProviderRouter {
     ) {
       return 'flag_off';
     }
+    // PR #355 — éviter de tirer TD sur les tickers déjà skippés EODHD-side
+    // pour cause de blacklist (statique ou dynamique R10). Sinon TD répète
+    // les calls inutiles que EODHD a évités.
+    if (this.blacklist?.isBlacklisted(eodhdTicker)) return 'ticker_blacklisted';
     if (hasTimeWindow) return 'time_window_present';
     if (!this.shouldRouteToTd(eodhdTicker)) return 'ab_test_sent_to_eodhd';
     if (this.convertToTdSymbol(eodhdTicker) === null) return 'unsupported_suffix';

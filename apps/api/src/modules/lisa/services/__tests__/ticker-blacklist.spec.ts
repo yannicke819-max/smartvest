@@ -198,7 +198,7 @@ describe('TickerBlacklistService', () => {
       const t0 = Date.now();
       const stats = svc.getStats();
       expect(stats.staticEnabled).toBe(true);
-      expect(stats.staticSize).toBe(23); // PR #337 : 9 NSE + 13 asia empty + 1 saigneur
+      expect(stats.staticSize).toBe(54); // PR #337 (23) + PR #355 (31)
       expect(stats.dynamicCount).toBe(0);
 
       // Add a dynamic blacklist
@@ -218,6 +218,35 @@ describe('TickerBlacklistService', () => {
       expect(svc.isBlacklisted('A.LSE')).toBe(true);
       svc.clear();
       expect(svc.isBlacklisted('A.LSE')).toBe(false);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // PR #355 — recordStrike supporte HTTP_200_EMPTY (fix R10 silent)
+  //
+  // Avant : recordStrike fire uniquement sur HTTP 404 strict côté
+  // eodhd-intraday.service.ts:329. Les tickers asia/EU qui retournent
+  // 200 + body vide (~80% des cas réels) ne déclenchaient jamais le
+  // compteur. Désormais l'empty-response 200 fire aussi via reason
+  // 'HTTP_200_EMPTY'.
+  // ─────────────────────────────────────────────────────────────────────
+  describe('PR #355 — recordStrike sur HTTP_200_EMPTY', () => {
+    it('3 strikes HTTP_200_EMPTY → ticker blacklisté', () => {
+      const svc = makeService();
+      const t0 = Date.now();
+      svc.recordStrike('FOO.KQ', 'HTTP_200_EMPTY', t0);
+      svc.recordStrike('FOO.KQ', 'HTTP_200_EMPTY', t0 + 1);
+      svc.recordStrike('FOO.KQ', 'HTTP_200_EMPTY', t0 + 2);
+      expect(svc.isBlacklisted('FOO.KQ', t0 + 3)).toBe(true);
+    });
+
+    it('mix HTTP_404 + HTTP_200_EMPTY compte ensemble', () => {
+      const svc = makeService();
+      const t0 = Date.now();
+      svc.recordStrike('BAR.KO', 'HTTP_404', t0);
+      svc.recordStrike('BAR.KO', 'HTTP_200_EMPTY', t0 + 1);
+      svc.recordStrike('BAR.KO', 'HTTP_404', t0 + 2);
+      expect(svc.isBlacklisted('BAR.KO', t0 + 3)).toBe(true);
     });
   });
 });
