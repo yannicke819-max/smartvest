@@ -339,6 +339,12 @@ export class EodhdIntradayService {
         // Bug #R12 — log empty response with success=true (HTTP 200, no payload)
         // distinguishable from parsed-price rows by price_usd IS NULL.
         this.logCall({ ticker: eodhdTicker, success: true, statusCode: res.status, latencyMs });
+        // PR #355 — Fix R10 : enregistrer un strike empty 200 (avant : seul
+        // HTTP 404 firait recordStrike, donc les tickers asia/EU retournant
+        // 200+empty (~80% des cas) ne déclenchaient jamais l'auto-blacklist
+        // dynamique. Résultat : ~9000 calls gaspillés/24h. Désormais R10
+        // catch aussi cette branche silencieuse.
+        this.blacklist?.recordStrike(eodhdTicker, 'HTTP_200_EMPTY');
         return null;
       }
 

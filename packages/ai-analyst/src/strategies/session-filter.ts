@@ -117,6 +117,60 @@ export const DEAD_TICKERS_STATIC: ReadonlySet<string> = new Set<string>([
   // --- Asia saigneur (PR #337, 1 ticker) ---
   // 222420.KQ : 102 SL / 0 TP sur 30j, PnL -$3582 (-$119/j). Arrêt hémorragie.
   '222420.KQ',
+
+  // --- PR #355 (19/05/2026) — 31 tickers récurrents 404/empty 24h ---
+  // Audit Supabase 19/05 9h30 : ~9000 calls gaspillés/24h (9% quota EODHD)
+  // sur ces 31 tickers, 0 accept sauf résidus. R10 dynamic ne triggered pas
+  // car les réponses sont majoritairement HTTP 200 + body empty (cf. fix
+  // recordStrike empty-response simultané, eodhd-intraday.service.ts).
+  // À retirer si EODHD republie data ou si audit manuel prouve valeur.
+  // `002900.KO` volontairement conservé (preuve TP positive 30j).
+
+  // Asia KOSPI/KOSDAQ (12 tickers, 70+ strikes/24h chacun)
+  '003690.KO',
+  '001450.KO',
+  '080220.KQ',
+  '066430.KQ',
+  '412350.KQ',
+  '274090.KQ',
+  '211270.KQ',
+  '027360.KQ',
+  '036930.KQ',
+  '446540.KQ',
+  '032580.KQ',
+  '092190.KQ',
+
+  // Asia Shanghai/Shenzhen (4 tickers)
+  '600500.SHG',
+  '600578.SHG',
+  '002421.SHE',
+  '300259.SHE',
+
+  // Asia saigneurs PnL négatif fort + 404 récurrent (4 tickers)
+  // 295310.KQ : -$136 sur 7 positions, 4 SL dont -5.37% en 1.8min
+  // 100790.KQ : -$153 sur 5 positions, 2 SL dont -7.69% en 14min
+  // 321370.KQ : -$13.82 sur 6 positions, 17% rate 404
+  // 601678.SHG : -$65.99 sur 2 positions
+  '295310.KQ',
+  '100790.KQ',
+  '321370.KQ',
+  '601678.SHG',
+
+  // EU LSE saigneur + obscurs (4 tickers)
+  // SCLP.LSE : -$170.74 sur 7 positions, penny stock pump-and-dump
+  'SCLP.LSE',
+  'PANR.LSE',
+  'ABDN.LSE',
+  'GAMA.LSE',
+
+  // US/TO obscurs (7 tickers, calls élevés 0 accept)
+  'ENPH.US',
+  'PZZA.US',
+  'TTGT.US',
+  'AXTI.US',
+  'BLDP.TO',
+  'KEY.TO',
+  'SDE.TO',
 ]);
 
 /**

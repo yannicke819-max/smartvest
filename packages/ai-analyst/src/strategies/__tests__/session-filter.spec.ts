@@ -94,8 +94,8 @@ describe('session-filter helpers', () => {
   });
 
   describe('DEAD_NSE_TICKERS (alias) + DEAD_TICKERS_STATIC', () => {
-    it('total = 23 tickers (9 NSE legacy + 13 asia empty + 1 saigneur)', () => {
-      expect(DEAD_NSE_TICKERS.size).toBe(23);
+    it('total = 54 tickers (23 PR #337 + 31 PR #355)', () => {
+      expect(DEAD_NSE_TICKERS.size).toBe(54);
     });
 
     it.each([
@@ -130,6 +130,30 @@ describe('session-filter helpers', () => {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { DEAD_TICKERS_STATIC } = require('../session-filter');
       expect(DEAD_NSE_TICKERS).toBe(DEAD_TICKERS_STATIC);
+    });
+
+    // PR #355 — 31 tickers ajoutés (audit Supabase 19/05/2026 9h30)
+    it.each([
+      // Asia KOSPI/KOSDAQ (12)
+      '003690.KO', '001450.KO',
+      '080220.KQ', '066430.KQ', '412350.KQ', '274090.KQ',
+      '211270.KQ', '027360.KQ', '036930.KQ', '446540.KQ',
+      '032580.KQ', '092190.KQ',
+      // Asia SHG/SHE (4)
+      '600500.SHG', '600578.SHG', '002421.SHE', '300259.SHE',
+      // Asia saigneurs (4)
+      '295310.KQ', '100790.KQ', '321370.KQ', '601678.SHG',
+      // EU LSE (4)
+      'SCLP.LSE', 'PANR.LSE', 'ABDN.LSE', 'GAMA.LSE',
+      // US/TO (7)
+      'ENPH.US', 'PZZA.US', 'TTGT.US', 'AXTI.US',
+      'BLDP.TO', 'KEY.TO', 'SDE.TO',
+    ])('PR #355 blacklist statique %s', (ticker) => {
+      expect(DEAD_NSE_TICKERS.has(ticker)).toBe(true);
+    });
+
+    it('PR #355 — 002900.KO toujours autorisé (preuve TP +$177/30j)', () => {
+      expect(DEAD_NSE_TICKERS.has('002900.KO')).toBe(false);
     });
   });
 });
