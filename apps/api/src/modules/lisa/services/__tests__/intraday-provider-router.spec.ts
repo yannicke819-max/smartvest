@@ -283,16 +283,14 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
       ['BMW.XETRA', 'BMW:XETR'],
       ['BMW.DE', 'BMW:XETR'],
       ['NESN.SW', 'NESN:SIX'],
-      ['STM.MI', 'STM:MIL'],
       ['SHOP.TO', 'SHOP:TSX'],
-      // PR #353 — asia (76% du trafic intraday)
+      // PR #353 — asia supportée par plan TD Pro
       ['005930.KO', '005930:KRX'], // Samsung KOSPI
       ['086790.KQ', '086790:KRX'], // KOSDAQ
       ['600519.SHG', '600519:SSE'], // Shanghai
       ['300024.SHE', '300024:SZSE'], // Shenzhen
-      ['0700.HK', '0700:HKEX'], // Tencent HK
-      ['7203.T', '7203:XTKS'], // Toyota Tokyo
-      ['CBA.AU', 'CBA:XASX'], // ASX
+      // PR #355 — .MI/.T/.HK/.AU retournent null (add-ons TD non actifs),
+      // testé séparément ci-dessous.
     ])('%s → %s', (input, expected) => {
       expect(router.convertToTdSymbol(input)).toBe(expected);
     });
@@ -302,6 +300,16 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
       'FOO.BAR',
       'TEST.ZZZ',
     ])('%s → null (suffixe inconnu)', (input) => {
+      expect(router.convertToTdSymbol(input)).toBeNull();
+    });
+
+    // PR #355 — add-ons TD payants non actifs (validé live 19/05/2026)
+    it.each([
+      'STM.MI', // Milan
+      '7203.T', // Tokyo JPX
+      '0700.HK', // HKEX
+      'CBA.AU', // ASX XASX
+    ])('%s → null (add-on TD non actif)', (input) => {
       expect(router.convertToTdSymbol(input)).toBeNull();
     });
   });

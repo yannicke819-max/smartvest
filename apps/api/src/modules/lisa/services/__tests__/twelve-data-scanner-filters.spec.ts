@@ -17,16 +17,18 @@ interface MockCounters {
   supertrendCalls: number;
   rsiCalls: number;
   lastRsiArgs: unknown[] | null;
+  lastSupertrendArgs: unknown[] | null;
 }
 
 function makeTwelveDataMock(overrides: {
   supertrend?: Awaited<ReturnType<TwelveDataService['getSupertrendSignal']>>;
   rsi?: Awaited<ReturnType<TwelveDataService['getRsi']>>;
 }): { service: TwelveDataService; counters: MockCounters } {
-  const counters: MockCounters = { supertrendCalls: 0, rsiCalls: 0, lastRsiArgs: null };
+  const counters: MockCounters = { supertrendCalls: 0, rsiCalls: 0, lastRsiArgs: null, lastSupertrendArgs: null };
   const service = {
-    getSupertrendSignal: (..._args: unknown[]) => {
+    getSupertrendSignal: (...args: unknown[]) => {
       counters.supertrendCalls += 1;
+      counters.lastSupertrendArgs = args;
       return Promise.resolve(overrides.supertrend ?? null);
     },
     getRsi: (...args: unknown[]) => {
@@ -258,6 +260,73 @@ describe('evaluateTwelveDataFilters — PR #345', () => {
       });
       expect(r.decision).toBe('reject_rsi_overbought');
       expect(counters.supertrendCalls).toBe(0);
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────
+  // PR #355 — strip suffixe EODHD avant l'appel TD Supertrend (fix bug
+  // 100% reject parce que AAPL.US n'est pas reconnu par TwelveData).
+  // ───────────────────────────────────────────────────────────────────────
+  describe('PR #355 — strip suffixe EODHD avant getSupertrendSignal', () => {
+    it('AAPL.US → strip → "AAPL" passé à TD', async () => {
+      const { service: td, counters } = makeTwelveDataMock({
+        supertrend: { value: 180, direction: 'up', timestamp: 'now' },
+      });
+      await evaluateTwelveDataFilters({
+        symbol: 'AAPL.US',
+        assetClass: 'us_equity_large',
+        supertrendEnabled: true,
+        cryptoRsiEnabled: false,
+        twelveData: td,
+      });
+      expect(counters.supertrendCalls).toBe(1);
+      expect(counters.lastSupertrendArgs?.[0]).toBe('AAPL'); // pas 'AAPL.US'
+    });
+
+    it('EACO.US, EOG.US (tickers observés prod en erreur) → strippés', async () => {
+      const samples = ['EACO.US', 'EOG.US', 'KOS.US', 'FDS.US', 'BLDP.US'];
+      for (const symbol of samples) {
+        const { service: td, counters } = makeTwelveDataMock({
+          supertrend: { value: 100, direction: 'up', timestamp: 'now' },
+        });
+        await evaluateTwelveDataFilters({
+          symbol,
+          assetClass: 'us_equity_large',
+          supertrendEnabled: true,
+          cryptoRsiEnabled: false,
+          twelveData: td,
+        });
+        expect(counters.lastSupertrendArgs?.[0]).toBe(symbol.replace('.US', ''));
+      }
+    });
+
+    it('AAPL (sans suffixe) → passé tel quel', async () => {
+      const { service: td, counters } = makeTwelveDataMock({
+        supertrend: { value: 180, direction: 'up', timestamp: 'now' },
+      });
+      await evaluateTwelveDataFilters({
+        symbol: 'AAPL',
+        assetClass: 'us_equity_large',
+        supertrendEnabled: true,
+        cryptoRsiEnabled: false,
+        twelveData: td,
+      });
+      expect(counters.lastSupertrendArgs?.[0]).toBe('AAPL');
+    });
+
+    it('FOO.XYZ (suffixe inconnu) → mapper retourne null → pas d\'appel TD', async () => {
+      const { service: td, counters } = makeTwelveDataMock({
+        supertrend: { value: 100, direction: 'down', timestamp: 'now' },
+      });
+      const r = await evaluateTwelveDataFilters({
+        symbol: 'FOO.XYZ',
+        assetClass: 'us_equity_large',
+        supertrendEnabled: true,
+        cryptoRsiEnabled: false,
+        twelveData: td,
+      });
+      expect(counters.supertrendCalls).toBe(0); // fail-open : pas d'appel
+      expect(r.decision).toBe('accept');
     });
   });
 });
