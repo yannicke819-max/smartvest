@@ -20,6 +20,8 @@ export type QwId =
   | 'QW_3'
   | 'QW_4'
   | 'QW_6'
+  | 'QW_7'
+  | 'QW_8'
   | 'QW_9'
   | 'QW_11'
   | 'QW_14A'

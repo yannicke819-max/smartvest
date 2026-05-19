@@ -73,6 +73,8 @@ import {
   Qw3WarmupExtendedService,
   Qw4RegimeFilterService,
   Qw6SymbolBlacklistService,
+  Qw7CooldownPostTpUsService,
+  Qw8BoostPostSlService,
   Qw9ScoreFloorService,
   Qw11AssetClassGateService,
   Qw14aFridayEuBoostService,
@@ -195,6 +197,9 @@ import { IntradayProviderRouter } from './services/intraday-provider-router.serv
     Qw14aFridayEuBoostService,
     Qw17RepeatSymbolCapService,
     Qw18ExchangeMultiplierService,
+    // PR #361 — cooldown/boost basis-position-history
+    Qw7CooldownPostTpUsService,
+    Qw8BoostPostSlService,
     QuickWinsPipelineService,
     // Phase 5 N1 PR-2 — matrice TP/SL DB-driven (read-only, cache 60s, fail-open)
     AssetClassTpSlConfigService,

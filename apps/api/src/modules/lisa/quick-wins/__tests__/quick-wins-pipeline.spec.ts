@@ -3,6 +3,8 @@ import { QuickWinsPipelineService } from '../quick-wins-pipeline.service';
 import { Qw1SessionFilterService } from '../qw-1-session-filter.service';
 import { Qw4RegimeFilterService } from '../qw-4-regime-filter.service';
 import { Qw6SymbolBlacklistService } from '../qw-6-symbol-blacklist.service';
+import { Qw7CooldownPostTpUsService } from '../qw-7-cooldown-post-tp-us.service';
+import { Qw8BoostPostSlService } from '../qw-8-boost-post-sl.service';
 import { Qw9ScoreFloorService } from '../qw-9-score-floor.service';
 import { Qw11AssetClassGateService } from '../qw-11-asset-class-gate.service';
 import { Qw14aFridayEuBoostService } from '../qw-14a-friday-eu-boost.service';
@@ -61,6 +63,8 @@ function makePipeline(
     new Qw1SessionFilterService(cfg, logger),
     new Qw4RegimeFilterService(cfg, supabase, logger),
     new Qw6SymbolBlacklistService(cfg, logger),
+    new Qw7CooldownPostTpUsService(cfg, supabase, logger),
+    new Qw8BoostPostSlService(cfg, supabase, logger),
     new Qw9ScoreFloorService(cfg, logger),
     new Qw11AssetClassGateService(cfg, logger),
     new Qw15FirstTradeBoostService(cfg, supabase, logger),
