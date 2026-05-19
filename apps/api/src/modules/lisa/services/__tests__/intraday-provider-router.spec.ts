@@ -16,6 +16,7 @@ import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { IntradayProviderRouter } from '../intraday-provider-router.service';
 import { TwelveDataService } from '../twelve-data.service';
+import { TickerBlacklistService } from '../ticker-blacklist.service';
 import { EodhdIntradayService } from '../eodhd-intraday.service';
 
 jest.spyOn(Logger.prototype, 'debug').mockImplementation(() => undefined);
@@ -106,6 +107,18 @@ function makeTdMock(opts?: {
   };
 }
 
+// PR #357 — mock minimal TickerBlacklistService. Par défaut, aucun ticker
+// blacklisté (comportement neutre identique à l'ancien @Optional null).
+// Tests qui veulent simuler une blacklist active passent { blacklisted: ['XYZ.US'] }.
+function makeBlacklistMock(opts?: { blacklisted?: string[] }): TickerBlacklistService {
+  const set = new Set(opts?.blacklisted ?? []);
+  return {
+    isBlacklisted: (ticker: string) => set.has(ticker),
+    recordStrike: () => undefined,
+    getStats: () => ({ staticEnabled: true, staticSize: 0, dynamicCount: 0, strikesThreshold: 3, ttlHours: 24 }),
+  } as unknown as TickerBlacklistService;
+}
+
 const TD_OK_QUOTE = { price: 180.5, changePct: 1.2, timestamp: 1747353600000 };
 const EODHD_OK_QUOTE = { price: 180.4, changePct: 1.1, timestamp: 1747353500000 };
 const TD_OK_CANDLES = {
@@ -130,6 +143,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         makeConfig({ TWELVEDATA_INTRADAY_SCANNER_ENABLED: 'false' }),
         eodhd.service,
         td.service,
+        makeBlacklistMock(),
       );
       const r = await router.getQuote('AAPL.US');
       expect(r!.provider).toBe('eodhd');
@@ -144,6 +158,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         makeConfig({ TWELVEDATA_INTRADAY_SCANNER_ENABLED: 'false' }),
         eodhd.service,
         td.service,
+        makeBlacklistMock(),
       );
       const r = await router.getCandles('AAPL.US', '1m', 20);
       expect(r!.provider).toBe('eodhd');
@@ -163,6 +178,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         eodhd.service,
         td.service,
+        makeBlacklistMock(),
       );
       const r = await router.getQuote('AAPL.US');
       expect(r!.provider).toBe('td');
@@ -182,6 +198,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         eodhd.service,
         td.service,
+        makeBlacklistMock(),
       );
       const r = await router.getCandles('AAPL.US', '1m', 20);
       expect(r!.provider).toBe('td');
@@ -202,6 +219,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         eodhd.service,
         td.service,
+        makeBlacklistMock(),
       );
       const r = await router.getQuote('AAPL.US');
       expect(r!.provider).toBe('eodhd');
@@ -221,6 +239,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         eodhd.service,
         td.service,
+        makeBlacklistMock(),
       );
       const r = await router.getCandles('AAPL.US', '1m', 20);
       expect(r!.provider).toBe('eodhd');
@@ -240,6 +259,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         eodhd.service,
         td.service,
+        makeBlacklistMock(),
       );
       await router.getCandles('AAPL.US', '5m', 20, { fromTs: 1000, toTs: 2000 });
       expect(td.candlesCalls).toBe(0);
@@ -259,6 +279,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         eodhd.service,
         td.service,
+        makeBlacklistMock(),
       );
       await router.getCandles('SOMETHING.XYZ', '1m', 20);
       expect(td.candlesCalls).toBe(0);
@@ -271,6 +292,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
       makeConfig({ TWELVEDATA_INTRADAY_SCANNER_ENABLED: 'true' }),
       makeEodhdMock().service,
       makeTdMock().service,
+      makeBlacklistMock(),
     );
 
     it.each([
@@ -325,6 +347,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         eodhd.service,
         td.service,
+        makeBlacklistMock(),
       );
       for (let i = 0; i < 100; i++) {
         await router.getQuote(`SYM${i}.US`);
@@ -343,6 +366,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         makeEodhdMock().service,
         makeTdMock().service,
+        makeBlacklistMock(),
       );
       const first = router.shouldRouteToTd('AAPL');
       for (let i = 0; i < 50; i++) {
@@ -360,6 +384,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         eodhd.service,
         td.service,
+        makeBlacklistMock(),
       );
       await router.getQuote('AAPL.US');
       expect(td.quoteCalls).toBe(0);
@@ -376,6 +401,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         eodhd.service,
         td.service,
+        makeBlacklistMock(),
       );
       await router.getQuote('AAPL.US');
       expect(td.quoteCalls).toBe(1);
@@ -395,6 +421,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         eodhd.service,
         null as unknown as TwelveDataService,
+        makeBlacklistMock(),
       );
       const r = await router.getQuote('AAPL.US');
       expect(r!.provider).toBe('eodhd');
@@ -417,6 +444,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         eodhd.service,
         td.service,
+        makeBlacklistMock(),
       );
       const r = await router.getCandles('005930.KO', '5m', 100, { calledBy: 'shadow_walkforward' });
       expect(r!.provider).toBe('td');
@@ -435,6 +463,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         eodhd.service,
         td.service,
+        makeBlacklistMock(),
       );
       await router.getCandles('600519.SHG', '1m', 20);
       expect(td.lastSymbol).toBe('600519:SSE');
@@ -456,6 +485,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
       makeConfig({}),
       makeEodhdMock().service,
       makeTdMock().service,
+      makeBlacklistMock(),
     );
 
     it('AAPL.US → AAPL (strip suffixe)', () => {
@@ -511,6 +541,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         makeConfig({ TWELVEDATA_INTRADAY_SCANNER_ENABLED: 'false' }),
         makeEodhdMock({ candles: EODHD_OK_CANDLES }).service,
         makeTdMock({ candles: TD_OK_CANDLES }).service,
+        makeBlacklistMock(),
       );
       await router.getCandles('AAPL.US', '1m', 20);
       const log = lastDualCall(calls);
@@ -529,6 +560,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         makeEodhdMock({ candles: EODHD_OK_CANDLES }).service,
         makeTdMock({ candles: TD_OK_CANDLES }).service,
+        makeBlacklistMock(),
       );
       await router.getCandles('AAPL.US', '5m', 20, { fromTs: 1000, toTs: 2000 });
       const log = lastDualCall(calls);
@@ -545,6 +577,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         makeEodhdMock({ candles: EODHD_OK_CANDLES }).service,
         makeTdMock({ candles: TD_OK_CANDLES }).service,
+        makeBlacklistMock(),
       );
       await router.getCandles('AAPL.US', '1m', 20);
       const log = lastDualCall(calls);
@@ -561,6 +594,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         makeEodhdMock({ candles: EODHD_OK_CANDLES }).service,
         makeTdMock({ candles: TD_OK_CANDLES }).service,
+        makeBlacklistMock(),
       );
       await router.getCandles('SOMETHING.XYZ', '1m', 20);
       const log = lastDualCall(calls);
@@ -578,6 +612,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         makeEodhdMock({ candles: EODHD_OK_CANDLES }).service,
         null as unknown as TwelveDataService,
+        makeBlacklistMock(),
       );
       await router.getCandles('AAPL.US', '1m', 20);
       const log = lastDualCall(calls);
@@ -594,6 +629,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         makeEodhdMock({ candles: EODHD_OK_CANDLES }).service,
         makeTdMock({ candles: TD_OK_CANDLES }).service,
+        makeBlacklistMock(),
       );
       await router.getCandles('AAPL.US', '1m', 20);
       const log = lastDualCall(calls);

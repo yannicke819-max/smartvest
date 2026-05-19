@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TwelveDataService } from './twelve-data.service';
 import { EodhdIntradayService, type CandleSeries } from './eodhd-intraday.service';
@@ -74,10 +74,13 @@ export class IntradayProviderRouter implements OnModuleInit {
     // PR #355 — check blacklist avant TD pour ne pas reporter le gaspillage
     // côté TD (avant : EODHD short-circuit dans this.eodhd.getCandles, mais
     // TD était appelé en parallèle sans aucun check).
-    // PR #356 — @Optional() conservé sur blacklist pour back-compat tests
-    // existants (23 .spec.ts qui n'injectent pas le 4e arg). Si null en prod,
-    // simplement perte d'optim blacklist pre-TD, pas de bug critique sur TD.
-    @Optional() private readonly blacklist: TickerBlacklistService | null = null,
+    // PR #357 — @Optional() retiré sur blacklist (même bug DI que td en PR #356).
+    // Post-deploy v570, /admin/providers-status retournait blacklist_injected=false
+    // malgré TickerBlacklistService bien exporté depuis LisaModule. Cause :
+    // forwardRef(LisaModule ↔ AdminModule) + @Optional() = NestJS injecte null.
+    // Fix identique à PR #356 sur td : suppression @Optional + tests mis à jour
+    // pour passer un mock TickerBlacklistService (4 args obligatoires).
+    private readonly blacklist: TickerBlacklistService,
   ) {
     const enabled = this.isEnabled();
     const ratio = this.getRatio();
@@ -100,10 +103,10 @@ export class IntradayProviderRouter implements OnModuleInit {
       );
     }
     if (!this.blacklist) {
-      // Warning seulement : @Optional() conservé pour tests, perte d'optim
-      // mais pas de bug fonctionnel TD.
-      this.logger.warn(
-        '[intraday-router] onModuleInit: TickerBlacklistService not injected (loss of pre-TD blacklist optim, non-critique).',
+      // PR #357 — @Optional() retiré, ce log ne devrait plus jamais apparaître.
+      // Si visible : NestJS DI cassé critique sur TickerBlacklistService.
+      this.logger.error(
+        '[intraday-router] FATAL onModuleInit: TickerBlacklistService not injected. Vérifier LisaModule exports.',
       );
     }
   }
