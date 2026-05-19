@@ -329,4 +329,129 @@ describe('evaluateTwelveDataFilters — PR #345', () => {
       expect(r.decision).toBe('accept');
     });
   });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // PR #360 — Filtre Supertrend asia 30m. Mapping .KO/.KQ → :KRX, .SHG → :SSE,
+  // .SHE → :SZSE déjà défini dans td-symbol-mapper (PR #355).
+  // ─────────────────────────────────────────────────────────────────────
+  describe('PR #360 — Filtre Supertrend asia 30m', () => {
+    it('flag OFF (default) → no call même si signal asia', async () => {
+      const { service: td, counters } = makeTwelveDataMock({
+        supertrend: { value: 100, direction: 'down', timestamp: 'now' },
+      });
+      const r = await evaluateTwelveDataFilters({
+        symbol: '002900.KO',
+        assetClass: 'asia_equity',
+        supertrendEnabled: false,
+        cryptoRsiEnabled: false,
+        // asiaSupertrendEnabled non spécifié → default false
+        twelveData: td,
+      });
+      expect(r.decision).toBe('accept');
+      expect(counters.supertrendCalls).toBe(0);
+    });
+
+    it('flag ON + asia direction=down → reject_supertrend_asia_down', async () => {
+      const { service: td, counters } = makeTwelveDataMock({
+        supertrend: { value: 1234.5, direction: 'down', timestamp: '2026-05-19 02:30' },
+      });
+      const r = await evaluateTwelveDataFilters({
+        symbol: '002900.KO',
+        assetClass: 'asia_equity',
+        supertrendEnabled: false,
+        cryptoRsiEnabled: false,
+        asiaSupertrendEnabled: true,
+        twelveData: td,
+      });
+      expect(r.decision).toBe('reject_supertrend_asia_down');
+      if (r.decision === 'reject_supertrend_asia_down') {
+        expect(r.reason).toContain('asia supertrend');
+        expect(r.reason).toContain('direction=down');
+        expect(r.reason).toContain('1234.5');
+      }
+      expect(counters.supertrendCalls).toBe(1);
+    });
+
+    it('flag ON + asia direction=up → accept', async () => {
+      const { service: td, counters } = makeTwelveDataMock({
+        supertrend: { value: 1500, direction: 'up', timestamp: 'now' },
+      });
+      const r = await evaluateTwelveDataFilters({
+        symbol: '601318.SHG',
+        assetClass: 'asia_equity',
+        supertrendEnabled: false,
+        cryptoRsiEnabled: false,
+        asiaSupertrendEnabled: true,
+        twelveData: td,
+      });
+      expect(r.decision).toBe('accept');
+      expect(counters.supertrendCalls).toBe(1);
+    });
+
+    it('flag ON + TD null (rate limit) → fail-open accept', async () => {
+      const { service: td, counters } = makeTwelveDataMock({ supertrend: null });
+      const r = await evaluateTwelveDataFilters({
+        symbol: '222420.KQ',
+        assetClass: 'asia_equity',
+        supertrendEnabled: false,
+        cryptoRsiEnabled: false,
+        asiaSupertrendEnabled: true,
+        twelveData: td,
+      });
+      expect(r.decision).toBe('accept');
+      expect(counters.supertrendCalls).toBe(1);
+    });
+
+    it('flag ON + asset_class us_equity_large → bypass (filtre asia only)', async () => {
+      const { service: td, counters } = makeTwelveDataMock({
+        supertrend: { value: 100, direction: 'down', timestamp: 'now' },
+      });
+      const r = await evaluateTwelveDataFilters({
+        symbol: 'AAPL.US',
+        assetClass: 'us_equity_large',
+        supertrendEnabled: false,
+        cryptoRsiEnabled: false,
+        asiaSupertrendEnabled: true,
+        twelveData: td,
+      });
+      expect(r.decision).toBe('accept');
+      expect(counters.supertrendCalls).toBe(0);
+    });
+
+    it('asia + .T suffix (non mappé dans td-symbol-mapper) → bypass fail-open', async () => {
+      const { service: td, counters } = makeTwelveDataMock({
+        supertrend: { value: 100, direction: 'down', timestamp: 'now' },
+      });
+      const r = await evaluateTwelveDataFilters({
+        symbol: '7203.T',
+        assetClass: 'asia_equity',
+        supertrendEnabled: false,
+        cryptoRsiEnabled: false,
+        asiaSupertrendEnabled: true,
+        twelveData: td,
+      });
+      // .T n'est pas mappé (TD ne couvre pas Tokyo sur ce plan), eodhdToTdSymbol
+      // retourne null → pas d'appel → fail-open accept.
+      expect(r.decision).toBe('accept');
+      expect(counters.supertrendCalls).toBe(0);
+    });
+
+    it('US supertrend OFF + asia supertrend ON sur signal asia down → reject_supertrend_asia_down (pas confondu)', async () => {
+      const { service: td, counters } = makeTwelveDataMock({
+        supertrend: { value: 80, direction: 'down', timestamp: 'now' },
+      });
+      const r = await evaluateTwelveDataFilters({
+        symbol: '300750.SHE',
+        assetClass: 'asia_equity',
+        supertrendEnabled: false,
+        cryptoRsiEnabled: false,
+        asiaSupertrendEnabled: true,
+        twelveData: td,
+      });
+      expect(r.decision).toBe('reject_supertrend_asia_down');
+      expect(counters.supertrendCalls).toBe(1);
+      // Vérifier que le called_by est bien le bon (scanner_asia_supertrend, pas scanner_us_supertrend)
+      expect(counters.lastSupertrendArgs?.[4]).toBe('scanner_asia_supertrend');
+    });
+  });
 });

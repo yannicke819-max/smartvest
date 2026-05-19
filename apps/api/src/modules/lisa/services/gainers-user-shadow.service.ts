@@ -39,6 +39,7 @@ export type ShadowDecision =
   | 'reject_opening_buffer'     // PR Phase 1 — premières N min après open
   | 'reject_supertrend_down'    // PR #345 — TwelveData Supertrend 30m direction=down (us_equity)
   | 'reject_rsi_overbought'     // PR #345 — TwelveData RSI 5m > 75 (crypto_major)
+  | 'reject_supertrend_asia_down' // PR #360 — TwelveData Supertrend 30m direction=down (asia_equity)
   | 'reject_other';
 
 export interface RecordDecisionInput {

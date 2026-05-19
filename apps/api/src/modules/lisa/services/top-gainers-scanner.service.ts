@@ -2283,27 +2283,36 @@ export class TopGainersScannerService implements OnModuleInit {
           recordShadowDecision(cand, 'reject_path_eff', persistence);
           continue;
         }
-        // PR #345 — Filtres TwelveData (Supertrend US + RSI crypto). No-op si
+        // PR #345 + #360 — Filtres TwelveData (Supertrend US + RSI crypto + Supertrend asia 30m). No-op si
         // flags OFF ou service non injecté. Fail-open total (null TD = pass).
         if (this.twelveData) {
           const supertrendEnabled =
             (this.config.get<string>('TWELVEDATA_FILTER_US_SUPERTREND_ENABLED') ?? 'false') === 'true';
           const cryptoRsiEnabled =
             (this.config.get<string>('TWELVEDATA_FILTER_CRYPTO_RSI_ENABLED') ?? 'false') === 'true';
-          if (supertrendEnabled || cryptoRsiEnabled) {
+          const asiaSupertrendEnabled =
+            (this.config.get<string>('TWELVEDATA_FILTER_ASIA_SUPERTREND_ENABLED') ?? 'false') === 'true';
+          if (supertrendEnabled || cryptoRsiEnabled || asiaSupertrendEnabled) {
             const tdFilter = await evaluateTwelveDataFilters({
               symbol: cand.symbol,
               assetClass: cand.assetClass,
               supertrendEnabled,
               cryptoRsiEnabled,
+              asiaSupertrendEnabled,
               twelveData: this.twelveData,
             });
             if (tdFilter.decision !== 'accept') {
               this.logger.log(
                 `[top-gainers] ${cand.symbol} TwelveData filter ${tdFilter.decision}: ${tdFilter.reason}`,
               );
+              const qwId =
+                tdFilter.decision === 'reject_supertrend_down'
+                  ? 'TD_SUPERTREND_US'
+                  : tdFilter.decision === 'reject_supertrend_asia_down'
+                    ? 'TD_SUPERTREND_ASIA'
+                    : 'TD_RSI_CRYPTO';
               this.qwLogger?.log({
-                qwId: tdFilter.decision === 'reject_supertrend_down' ? 'TD_SUPERTREND_US' : 'TD_RSI_CRYPTO',
+                qwId,
                 symbol: cand.symbol,
                 assetClass: cand.assetClass,
                 decision: 'block',
