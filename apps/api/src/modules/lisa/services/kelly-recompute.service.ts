@@ -18,6 +18,12 @@ import { KellySizingService } from '../../gainers-scanner/kelly/kelly-sizing.ser
  * Si edge négatif (fullKelly ≤ 0) : upsert notional=1575 (fallback), fraction=0,
  * source='auto_recompute_no_edge'. Le service consommateur lit la fraction et
  * désactive l override → caller utilise le notional uniforme historique.
+ *
+ * PR #359 (19/05/2026) — no-edge reducer :
+ *   Quand edge négatif ET WR observé < 20% sur sample suffisant (>= 30), le
+ *   baseline $1575 reste trop agressif : le 19 mai PnL -$534/jour avec
+ *   WR=12.9%. On réduit à $800 (NOTIONAL_REDUCED_USD) pour bridger jusqu'à
+ *   retour edge positif. Source = 'auto_recompute_reduced_low_wr'.
  */
 
 const ASSET_CLASSES = [
@@ -29,8 +35,11 @@ const ASSET_CLASSES = [
 ] as const;
 
 const NOTIONAL_FALLBACK_USD = 1575;
+const NOTIONAL_REDUCED_USD = 800; // PR #359 — reducer no-edge + WR low
 const NOTIONAL_MIN = 500;
 const NOTIONAL_MAX = 3000;
+const LOW_WR_THRESHOLD = 0.20; // PR #359 — WR observé < 20% = signal dégradé
+const LOW_WR_MIN_SAMPLE = 30; // PR #359 — sample minimal pour appliquer le reducer
 
 // TODO Phase 5 N3 : récupérer le capital réel via portfolios.equity_usd au lieu
 // de la constante. Pour MVP, baseline = notional_avg actuel × max positions.
@@ -113,8 +122,16 @@ export class KellyRecomputeService {
     let source: string;
 
     if (edgeNegative || fraction === 0) {
-      notionalUsd = NOTIONAL_FALLBACK_USD;
-      source = 'auto_recompute_no_edge';
+      // PR #359 — si edge négatif ET WR observé < 20% sur sample suffisant, on
+      // descend à $800 au lieu de $1575 pour limiter le saignement (jour 19 mai
+      // PnL -$534 avec WR 12.9%). Sinon baseline historique conservé.
+      if (stats.wr < LOW_WR_THRESHOLD && stats.n_closed >= LOW_WR_MIN_SAMPLE) {
+        notionalUsd = NOTIONAL_REDUCED_USD;
+        source = 'auto_recompute_reduced_low_wr';
+      } else {
+        notionalUsd = NOTIONAL_FALLBACK_USD;
+        source = 'auto_recompute_no_edge';
+      }
     } else {
       const raw = fraction * this.capitalUsd;
       notionalUsd = Math.max(NOTIONAL_MIN, Math.min(NOTIONAL_MAX, raw));
