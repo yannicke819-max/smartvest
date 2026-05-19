@@ -258,6 +258,12 @@ import { IntradayProviderRouter } from './services/intraday-provider-router.serv
     // in the AdminModule context." → empêchait app.listen → port 3001 jamais bindé →
     // Fly proxy fail. Cf. PR #200.
     TopGainersScannerService,
+    // PR #356 — exports TD + router pour AdminProvidersStatusController qui
+    // expose /admin/providers-status. Même pattern que TopGainersScannerService
+    // export hotfix PR #200 (forwardRef LisaModule ↔ AdminModule).
+    TwelveDataService,
+    IntradayProviderRouter,
+    TickerBlacklistService,
   ],
 })
 export class LisaModule {}
