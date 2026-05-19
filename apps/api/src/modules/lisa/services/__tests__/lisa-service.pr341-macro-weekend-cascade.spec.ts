@@ -114,6 +114,45 @@ describe('LisaService.isCascadeFullyClosed — PR #341 macro weekend filter', ()
       expect(closed).toBe(false);
     });
 
+    // PR #363 — Yahoo FX (EURUSD=X, USDJPY=X) + futures (GC=F, SI=F) servent
+    // un last-close 24/7 même le weekend. Ne doivent PAS être considérés fermés.
+    it.each(['GC=F', 'SI=F', 'EURUSD=X', 'USDJPY=X'])(
+      'PR #363 Yahoo %s samedi → false (continuous quote 24/7)',
+      (ticker) => {
+        const sat = new Date('2026-05-16T15:00:00Z');
+        const closed = service.isCascadeFullyClosed(
+          [{ ticker, source: 'yahoo', quality: 'live' }],
+          sat,
+        );
+        expect(closed).toBe(false);
+      },
+    );
+
+    it('PR #363 cascade gold (GC=F yahoo + XAUUSD.FOREX + GLD.US) samedi → false', () => {
+      const sat = new Date('2026-05-16T10:00:00Z');
+      const closed = service.isCascadeFullyClosed(
+        [
+          { ticker: 'GC=F', source: 'yahoo', quality: 'live' },
+          { ticker: 'XAUUSD.FOREX', source: 'eodhd', quality: 'live' },
+          { ticker: 'GLD.US', source: 'eodhd', multiplier: 10, quality: 'proxy' },
+        ],
+        sat,
+      );
+      expect(closed).toBe(false);
+    });
+
+    it('PR #363 cascade eurusd (EURUSD=X yahoo + EURUSD.FOREX) dimanche 12h UTC → false', () => {
+      const sun = new Date('2026-05-17T12:00:00Z');
+      const closed = service.isCascadeFullyClosed(
+        [
+          { ticker: 'EURUSD=X', source: 'yahoo', quality: 'live' },
+          { ticker: 'EURUSD.FOREX', source: 'eodhd', quality: 'live' },
+        ],
+        sun,
+      );
+      expect(closed).toBe(false);
+    });
+
     it('BTC-USD.CC dimanche → false (crypto 24/7)', () => {
       const sun = new Date('2026-05-17T03:00:00Z');
       const closed = service.isCascadeFullyClosed(
