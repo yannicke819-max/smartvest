@@ -16,6 +16,7 @@
  */
 
 import type { TwelveDataService } from './twelve-data.service';
+import { eodhdToTdSymbol } from './td-symbol-mapper';
 
 export type ScannerFilterDecision =
   | { decision: 'accept' }
@@ -50,12 +51,19 @@ export async function evaluateTwelveDataFilters(
 ): Promise<ScannerFilterDecision> {
   // Filtre 1 — Supertrend US 30m
   if (ctx.supertrendEnabled && US_CLASSES.has(ctx.assetClass)) {
-    const st = await ctx.twelveData.getSupertrendSignal(ctx.symbol, '30min', 10, 3, 'scanner_us_supertrend');
-    if (st !== null && st.direction === 'down') {
-      return {
-        decision: 'reject_supertrend_down',
-        reason: `supertrend direction=down at ${st.timestamp} value=${st.value.toFixed(4)}`,
-      };
+    // PR #355 — strip suffixe EODHD avant l'appel TD (AAPL.US → AAPL).
+    // Avant : `ctx.symbol` passé tel quel à TD → 404/erreur silencieuse
+    // côté TD pour 100% des US équities. Fail-open si symbole non
+    // mappable (pas censé arriver pour US_CLASSES, mais on est tolérant).
+    const tdSymbol = eodhdToTdSymbol(ctx.symbol);
+    if (tdSymbol !== null) {
+      const st = await ctx.twelveData.getSupertrendSignal(tdSymbol, '30min', 10, 3, 'scanner_us_supertrend');
+      if (st !== null && st.direction === 'down') {
+        return {
+          decision: 'reject_supertrend_down',
+          reason: `supertrend direction=down at ${st.timestamp} value=${st.value.toFixed(4)}`,
+        };
+      }
     }
   }
 

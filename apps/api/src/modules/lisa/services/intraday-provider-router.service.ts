@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { TwelveDataService } from './twelve-data.service';
 import { EodhdIntradayService, type CandleSeries } from './eodhd-intraday.service';
 import { TickerBlacklistService } from './ticker-blacklist.service';
+import { eodhdToTdSymbol } from './td-symbol-mapper';
 
 /**
  * PR #352 (original) — Routeur intraday TwelveData-first avec fallback EODHD.
@@ -304,30 +305,8 @@ export class IntradayProviderRouter {
    * Visible pour tests.
    */
   convertToTdSymbol(eodhdTicker: string): string | null {
-    if (!eodhdTicker.includes('.')) return eodhdTicker;
-    const [base, suffix] = eodhdTicker.split('.');
-    const map: Record<string, string> = {
-      US: '',
-      L: ':LSE',
-      LSE: ':LSE',
-      PA: ':Euronext',
-      AS: ':Euronext',
-      AMS: ':Euronext',
-      XETRA: ':XETR',
-      DE: ':XETR',
-      SW: ':SIX',
-      MI: ':MIL',
-      TO: ':TSX',
-      // PR #353 — asia mapping (TwelveData Pro)
-      KO: ':KRX',
-      KQ: ':KRX',
-      SHG: ':SSE',
-      SHE: ':SZSE',
-      HK: ':HKEX',
-      T: ':XTKS',
-      AU: ':XASX',
-    };
-    if (!(suffix in map)) return null;
-    return map[suffix] ? `${base}${map[suffix]}` : base;
+    // PR #355 — délégué au helper pur `td-symbol-mapper` (centralisé,
+    // partagé avec evaluateTwelveDataFilters Supertrend US).
+    return eodhdToTdSymbol(eodhdTicker);
   }
 }
