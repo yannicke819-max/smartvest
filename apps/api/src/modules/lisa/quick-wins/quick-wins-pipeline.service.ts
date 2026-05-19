@@ -34,11 +34,20 @@ import type { QwId, QwResult, QwSignal, QwTrace } from './types';
  *
  * Master flag QUICK_WINS_PIPELINE_ENABLED. Default 'false' jusqu'à validation
  * post-merge par l'agent (Perplexity Computer).
+ *
+ * PR #358 (19/05/2026) — runtime toggle :
+ *   - lecture initiale depuis ConfigService (QUICK_WINS_PIPELINE_ENABLED)
+ *   - override runtime possible via setEnabledRuntime() (utilisé par
+ *     /admin/qw-pipeline-toggle), survit jusqu'au prochain restart
+ *   - chaque appel logge le verdict pour audit (compteur in-memory)
  */
 @Injectable()
 export class QuickWinsPipelineService {
   private readonly logger = new Logger(QuickWinsPipelineService.name);
-  private readonly masterEnabled: boolean;
+  private masterEnabled: boolean;
+  private runtimeOverride: boolean | null = null;
+  private evalCount = 0;
+  private lastDecisionAt: string | null = null;
 
   constructor(
     private readonly config: ConfigService,
@@ -57,19 +66,55 @@ export class QuickWinsPipelineService {
     private readonly qw14a: Qw14aFridayEuBoostService,
   ) {
     this.masterEnabled = (this.config.get<string>('QUICK_WINS_PIPELINE_ENABLED') ?? 'false') === 'true';
-    if (this.masterEnabled) {
-      this.logger.log('Quick Wins pipeline ENABLED (master flag on)');
-    }
+    this.logger.log(
+      `[QW] boot masterEnabled=${this.masterEnabled} (env QUICK_WINS_PIPELINE_ENABLED=${this.config.get<string>('QUICK_WINS_PIPELINE_ENABLED') ?? 'unset'})`,
+    );
   }
 
   isEnabled(): boolean {
-    return this.masterEnabled;
+    return this.runtimeOverride !== null ? this.runtimeOverride : this.masterEnabled;
+  }
+
+  /**
+   * PR #358 — toggle runtime via endpoint admin. Override survit jusqu'au
+   * prochain restart de process (puis revient à QUICK_WINS_PIPELINE_ENABLED env).
+   * Passer null pour relâcher l'override (revient au flag env).
+   */
+  setEnabledRuntime(value: boolean | null): { previous: boolean; current: boolean } {
+    const previous = this.isEnabled();
+    this.runtimeOverride = value;
+    const current = this.isEnabled();
+    this.logger.log(
+      `[QW] runtime toggle previous=${previous} current=${current} override=${value === null ? 'null(use_env)' : value}`,
+    );
+    return { previous, current };
+  }
+
+  /** Diagnostic pour /admin/qw-pipeline-toggle GET. */
+  getStatus(): {
+    masterEnabled: boolean;
+    envFlag: string | null;
+    runtimeOverride: boolean | null;
+    effective: boolean;
+    evalCount: number;
+    lastDecisionAt: string | null;
+  } {
+    return {
+      masterEnabled: this.masterEnabled,
+      envFlag: this.config.get<string>('QUICK_WINS_PIPELINE_ENABLED') ?? null,
+      runtimeOverride: this.runtimeOverride,
+      effective: this.isEnabled(),
+      evalCount: this.evalCount,
+      lastDecisionAt: this.lastDecisionAt,
+    };
   }
 
   async evaluate(signal: QwSignal): Promise<QwResult> {
-    if (!this.masterEnabled) {
+    if (!this.isEnabled()) {
       return { decision: 'pass', sizingMultiplier: 1.0, modifications: [], qwTrace: [] };
     }
+    this.evalCount += 1;
+    this.lastDecisionAt = new Date().toISOString();
 
     const trace: QwTrace[] = [];
     let sizingMultiplier = 1.0;

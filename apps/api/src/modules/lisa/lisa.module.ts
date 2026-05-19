@@ -264,6 +264,9 @@ import { IntradayProviderRouter } from './services/intraday-provider-router.serv
     TwelveDataService,
     IntradayProviderRouter,
     TickerBlacklistService,
+    // PR #358 — export pour AdminQwPipelineToggleController qui expose
+    // /admin/qw-pipeline-toggle (toggle runtime QUICK_WINS_PIPELINE_ENABLED).
+    QuickWinsPipelineService,
   ],
 })
 export class LisaModule {}
