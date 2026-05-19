@@ -202,6 +202,58 @@ describe('KellyRecomputeService', () => {
     expect(upserts).toHaveLength(0);
   });
 
+  // ---------------------------------------------------------------------------
+  // PR #359 — no-edge reducer : WR < 20% + sample >= 30 → notional $800
+  // ---------------------------------------------------------------------------
+  it('PR #359 — edge négatif + WR<20% + n>=30 → notional=800 source=auto_recompute_reduced_low_wr', async () => {
+    // 5 TP / 35 SL = WR 12.5% sur 40 trades (cas réel 19 mai us_large WR=19.3%)
+    const rows: FetchRow[] = [
+      ...Array.from({ length: 5 }, () => mkRow('closed_target', 2.0)),
+      ...Array.from({ length: 35 }, () => mkRow('closed_stop', -1.3)),
+    ];
+    const { service: supabase, upserts } = makeSupabaseStub(rows);
+    const sizing = makeKellySizingMock({
+      fractionSuggested: 0,
+      fullKelly: -0.5,
+      winRateLowerWilson: 0.08,
+    });
+    const svc = new KellyRecomputeService(makeConfig(), supabase, sizing);
+
+    await svc.recomputeForClass('us_equity_large');
+
+    expect(upserts).toHaveLength(1);
+    expect(upserts[0]).toMatchObject({
+      asset_class: 'us_equity_large',
+      notional_usd: 800,
+      kelly_fraction: 0,
+      source: 'auto_recompute_reduced_low_wr',
+      sample_size: 40,
+    });
+  });
+
+  it('PR #359 — edge négatif + WR>=20% → reste sur notional=1575 (pas de reducer)', async () => {
+    // 10 TP / 30 SL = WR 25% → au-dessus du seuil 20%, fallback historique
+    const rows: FetchRow[] = [
+      ...Array.from({ length: 10 }, () => mkRow('closed_target', 2.0)),
+      ...Array.from({ length: 30 }, () => mkRow('closed_stop', -1.5)),
+    ];
+    const { service: supabase, upserts } = makeSupabaseStub(rows);
+    const sizing = makeKellySizingMock({
+      fractionSuggested: 0,
+      fullKelly: -0.2,
+      winRateLowerWilson: 0.15,
+    });
+    const svc = new KellyRecomputeService(makeConfig(), supabase, sizing);
+
+    await svc.recomputeForClass('asia_equity');
+
+    expect(upserts).toHaveLength(1);
+    expect(upserts[0]).toMatchObject({
+      notional_usd: 1575,
+      source: 'auto_recompute_no_edge',
+    });
+  });
+
   it('CAPITAL via env var KELLY_CAPITAL_ESTIME_USD prend le pas', async () => {
     const rows: FetchRow[] = [
       ...Array.from({ length: 25 }, () => mkRow('closed_target', 3.0)),
