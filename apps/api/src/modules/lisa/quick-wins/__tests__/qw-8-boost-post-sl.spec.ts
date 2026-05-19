@@ -93,7 +93,7 @@ describe('Qw8BoostPostSlService', () => {
       makeSupabaseNotReady(),
       makeLogger(),
     );
-    const r = await svc.check({ ...baseSignal, portfolioId: undefined });
+    const r = await svc.check({ ...baseSignal, portfolioId: null });
     expect(r.decision).toBe('pass');
     expect(r.reason).toBe('no_portfolio_id');
   });
