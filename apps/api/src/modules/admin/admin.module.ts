@@ -35,6 +35,7 @@ import { AdminGainersInsightsController } from './admin-gainers-insights.control
 import { AdminRejectedInsightsController } from './admin-rejected-insights.controller';
 import { AdminThresholdTunerController } from './admin-threshold-tuner.controller';
 import { AdminProvidersStatusController } from './admin-providers-status.controller';
+import { AdminQwPipelineToggleController } from './admin-qw-pipeline-toggle.controller';
 
 @Module({
   imports: [SupabaseModule, forwardRef(() => LisaModule), GainersModule],
@@ -55,6 +56,8 @@ import { AdminProvidersStatusController } from './admin-providers-status.control
     AdminThresholdTunerController,
     // PR #356 — diagnostic DI IntradayProviderRouter + TwelveDataService.
     AdminProvidersStatusController,
+    // PR #358 — toggle runtime QUICK_WINS_PIPELINE_ENABLED sans redeploy.
+    AdminQwPipelineToggleController,
   ],
 })
 export class AdminModule {}
