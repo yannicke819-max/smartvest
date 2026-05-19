@@ -94,8 +94,8 @@ describe('session-filter helpers', () => {
   });
 
   describe('DEAD_NSE_TICKERS (alias) + DEAD_TICKERS_STATIC', () => {
-    it('total = 54 tickers (23 PR #337 + 31 PR #355)', () => {
-      expect(DEAD_NSE_TICKERS.size).toBe(54);
+    it('total = 63 tickers (23 PR #337 + 31 PR #355 + 9 PR #363)', () => {
+      expect(DEAD_NSE_TICKERS.size).toBe(63);
     });
 
     it.each([
@@ -154,6 +154,21 @@ describe('session-filter helpers', () => {
 
     it('PR #355 — 002900.KO toujours autorisé (preuve TP +$177/30j)', () => {
       expect(DEAD_NSE_TICKERS.has('002900.KO')).toBe(false);
+    });
+
+    // PR #363 — 9 tickers US ajoutés (audit 19/05/2026 19h UTC)
+    // 6 QW#6 deja bloqués ouverture + 3 saigneurs US 0 productivité
+    it.each([
+      // QW#6 ouverture-bloqués, ajout fetch-level (6)
+      'PODD.US', 'CGNX.US', 'ORA.US', 'QCOM.US', 'ST.US', 'PRU.US',
+      // Saigneurs US non-QW#6 (3)
+      'EXLS.US', 'CTSH.US', 'KBR.US',
+    ])('PR #363 blacklist statique %s', (ticker) => {
+      expect(DEAD_NSE_TICKERS.has(ticker)).toBe(true);
+    });
+
+    it('PR #363 — DXCM.US toujours autorisé (productif +$20.58/30j 1 TP)', () => {
+      expect(DEAD_NSE_TICKERS.has('DXCM.US')).toBe(false);
     });
   });
 });

@@ -171,6 +171,31 @@ export const DEAD_TICKERS_STATIC: ReadonlySet<string> = new Set<string>([
   'BLDP.TO',
   'KEY.TO',
   'SDE.TO',
+
+  // --- PR #363 (19/05/2026 19h UTC) — Double blacklist QW#6 + fetch-level ---
+  // QW#6 (qw-6-symbol-blacklist.service.ts) bloque l'OUVERTURE de position via
+  // env QW_6_SYMBOL_BLACKLIST mais NE STOPPE PAS le fetch EODHD intraday.
+  // Conséquence : PODD/CGNX/ORA/QCOM/ST/PRU consomment ~65 calls/24h chacun
+  // pour 0 position ouverte. Cette section les bloque AUSSI au niveau scanner
+  // upstream (fetch-level) pour économiser ~700 calls EODHD/24h.
+  // EXLS et 3 autres US ajoutés en plus (audit 19/05 19h UTC : 14 erreurs
+  // 404/24h chacun, 0 accept, 0 ou 2 positions losing).
+  // DXCM.US volontairement CONSERVÉ malgré 17 erreurs/24h : 1 accept 24h,
+  // 1 TP / 0 SL sur 30j (+$20.58, productif) → bloquer serait perdre alpha.
+
+  // QW#6 backlist (6 tickers) — déjà bloqués à l'OUVERTURE, ajout fetch-level
+  // Audit 19/05/2026 19h UTC : 65-100 calls/24h chacun, 0 accept réel
+  'PODD.US', // QW#6 + 14 err/24h, 65 calls/24h, 0 accept, 9 positions 30j 0 TP/4 SL (-$24)
+  'CGNX.US', // QW#6 + tendance similaire PODD
+  'ORA.US',  // QW#6
+  'QCOM.US', // QW#6
+  'ST.US',   // QW#6
+  'PRU.US',  // QW#6
+
+  // Saigneurs US non-QW#6 (audit 19/05 19h UTC, 0 accept/24h, 0 TP)
+  'EXLS.US', // 14 err/24h, 69 calls/24h, 0 accept, 0 position 30j → pur gaspillage
+  'CTSH.US', // 14 err/24h, 234 calls/24h, 2 accept, 2 positions 30j 0 TP/1 SL (-$24.86)
+  'KBR.US',  // 13 err/24h, 256 calls/24h, 2 accept, 2 positions 30j 0 TP/1 SL (-$26.91)
 ]);
 
 /**

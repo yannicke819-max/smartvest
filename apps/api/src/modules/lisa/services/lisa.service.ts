@@ -3071,6 +3071,9 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       if (src === 'fred') return false;
       if (a.ticker.startsWith('^') || a.ticker === 'DX-Y.NYB') return false;
       if (a.ticker.endsWith('.CC')) return false;
+      // PR #363 — Yahoo FX/futures continuous (GC=F, SI=F, EURUSD=X,
+      // USDJPY=X, etc.) servent un last-close 24/7. Ne pas skip weekend.
+      if (src === 'yahoo' && (a.ticker.endsWith('=F') || a.ticker.endsWith('=X'))) return false;
       return !this.isMacroTickerMarketOpen(a.ticker, now);
     });
   }
@@ -3502,20 +3505,38 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       fetchCascade('eth', [
         { ticker: 'ETH-USD.CC', quality: 'live' },
       ]),
-      // Gold : .COMM 404 → GLD ETF × 10 (GLD $300 ≈ Gold $3000)
+      // Gold cascade — PR #363 (19/05/2026) : YAHOO PRIMARY car EODHD
+      // XAUUSD.FOREX renvoie HTTP 200 empty_price_field 14-50% du temps
+      // (audit 19/05 18h UTC, 4 ERROR LisaService macro/h corrélés).
+      // Yahoo GC=F (gold futures continuous) = data temps réel sans auth.
+      //   1. yahoo:GC=F        (primary)
+      //   2. eodhd:XAUUSD.FOREX (legacy, fréquemment empty)
+      //   3. eodhd:GLD.US x10  (ETF proxy)
       fetchCascade('gold', [
-        { ticker: 'XAUUSD.FOREX', quality: 'live' },
-        { ticker: 'GLD.US', multiplier: 10, quality: 'proxy' },
+        { ticker: 'GC=F', source: 'yahoo', quality: 'live' },
+        { ticker: 'XAUUSD.FOREX', source: 'eodhd', quality: 'live' },
+        { ticker: 'GLD.US', source: 'eodhd', multiplier: 10, quality: 'proxy' },
       ]),
       // ETFs OK directs
       fetchCascade('spy', [{ ticker: 'SPY.US', quality: 'live' }]),
       fetchCascade('qqq', [{ ticker: 'QQQ.US', quality: 'live' }]),
-      fetchCascade('eurusd', [{ ticker: 'EURUSD.FOREX', quality: 'live' }]),
-      fetchCascade('usdjpy', [{ ticker: 'USDJPY.FOREX', quality: 'live' }]),
-      // Silver : .COMM 404 → SLV ETF
+      // EURUSD cascade — PR #363 : YAHOO PRIMARY (EURUSD=X) car EODHD
+      // EURUSD.FOREX renvoie occasionnellement empty_price_field.
+      fetchCascade('eurusd', [
+        { ticker: 'EURUSD=X', source: 'yahoo', quality: 'live' },
+        { ticker: 'EURUSD.FOREX', source: 'eodhd', quality: 'live' },
+      ]),
+      // USDJPY cascade — PR #363 : YAHOO PRIMARY (USDJPY=X) même motif.
+      fetchCascade('usdjpy', [
+        { ticker: 'USDJPY=X', source: 'yahoo', quality: 'live' },
+        { ticker: 'USDJPY.FOREX', source: 'eodhd', quality: 'live' },
+      ]),
+      // Silver cascade — PR #363 : YAHOO PRIMARY (SI=F silver futures)
+      // car XAGUSD.FOREX 16 empty/h observés 19/05 18h UTC.
       fetchCascade('silver', [
-        { ticker: 'XAGUSD.FOREX', quality: 'live' },
-        { ticker: 'SLV.US', quality: 'proxy' },
+        { ticker: 'SI=F', source: 'yahoo', quality: 'live' },
+        { ticker: 'XAGUSD.FOREX', source: 'eodhd', quality: 'live' },
+        { ticker: 'SLV.US', source: 'eodhd', quality: 'proxy' },
       ]),
       // HYG ETF pour proxy de credit HY OAS spread
       fetchCascade('hyg', [{ ticker: 'HYG.US', quality: 'live' }]),
