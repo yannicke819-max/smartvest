@@ -4,6 +4,8 @@ import { LisaCircuitBreakerService } from '../services/circuit-breaker.service';
 import { Qw1SessionFilterService } from './qw-1-session-filter.service';
 import { Qw4RegimeFilterService } from './qw-4-regime-filter.service';
 import { Qw6SymbolBlacklistService } from './qw-6-symbol-blacklist.service';
+import { Qw7CooldownPostTpUsService } from './qw-7-cooldown-post-tp-us.service';
+import { Qw8BoostPostSlService } from './qw-8-boost-post-sl.service';
 import { Qw9ScoreFloorService } from './qw-9-score-floor.service';
 import { Qw11AssetClassGateService } from './qw-11-asset-class-gate.service';
 import { Qw15FirstTradeBoostService } from './qw-15-first-trade-boost.service';
@@ -24,13 +26,16 @@ import type { QwId, QwResult, QwSignal, QwTrace } from './types';
  *   2. QW#47 .LSE
  *   3. QW#1  session filter
  *   4. QW#6  symbol blacklist
- *   5. QW#11 asset class gate
- *   6. QW#9  score floor
- *   7. QW#27 path eff floor
- *   8. QW#4  régime asia (queries Supabase, cache 5min)
- *   9. QW#17 repeat cap
- *  10. QW#15 first trade boost (modify)
- *  11. QW#18 exchange multiplier (modify)
+ *   5. QW#7  cooldown post-TP US 60min (PR #361)
+ *   6. QW#11 asset class gate
+ *   7. QW#9  score floor
+ *   8. QW#27 path eff floor
+ *   9. QW#4  régime asia (queries Supabase, cache 5min)
+ *  10. QW#17 repeat cap
+ *  11. QW#15 first trade boost (modify)
+ *  12. QW#18 exchange multiplier (modify)
+ *  13. QW#14A friday eu boost (modify)
+ *  14. QW#8  boost post-SL 30min (modify, PR #361)
  *
  * Master flag QUICK_WINS_PIPELINE_ENABLED. Default 'false' jusqu'à validation
  * post-merge par l'agent (Perplexity Computer).
@@ -55,6 +60,8 @@ export class QuickWinsPipelineService {
     private readonly qw1: Qw1SessionFilterService,
     private readonly qw4: Qw4RegimeFilterService,
     private readonly qw6: Qw6SymbolBlacklistService,
+    private readonly qw7: Qw7CooldownPostTpUsService,
+    private readonly qw8: Qw8BoostPostSlService,
     private readonly qw9: Qw9ScoreFloorService,
     private readonly qw11: Qw11AssetClassGateService,
     private readonly qw15: Qw15FirstTradeBoostService,
@@ -146,6 +153,8 @@ export class QuickWinsPipelineService {
       () => Promise.resolve(this.qw47.check(signal)),
       () => Promise.resolve(this.qw1.check(signal)),
       () => Promise.resolve(this.qw6.check(signal)),
+      // PR #361 — QW#7 cooldown post-TP US (block) avant gate classe / score
+      () => this.qw7.check(signal),
       () => Promise.resolve(this.qw11.check(signal)),
       () => Promise.resolve(this.qw9.check(signal)),
       () => Promise.resolve(this.qw27.check(signal)),
@@ -154,6 +163,9 @@ export class QuickWinsPipelineService {
       () => this.qw15.check(signal),
       () => Promise.resolve(this.qw18.check(signal)),
       () => Promise.resolve(this.qw14a.check(signal)),
+      // PR #361 — QW#8 boost post-SL (modify) en dernier pour qu'il s'applique
+      // même si autres modifiers ont déjà ajusté le sizing
+      () => this.qw8.check(signal),
     ];
 
     for (const step of ordered) {

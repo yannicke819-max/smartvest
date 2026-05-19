@@ -4,6 +4,8 @@ export { Qw1SessionFilterService } from './qw-1-session-filter.service';
 export { Qw3WarmupExtendedService } from './qw-3-warmup-extended.service';
 export { Qw4RegimeFilterService } from './qw-4-regime-filter.service';
 export { Qw6SymbolBlacklistService } from './qw-6-symbol-blacklist.service';
+export { Qw7CooldownPostTpUsService } from './qw-7-cooldown-post-tp-us.service';
+export { Qw8BoostPostSlService } from './qw-8-boost-post-sl.service';
 export { Qw9ScoreFloorService } from './qw-9-score-floor.service';
 export { Qw11AssetClassGateService } from './qw-11-asset-class-gate.service';
 export { Qw14aFridayEuBoostService } from './qw-14a-friday-eu-boost.service';
