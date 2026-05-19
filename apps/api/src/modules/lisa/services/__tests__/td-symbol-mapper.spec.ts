@@ -39,7 +39,7 @@ describe('eodhdToTdSymbol — PR #355', () => {
     });
   });
 
-  describe('Europe — LSE / Euronext / XETRA / SIX / Milan', () => {
+  describe('Europe supportée — LSE / Euronext / XETRA / SIX', () => {
     it.each([
       ['BARC.L', 'BARC:LSE'],
       ['BARC.LSE', 'BARC:LSE'],
@@ -49,23 +49,36 @@ describe('eodhdToTdSymbol — PR #355', () => {
       ['BMW.XETRA', 'BMW:XETR'],
       ['BMW.DE', 'BMW:XETR'],
       ['NESN.SW', 'NESN:SIX'],
-      ['STM.MI', 'STM:MIL'],
     ])('%s → %s', (input, expected) => {
       expect(eodhdToTdSymbol(input)).toBe(expected);
     });
   });
 
-  describe('Asia (PR #353)', () => {
+  describe('Asia supportée — KRX / SSE / SZSE (validé live 19/05/2026)', () => {
     it.each([
       ['005930.KO', '005930:KRX'],
       ['086790.KQ', '086790:KRX'],
       ['600519.SHG', '600519:SSE'],
       ['300024.SHE', '300024:SZSE'],
-      ['0700.HK', '0700:HKEX'],
-      ['7203.T', '7203:XTKS'],
-      ['CBA.AU', 'CBA:XASX'],
     ])('%s → %s', (input, expected) => {
       expect(eodhdToTdSymbol(input)).toBe(expected);
+    });
+  });
+
+  describe('Exchanges NON supportés sur plan TD Pro actuel → null (fallback EODHD)', () => {
+    // Validé live 19/05/2026 : add-ons payants non souscrits (Milan, JPX, HKEX, XASX).
+    // À retirer du Set UNSUPPORTED_TD_SUFFIXES si les add-ons sont activés.
+    it.each([
+      ['STM.MI', 'Milan (Borsa Italiana) — add-on requis'],
+      ['ENEL.MI', 'Milan — add-on requis'],
+      ['7203.T', 'Tokyo (JPX) — add-on payant'],
+      ['9984.T', 'Tokyo — add-on payant'],
+      ['0700.HK', 'Hong Kong (HKEX) — add-on payant'],
+      ['9988.HK', 'HK — add-on payant'],
+      ['CBA.AU', 'ASX (XASX) — add-on requis'],
+      ['BHP.AU', 'ASX — add-on requis'],
+    ])('%s → null (%s)', (input) => {
+      expect(eodhdToTdSymbol(input)).toBeNull();
     });
   });
 
