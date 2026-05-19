@@ -385,13 +385,16 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
   describe('Sans TwelveDataService injecté → EODHD only', () => {
     it('flag ON mais td=null → EODHD only', async () => {
       const eodhd = makeEodhdMock({ quote: EODHD_OK_QUOTE });
+      // PR #356 : td est désormais required par DI. On simule la pathologie
+      // historique (DI cassé qui injectait null silencieusement) via cast,
+      // pour vérifier que le guard défensif isEnabled()→false tient toujours.
       const router = new IntradayProviderRouter(
         makeConfig({
           TWELVEDATA_INTRADAY_SCANNER_ENABLED: 'true',
           TWELVEDATA_INTRADAY_AB_TEST_RATIO: '1.0',
         }),
         eodhd.service,
-        null,
+        null as unknown as TwelveDataService,
       );
       const r = await router.getQuote('AAPL.US');
       expect(r!.provider).toBe('eodhd');
@@ -567,13 +570,14 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
 
     it('TD non injecté + flag ON → td_skip_reason="td_not_injected"', async () => {
       const { calls, restore } = captureLogs();
+      // PR #356 : cast pour simuler pathologie DI (td required mais null en runtime).
       const router = new IntradayProviderRouter(
         makeConfig({
           TWELVEDATA_INTRADAY_SCANNER_ENABLED: 'true',
           TWELVEDATA_INTRADAY_AB_TEST_RATIO: '1.0',
         }),
         makeEodhdMock({ candles: EODHD_OK_CANDLES }).service,
-        null,
+        null as unknown as TwelveDataService,
       );
       await router.getCandles('AAPL.US', '1m', 20);
       const log = lastDualCall(calls);

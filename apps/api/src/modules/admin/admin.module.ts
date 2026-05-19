@@ -34,6 +34,7 @@ import { AdminGainersSeedUniverseController } from './admin-gainers-seed-univers
 import { AdminGainersInsightsController } from './admin-gainers-insights.controller';
 import { AdminRejectedInsightsController } from './admin-rejected-insights.controller';
 import { AdminThresholdTunerController } from './admin-threshold-tuner.controller';
+import { AdminProvidersStatusController } from './admin-providers-status.controller';
 
 @Module({
   imports: [SupabaseModule, forwardRef(() => LisaModule), GainersModule],
@@ -52,6 +53,8 @@ import { AdminThresholdTunerController } from './admin-threshold-tuner.controlle
     AdminGainersInsightsController,
     AdminRejectedInsightsController,
     AdminThresholdTunerController,
+    // PR #356 — diagnostic DI IntradayProviderRouter + TwelveDataService.
+    AdminProvidersStatusController,
   ],
 })
 export class AdminModule {}

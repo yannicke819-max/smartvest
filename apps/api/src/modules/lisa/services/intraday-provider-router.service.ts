@@ -1,4 +1,4 @@
-import { Injectable, Logger, Optional } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TwelveDataService } from './twelve-data.service';
 import { EodhdIntradayService, type CandleSeries } from './eodhd-intraday.service';
@@ -53,7 +53,7 @@ export interface IntradayCandlesOptions {
 }
 
 @Injectable()
-export class IntradayProviderRouter {
+export class IntradayProviderRouter implements OnModuleInit {
   private readonly logger = new Logger(IntradayProviderRouter.name);
   // PR #354 — first-call witness pour confirmer que le router est invoqué.
   // Loggue un événement unique au premier passage dans getCandles/getQuote
@@ -64,10 +64,19 @@ export class IntradayProviderRouter {
   constructor(
     private readonly config: ConfigService,
     private readonly eodhd: EodhdIntradayService,
-    @Optional() private readonly td: TwelveDataService | null = null,
+    // PR #356 — @Optional() retiré sur td : en prod v569 le DI silencieusement
+    // injectait null malgré TwelveDataService instancié OK ailleurs (apiKey=set
+    // dans logs init). Résultat : 100% des appels router avec
+    // td_skip_reason="td_not_injected". Sans @Optional, NestJS crash boot
+    // visible si DI échoue → diagnostic immédiat. Tests doivent désormais
+    // injecter un mock TwelveDataService explicite (cf. .spec.ts mise à jour).
+    private readonly td: TwelveDataService,
     // PR #355 — check blacklist avant TD pour ne pas reporter le gaspillage
     // côté TD (avant : EODHD short-circuit dans this.eodhd.getCandles, mais
     // TD était appelé en parallèle sans aucun check).
+    // PR #356 — @Optional() conservé sur blacklist pour back-compat tests
+    // existants (23 .spec.ts qui n'injectent pas le 4e arg). Si null en prod,
+    // simplement perte d'optim blacklist pre-TD, pas de bug critique sur TD.
     @Optional() private readonly blacklist: TickerBlacklistService | null = null,
   ) {
     const enabled = this.isEnabled();
@@ -77,12 +86,59 @@ export class IntradayProviderRouter {
     );
   }
 
+  /**
+   * PR #356 — assertion post-boot. Si td ou blacklist sont null malgré
+   * la suppression de @Optional (cas pathologique DI), on log un ERROR
+   * explicite plutôt que d'échouer silencieusement.
+   */
+  onModuleInit(): void {
+    if (!this.td) {
+      // Ne devrait JAMAIS arriver depuis PR #356 (td required par DI).
+      // Si on voit ce log en prod → NestJS DI cassé critique.
+      this.logger.error(
+        '[intraday-router] FATAL onModuleInit: TwelveDataService not injected. Vérifier LisaModule providers et imports SupabaseModule global.',
+      );
+    }
+    if (!this.blacklist) {
+      // Warning seulement : @Optional() conservé pour tests, perte d'optim
+      // mais pas de bug fonctionnel TD.
+      this.logger.warn(
+        '[intraday-router] onModuleInit: TickerBlacklistService not injected (loss of pre-TD blacklist optim, non-critique).',
+      );
+    }
+  }
+
   private isEnabled(): boolean {
+    // PR #356 — guard défensif conservé : td est désormais required par DI,
+    // mais on garde un faux-fail si jamais une instance custom contourne le
+    // graph DI (ex : test mal isolé qui passerait undefined).
     if (!this.td) return false;
     return (
       (this.config.get<string>('TWELVEDATA_INTRADAY_SCANNER_ENABLED') ?? 'false').toLowerCase() ===
       'true'
     );
+  }
+
+  /**
+   * PR #356 — état d'injection pour endpoint /admin/providers-status.
+   * Permet une vérification post-deploy en 1 curl pour confirmer que le DI
+   * a bien câblé TwelveDataService et TickerBlacklistService. À combiner
+   * avec apikey_set du TwelveDataService pour diag complet.
+   */
+  getInjectionStatus(): {
+    td_injected: boolean;
+    blacklist_injected: boolean;
+    enabled: boolean;
+    ratio: number;
+    flag_raw: string | undefined;
+  } {
+    return {
+      td_injected: !!this.td,
+      blacklist_injected: !!this.blacklist,
+      enabled: this.isEnabled(),
+      ratio: this.getRatio(),
+      flag_raw: this.config.get<string>('TWELVEDATA_INTRADAY_SCANNER_ENABLED'),
+    };
   }
 
   private getRatio(): number {
