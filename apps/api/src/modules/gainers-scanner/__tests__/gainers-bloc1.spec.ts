@@ -23,6 +23,7 @@ import {
 } from '../bloc1/trend-filter';
 import {
   DEFAULT_COMPOSITE_SCORER_CONFIG,
+  LEGACY_COMPOSITE_SCORER_CONFIG,
   SHADOW_COMPOSITE_SCORER_CONFIG,
   computeCompositeScore,
 } from '../bloc1/composite-scorer';
@@ -325,6 +326,153 @@ describe('GainersBloc1 — composite scorer', () => {
     expect(s!).toBeGreaterThanOrEqual(0);
   });
 
+  // PR #362 — Recalibrage data-driven
+  describe('PR #362 — recalibrage data-driven', () => {
+    it('momentumNormalizationCeiling default = 0.25 (anti-saturation asia/eu)', () => {
+      expect(DEFAULT_COMPOSITE_SCORER_CONFIG.momentumNormalizationCeiling).toBe(0.25);
+    });
+
+    it('LEGACY_COMPOSITE_SCORER_CONFIG conserve ceiling 0.10 (régression bit-perfect ADR-005)', () => {
+      expect(LEGACY_COMPOSITE_SCORER_CONFIG.momentumNormalizationCeiling).toBe(0.1);
+      expect(LEGACY_COMPOSITE_SCORER_CONFIG.weightPersistence).toBe(0.5);
+      expect(LEGACY_COMPOSITE_SCORER_CONFIG.weightMomentum).toBe(0.3);
+      expect(LEGACY_COMPOSITE_SCORER_CONFIG.weightVolatilityInv).toBe(0.2);
+      expect(LEGACY_COMPOSITE_SCORER_CONFIG.perClassWeights).toBeUndefined();
+      expect(LEGACY_COMPOSITE_SCORER_CONFIG.perClassMomentumBoost).toBeUndefined();
+    });
+
+    it('Saturation fix : ch1m=20% sur ceiling 0.25 ne sature plus le component momentum', () => {
+      // Ancien (ceiling 0.10) : 0.20/0.10=2.0 → clamp 1.0 (saturé)
+      // Nouveau (ceiling 0.25) : 0.20/0.25=0.8 (non saturé)
+      const rawNoClass = baseEquity({ changePct1m: 0.2, persistenceScore: 0.5, atrDailyRelative: 0.05 });
+      const sNew = computeCompositeScore(rawNoClass, DEFAULT_COMPOSITE_SCORER_CONFIG);
+      const sLegacy = computeCompositeScore(rawNoClass, LEGACY_COMPOSITE_SCORER_CONFIG);
+      // sLegacy : 0.5*0.5 + 0.3*1.0 + 0.2*(1-0.05/0.15)=0.2*0.667=0.1333 → 0.683
+      // sNew (no assetClass, poids globaux) : 0.5*0.5 + 0.3*0.8 + 0.2*0.667 = 0.25+0.24+0.1333 = 0.6233
+      expect(sLegacy!).toBeCloseTo(0.683, 2);
+      expect(sNew!).toBeCloseTo(0.623, 2);
+    });
+
+    it('Per-class eu_equity : poids momentum 0.55 prend le dessus sur persistence 0.25', () => {
+      // eu_equity, ch1m=18% (bucket 15-25, WR mesuré 39-58%), persistance=0.5, atr=0.05
+      const raw = baseEquity({
+        assetClass: 'eu_equity',
+        changePct1m: 0.18,
+        persistenceScore: 0.5,
+        atrDailyRelative: 0.05,
+      });
+      const s = computeCompositeScore(raw, DEFAULT_COMPOSITE_SCORER_CONFIG);
+      // momentumComp = 0.18/0.25 = 0.72
+      // volInvComp = 1 - 0.05/0.15 = 0.6667
+      // weighted = 0.55*0.72 + 0.25*0.5 + 0.2*0.6667 = 0.396 + 0.125 + 0.1333 = 0.6543
+      // ch1m=18% >= 10% → boost ×1.25 → 0.6543 * 1.25 = 0.818 (cap 1.0)
+      expect(s!).toBeCloseTo(0.818, 2);
+    });
+
+    it('Per-class us_equity_large : persistance dominante (poids 0.55)', () => {
+      // us_large, ch1m=7% (sous boost ×1.15 threshold de 10%), persistance haute=0.95
+      const raw = baseEquity({
+        assetClass: 'us_equity_large',
+        changePct1m: 0.07,
+        persistenceScore: 0.95,
+        atrDailyRelative: 0.04,
+      });
+      const s = computeCompositeScore(raw, DEFAULT_COMPOSITE_SCORER_CONFIG);
+      // momentumComp = 0.07/0.25 = 0.28
+      // volInvComp = 1 - 0.04/0.15 = 0.7333
+      // weighted = 0.25*0.28 + 0.55*0.95 + 0.2*0.7333 = 0.07 + 0.5225 + 0.1467 = 0.7392
+      // ch1m=7% < 10% → pas de boost
+      expect(s!).toBeCloseTo(0.739, 2);
+    });
+
+    it('Per-class asia_equity : boost ×1.20 si ch1m >= 15%', () => {
+      const raw = baseEquity({
+        assetClass: 'asia_equity',
+        changePct1m: 0.16,
+        persistenceScore: 0.9,
+        atrDailyRelative: 0.05,
+      });
+      const s = computeCompositeScore(raw, DEFAULT_COMPOSITE_SCORER_CONFIG);
+      // momentumComp = 0.16/0.25 = 0.64
+      // volInvComp = 1 - 0.05/0.15 = 0.6667
+      // weighted = 0.4*0.64 + 0.4*0.9 + 0.2*0.6667 = 0.256+0.36+0.1333 = 0.7493
+      // ch1m=16% >= 15% → boost ×1.20 → 0.7493 * 1.20 = 0.899
+      expect(s!).toBeCloseTo(0.899, 2);
+    });
+
+    it('Per-class asia_equity : pas de boost si ch1m < 15%', () => {
+      const raw = baseEquity({
+        assetClass: 'asia_equity',
+        changePct1m: 0.12,
+        persistenceScore: 0.9,
+        atrDailyRelative: 0.05,
+      });
+      const s = computeCompositeScore(raw, DEFAULT_COMPOSITE_SCORER_CONFIG);
+      // momentumComp = 0.12/0.25 = 0.48
+      // weighted = 0.4*0.48 + 0.4*0.9 + 0.2*0.6667 = 0.192+0.36+0.1333 = 0.6853
+      // ch1m=12% < 15% → pas de boost
+      expect(s!).toBeCloseTo(0.685, 2);
+    });
+
+    it('Per-class us_equity_small_mid : pas de boost configuré (bucket inversé)', () => {
+      const raw = baseEquity({
+        assetClass: 'us_equity_small_mid',
+        changePct1m: 0.25,
+        persistenceScore: 0.8,
+        atrDailyRelative: 0.05,
+      });
+      const s = computeCompositeScore(raw, DEFAULT_COMPOSITE_SCORER_CONFIG);
+      // momentumComp = 0.25/0.25 = 1.0
+      // volInvComp = 1 - 0.05/0.15 = 0.6667
+      // weighted = 0.35*1.0 + 0.45*0.8 + 0.2*0.6667 = 0.35+0.36+0.1333 = 0.8433
+      // PAS de boost (us_small_mid bucket inversé)
+      expect(s!).toBeCloseTo(0.843, 2);
+    });
+
+    it('Rétrocompat : assetClass absent → poids globaux fallback (0.5/0.3/0.2)', () => {
+      const raw = baseEquity({
+        changePct1m: 0.10,
+        persistenceScore: 0.9,
+        atrDailyRelative: 0.05,
+      });
+      // Pas d'assetClass → poids globaux. Ceiling 0.25.
+      // momentumComp = 0.10/0.25 = 0.4
+      // volInvComp = 1 - 0.05/0.15 = 0.6667
+      // weighted = 0.5*0.9 + 0.3*0.4 + 0.2*0.6667 = 0.45+0.12+0.1333 = 0.7033
+      const s = computeCompositeScore(raw, DEFAULT_COMPOSITE_SCORER_CONFIG);
+      expect(s!).toBeCloseTo(0.703, 2);
+    });
+
+    it('Rétrocompat : crypto_major sans poids per-class défini → fallback global', () => {
+      // crypto_major n'est PAS dans DEFAULT_PER_CLASS_WEIGHTS (sample insuffisant)
+      const raw = baseEquity({
+        assetClass: 'crypto_major',
+        changePct1m: 0.05,
+        persistenceScore: 0.8,
+        atrDailyRelative: 0.04,
+      });
+      const s = computeCompositeScore(raw, DEFAULT_COMPOSITE_SCORER_CONFIG);
+      // Fallback poids globaux 0.5/0.3/0.2, ceiling 0.25
+      // momentumComp = 0.05/0.25 = 0.2
+      // volInvComp = 1 - 0.04/0.15 = 0.7333
+      // weighted = 0.5*0.8 + 0.3*0.2 + 0.2*0.7333 = 0.4+0.06+0.1467 = 0.6067
+      expect(s!).toBeCloseTo(0.607, 2);
+    });
+
+    it('Boost momentum cap à 1.0 même si multiplier le pousse au-dessus', () => {
+      const raw = baseEquity({
+        assetClass: 'eu_equity',
+        changePct1m: 0.5,  // 50% → boost ×1.25
+        persistenceScore: 1.0,
+        atrDailyRelative: 0.01,
+      });
+      const s = computeCompositeScore(raw, DEFAULT_COMPOSITE_SCORER_CONFIG);
+      // Score avant boost déjà élevé, boost cap à 1.0
+      expect(s!).toBeLessThanOrEqual(1.0);
+      expect(s!).toBeGreaterThanOrEqual(0.95);
+    });
+  });
+
   // PR6.6.6 — shadowAllowPartialScore : best-effort scoring with null fields
   describe('PR6.6.6 — shadowAllowPartialScore', () => {
     it('Cas 1 : tous fields présents, shadowAllowPartialScore=false → strict identique', () => {
@@ -367,21 +515,19 @@ describe('GainersBloc1 — composite scorer', () => {
         SHADOW_COMPOSITE_SCORER_CONFIG,
       );
       expect(s).not.toBeNull();
-      // PR6.6.6.1 missing-penalty (PAS renormalize) :
-      // momentumComp = 0.05 / 0.10 = 0.5
-      // weightedSum = 0.3 × 0.5 = 0.15 (persistence + atr absents → max 0.3)
-      expect(s!).toBeCloseTo(0.15);
+      // PR #362 : ceiling 0.25 (ex-0.10). momentumComp = 0.05/0.25 = 0.2
+      // weightedSum = 0.3 × 0.2 = 0.06 (persistence + atr absents → max 0.3)
+      expect(s!).toBeCloseTo(0.06);
     });
 
-    it('Cas 5bis : PR6.6.6.1 — changePct1m=20% (max momentum) + tous null → score plafonné à 0.3', () => {
+    it('Cas 5bis : PR6.6.6.1 — changePct1m=20% + tous null → score plafonné (ceiling 0.25)', () => {
       const s = computeCompositeScore(
         baseEquity({ persistenceScore: null, atrDailyRelative: null, changePct1m: 0.20 }),
         SHADOW_COMPOSITE_SCORER_CONFIG,
       );
-      // momentum clamp à 1.0 (changePct >= ceiling 0.10)
-      // weightedSum = 0.3 × 1.0 = 0.3 (max possible avec seul momentum)
-      // Sans renormalize → 0.3 (vs ancien 1.0 = artifact bilan smoke test)
-      expect(s).toBeCloseTo(0.3);
+      // PR #362 : ceiling 0.25. momentum = 0.20/0.25 = 0.8 (n'est plus saturé)
+      // weightedSum = 0.3 × 0.8 = 0.24 (vs 0.3 historique avec ceiling 0.10)
+      expect(s).toBeCloseTo(0.24);
     });
 
     it('Cas 6 : Régression prod default — shadowAllowPartialScore=false', () => {
@@ -392,20 +538,23 @@ describe('GainersBloc1 — composite scorer', () => {
       expect(SHADOW_COMPOSITE_SCORER_CONFIG.shadowAllowPartialScore).toBe(true);
     });
 
-    it('Cas 8 : PR6.6.6.1 — score partiel reflète complétude (NO renormalize)', () => {
-      // baseEquity : persistence=0.83, momentum=0.02 (changePct1m), atr=0.03
-      // Strict score : 0.5*0.83 + 0.3*0.2 + 0.2*0.8 = 0.415 + 0.06 + 0.16 = 0.635
+    it('Cas 8 : PR6.6.6.1 — score partiel reflète complétude (NO renormalize, ceiling 0.25)', () => {
+      // baseEquity : persistence=0.83, ch1m=0.02, atr=0.03. Pas d'assetClass.
+      // PR #362 ceiling 0.25 : momentumComp = 0.02/0.25 = 0.08
+      // volInvComp = 1 - 0.03/0.15 = 0.8
+      // Strict score (poids globaux fallback) : 0.5*0.83 + 0.3*0.08 + 0.2*0.8
+      //                                       = 0.415 + 0.024 + 0.16 = 0.599
       const strict = computeCompositeScore(baseEquity(), DEFAULT_COMPOSITE_SCORER_CONFIG);
 
       // Shadow partiel sans persistence (missing-penalty PR6.6.6.1) :
-      // weightedSum = 0.3*0.2 + 0.2*0.8 = 0.06 + 0.16 = 0.22 (max = 0.3+0.2 = 0.5)
+      // weightedSum = 0.3*0.08 + 0.2*0.8 = 0.024 + 0.16 = 0.184
       const partial = computeCompositeScore(
         baseEquity({ persistenceScore: null }),
         SHADOW_COMPOSITE_SCORER_CONFIG,
       );
-      expect(strict).toBeCloseTo(0.635);
-      expect(partial).toBeCloseTo(0.22);
-      // Ranking préservé : strict (0.635) > partial (0.22) ✅
+      expect(strict).toBeCloseTo(0.599);
+      expect(partial).toBeCloseTo(0.184);
+      // Ranking préservé : strict (0.599) > partial (0.184)
       expect(strict!).toBeGreaterThan(partial!);
     });
 

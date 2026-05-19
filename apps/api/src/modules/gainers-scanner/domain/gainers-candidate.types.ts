@@ -12,11 +12,34 @@ import {
   TrendFilterKind,
 } from './gainers-enums';
 
+/**
+ * PR #362 — TopGainerAssetClass exposé pour scoring per-class.
+ * Aligné sur packages/ai-analyst/src/strategies/top-gainers-filter.ts.
+ * Dupliqué ici pour éviter cycle d'imports cross-module.
+ */
+export type GainersAssetClass =
+  | 'us_equity_large'
+  | 'us_equity_small_mid'
+  | 'eu_equity'
+  | 'asia_equity'
+  | 'crypto_major'
+  | 'crypto_alt'
+  | 'fx_major'
+  | 'fx_cross'
+  | 'commodity';
+
 /** Données brutes d'un candidat en entrée du pipeline (avant scoring BLOC 1). */
 export interface GainersCandidateRaw {
   symbol: string;
   market: 'equity' | 'crypto';
   exchange: string;
+  /**
+   * PR #362 — classe d'actif déduite (us_equity_large, asia_equity, etc).
+   * Optionnel pour rétrocompat ; si présent, le composite scorer utilise
+   * les poids per-class recalibrés à partir des données historiques
+   * (251 positions 14j mai 2026, voir DEFAULT_PER_CLASS_WEIGHTS).
+   */
+  assetClass?: GainersAssetClass;
   /** Prix de clôture ou last trade (USD). */
   close: number;
   open: number;
