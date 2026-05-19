@@ -43,6 +43,20 @@ function mapAssetClass(
 }
 
 /**
+ * PR #362 — Résout la classe d'actif détaillée (9 classes) requise par le
+ * composite scorer per-class data-driven. Garantit qu'`assetClass` n'est
+ * jamais undefined dans le `GainersCandidateRaw` produit.
+ */
+function resolveDetailedAssetClass(
+  legacyAssetClass: TopGainerAssetClass | undefined,
+  symbol: string,
+  exchange: string | null | undefined,
+  marketCap: number | null,
+): TopGainerAssetClass {
+  return legacyAssetClass ?? detectAssetClass(symbol, exchange, marketCap);
+}
+
+/**
  * Convertit un TopGainerCandidate (legacy scanner) en GainersCandidateRaw (V1).
  * Champs manquants → null/défauts pour permettre BLOC 1 prefilter d'évaluer
  * en mode dégradé (skip gates basés sur null).
@@ -62,10 +76,17 @@ export function mapTopGainerToCandidateRaw(
     candidate.exchange,
     candidate.marketCap ?? null,
   );
+  const detailedAssetClass = resolveDetailedAssetClass(
+    candidate.assetClass,
+    candidate.symbol,
+    candidate.exchange,
+    candidate.marketCap ?? null,
+  );
   const isCrypto = market === 'crypto';
   return {
     symbol: candidate.symbol,
     market,
+    assetClass: detailedAssetClass,
     exchange: candidate.exchange ?? 'UNKNOWN',
     close: candidate.close,
     open: candidate.close, // single-tick fallback
