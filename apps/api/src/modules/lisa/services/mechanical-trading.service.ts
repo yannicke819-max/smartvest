@@ -1843,6 +1843,19 @@ export class MechanicalTradingService {
       return;
     }
 
+    // 🛡️ ZERO-PRICE GUARD (incident SEE.LSE 14/05/2026, perte -$1574) :
+    // un tick à prix <= 0 (ou NaN) provenant d'une source NON taggée fallback
+    // contourne le sanity bound ci-dessous (gardé par `livePx.gt(0)`) et
+    // déclenche un stop à 0 → fausse liquidation -100%. Tout prix non-positif
+    // est traité comme non fiable : on attend le tick suivant (comme le fallback).
+    const livePriceNum = Number(quote.price);
+    if (!Number.isFinite(livePriceNum) || livePriceNum <= 0) {
+      this.logger.warn(
+        `[ZERO_PRICE_GUARD] ${pos.symbol}: live price=${quote.price} (source=${quote.source}) <= 0 ou NaN — skip stop/target (tick corrompu)`,
+      );
+      return;
+    }
+
     // 🛡️ SANITY BOUND (incident 27/04, LMT closed at $100 from $513) :
     // refuse tout prix qui diverge > 30% de l'entry en un seul tick. Un
     // vrai mouvement >30% sur un asset liquide en 60s est virtuellement
