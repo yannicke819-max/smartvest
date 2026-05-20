@@ -48,12 +48,31 @@ interface SimResult {
   slippagePct: number | null;
 }
 
+/** Shadow A/B — résultat de la variante entrée pullback (cf. migration 0150). */
+interface VariantResult {
+  entryPrice: number;
+  entryOffsetMin: number;
+  exitPrice: number;
+  exitAt: string;
+  exitReason: string;
+  pnlPct: number;
+  slippagePct: number | null;
+}
+
 const MIN_AGE_MIN_BEFORE_REPLAY = 5;
 const MAX_HOLD_HOURS = 3; // ADR-005 §2.4 time-stop
 
 @Injectable()
 export class ShadowExitSimulatorService {
   private readonly logger = new Logger(ShadowExitSimulatorService.name);
+
+  // Shadow A/B variante entrée pullback (migration 0150). Params env, defaults
+  // issus du backtest 48h crypto (pullback 1.5% + SL 2.5% + TP 3% → +0.47% net).
+  private readonly variantEnabled = process.env.SHADOW_ENTRY_VARIANT_ENABLED !== 'false';
+  private readonly variantPullbackPct = Number(process.env.SHADOW_VARIANT_PULLBACK_PCT ?? '0.015');
+  private readonly variantWindowMin = Number(process.env.SHADOW_VARIANT_WINDOW_MIN ?? '30');
+  private readonly variantSlPct = Number(process.env.SHADOW_VARIANT_SL_PCT ?? '0.025');
+  private readonly variantTpPct = Number(process.env.SHADOW_VARIANT_TP_PCT ?? '0.03');
 
   constructor(
     private readonly supabase: SupabaseService,
@@ -71,6 +90,15 @@ export class ShadowExitSimulatorService {
       await this.runInner();
     } catch (e) {
       this.logger.error(`[exit-sim] cron failed: ${String(e).slice(0, 200)}`);
+    }
+    // Shadow A/B variante pullback — indépendant du live (try/catch séparé pour
+    // qu'un échec variante n'affecte jamais la simulation live).
+    if (this.variantEnabled) {
+      try {
+        await this.runVariantInner();
+      } catch (e) {
+        this.logger.error(`[exit-sim:variant] cron failed: ${String(e).slice(0, 200)}`);
+      }
     }
   }
 
@@ -190,6 +218,159 @@ export class ShadowExitSimulatorService {
     return {
       exitPrice,
       exitAt: exitTime,
+      exitReason: String(exitReason),
+      pnlPct,
+      slippagePct,
+    };
+  }
+
+  /**
+   * Shadow A/B (migration 0150) — pour chaque signal ACCEPT dont la variante
+   * n'est pas encore tranchée, simule une entrée pullback + SL élargi.
+   */
+  private async runVariantInner(): Promise<void> {
+    const cutoff = new Date(Date.now() - MIN_AGE_MIN_BEFORE_REPLAY * 60_000).toISOString();
+    const { data, error } = await this.supabase
+      .getClient()
+      .from('gainers_v1_shadow_signals')
+      .select('id, symbol, exchange, asset_class, entry_price, entry_path_eff, tp_price, sl_price, created_at')
+      .eq('decision', 'ACCEPT')
+      .not('entry_price', 'is', null)
+      .is('variant_exit_at', null)
+      .is('variant_no_entry', null)
+      .lte('created_at', cutoff)
+      .order('created_at', { ascending: true })
+      .limit(50);
+
+    if (error || !data || data.length === 0) return;
+
+    const params = {
+      pullback_pct: this.variantPullbackPct,
+      window_min: this.variantWindowMin,
+      sl_pct: this.variantSlPct,
+      tp_pct: this.variantTpPct,
+    };
+    let resolved = 0;
+    let noEntry = 0;
+    for (const r of data as ShadowSignalRow[]) {
+      try {
+        const v = await this.simulateVariant(r);
+        if (v === 'pending' || v === null) continue;
+        const update = v === 'no_entry'
+          ? { variant_no_entry: true, variant_params: params }
+          : {
+              variant_entry_price: v.entryPrice,
+              variant_entry_offset_min: v.entryOffsetMin,
+              variant_no_entry: false,
+              variant_exit_price: v.exitPrice,
+              variant_exit_at: v.exitAt,
+              variant_exit_reason: v.exitReason,
+              variant_pnl_pct: v.pnlPct,
+              variant_slippage_pct: v.slippagePct,
+              variant_params: params,
+            };
+        const { error: upErr } = await this.supabase
+          .getClient()
+          .from('gainers_v1_shadow_signals')
+          .update(update)
+          .eq('id', r.id);
+        if (upErr) this.logger.warn(`[exit-sim:variant] update ${r.id} failed: ${upErr.message}`);
+        else if (v === 'no_entry') noEntry++;
+        else resolved++;
+      } catch (e) {
+        this.logger.warn(`[exit-sim:variant] ${r.symbol} (${r.id}) failed: ${String(e).slice(0, 80)}`);
+      }
+    }
+    this.logger.log(`[exit-sim:variant] resolved ${resolved}, no_entry ${noEntry}`);
+  }
+
+  /**
+   * Simule la variante pullback sur un signal. Retourne :
+   *   - 'no_entry' : fenêtre écoulée sans pullback (la variante n'aurait pas tradé)
+   *   - 'pending'  : pullback touché mais exit non encore résolu (réessayer)
+   *   - null       : pas assez de données / trop jeune pour conclure
+   *   - VariantResult : entrée+exit résolus
+   */
+  private async simulateVariant(row: ShadowSignalRow): Promise<VariantResult | 'no_entry' | 'pending' | null> {
+    const entryTimeMs = new Date(row.created_at).getTime();
+    const ageMin = (Date.now() - entryTimeMs) / 60_000;
+    // Fenêtre pullback + horizon de hold complet.
+    const maxCandles = this.variantWindowMin + 60 * MAX_HOLD_HOURS;
+    const replayCount = Math.min(maxCandles, Math.ceil(ageMin));
+    if (replayCount < 5) return null;
+
+    const candles = await this.fetchCandles(row, replayCount);
+    if (!candles || candles.length === 0) return null;
+
+    // 1. Cherche le 1er pullback sous entry_price*(1-pullback_pct) dans la fenêtre.
+    const pullbackTrigger = row.entry_price * (1 - this.variantPullbackPct);
+    const windowEnd = Math.min(this.variantWindowMin, candles.length);
+    let entryIdx = -1;
+    for (let i = 0; i < windowEnd; i++) {
+      if (candles[i].close <= pullbackTrigger) {
+        entryIdx = i;
+        break;
+      }
+    }
+
+    if (entryIdx === -1) {
+      // Pas de pullback observé. On ne peut conclure 'no_entry' que si la fenêtre
+      // est entièrement écoulée (sinon il peut encore arriver).
+      if (ageMin >= this.variantWindowMin) return 'no_entry';
+      return null;
+    }
+
+    // 2. Entrée à ce close, SL élargi + TP relatifs à l'entrée variante.
+    const variantEntry = candles[entryIdx].close;
+    const initialSl = variantEntry * (1 - this.variantSlPct);
+    let snap: PositionSnapshot = {
+      state: PositionState.OPEN,
+      entryPrice: variantEntry,
+      pathEff: row.entry_path_eff,
+      tpPrice: variantEntry * (1 + this.variantTpPct),
+      initialSlPrice: initialSl,
+      currentStopPrice: initialSl,
+      mfePrice: variantEntry,
+    };
+
+    // 3. Replay BLOC4 (identique au live) sur les candles post-entrée.
+    let exitIdx = -1;
+    let exitReason: ExitReason | null = null;
+    for (let i = entryIdx + 1; i < candles.length; i++) {
+      const r = applyTick({ position: snap, currentPrice: candles[i].close });
+      snap = { ...snap, state: r.newState, currentStopPrice: r.newStopPrice, mfePrice: r.newMfePrice };
+      if (r.exitReason) {
+        exitReason = r.exitReason;
+        exitIdx = i;
+        break;
+      }
+    }
+
+    if (exitIdx === -1) {
+      const variantEntryTimeMs = entryTimeMs + (entryIdx + 1) * 60_000;
+      const holdMin = (Date.now() - variantEntryTimeMs) / 60_000;
+      if (holdMin >= MAX_HOLD_HOURS * 60) {
+        exitReason = ExitReason.TIME_LIMIT;
+        exitIdx = candles.length - 1;
+      } else {
+        return 'pending';
+      }
+    }
+
+    const exitPrice = candles[exitIdx].close;
+    const exitAt = new Date(entryTimeMs + (exitIdx + 1) * 60_000).toISOString();
+    const pnlPct = (exitPrice - variantEntry) / variantEntry;
+    const theoretical =
+      exitReason === ExitReason.TP_FULL ? snap.tpPrice :
+      exitReason === ExitReason.SL ? initialSl :
+      snap.currentStopPrice;
+    const slippagePct = theoretical !== null ? (exitPrice - theoretical) / variantEntry : null;
+
+    return {
+      entryPrice: variantEntry,
+      entryOffsetMin: entryIdx + 1,
+      exitPrice,
+      exitAt,
       exitReason: String(exitReason),
       pnlPct,
       slippagePct,
