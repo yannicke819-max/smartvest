@@ -198,7 +198,7 @@ describe('TickerBlacklistService', () => {
       const t0 = Date.now();
       const stats = svc.getStats();
       expect(stats.staticEnabled).toBe(true);
-      expect(stats.staticSize).toBe(54); // PR #337 (23) + PR #355 (31)
+      expect(stats.staticSize).toBe(63); // PR #337 (23) + PR #355 (31) + PR #363 (9)
       expect(stats.dynamicCount).toBe(0);
 
       // Add a dynamic blacklist
