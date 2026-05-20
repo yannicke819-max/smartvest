@@ -31,6 +31,17 @@ export interface HarvestOffset {
 
 const STORAGE_KEY_PREFIX = 'smartvest:harvest-display-offset:';
 
+/**
+ * PR #364 — Retourne le timestamp (ms epoch) de minuit UTC du jour courant.
+ * Utilisé pour invalider tout offset rebasé avant le rollover quotidien :
+ * le backend reset `closedTodayPnlUsd` à 00:00 UTC, donc un offset stocké
+ * avant cette barrière soustrait une valeur d'hier d'un compteur qui repart
+ * de zéro aujourd'hui (incident 20/05/2026 : -118.26 - (-534.74) = +416.48 faux).
+ */
+function startOfUtcDayMs(now: Date = new Date()): number {
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+}
+
 function readOffset(portfolioId: string): HarvestOffset | null {
   if (typeof window === 'undefined') return null;
   try {
@@ -51,7 +62,18 @@ function readOffset(portfolioId: string): HarvestOffset | null {
       const v = parsed[k];
       if (typeof v !== 'number' || !Number.isFinite(v)) return null;
     }
-    if (!parsed.rebasedAt || Number.isNaN(new Date(parsed.rebasedAt).getTime())) return null;
+    const rebasedAtMs = parsed.rebasedAt ? new Date(parsed.rebasedAt).getTime() : NaN;
+    if (Number.isNaN(rebasedAtMs)) {
+      // PR #364 — format inconnu ou rebasedAt absent (offset legacy) → expire par sécurité.
+      window.localStorage.removeItem(STORAGE_KEY_PREFIX + portfolioId);
+      return null;
+    }
+    // PR #364 — expire à chaque rollover 00:00 UTC. Le backend a reset
+    // closedTodayPnlUsd à minuit, donc l'offset n'a plus de sens.
+    if (rebasedAtMs < startOfUtcDayMs()) {
+      window.localStorage.removeItem(STORAGE_KEY_PREFIX + portfolioId);
+      return null;
+    }
     return parsed;
   } catch {
     return null;
