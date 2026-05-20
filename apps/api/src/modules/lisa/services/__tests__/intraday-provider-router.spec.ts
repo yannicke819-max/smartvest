@@ -119,6 +119,14 @@ function makeBlacklistMock(opts?: { blacklisted?: string[] }): TickerBlacklistSe
   } as unknown as TickerBlacklistService;
 }
 
+// PR #366 — SupabaseService mock (no-op insert) pour le compare-table.
+function makeSupabaseMock(): import('../../../supabase/supabase.service').SupabaseService {
+  return {
+    isReady: () => false, // false = pas d'insert tenté dans les tests par défaut
+    getClient: () => ({ from: () => ({ insert: () => Promise.resolve({ error: null }) }) }),
+  } as unknown as import('../../../supabase/supabase.service').SupabaseService;
+}
+
 const TD_OK_QUOTE = { price: 180.5, changePct: 1.2, timestamp: 1747353600000 };
 const EODHD_OK_QUOTE = { price: 180.4, changePct: 1.1, timestamp: 1747353500000 };
 const TD_OK_CANDLES = {
@@ -143,7 +151,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         makeConfig({ TWELVEDATA_INTRADAY_SCANNER_ENABLED: 'false' }),
         eodhd.service,
         td.service,
-        makeBlacklistMock(),
+        makeBlacklistMock(), makeSupabaseMock(),
       );
       const r = await router.getQuote('AAPL.US');
       expect(r!.provider).toBe('eodhd');
@@ -158,7 +166,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         makeConfig({ TWELVEDATA_INTRADAY_SCANNER_ENABLED: 'false' }),
         eodhd.service,
         td.service,
-        makeBlacklistMock(),
+        makeBlacklistMock(), makeSupabaseMock(),
       );
       const r = await router.getCandles('AAPL.US', '1m', 20);
       expect(r!.provider).toBe('eodhd');
@@ -178,7 +186,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         eodhd.service,
         td.service,
-        makeBlacklistMock(),
+        makeBlacklistMock(), makeSupabaseMock(),
       );
       const r = await router.getQuote('AAPL.US');
       expect(r!.provider).toBe('td');
@@ -198,7 +206,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         eodhd.service,
         td.service,
-        makeBlacklistMock(),
+        makeBlacklistMock(), makeSupabaseMock(),
       );
       const r = await router.getCandles('AAPL.US', '1m', 20);
       expect(r!.provider).toBe('td');
@@ -219,7 +227,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         eodhd.service,
         td.service,
-        makeBlacklistMock(),
+        makeBlacklistMock(), makeSupabaseMock(),
       );
       const r = await router.getQuote('AAPL.US');
       expect(r!.provider).toBe('eodhd');
@@ -239,7 +247,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         eodhd.service,
         td.service,
-        makeBlacklistMock(),
+        makeBlacklistMock(), makeSupabaseMock(),
       );
       const r = await router.getCandles('AAPL.US', '1m', 20);
       expect(r!.provider).toBe('eodhd');
@@ -259,7 +267,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         eodhd.service,
         td.service,
-        makeBlacklistMock(),
+        makeBlacklistMock(), makeSupabaseMock(),
       );
       await router.getCandles('AAPL.US', '5m', 20, { fromTs: 1000, toTs: 2000 });
       expect(td.candlesCalls).toBe(0);
@@ -279,7 +287,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         eodhd.service,
         td.service,
-        makeBlacklistMock(),
+        makeBlacklistMock(), makeSupabaseMock(),
       );
       await router.getCandles('SOMETHING.XYZ', '1m', 20);
       expect(td.candlesCalls).toBe(0);
@@ -292,7 +300,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
       makeConfig({ TWELVEDATA_INTRADAY_SCANNER_ENABLED: 'true' }),
       makeEodhdMock().service,
       makeTdMock().service,
-      makeBlacklistMock(),
+      makeBlacklistMock(), makeSupabaseMock(),
     );
 
     it.each([
@@ -347,7 +355,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         eodhd.service,
         td.service,
-        makeBlacklistMock(),
+        makeBlacklistMock(), makeSupabaseMock(),
       );
       for (let i = 0; i < 100; i++) {
         await router.getQuote(`SYM${i}.US`);
@@ -366,7 +374,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         makeEodhdMock().service,
         makeTdMock().service,
-        makeBlacklistMock(),
+        makeBlacklistMock(), makeSupabaseMock(),
       );
       const first = router.shouldRouteToTd('AAPL');
       for (let i = 0; i < 50; i++) {
@@ -384,7 +392,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         eodhd.service,
         td.service,
-        makeBlacklistMock(),
+        makeBlacklistMock(), makeSupabaseMock(),
       );
       await router.getQuote('AAPL.US');
       expect(td.quoteCalls).toBe(0);
@@ -401,7 +409,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         eodhd.service,
         td.service,
-        makeBlacklistMock(),
+        makeBlacklistMock(), makeSupabaseMock(),
       );
       await router.getQuote('AAPL.US');
       expect(td.quoteCalls).toBe(1);
@@ -421,7 +429,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         eodhd.service,
         null as unknown as TwelveDataService,
-        makeBlacklistMock(),
+        makeBlacklistMock(), makeSupabaseMock(),
       );
       const r = await router.getQuote('AAPL.US');
       expect(r!.provider).toBe('eodhd');
@@ -444,7 +452,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         eodhd.service,
         td.service,
-        makeBlacklistMock(),
+        makeBlacklistMock(), makeSupabaseMock(),
       );
       const r = await router.getCandles('005930.KO', '5m', 100, { calledBy: 'shadow_walkforward' });
       expect(r!.provider).toBe('td');
@@ -463,7 +471,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         eodhd.service,
         td.service,
-        makeBlacklistMock(),
+        makeBlacklistMock(), makeSupabaseMock(),
       );
       await router.getCandles('600519.SHG', '1m', 20);
       expect(td.lastSymbol).toBe('600519:SSE');
@@ -485,7 +493,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
       makeConfig({}),
       makeEodhdMock().service,
       makeTdMock().service,
-      makeBlacklistMock(),
+      makeBlacklistMock(), makeSupabaseMock(),
     );
 
     it('AAPL.US → AAPL (strip suffixe)', () => {
@@ -541,7 +549,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         makeConfig({ TWELVEDATA_INTRADAY_SCANNER_ENABLED: 'false' }),
         makeEodhdMock({ candles: EODHD_OK_CANDLES }).service,
         makeTdMock({ candles: TD_OK_CANDLES }).service,
-        makeBlacklistMock(),
+        makeBlacklistMock(), makeSupabaseMock(),
       );
       await router.getCandles('AAPL.US', '1m', 20);
       const log = lastDualCall(calls);
@@ -560,7 +568,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         makeEodhdMock({ candles: EODHD_OK_CANDLES }).service,
         makeTdMock({ candles: TD_OK_CANDLES }).service,
-        makeBlacklistMock(),
+        makeBlacklistMock(), makeSupabaseMock(),
       );
       await router.getCandles('AAPL.US', '5m', 20, { fromTs: 1000, toTs: 2000 });
       const log = lastDualCall(calls);
@@ -577,7 +585,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         makeEodhdMock({ candles: EODHD_OK_CANDLES }).service,
         makeTdMock({ candles: TD_OK_CANDLES }).service,
-        makeBlacklistMock(),
+        makeBlacklistMock(), makeSupabaseMock(),
       );
       await router.getCandles('AAPL.US', '1m', 20);
       const log = lastDualCall(calls);
@@ -594,7 +602,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         makeEodhdMock({ candles: EODHD_OK_CANDLES }).service,
         makeTdMock({ candles: TD_OK_CANDLES }).service,
-        makeBlacklistMock(),
+        makeBlacklistMock(), makeSupabaseMock(),
       );
       await router.getCandles('SOMETHING.XYZ', '1m', 20);
       const log = lastDualCall(calls);
@@ -612,7 +620,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         makeEodhdMock({ candles: EODHD_OK_CANDLES }).service,
         null as unknown as TwelveDataService,
-        makeBlacklistMock(),
+        makeBlacklistMock(), makeSupabaseMock(),
       );
       await router.getCandles('AAPL.US', '1m', 20);
       const log = lastDualCall(calls);
@@ -629,13 +637,136 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
         }),
         makeEodhdMock({ candles: EODHD_OK_CANDLES }).service,
         makeTdMock({ candles: TD_OK_CANDLES }).service,
-        makeBlacklistMock(),
+        makeBlacklistMock(), makeSupabaseMock(),
       );
       await router.getCandles('AAPL.US', '1m', 20);
       const log = lastDualCall(calls);
       restore();
       expect(log!.td_skip_reason).toBeNull();
       expect(log!.td_attempted).toBe(true);
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────
+  // PR #366 — recordProviderCompare (instrumentation TD vs EODHD)
+  // ───────────────────────────────────────────────────────────────────────
+  describe('PR #366 — recordProviderCompare divergence bps', () => {
+    function captureInsert(): {
+      supabase: import('../../../supabase/supabase.service').SupabaseService;
+      rows: Array<Record<string, unknown>>;
+    } {
+      const rows: Array<Record<string, unknown>> = [];
+      const supabase = {
+        isReady: () => true,
+        getClient: () => ({
+          from: () => ({
+            insert: (row: Record<string, unknown>) => {
+              rows.push(row);
+              return Promise.resolve({ error: null });
+            },
+          }),
+        }),
+      } as unknown as import('../../../supabase/supabase.service').SupabaseService;
+      return { supabase, rows };
+    }
+
+    it('divergence positive : TD plus haut → bps > 0', async () => {
+      const { supabase, rows } = captureInsert();
+      const router = new IntradayProviderRouter(
+        makeConfig({}),
+        makeEodhdMock().service,
+        makeTdMock().service,
+        makeBlacklistMock(),
+        supabase,
+      );
+      await router.recordProviderCompare(
+        '005930.KO',
+        '005930:KRX',
+        '5m',
+        { candles: [{ timestamp: 100, close: 101.0 }] }, // TD
+        { candles: [{ timestamp: 100, close: 100.0 }] }, // EODHD
+        'test',
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0].td_close).toBe(101.0);
+      expect(rows[0].eodhd_close).toBe(100.0);
+      // (101 - 100) / 100 * 10000 = 100 bps
+      expect(rows[0].divergence_bps).toBe(100);
+      expect(rows[0].symbol).toBe('005930.KO');
+      expect(rows[0].td_symbol).toBe('005930:KRX');
+    });
+
+    it('divergence nulle : prix identiques → 0 bps', async () => {
+      const { supabase, rows } = captureInsert();
+      const router = new IntradayProviderRouter(
+        makeConfig({}),
+        makeEodhdMock().service,
+        makeTdMock().service,
+        makeBlacklistMock(),
+        supabase,
+      );
+      await router.recordProviderCompare(
+        'AAPL.US', 'AAPL', '1m',
+        { candles: [{ timestamp: 1, close: 180.0 }] },
+        { candles: [{ timestamp: 1, close: 180.0 }] },
+        'test',
+      );
+      expect(rows[0].divergence_bps).toBe(0);
+    });
+
+    it('eodhd_close <= 0 → divergence_bps null (pas de division)', async () => {
+      const { supabase, rows } = captureInsert();
+      const router = new IntradayProviderRouter(
+        makeConfig({}),
+        makeEodhdMock().service,
+        makeTdMock().service,
+        makeBlacklistMock(),
+        supabase,
+      );
+      await router.recordProviderCompare(
+        'X.US', 'X', '1m',
+        { candles: [{ timestamp: 1, close: 50 }] },
+        { candles: [{ timestamp: 1, close: 0 }] },
+        'test',
+      );
+      expect(rows[0].divergence_bps).toBeNull();
+    });
+
+    it('supabase non ready → pas d\'insert', async () => {
+      const rows: Array<Record<string, unknown>> = [];
+      const supabase = {
+        isReady: () => false,
+        getClient: () => ({ from: () => ({ insert: (r: Record<string, unknown>) => { rows.push(r); return Promise.resolve({ error: null }); } }) }),
+      } as unknown as import('../../../supabase/supabase.service').SupabaseService;
+      const router = new IntradayProviderRouter(
+        makeConfig({}), makeEodhdMock().service, makeTdMock().service, makeBlacklistMock(), supabase,
+      );
+      await router.recordProviderCompare(
+        'X.US', 'X', '1m',
+        { candles: [{ timestamp: 1, close: 50 }] },
+        { candles: [{ timestamp: 1, close: 49 }] },
+        'test',
+      );
+      expect(rows).toHaveLength(0);
+    });
+
+    it('dual-call getCandles avec 2 succès → insert auto', async () => {
+      const { supabase, rows } = captureInsert();
+      const router = new IntradayProviderRouter(
+        makeConfig({
+          TWELVEDATA_INTRADAY_SCANNER_ENABLED: 'true',
+          TWELVEDATA_INTRADAY_AB_TEST_RATIO: '1.0',
+        }),
+        makeEodhdMock({ candles: EODHD_OK_CANDLES }).service,
+        makeTdMock({ candles: TD_OK_CANDLES }).service,
+        makeBlacklistMock(),
+        supabase,
+      );
+      await router.getCandles('AAPL.US', '1m', 20);
+      // EODHD_OK_CANDLES close=180.4, TD_OK_CANDLES close=180.5
+      expect(rows).toHaveLength(1);
+      expect(rows[0].td_close).toBe(180.5);
+      expect(rows[0].eodhd_close).toBe(180.4);
     });
   });
 });
