@@ -46,6 +46,40 @@ function row(createdMinAgo: number) {
   };
 }
 
+describe('Migration 0151 — variant_exit_grid', () => {
+  it('grille TP/SL calculée sur la même entrée pullback', async () => {
+    // entrée 98.4 (idx1). candle idx2=102.
+    // tp3% → 98.4*1.03=101.35 ; 102>=101.35 → TP_FULL +0.03.
+    // tp5% → 98.4*1.05=103.32 ; 102<103.32 → TIME_LIMIT pnl=(102-98.4)/98.4.
+    const candles = [{ close: 99.5 }, { close: 98.4 }, { close: 102 }];
+    const svc = makeSvc(candles);
+    const v = (await svc.simulateVariant(row(300))) as {
+      exitGrid: Array<{ tp_pct: number; sl_pct: number; pnl_pct: number; exit_reason: string }>;
+    };
+    expect(Array.isArray(v.exitGrid)).toBe(true);
+    expect(v.exitGrid.length).toBe(5);
+    const tp3 = v.exitGrid.find((g) => g.tp_pct === 0.03)!;
+    expect(tp3.exit_reason).toBe('TP_FULL');
+    expect(tp3.pnl_pct).toBeCloseTo(0.03, 5);
+    const tp20 = v.exitGrid.find((g) => g.tp_pct === 0.2)!;
+    expect(tp20.exit_reason).toBe('TIME_LIMIT');
+    expect(tp20.pnl_pct).toBeCloseTo((102 - 98.4) / 98.4, 5);
+  });
+
+  it('grille : SL serré touché avant un TP large → loss borné au SL', async () => {
+    // entrée 98.0 (idx0, <=98.5). idx1=95 → -3.06% < tous les SL (2.5/3%) → SL pour tous.
+    const candles = [{ close: 98.0 }, { close: 95 }];
+    const svc = makeSvc(candles);
+    const v = (await svc.simulateVariant(row(300))) as {
+      exitGrid: Array<{ tp_pct: number; sl_pct: number; pnl_pct: number; exit_reason: string }>;
+    };
+    for (const g of v.exitGrid) {
+      expect(g.exit_reason).toBe('SL');
+      expect(g.pnl_pct).toBeCloseTo(-g.sl_pct, 5);
+    }
+  });
+});
+
 describe('Migration 0150 — simulateVariant', () => {
   it('pullback touché puis TP → win, entrée au creux, SL à 2.5%', async () => {
     // trigger pullback = 100*(1-0.015) = 98.5. idx1=98.4 touche, puis idx2=102 >= TP(98.4*1.03=101.35).
