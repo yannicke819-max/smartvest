@@ -1801,6 +1801,28 @@ export class MechanicalTradingService {
     return 'ok';
   }
 
+  /**
+   * PR #369 — Met à jour peak_pre_exit (MFE) si le prix courant améliore le pic.
+   * Long : pic = prix max atteint. Short : pic = prix min. Update conditionnel
+   * SQL (`peak_pre_exit IS NULL OR <comparaison>`) → un seul aller-retour,
+   * pas de read préalable. Fire-and-forget : toute erreur est avalée (le
+   * tracking MFE ne doit jamais bloquer le cycle stop/target).
+   */
+  private async recordMfe(positionId: string, price: number, isLong: boolean): Promise<void> {
+    if (!Number.isFinite(price) || price <= 0) return;
+    try {
+      const cmp = isLong ? `peak_pre_exit.lt.${price}` : `peak_pre_exit.gt.${price}`;
+      await this.supabase
+        .getClient()
+        .from('lisa_positions')
+        .update({ peak_pre_exit: price })
+        .eq('id', positionId)
+        .or(`peak_pre_exit.is.null,${cmp}`);
+    } catch {
+      // non bloquant — instrumentation best-effort
+    }
+  }
+
   private async checkStopTarget(pos: OpenPosition, isHyperActive: boolean = false): Promise<void> {
     if (!pos.stopLossPrice && !pos.takeProfitPrice) return;
 
@@ -1861,6 +1883,16 @@ export class MechanicalTradingService {
     // Bug #314 #M4 — helper centralisé : reconnaît long/long_call/long_put.
     // Avant : `=== 'long'` strict → options gérées comme SHORT → stop/target inversés.
     const isLong = isLongPosition(pos.direction);
+
+    // PR #369 — Instrumentation MFE (Max Favorable Excursion). Enregistre le
+    // pic de prix favorable atteint avant la sortie, dans peak_pre_exit (jusqu'à
+    // présent jamais peuplé). Permet de mesurer a posteriori si les positions
+    // qui finissent en SL avaient atteint un gain significatif avant de se
+    // retourner → chiffre la valeur d'un exit réactif (lock partiel). Update
+    // conditionnel fire-and-forget : n'écrit que si le prix améliore le pic
+    // (long = plus haut, short = plus bas). Coût négligeable (~7 open × 1/60s).
+    void this.recordMfe(pos.id, currentPrice.toNumber(), isLong);
+
     const hitStop = stopPrice && (isLong ? currentPrice.lte(stopPrice) : currentPrice.gte(stopPrice));
     const hitTarget = tpPrice && (isLong ? currentPrice.gte(tpPrice) : currentPrice.lte(tpPrice));
 
