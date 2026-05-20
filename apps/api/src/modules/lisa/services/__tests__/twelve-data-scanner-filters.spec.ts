@@ -454,4 +454,105 @@ describe('evaluateTwelveDataFilters — PR #345', () => {
       expect(counters.lastSupertrendArgs?.[4]).toBe('scanner_asia_supertrend');
     });
   });
+
+  describe('PR #368 — Filtre Supertrend eu 30m', () => {
+    it('flag OFF → no call même si signal eu', async () => {
+      const { service: td, counters } = makeTwelveDataMock({
+        supertrend: { value: 80, direction: 'down', timestamp: 'now' },
+      });
+      const r = await evaluateTwelveDataFilters({
+        symbol: 'BNP.PA',
+        assetClass: 'eu_equity',
+        supertrendEnabled: false,
+        cryptoRsiEnabled: false,
+        // euSupertrendEnabled non spécifié → default false
+        twelveData: td,
+      });
+      expect(r.decision).toBe('accept');
+      expect(counters.supertrendCalls).toBe(0);
+    });
+
+    it('eu_equity + direction=down → reject_supertrend_eu_down', async () => {
+      const { service: td, counters } = makeTwelveDataMock({
+        supertrend: { value: 88.5, direction: 'down', timestamp: 'now' },
+      });
+      const r = await evaluateTwelveDataFilters({
+        symbol: 'BNP.PA',
+        assetClass: 'eu_equity',
+        supertrendEnabled: false,
+        cryptoRsiEnabled: false,
+        euSupertrendEnabled: true,
+        twelveData: td,
+      });
+      expect(r.decision).toBe('reject_supertrend_eu_down');
+      if (r.decision === 'reject_supertrend_eu_down') {
+        expect(r.reason).toContain('eu supertrend direction=down');
+      }
+      expect(counters.supertrendCalls).toBe(1);
+      // mapping BNP.PA → BNP:Euronext + called_by=scanner_eu_supertrend
+      expect(counters.lastSupertrendArgs?.[0]).toBe('BNP:Euronext');
+      expect(counters.lastSupertrendArgs?.[4]).toBe('scanner_eu_supertrend');
+    });
+
+    it('eu_equity + direction=up → accept', async () => {
+      const { service: td } = makeTwelveDataMock({
+        supertrend: { value: 80, direction: 'up', timestamp: 'now' },
+      });
+      const r = await evaluateTwelveDataFilters({
+        symbol: 'SAP.XETRA',
+        assetClass: 'eu_equity',
+        supertrendEnabled: false,
+        cryptoRsiEnabled: false,
+        euSupertrendEnabled: true,
+        twelveData: td,
+      });
+      expect(r.decision).toBe('accept');
+    });
+
+    it('TwelveData null (rate limit) → fail-open accept', async () => {
+      const { service: td, counters } = makeTwelveDataMock({ supertrend: null });
+      const r = await evaluateTwelveDataFilters({
+        symbol: 'NESN.SW',
+        assetClass: 'eu_equity',
+        supertrendEnabled: false,
+        cryptoRsiEnabled: false,
+        euSupertrendEnabled: true,
+        twelveData: td,
+      });
+      expect(r.decision).toBe('accept');
+      expect(counters.supertrendCalls).toBe(1); // appel tenté
+    });
+
+    it('Milan .MI non mappable TD → fail-open (pas d\'appel)', async () => {
+      const { service: td, counters } = makeTwelveDataMock({
+        supertrend: { value: 50, direction: 'down', timestamp: 'now' },
+      });
+      const r = await evaluateTwelveDataFilters({
+        symbol: 'ENEL.MI',
+        assetClass: 'eu_equity',
+        supertrendEnabled: false,
+        cryptoRsiEnabled: false,
+        euSupertrendEnabled: true,
+        twelveData: td,
+      });
+      expect(r.decision).toBe('accept');
+      expect(counters.supertrendCalls).toBe(0); // .MI → eodhdToTdSymbol null → skip
+    });
+
+    it('asset_class us_equity + eu flag ON → bypass (filtre eu only)', async () => {
+      const { service: td, counters } = makeTwelveDataMock({
+        supertrend: { value: 50, direction: 'down', timestamp: 'now' },
+      });
+      const r = await evaluateTwelveDataFilters({
+        symbol: 'AAPL.US',
+        assetClass: 'us_equity_large',
+        supertrendEnabled: false,
+        cryptoRsiEnabled: false,
+        euSupertrendEnabled: true,
+        twelveData: td,
+      });
+      expect(r.decision).toBe('accept');
+      expect(counters.supertrendCalls).toBe(0);
+    });
+  });
 });
