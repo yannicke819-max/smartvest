@@ -4,6 +4,7 @@ import { TwelveDataService } from './twelve-data.service';
 import { EodhdIntradayService, type CandleSeries } from './eodhd-intraday.service';
 import { TickerBlacklistService } from './ticker-blacklist.service';
 import { eodhdToTdSymbol } from './td-symbol-mapper';
+import { SupabaseService } from '../../supabase/supabase.service';
 
 /**
  * PR #352 (original) — Routeur intraday TwelveData-first avec fallback EODHD.
@@ -81,6 +82,9 @@ export class IntradayProviderRouter implements OnModuleInit {
     // Fix identique à PR #356 sur td : suppression @Optional + tests mis à jour
     // pour passer un mock TickerBlacklistService (4 args obligatoires).
     private readonly blacklist: TickerBlacklistService,
+    // PR #366 — instrumentation comparative TD vs EODHD. Singleton stable
+    // (SupabaseModule importé), insert fire-and-forget non bloquant.
+    private readonly supabase: SupabaseService,
   ) {
     const enabled = this.isEnabled();
     const ratio = this.getRatio();
@@ -322,6 +326,20 @@ export class IntradayProviderRouter implements OnModuleInit {
       }),
     );
 
+    // PR #366 — quand les 2 providers réussissent, logge la comparaison
+    // close TD vs EODHD (fire-and-forget). Mesure la valeur ajoutée réelle
+    // de TD (divergence en bps) vs simple redondance.
+    if (tdVal !== null && eodhdVal !== null && eodhdVal.candles.length > 0) {
+      void this.recordProviderCompare(
+        eodhdTicker,
+        tdSymbol,
+        interval,
+        tdVal,
+        eodhdVal,
+        calledBy,
+      );
+    }
+
     if (tdVal !== null) {
       return {
         ticker: eodhdTicker,
@@ -334,6 +352,54 @@ export class IntradayProviderRouter implements OnModuleInit {
     }
     if (eodhdVal !== null) return { ...eodhdVal, provider: 'eodhd' };
     return null;
+  }
+
+  /**
+   * PR #366 — Enregistre la comparaison close TD vs EODHD (fire-and-forget).
+   * Calcule la divergence en bps sur la dernière bougie de chaque série.
+   * Visible pour tests.
+   */
+  async recordProviderCompare(
+    symbol: string,
+    tdSymbol: string | null,
+    interval: string,
+    tdSeries: { candles: Array<{ timestamp: number; close: number }> },
+    eodhdSeries: { candles: Array<{ timestamp: number; close: number }> },
+    calledBy: string,
+  ): Promise<void> {
+    try {
+      const tdLast = tdSeries.candles[tdSeries.candles.length - 1];
+      const eodhdLast = eodhdSeries.candles[eodhdSeries.candles.length - 1];
+      if (!tdLast || !eodhdLast) return;
+      const tdClose = tdLast.close;
+      const eodhdClose = eodhdLast.close;
+      const divergenceBps =
+        eodhdClose > 0 ? ((tdClose - eodhdClose) / eodhdClose) * 10000 : null;
+      if (!this.supabase?.isReady?.()) return;
+      const { error } = await this.supabase
+        .getClient()
+        .from('intraday_provider_compare')
+        .insert({
+          symbol,
+          td_symbol: tdSymbol,
+          interval,
+          td_close: tdClose,
+          eodhd_close: eodhdClose,
+          divergence_bps: divergenceBps != null ? Number(divergenceBps.toFixed(2)) : null,
+          td_candle_ts: tdLast.timestamp,
+          eodhd_candle_ts: eodhdLast.timestamp,
+          td_candle_count: tdSeries.candles.length,
+          eodhd_candle_count: eodhdSeries.candles.length,
+          called_by: calledBy,
+        });
+      if (error) {
+        this.logger.debug(`[intraday-router] provider-compare insert failed: ${error.message}`);
+      }
+    } catch (err) {
+      this.logger.debug(
+        `[intraday-router] provider-compare exception: ${(err as Error).message}`,
+      );
+    }
   }
 
   /**
