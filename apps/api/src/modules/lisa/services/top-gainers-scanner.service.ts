@@ -51,6 +51,7 @@ import { SHADOW_BLOC1_CONFIG } from '../../gainers-scanner/bloc1/prefilter-gates
 import { CandidateRejectReason } from '../../gainers-scanner/domain/gainers-enums';
 // PR6.4 — Enrichment helpers (ATR + EMA + persistence depuis ohlcv_cache_daily)
 import { enrichShadowCandidate } from './shadow-enrichment.helper';
+import { evaluateLiquidityGate } from './liquidity-gate.helper';
 import {
   calculateContinuousScore,
   type ScoringAssetClass,
@@ -2366,6 +2367,37 @@ export class TopGainersScannerService implements OnModuleInit {
           `[top-gainers:crypto_tradable] ${cand.symbol} not in CRYPTO_TRADABLE_WHITELIST → skip open (visible in scan, not traded)`,
         );
         continue;
+      }
+
+      // PR #367 — Gate liquidité (anti-slippage). Diagnostic 20/05 : les SL
+      // slippaient -2.69% moy (jusqu'à -7.69%) sur small-caps illiquides
+      // (.KQ/.SHG/.SHE/penny LSE) faute de liquidité au prix du stop. On
+      // refuse d'ouvrir si le dollar-volume quotidien (avgVol50d × close ×
+      // fx_to_usd) est sous le seuil. Crypto exempté (toujours liquide + FX
+      // table inadaptée aux paires Binance). Fail-open si données manquantes.
+      if (!isCryptoCand) {
+        // Défaut $500k/jour : attrape les saigneurs micro-caps (76k-182k mesurés
+        // 20/05) avec marge, préserve les mid-caps. Montable à $2M via env après
+        // observation. Mettre 0 désactive le gate.
+        const minDollarVol = Number(
+          this.config.get<string>('GAINERS_MIN_DOLLAR_VOLUME_USD') ?? '500000',
+        );
+        const liq = evaluateLiquidityGate(cand.symbol, cand.close, cand.avgVol50d, minDollarVol);
+        if (!liq.pass) {
+          this.logger.log(
+            `[top-gainers:liquidity] ${cand.symbol} (${cand.assetClass}) skip — ${liq.reason}`,
+          );
+          this.qwLogger?.log({
+            qwId: 'LIQUIDITY_GATE',
+            symbol: cand.symbol,
+            assetClass: cand.assetClass,
+            decision: 'block',
+            reason: liq.reason ?? 'low_dollar_volume',
+            wouldHavePassedWithoutFlag: true,
+            details: { dollar_volume_usd: liq.dollarVolumeUsd, min_usd: minDollarVol },
+          });
+          continue;
+        }
       }
 
       // PR #4 — pWin gate (ML logistic regression P9). Activable par portfolio
