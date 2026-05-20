@@ -8,6 +8,7 @@
  *   1. Supertrend US equity 30m   : reject si direction='down' (us_equity_large/small_mid)
  *   2. RSI crypto 5m surachat     : reject si value > 75 (crypto_major)
  *   3. Supertrend asia equity 30m : reject si direction='down' (asia_equity) — PR #360
+ *   4. Supertrend eu equity 30m   : reject si direction='down' (eu_equity) — PR #368
  *
  * Le filtre ne court PAS si :
  *   - le flag d'env est désactivé (default OFF)
@@ -23,11 +24,13 @@ export type ScannerFilterDecision =
   | { decision: 'accept' }
   | { decision: 'reject_supertrend_down'; reason: string }
   | { decision: 'reject_rsi_overbought'; reason: string }
-  | { decision: 'reject_supertrend_asia_down'; reason: string };
+  | { decision: 'reject_supertrend_asia_down'; reason: string }
+  | { decision: 'reject_supertrend_eu_down'; reason: string };
 
 const US_CLASSES = new Set(['us_equity_large', 'us_equity_small_mid']);
 const CRYPTO_CLASSES = new Set(['crypto_major']);
 const ASIA_CLASSES = new Set(['asia_equity']);
+const EU_CLASSES = new Set(['eu_equity']);
 const RSI_OVERBOUGHT_THRESHOLD = 75;
 
 export interface FilterContext {
@@ -37,6 +40,8 @@ export interface FilterContext {
   cryptoRsiEnabled: boolean;
   /** PR #360 — default false pour rétro-compat avec callers existants (PR #345). */
   asiaSupertrendEnabled?: boolean;
+  /** PR #368 — default false pour rétro-compat. */
+  euSupertrendEnabled?: boolean;
   twelveData: TwelveDataService;
 }
 
@@ -106,6 +111,27 @@ export async function evaluateTwelveDataFilters(
         return {
           decision: 'reject_supertrend_asia_down',
           reason: `asia supertrend direction=down at ${st.timestamp} value=${st.value.toFixed(4)}`,
+        };
+      }
+    }
+  }
+
+  // Filtre 4 — Supertrend eu equity 30m (PR #368)
+  //
+  // Contexte 20/05/2026 : eu_equity perdait -242$ sur 48h (WR 25%, 3TP/9SL).
+  // Mêmes signaux contre-tendance que asia : le scanner accepte des gainers
+  // 1min dont la tendance 30m est baissière confirmée → se font stopper.
+  // Bourses EU mappables TD validées live PR #354 : .PA/.AS/.AMS → :Euronext,
+  // .XETRA/.DE → :XETR, .SW → :SIX, .LSE/.L → :LSE. .MI (Milan) non supporté
+  // (add-on TD) → eodhdToTdSymbol retourne null → fail-open (skip filtre).
+  if (ctx.euSupertrendEnabled && EU_CLASSES.has(ctx.assetClass)) {
+    const tdSymbol = eodhdToTdSymbol(ctx.symbol);
+    if (tdSymbol !== null) {
+      const st = await ctx.twelveData.getSupertrendSignal(tdSymbol, '30min', 10, 3, 'scanner_eu_supertrend');
+      if (st !== null && st.direction === 'down') {
+        return {
+          decision: 'reject_supertrend_eu_down',
+          reason: `eu supertrend direction=down at ${st.timestamp} value=${st.value.toFixed(4)}`,
         };
       }
     }

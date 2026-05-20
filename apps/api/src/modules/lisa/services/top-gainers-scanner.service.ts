@@ -2302,13 +2302,16 @@ export class TopGainersScannerService implements OnModuleInit {
             (this.config.get<string>('TWELVEDATA_FILTER_CRYPTO_RSI_ENABLED') ?? 'false') === 'true';
           const asiaSupertrendEnabled =
             (this.config.get<string>('TWELVEDATA_FILTER_ASIA_SUPERTREND_ENABLED') ?? 'false') === 'true';
-          if (supertrendEnabled || cryptoRsiEnabled || asiaSupertrendEnabled) {
+          const euSupertrendEnabled =
+            (this.config.get<string>('TWELVEDATA_FILTER_EU_SUPERTREND_ENABLED') ?? 'false') === 'true';
+          if (supertrendEnabled || cryptoRsiEnabled || asiaSupertrendEnabled || euSupertrendEnabled) {
             const tdFilter = await evaluateTwelveDataFilters({
               symbol: cand.symbol,
               assetClass: cand.assetClass,
               supertrendEnabled,
               cryptoRsiEnabled,
               asiaSupertrendEnabled,
+              euSupertrendEnabled,
               twelveData: this.twelveData,
             });
             if (tdFilter.decision !== 'accept') {
@@ -2320,7 +2323,9 @@ export class TopGainersScannerService implements OnModuleInit {
                   ? 'TD_SUPERTREND_US'
                   : tdFilter.decision === 'reject_supertrend_asia_down'
                     ? 'TD_SUPERTREND_ASIA'
-                    : 'TD_RSI_CRYPTO';
+                    : tdFilter.decision === 'reject_supertrend_eu_down'
+                      ? 'TD_SUPERTREND_EU'
+                      : 'TD_RSI_CRYPTO';
               this.qwLogger?.log({
                 qwId,
                 symbol: cand.symbol,
