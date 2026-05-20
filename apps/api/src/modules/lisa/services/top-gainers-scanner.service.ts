@@ -36,6 +36,9 @@ import { DecisionLogService } from './decision-log.service';
 import { BinanceMarketService } from './binance-market.service';
 import { MultiTimeframePersistenceService, type PersistenceWithPath } from './multi-tf-persistence.service';
 import { PersistenceProbabilityService } from './persistence-probability.service';
+// PR #365 — matrice TP/SL par asset_class (Hurst asia tp=3.90%, eu=3.25%).
+// Le scanner Gainers Direct (PR #250) ignorait cette matrice à l'ouverture.
+import { AssetClassTpSlConfigService } from './asset-class-tpsl-config.service';
 import { EodhdQuotaService } from './eodhd-quota.service';
 import { EodhdCalendarService } from './eodhd-calendar.service';
 import { MacroVetoService } from './macro-veto.service';
@@ -552,6 +555,13 @@ export class TopGainersScannerService implements OnModuleInit {
      */
     @Optional() private readonly twelveData?: TwelveDataService,
     @Optional() private readonly qwLogger?: QwDecisionLoggerService,
+    /**
+     * PR #365 — matrice TP/SL par asset_class. @Optional pour back-compat
+     * tests (mock scanner sans ce service). Quand injecté, override les
+     * tpPct/slPct UI uniformes par les valeurs Hurst par classe (asia 3.90%,
+     * eu 3.25%, etc.). Le flag GAINERS_TPSL_MATRIX_ENABLED gate l'activation.
+     */
+    @Optional() private readonly tpSlConfig?: AssetClassTpSlConfigService,
   ) {}
 
   /**
@@ -2482,14 +2492,39 @@ export class TopGainersScannerService implements OnModuleInit {
       //
       // ATR provenant de persistence.atrPct (calculé sur les candles 1m/5m
       // déjà fetchées, zéro EODHD call extra).
-      let effectiveSlPct = slPct;
+      // PR #365 — Override TP/SL par matrice asset_class (Hurst). Avant : le
+      // scanner Gainers Direct utilisait gainers_default_tp_pct/sl_pct (UI,
+      // uniforme 2.5%/1.5% toutes classes), ignorant asset_class_tpsl_config
+      // (asia tp=3.90% via Hurst ×1.30). Seul mechanical-trading consultait la
+      // matrice. Bug : 7 positions asia ouvertes à tp_pct=2.5% au lieu de 3.90%.
+      // getTpPct/getSlPct retournent des décimaux (0.039 / -0.013) → ×100 vers %.
+      // Gate GAINERS_TPSL_MATRIX_ENABLED (default ON si service injecté).
+      let effectiveTpPct = tpPct;
+      let baseSlPct = slPct;
+      const matrixEnabled =
+        (this.config.get<string>('GAINERS_TPSL_MATRIX_ENABLED') ?? 'true').toLowerCase() === 'true';
+      if (matrixEnabled && this.tpSlConfig) {
+        const matrixTp = this.tpSlConfig.getTpPct(cand.assetClass);
+        const matrixSl = this.tpSlConfig.getSlPct(cand.assetClass);
+        if (matrixTp != null) effectiveTpPct = matrixTp * 100;
+        if (matrixSl != null) baseSlPct = Math.abs(matrixSl) * 100;
+        if (matrixTp != null || matrixSl != null) {
+          this.logger.log(
+            `[top-gainers] ${cand.symbol} (${cand.assetClass}) matrice TP/SL: ` +
+            `tp=${effectiveTpPct.toFixed(2)}% sl=${baseSlPct.toFixed(2)}% ` +
+            `(UI defaults tp=${tpPct.toFixed(2)}% sl=${slPct.toFixed(2)}%)`,
+          );
+        }
+      }
+
+      let effectiveSlPct = baseSlPct;
       const atrMultiplier = Number(this.config.get<string>('GAINERS_SL_ATR_MULTIPLIER') ?? '0');
       if (atrMultiplier > 0 && persistence.atrPct != null && persistence.atrPct > 0) {
         const atrSlPct = persistence.atrPct * 100 * atrMultiplier;
-        if (atrSlPct > slPct) {
+        if (atrSlPct > baseSlPct) {
           effectiveSlPct = atrSlPct;
           this.logger.log(
-            `[top-gainers] ${cand.symbol} SL widened: base=${slPct.toFixed(2)}% → ATR×${atrMultiplier}=${atrSlPct.toFixed(2)}% (atrPct=${(persistence.atrPct * 100).toFixed(3)}%)`,
+            `[top-gainers] ${cand.symbol} SL widened: base=${baseSlPct.toFixed(2)}% → ATR×${atrMultiplier}=${atrSlPct.toFixed(2)}% (atrPct=${(persistence.atrPct * 100).toFixed(3)}%)`,
           );
         }
       }
@@ -2500,7 +2535,7 @@ export class TopGainersScannerService implements OnModuleInit {
         cand,
         persistence,
         {
-          tpPct,
+          tpPct: effectiveTpPct,
           slPct: effectiveSlPct,
           capitalUsd,
           positionPct,
