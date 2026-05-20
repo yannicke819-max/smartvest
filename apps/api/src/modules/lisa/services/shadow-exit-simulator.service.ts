@@ -57,7 +57,28 @@ interface VariantResult {
   exitReason: string;
   pnlPct: number;
   slippagePct: number | null;
+  /** Migration 0151 — issues simulées par couple (tp,sl) sur la même entrée pullback. */
+  exitGrid: ExitGridEntry[];
 }
+
+/** Migration 0151 — une issue d'exit pour un couple (tp_pct, sl_pct) donné. */
+interface ExitGridEntry {
+  tp_pct: number;
+  sl_pct: number;
+  pnl_pct: number;
+  exit_reason: 'TP_FULL' | 'SL' | 'TIME_LIMIT';
+  exit_offset_min: number;
+}
+
+// Migration 0151 — grille d'exits asymétriques testée en forward. Couples
+// (TP, SL) issus du backtest crypto où l'espérance monte avec la largeur du TP.
+const EXIT_GRID: ReadonlyArray<{ tp: number; sl: number }> = [
+  { tp: 0.03, sl: 0.025 },
+  { tp: 0.05, sl: 0.025 },
+  { tp: 0.08, sl: 0.025 },
+  { tp: 0.12, sl: 0.03 },
+  { tp: 0.20, sl: 0.03 },
+];
 
 const MIN_AGE_MIN_BEFORE_REPLAY = 5;
 const MAX_HOLD_HOURS = 3; // ADR-005 §2.4 time-stop
@@ -268,6 +289,7 @@ export class ShadowExitSimulatorService {
               variant_pnl_pct: v.pnlPct,
               variant_slippage_pct: v.slippagePct,
               variant_params: params,
+              variant_exit_grid: v.exitGrid,
             };
         const { error: upErr } = await this.supabase
           .getClient()
@@ -366,6 +388,9 @@ export class ShadowExitSimulatorService {
       snap.currentStopPrice;
     const slippagePct = theoretical !== null ? (exitPrice - theoretical) / variantEntry : null;
 
+    // Migration 0151 — grille d'exits asymétriques sur la MÊME entrée pullback.
+    const exitGrid = this.computeExitGrid(candles, entryIdx, variantEntry);
+
     return {
       entryPrice: variantEntry,
       entryOffsetMin: entryIdx + 1,
@@ -374,7 +399,37 @@ export class ShadowExitSimulatorService {
       exitReason: String(exitReason),
       pnlPct,
       slippagePct,
+      exitGrid,
     };
+  }
+
+  /**
+   * Migration 0151 — pour chaque couple (tp, sl) de la grille, course TP/SL
+   * close-based sur les candles post-entrée. TIME_LIMIT = sortie au dernier
+   * close si ni TP ni SL touché. Sert à mesurer forward l'edge des exits larges.
+   */
+  private computeExitGrid(
+    candles: Array<{ close: number }>,
+    entryIdx: number,
+    entry: number,
+  ): ExitGridEntry[] {
+    return EXIT_GRID.map(({ tp, sl }) => {
+      const tpPx = entry * (1 + tp);
+      const slPx = entry * (1 - sl);
+      for (let i = entryIdx + 1; i < candles.length; i++) {
+        const px = candles[i].close;
+        // SL prioritaire (protège le capital), comme la state machine BLOC4.
+        if (px <= slPx) {
+          return { tp_pct: tp, sl_pct: sl, pnl_pct: -sl, exit_reason: 'SL' as const, exit_offset_min: i + 1 };
+        }
+        if (px >= tpPx) {
+          return { tp_pct: tp, sl_pct: sl, pnl_pct: tp, exit_reason: 'TP_FULL' as const, exit_offset_min: i + 1 };
+        }
+      }
+      const lastIdx = candles.length - 1;
+      const pnl = (candles[lastIdx].close - entry) / entry;
+      return { tp_pct: tp, sl_pct: sl, pnl_pct: pnl, exit_reason: 'TIME_LIMIT' as const, exit_offset_min: lastIdx + 1 };
+    });
   }
 
   /** Fetch intraday 1m candles depuis le ticker (EODHD ou Binance). */
