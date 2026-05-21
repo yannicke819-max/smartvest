@@ -1,14 +1,17 @@
 /**
- * Migration 0150 — Shadow A/B variante entrée pullback.
+ * Migration 0150/0151 — Shadow A/B variante entrée pullback + grille d'exits.
  *
  * simulateVariant(row) doit :
- *   - attendre un pullback de pullback_pct sous entry_price dans la fenêtre,
- *   - entrer à ce close avec SL élargi (sl_pct) + TP (tp_pct),
- *   - rejouer le moteur BLOC4 (applyTick) identique au live,
- *   - retourner 'no_entry' si la fenêtre s'écoule sans pullback,
- *   - retourner 'pending' si entrée touchée mais exit non résolu (< time-limit).
+ *   - ne résoudre qu'une fois la fenêtre [created_at, +window+hold] écoulée en
+ *     temps réel (fix 21/05 : sinon les candles du futur n'existent pas → grille
+ *     d'exits larges = artefact). window+hold = 30 + 3*60 = 210 min.
+ *   - fetcher les VRAIES candles de la période via fetchCandlesWindow (time-window),
+ *   - attendre un pullback de pullback_pct sous entry_price dans la fenêtre pullback,
+ *   - entrer à ce close avec SL élargi (sl_pct) + TP (tp_pct), rejouer BLOC4 (applyTick),
+ *   - 'no_entry' si fenêtre écoulée sans pullback, 'skip' si couverture absente,
+ *     null si la fenêtre n'est pas encore écoulée.
  *
- * On instancie via Object.create (DI lourd) + stub fetchCandles.
+ * On instancie via Object.create (DI lourd) + stub fetchCandlesWindow.
  */
 
 import { ShadowExitSimulatorService } from '../shadow-exit-simulator.service';
@@ -18,7 +21,11 @@ interface Svc {
   variantWindowMin: number;
   variantSlPct: number;
   variantTpPct: number;
-  fetchCandles: (row: unknown, count: number) => Promise<Array<{ close: number }> | null>;
+  fetchCandlesWindow: (
+    row: unknown,
+    fromMs: number,
+    toMs: number,
+  ) => Promise<Array<{ close: number }> | null>;
   simulateVariant: (row: unknown) => Promise<unknown>;
 }
 
@@ -28,10 +35,11 @@ function makeSvc(candles: Array<{ close: number }> | null): Svc {
   svc.variantWindowMin = 30;
   svc.variantSlPct = 0.025;
   svc.variantTpPct = 0.03;
-  svc.fetchCandles = async () => candles;
+  svc.fetchCandlesWindow = async () => candles;
   return svc;
 }
 
+// window + hold = 30 + 3*60 = 210 min. RESOLVED = age >= 210 ; PENDING/null = age < 210.
 function row(createdMinAgo: number) {
   return {
     id: 'sig-1',
@@ -50,7 +58,7 @@ describe('Migration 0151 — variant_exit_grid', () => {
   it('grille TP/SL calculée sur la même entrée pullback', async () => {
     // entrée 98.4 (idx1). candle idx2=102.
     // tp3% → 98.4*1.03=101.35 ; 102>=101.35 → TP_FULL +0.03.
-    // tp5% → 98.4*1.05=103.32 ; 102<103.32 → TIME_LIMIT pnl=(102-98.4)/98.4.
+    // tp20% → 98.4*1.2=118.08 ; 102<118.08 → TIME_LIMIT pnl=(102-98.4)/98.4.
     const candles = [{ close: 99.5 }, { close: 98.4 }, { close: 102 }];
     const svc = makeSvc(candles);
     const v = (await svc.simulateVariant(row(300))) as {
@@ -106,33 +114,35 @@ describe('Migration 0150 — simulateVariant', () => {
   it('aucun pullback + fenêtre écoulée → no_entry', async () => {
     const candles = Array.from({ length: 35 }, () => ({ close: 100.5 })); // jamais sous 98.5
     const svc = makeSvc(candles);
-    const v = await svc.simulateVariant(row(60)); // age 60 > window 30
+    const v = await svc.simulateVariant(row(300)); // age 300 >= window 210
     expect(v).toBe('no_entry');
   });
 
-  it('pullback touché mais exit non résolu et < time-limit → pending', async () => {
-    const candles = [{ close: 98.0 }, { close: 99 }, { close: 99.5 }]; // entrée idx0, pas de TP/SL
+  it('pullback touché, ni TP ni SL sur la fenêtre écoulée → TIME_LIMIT', async () => {
+    // entrée idx0=98.0 ; 99/99.5 ne touchent ni TP (100.94) ni SL (95.55).
+    const candles = [{ close: 98.0 }, { close: 99 }, { close: 99.5 }];
     const svc = makeSvc(candles);
-    const v = await svc.simulateVariant(row(10)); // hold court, pas de time-limit
-    expect(v).toBe('pending');
+    const v = (await svc.simulateVariant(row(300))) as { exitReason: string; pnlPct: number };
+    expect(v.exitReason).toBe('TIME_LIMIT');
+    expect(v.pnlPct).toBeCloseTo((99.5 - 98.0) / 98.0, 5);
   });
 
-  it('trop jeune (fenêtre non écoulée, pas de pullback) → null', async () => {
+  it('fenêtre pas encore écoulée → null (réessai plus tard)', async () => {
     const candles = [{ close: 100.2 }, { close: 100.1 }];
     const svc = makeSvc(candles);
-    const v = await svc.simulateVariant(row(8)); // age 8 < window 30
+    const v = await svc.simulateVariant(row(8)); // age 8 < window 210
     expect(v).toBeNull();
   });
 
-  it('ticker non-couvert + fenêtre écoulée → skip (anti-famine, candles inatteignables)', async () => {
-    const svc = makeSvc(null); // fetchCandles renvoie null (blacklist/suffixe absent)
-    const v = await svc.simulateVariant(row(300)); // age 300 >= window 30
+  it('couverture absente + fenêtre écoulée → skip (anti-famine, candles inatteignables)', async () => {
+    const svc = makeSvc(null); // fetchCandlesWindow renvoie null (blacklist/suffixe/rétention)
+    const v = await svc.simulateVariant(row(300)); // age 300 >= window 210
     expect(v).toBe('skip');
   });
 
-  it('ticker non-couvert mais trop jeune → null (échec transitoire, on réessaie)', async () => {
+  it('couverture absente mais fenêtre pas écoulée → null (on réessaie)', async () => {
     const svc = makeSvc(null);
-    const v = await svc.simulateVariant(row(8)); // age 8 < window 30
+    const v = await svc.simulateVariant(row(8)); // age 8 < window 210
     expect(v).toBeNull();
   });
 });
