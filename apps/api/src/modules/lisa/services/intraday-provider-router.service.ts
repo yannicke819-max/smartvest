@@ -371,10 +371,34 @@ export class IntradayProviderRouter implements OnModuleInit {
       const tdLast = tdSeries.candles[tdSeries.candles.length - 1];
       const eodhdLast = eodhdSeries.candles[eodhdSeries.candles.length - 1];
       if (!tdLast || !eodhdLast) return;
-      const tdClose = tdLast.close;
-      const eodhdClose = eodhdLast.close;
+
+      // Fix 21/05 — comparer la dernière bougie de TIMESTAMP COMMUN, pas la
+      // dernière de chaque série. Quand un provider est stale (asia/rétention
+      // EODHD) ou bucke différemment (5m), les deux "dernières" bougies sont de
+      // moments différents → divergence artefacte (jusqu'à 3000 bps, 99% des
+      // lignes désalignées dans l'audit). divergence_bps n'est calculé que sur
+      // une bougie réellement comparable ; sinon null (ligne conservée pour
+      // tracer le taux de désalignement via td_candle_ts ≠ eodhd_candle_ts).
+      const eodhdByTs = new Map<number, number>();
+      for (const c of eodhdSeries.candles) eodhdByTs.set(c.timestamp, c.close);
+      let matchTs: number | null = null;
+      let matchTd: number | null = null;
+      let matchEodhd: number | null = null;
+      for (let i = tdSeries.candles.length - 1; i >= 0; i--) {
+        const c = tdSeries.candles[i];
+        const e = eodhdByTs.get(c.timestamp);
+        if (e !== undefined) {
+          matchTs = c.timestamp;
+          matchTd = c.close;
+          matchEodhd = e;
+          break;
+        }
+      }
+      const aligned = matchTs != null;
+      const tdClose = aligned ? matchTd! : tdLast.close;
+      const eodhdClose = aligned ? matchEodhd! : eodhdLast.close;
       const divergenceBps =
-        eodhdClose > 0 ? ((tdClose - eodhdClose) / eodhdClose) * 10000 : null;
+        aligned && eodhdClose > 0 ? ((tdClose - eodhdClose) / eodhdClose) * 10000 : null;
       if (!this.supabase?.isReady?.()) return;
       const { error } = await this.supabase
         .getClient()
@@ -386,8 +410,8 @@ export class IntradayProviderRouter implements OnModuleInit {
           td_close: tdClose,
           eodhd_close: eodhdClose,
           divergence_bps: divergenceBps != null ? Number(divergenceBps.toFixed(2)) : null,
-          td_candle_ts: tdLast.timestamp,
-          eodhd_candle_ts: eodhdLast.timestamp,
+          td_candle_ts: aligned ? matchTs : tdLast.timestamp,
+          eodhd_candle_ts: aligned ? matchTs : eodhdLast.timestamp,
           td_candle_count: tdSeries.candles.length,
           eodhd_candle_count: eodhdSeries.candles.length,
           called_by: calledBy,

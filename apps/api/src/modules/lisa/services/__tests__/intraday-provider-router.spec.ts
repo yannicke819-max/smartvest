@@ -768,5 +768,54 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
       expect(rows[0].td_close).toBe(180.5);
       expect(rows[0].eodhd_close).toBe(180.4);
     });
+
+    // Fix 21/05 — alignement par timestamp commun.
+    it('séries désalignées (aucun ts commun) → divergence_bps null, ligne conservée', async () => {
+      const { supabase, rows } = captureInsert();
+      const router = new IntradayProviderRouter(
+        makeConfig({}),
+        makeEodhdMock().service,
+        makeTdMock().service,
+        makeBlacklistMock(),
+        supabase,
+      );
+      await router.recordProviderCompare(
+        '024840.KQ', '024840:KRX', '5m',
+        { candles: [{ timestamp: 1779375600, close: 6890 }] }, // TD frais
+        { candles: [{ timestamp: 1779256800, close: 5300 }] }, // EODHD stale (33h avant)
+        'test',
+      );
+      expect(rows).toHaveLength(1);
+      // Pas de bougie de ts commun → on ne calcule pas une divergence bidon.
+      expect(rows[0].divergence_bps).toBeNull();
+      // ts bruts conservés pour mesurer le taux de désalignement.
+      expect(rows[0].td_candle_ts).toBe(1779375600);
+      expect(rows[0].eodhd_candle_ts).toBe(1779256800);
+    });
+
+    it('ts commun plus ancien que la dernière bougie → divergence calculée sur le commun', async () => {
+      const { supabase, rows } = captureInsert();
+      const router = new IntradayProviderRouter(
+        makeConfig({}),
+        makeEodhdMock().service,
+        makeTdMock().service,
+        makeBlacklistMock(),
+        supabase,
+      );
+      await router.recordProviderCompare(
+        'AAPL.US', 'AAPL', '1m',
+        { candles: [{ timestamp: 100, close: 180.0 }, { timestamp: 160, close: 181.0 }] }, // TD a une bougie 160 de plus
+        { candles: [{ timestamp: 100, close: 180.5 }] }, // EODHD s'arrête à 100
+        'test',
+      );
+      expect(rows).toHaveLength(1);
+      // Comparaison sur ts=100 (commun), pas sur la dernière bougie TD (160).
+      expect(rows[0].td_candle_ts).toBe(100);
+      expect(rows[0].eodhd_candle_ts).toBe(100);
+      expect(rows[0].td_close).toBe(180.0);
+      expect(rows[0].eodhd_close).toBe(180.5);
+      // (180.0 - 180.5) / 180.5 * 10000 = -27.7 bps
+      expect(rows[0].divergence_bps).toBeCloseTo(-27.7, 0);
+    });
   });
 });
