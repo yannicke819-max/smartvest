@@ -162,6 +162,43 @@ const EU_WATCHLIST_NAMES = ['cac40', 'dax40', 'ftse100'];
 export const CRYPTO_PAIRS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT', 'DOTUSDT', 'LINKUSDT', 'POLUSDT'];
 
 /**
+ * Panier or/énergie fixe — toujours scanné (en sus des screeners EODHD dynamiques).
+ *
+ * Pourquoi : les screeners EODHD ne remontent un ticker que s'il fait déjà
+ * +3%/jour (US) ; une tendance macro lente (or, pétrole) ne crosse pas ce seuil
+ * intraday → invisible du scan. L'or/pétrole "spot" (XAUUSD.FOREX / BRENT.COMM)
+ * sont en plus exclus par le session-filter (suffixes FOREX/COMM). Ce panier
+ * passe par des PROXIES equity .US (ETF + miniers/majors) qui, eux, traversent
+ * le session-filter (classe `us_equity`) et sont évalués chaque cycle.
+ *
+ * Ils restent soumis à TOUS les gates normaux (changePct, mcap, liquidité,
+ * persistence, path) — aucun bypass. Ils apparaissent donc dans
+ * `gainers_user_shadow_signals` (ACCEPT ou REJECT) et ne deviennent tradables
+ * que sur un vrai mouvement (≥ +3% large-cap / ≥ +5% small-mid).
+ *
+ * `approxMarketCapUsd` / `approxAvgVol50d` : le endpoint real-time ne renvoie ni
+ * market cap ni volume 50j. Valeurs approximatives (mêmes ordre de grandeur que
+ * CRYPTO_MARKET_CAP_USD), uniquement pour la classification (large vs small-mid)
+ * et les gates mcap/liquidité. Tolérance ×2 de dérive avant impact. Tous >> les
+ * planchers (100M mcap, 500k vol). Désactivable via GAINERS_FIXED_BASKET_ENABLED=false.
+ */
+export interface FixedBasketEntry {
+  symbol: string;
+  approxMarketCapUsd: number;
+  approxAvgVol50d: number;
+}
+export const GAINERS_FIXED_BASKET: FixedBasketEntry[] = [
+  { symbol: 'GLD.US',  approxMarketCapUsd: 76_000_000_000,  approxAvgVol50d: 7_000_000 },  // ETF or physique (AUM)
+  { symbol: 'USO.US',  approxMarketCapUsd: 1_500_000_000,   approxAvgVol50d: 3_000_000 },  // ETF pétrole WTI (AUM)
+  { symbol: 'XLE.US',  approxMarketCapUsd: 40_000_000_000,  approxAvgVol50d: 15_000_000 }, // ETF secteur énergie (AUM)
+  { symbol: 'GDX.US',  approxMarketCapUsd: 15_000_000_000,  approxAvgVol50d: 25_000_000 }, // ETF miniers or (AUM)
+  { symbol: 'NEM.US',  approxMarketCapUsd: 60_000_000_000,  approxAvgVol50d: 10_000_000 }, // Newmont (minier or)
+  { symbol: 'GOLD.US', approxMarketCapUsd: 40_000_000_000,  approxAvgVol50d: 20_000_000 }, // Barrick Gold (minier or)
+  { symbol: 'XOM.US',  approxMarketCapUsd: 520_000_000_000, approxAvgVol50d: 15_000_000 }, // ExxonMobil (major pétrole)
+  { symbol: 'CVX.US',  approxMarketCapUsd: 280_000_000_000, approxAvgVol50d: 8_000_000 },  // Chevron (major pétrole)
+];
+
+/**
  * PR #266 — Horaires session UTC (approximatifs, ne tient pas compte du DST
  * change exact). Utilisés pour :
  *   - Filtrage automatique scan : skip un asset class quand bourse fermée.
@@ -1189,6 +1226,27 @@ export class TopGainersScannerService implements OnModuleInit {
           `[top-gainers] EU sessions closed — skipping ${EU_EXCHANGES.length} exchanges (${EU_EXCHANGES.join(',')})`,
         );
       }
+      // Panier or/énergie fixe (proxies equity .US). Gaté sur la session US
+      // comme les exchanges US : inutile de brûler des crédits real-time quand
+      // le marché US est fermé (le pre-filter session-aware les dropperait de
+      // toute façon en aval). Toujours fetché si session-aware désactivé.
+      const usOpenForBasket = !sessionAware || isMarketOpen('us', now);
+      if (usOpenForBasket) {
+        tasks.push(
+          this.fetchFixedBasket(apiKey)
+            .then((rows) => {
+              this.recordExchangeResult('BASKET', rows.length);
+              return rows;
+            })
+            .catch((e) => {
+              const msg = e?.message ?? String(e);
+              this.recordExchangeResult('BASKET', 0, msg);
+              return [];
+            }),
+        );
+      } else {
+        this.logger.log('[top-gainers] session-aware fetch: US closed — skipped gold/energy fixed basket');
+      }
     } else {
       this.logger.warn('[top-gainers] EODHD_API_KEY missing — skip equity scan');
     }
@@ -1542,6 +1600,63 @@ export class TopGainersScannerService implements OnModuleInit {
       }
     }
     return out;
+  }
+
+  /**
+   * Panier or/énergie fixe via EODHD real-time batch (1 requête HTTP, `s=` param).
+   * Toujours inclus dans le pool de candidats pour que la tendance macro
+   * or/pétrole soit captée même sans déclencher le screener +3%/jour.
+   * Voir GAINERS_FIXED_BASKET pour le rationale complet.
+   */
+  private async fetchFixedBasket(apiKey: string): Promise<TopGainerCandidate[]> {
+    const enabled = (this.config.get<string>('GAINERS_FIXED_BASKET_ENABLED') ?? 'true').toLowerCase() !== 'false';
+    if (!enabled || GAINERS_FIXED_BASKET.length === 0) return [];
+
+    const capBySymbol = new Map(GAINERS_FIXED_BASKET.map((e) => [e.symbol.toUpperCase(), e]));
+    const symbols = GAINERS_FIXED_BASKET.map((e) => e.symbol);
+    // Batch real-time : premier symbole dans le path, le reste dans `s=`.
+    const [first, ...rest] = symbols;
+    const sParam = rest.length > 0 ? `&s=${encodeURIComponent(rest.join(','))}` : '';
+    const url = `https://eodhd.com/api/real-time/${encodeURIComponent(first)}?api_token=${encodeURIComponent(apiKey)}&fmt=json${sParam}`;
+
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        this.logger.warn(`[top-gainers] fixed-basket HTTP ${res.status} — body: ${body.slice(0, 160)}`);
+        return [];
+      }
+      const json = (await res.json()) as Record<string, unknown> | Record<string, unknown>[];
+      const rows = Array.isArray(json) ? json : [json];
+      const out: TopGainerCandidate[] = [];
+      for (const r of rows) {
+        const rawCode = String((r as { code?: string }).code ?? '');
+        if (!rawCode) continue;
+        const symbol = rawCode.includes('.') ? rawCode.toUpperCase() : `${rawCode.toUpperCase()}.US`;
+        const meta = capBySymbol.get(symbol);
+        if (!meta) continue; // ignore tout symbole inattendu renvoyé par l'API
+        const close = num((r as { close?: unknown }).close);
+        const high = Math.max(num((r as { high?: unknown }).high) || 0, close);
+        const changePct = num((r as { change_p?: unknown }).change_p);
+        const volume = num((r as { volume?: unknown }).volume);
+        if (!Number.isFinite(close) || close <= 0) continue;
+        out.push({
+          symbol,
+          exchange: 'US',
+          assetClass: detectAssetClass(symbol, 'US', meta.approxMarketCapUsd),
+          close,
+          high: high > 0 ? high : close,
+          changePct: Number.isFinite(changePct) ? changePct : 0,
+          volume: Number.isFinite(volume) ? volume : 0,
+          avgVol50d: meta.approxAvgVol50d,
+          marketCap: meta.approxMarketCapUsd,
+        });
+      }
+      return out;
+    } catch (e) {
+      this.logger.debug(`[top-gainers] fixed-basket fetch error: ${String(e).slice(0, 120)}`);
+      return [];
+    }
   }
 
   /**
