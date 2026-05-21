@@ -109,6 +109,35 @@ export class BinanceMarketService {
     return null;
   }
 
+  /**
+   * Prix spot pour plusieurs symboles en UN seul appel (weight ≈ 2 pour ≤20
+   * symboles) — pour l'échantillonnage fin micro-momentum. Pas de cache (on veut
+   * la valeur fraîche à chaque tick). Retourne une Map symbol→price.
+   */
+  async getSpotPrices(binanceSymbols: string[]): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    if (binanceSymbols.length === 0) return out;
+    try {
+      const param = encodeURIComponent(JSON.stringify(binanceSymbols));
+      const url = `${this.BASE_URL}/api/v3/ticker/price?symbols=${param}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      if (!res.ok) {
+        this.logger.debug(`Binance spot prices HTTP ${res.status}`);
+        return out;
+      }
+      const data = await res.json() as Array<{ symbol?: string; price?: string }>;
+      if (!Array.isArray(data)) return out;
+      for (const d of data) {
+        const p = Number(d.price);
+        if (d.symbol && Number.isFinite(p) && p > 0) out.set(d.symbol, p);
+      }
+      return out;
+    } catch (e) {
+      this.logger.debug(`Binance spot prices failed: ${String(e).slice(0, 80)}`);
+      return out;
+    }
+  }
+
   async getKlines(binanceSymbol: string, interval: '1m' | '5m' | '15m' | '1h' | '4h' | '1d' = '5m', limit = 20): Promise<BinanceCandle[] | null> {
     const cacheKey = `${binanceSymbol}::${interval}::${limit}`;
     const cached = this.klinesCache.get(cacheKey);
