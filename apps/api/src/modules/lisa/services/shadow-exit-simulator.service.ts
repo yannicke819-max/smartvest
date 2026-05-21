@@ -258,7 +258,14 @@ export class ShadowExitSimulatorService {
    * n'est pas encore tranchée, simule une entrée pullback + SL élargi.
    */
   private async runVariantInner(): Promise<void> {
-    const cutoff = new Date(Date.now() - MIN_AGE_MIN_BEFORE_REPLAY * 60_000).toISOString();
+    // Le gate temporel de simulateVariant ne résout qu'une fois la fenêtre
+    // [created_at, +window+hold] écoulée. On NE sélectionne donc que des signaux
+    // dont la fenêtre est déjà écoulée (âge ≥ windowMin) — sinon, avec un ordre
+    // DESC + limit(50) et un fort volume de signaux frais, le working set serait
+    // saturé en permanence de signaux trop jeunes (tous null) et la grille ne se
+    // remplirait jamais (famine "par le haut", observée 21/05 post-déploiement).
+    const variantWindowMin = this.variantWindowMin + 60 * MAX_HOLD_HOURS;
+    const cutoff = new Date(Date.now() - variantWindowMin * 60_000).toISOString();
     const recentFloor = new Date(Date.now() - SHADOW_RECENT_DAYS * 86_400_000).toISOString();
     const { data, error } = await this.supabase
       .getClient()
