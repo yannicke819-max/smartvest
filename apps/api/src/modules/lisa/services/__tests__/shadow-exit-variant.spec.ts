@@ -123,4 +123,16 @@ describe('Migration 0150 — simulateVariant', () => {
     const v = await svc.simulateVariant(row(8)); // age 8 < window 30
     expect(v).toBeNull();
   });
+
+  it('ticker non-couvert + fenêtre écoulée → skip (anti-famine, candles inatteignables)', async () => {
+    const svc = makeSvc(null); // fetchCandles renvoie null (blacklist/suffixe absent)
+    const v = await svc.simulateVariant(row(300)); // age 300 >= window 30
+    expect(v).toBe('skip');
+  });
+
+  it('ticker non-couvert mais trop jeune → null (échec transitoire, on réessaie)', async () => {
+    const svc = makeSvc(null);
+    const v = await svc.simulateVariant(row(8)); // age 8 < window 30
+    expect(v).toBeNull();
+  });
 });
