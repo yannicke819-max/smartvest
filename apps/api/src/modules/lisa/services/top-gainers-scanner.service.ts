@@ -43,6 +43,7 @@ import { EodhdQuotaService } from './eodhd-quota.service';
 import { EodhdCalendarService } from './eodhd-calendar.service';
 import { MacroVetoService } from './macro-veto.service';
 import { GainersUserShadowService, type ShadowDecision } from './gainers-user-shadow.service';
+import { dollarVolumeUsd, passesLiquidityFloor } from './gainers-liquidity.helper';
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
 // PR6.3 — Shadow wiring (LisaModule import GainersModule pour résolution DI)
 import { GainersShadowRunService } from '../../gainers-scanner/shadow/shadow-run.service';
@@ -2109,6 +2110,25 @@ export class TopGainersScannerService implements OnModuleInit {
             `[top-gainers] ${cand.symbol} POST_SL_COOLDOWN actif (SL il y a ${elapsedMin} min < ${postSlCooldownMin} min) → skip`,
           );
           recordShadowDecision(cand, 'reject_post_sl_cooldown', undefined);
+          continue;
+        }
+      }
+
+      // Filtre liquidité dollar-volume (equity). Vire les penny-stocks
+      // LSE/Euronext illiquides : spread large → SL déclenché par le bruit du
+      // spread, pas par un vrai mouvement (gros du -$1688 de pertes EU mesurées
+      // 21/05). Crypto exempt (majors whitelistés, toujours liquides).
+      // Tunable via GAINERS_MIN_DOLLAR_VOLUME_USD (default $1M). Fail-open si
+      // volume indispo (cf. gainers-liquidity.helper).
+      const isCryptoLiq = cand.assetClass === 'crypto_major' || cand.assetClass === 'crypto_alt';
+      if (!isCryptoLiq) {
+        const minDollarVol = Number(this.config.get<string>('GAINERS_MIN_DOLLAR_VOLUME_USD') ?? '1000000');
+        const dollarVol = dollarVolumeUsd(cand.close, cand.avgVol50d, cand.volume);
+        if (!passesLiquidityFloor(dollarVol, minDollarVol)) {
+          this.logger.log(
+            `[top-gainers] ${cand.symbol} liquidité $${(dollarVol / 1e6).toFixed(2)}M < min $${(minDollarVol / 1e6).toFixed(2)}M → skip (penny-stock illiquide)`,
+          );
+          recordShadowDecision(cand, 'reject_liquidity', undefined);
           continue;
         }
       }

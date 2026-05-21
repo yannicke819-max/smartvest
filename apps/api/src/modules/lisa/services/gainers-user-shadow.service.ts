@@ -41,6 +41,7 @@ export type ShadowDecision =
   | 'reject_rsi_overbought'     // PR #345 — TwelveData RSI 5m > 75 (crypto_major)
   | 'reject_supertrend_asia_down' // PR #360 — TwelveData Supertrend 30m direction=down (asia_equity)
   | 'reject_supertrend_eu_down' // PR #368 — TwelveData Supertrend 30m direction=down (eu_equity)
+  | 'reject_liquidity'          // Filtre dollar-volume : penny-stock illiquide (equity)
   | 'reject_other';
 
 export interface RecordDecisionInput {
