@@ -38,6 +38,14 @@ primary_region = 'cdg'
   # Voir MEASURE-short-shadow-2026-05-11.md §16.8 pour l'investigation complète.
   SCANNER_SESSION_AWARE = 'true'
 
+  # Micro-momentum (expérience shadow d'entrée HF crypto, table micro_momentum_probes).
+  # Seuils élargis volontairement pour collecter un SPECTRE de triggers (run 3,4,5…
+  # × vélocité) — l'analyse bucketise ensuite par (run_length, vélocité) pour trouver
+  # où l'espérance nette de frais bascule positive. Trop strict = on ne voit que les
+  # extrêmes, impossible de comparer faible vs fort. Activation = MICRO_MOMENTUM_ENABLED.
+  MICRO_MIN_RUN = '3'
+  MICRO_MIN_VELOCITY_PCT_S = '0.0001'
+
 [http_service]
   internal_port = 3001
   force_https = true
