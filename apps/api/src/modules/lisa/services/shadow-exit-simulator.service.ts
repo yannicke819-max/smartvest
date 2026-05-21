@@ -143,7 +143,7 @@ export class ShadowExitSimulatorService {
       .not('entry_price', 'is', null)
       .gte('created_at', recentFloor)
       .lte('created_at', cutoff)
-      .order('created_at', { ascending: true })
+      .order('created_at', { ascending: false })
       .limit(50);
 
     if (error || !data || data.length === 0) return;
@@ -270,7 +270,7 @@ export class ShadowExitSimulatorService {
       .is('variant_exit_at', null)
       .is('variant_no_entry', null)
       .lte('created_at', cutoff)
-      .order('created_at', { ascending: true })
+      .order('created_at', { ascending: false })
       .limit(50);
 
     if (error || !data || data.length === 0) return;
@@ -283,11 +283,14 @@ export class ShadowExitSimulatorService {
     };
     let resolved = 0;
     let noEntry = 0;
+    let skipped = 0;
     for (const r of data as ShadowSignalRow[]) {
       try {
         const v = await this.simulateVariant(r);
         if (v === 'pending' || v === null) continue;
-        const update = v === 'no_entry'
+        const update = v === 'skip'
+          ? { variant_no_entry: true, variant_params: { ...params, skip_reason: 'no_candles' } }
+          : v === 'no_entry'
           ? { variant_no_entry: true, variant_params: params }
           : {
               variant_entry_price: v.entryPrice,
@@ -307,23 +310,27 @@ export class ShadowExitSimulatorService {
           .update(update)
           .eq('id', r.id);
         if (upErr) this.logger.warn(`[exit-sim:variant] update ${r.id} failed: ${upErr.message}`);
+        else if (v === 'skip') skipped++;
         else if (v === 'no_entry') noEntry++;
         else resolved++;
       } catch (e) {
         this.logger.warn(`[exit-sim:variant] ${r.symbol} (${r.id}) failed: ${String(e).slice(0, 80)}`);
       }
     }
-    this.logger.log(`[exit-sim:variant] resolved ${resolved}, no_entry ${noEntry}`);
+    this.logger.log(`[exit-sim:variant] resolved ${resolved}, no_entry ${noEntry}, skipped ${skipped}`);
   }
 
   /**
    * Simule la variante pullback sur un signal. Retourne :
    *   - 'no_entry' : fenêtre écoulée sans pullback (la variante n'aurait pas tradé)
    *   - 'pending'  : pullback touché mais exit non encore résolu (réessayer)
-   *   - null       : pas assez de données / trop jeune pour conclure
+   *   - 'skip'     : ticker non-couvert (blacklist/suffixe) ET fenêtre écoulée →
+   *                  candles inatteignables à jamais ; marqueur terminal pour
+   *                  libérer le working set limit(50) (anti-famine).
+   *   - null       : pas assez de données / trop jeune pour conclure (réessayer)
    *   - VariantResult : entrée+exit résolus
    */
-  private async simulateVariant(row: ShadowSignalRow): Promise<VariantResult | 'no_entry' | 'pending' | null> {
+  private async simulateVariant(row: ShadowSignalRow): Promise<VariantResult | 'no_entry' | 'pending' | 'skip' | null> {
     const entryTimeMs = new Date(row.created_at).getTime();
     const ageMin = (Date.now() - entryTimeMs) / 60_000;
     // Fenêtre pullback + horizon de hold complet.
@@ -332,7 +339,15 @@ export class ShadowExitSimulatorService {
     if (replayCount < 5) return null;
 
     const candles = await this.fetchCandles(row, replayCount);
-    if (!candles || candles.length === 0) return null;
+    if (!candles || candles.length === 0) {
+      // Ticker non-couvert (blacklist Binance / suffixe EODHD absent) : si la
+      // fenêtre est déjà écoulée, les candles ne réapparaîtront jamais. On marque
+      // 'skip' (terminal) pour le sortir du working set limit(50) — sinon ces
+      // signaux non-résolubles saturent le batch et affament les signaux
+      // résolubles (famine observée 21/05, grille bloquée à 0).
+      if (ageMin >= this.variantWindowMin) return 'skip';
+      return null;
+    }
 
     // 1. Cherche le 1er pullback sous entry_price*(1-pullback_pct) dans la fenêtre.
     const pullbackTrigger = row.entry_price * (1 - this.variantPullbackPct);
