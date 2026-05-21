@@ -515,8 +515,14 @@ export class ShadowExitSimulatorService {
     return series ? series.candles.map((c) => ({ close: c.close })) : null;
   }
 
-  private toBinanceSymbol(eodhdSymbol: string): string | null {
-    const m = eodhdSymbol.match(/^([A-Z0-9]+)-USD\.CC$/);
+  private toBinanceSymbol(symbol: string): string | null {
+    // Les top-gainers crypto sont stockés AU FORMAT BINANCE natif ("BTCUSDT",
+    // "AVAXUSDT") via fetchBinanceGainers — pas au format EODHD. Sans ce cas,
+    // toBinanceSymbol renvoyait null sur 100% des signaux crypto → fetch null →
+    // skip(no_candles) systématique → 0 grille crypto (asymétrie TP non mesurable).
+    if (/^[A-Z0-9]+(USDT|USDC)$/.test(symbol)) return symbol;
+    // Compat format EODHD crypto "BTC-USD.CC" → "BTCUSDT".
+    const m = symbol.match(/^([A-Z0-9]+)-USD\.CC$/);
     return m ? `${m[1]}USDT` : null;
   }
 }
