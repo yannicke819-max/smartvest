@@ -2514,9 +2514,12 @@ export class TopGainersScannerService implements OnModuleInit {
         if (matrixTp != null) effectiveTpPct = matrixTp * 100;
         if (matrixSl != null) baseSlPct = Math.abs(matrixSl) * 100;
         if (matrixTp != null || matrixSl != null) {
+          // Tag structuré greppable [tpsl-matrix-applied] : permet de monitorer
+          // l'override sans attendre une session asia (cf. analyse logs 21/05 —
+          // matrice chargée mais application non observable côté logs).
           this.logger.log(
-            `[top-gainers] ${cand.symbol} (${cand.assetClass}) matrice TP/SL: ` +
-            `tp=${effectiveTpPct.toFixed(2)}% sl=${baseSlPct.toFixed(2)}% ` +
+            `[tpsl-matrix-applied] ${cand.symbol} (${cand.assetClass}) ` +
+            `tp=${effectiveTpPct.toFixed(2)}% sl=${baseSlPct.toFixed(2)}% source=matrix ` +
             `(UI defaults tp=${tpPct.toFixed(2)}% sl=${slPct.toFixed(2)}%)`,
           );
         }
