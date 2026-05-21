@@ -287,7 +287,7 @@ export class ShadowExitSimulatorService {
     for (const r of data as ShadowSignalRow[]) {
       try {
         const v = await this.simulateVariant(r);
-        if (v === 'pending' || v === null) continue;
+        if (v === null) continue;
         const update = v === 'skip'
           ? { variant_no_entry: true, variant_params: { ...params, skip_reason: 'no_candles' } }
           : v === 'no_entry'
@@ -323,33 +323,38 @@ export class ShadowExitSimulatorService {
   /**
    * Simule la variante pullback sur un signal. Retourne :
    *   - 'no_entry' : fenêtre écoulée sans pullback (la variante n'aurait pas tradé)
-   *   - 'pending'  : pullback touché mais exit non encore résolu (réessayer)
-   *   - 'skip'     : ticker non-couvert (blacklist/suffixe) ET fenêtre écoulée →
-   *                  candles inatteignables à jamais ; marqueur terminal pour
-   *                  libérer le working set limit(50) (anti-famine).
-   *   - null       : pas assez de données / trop jeune pour conclure (réessayer)
+   *   - 'skip'     : couverture intraday absente sur la fenêtre (blacklist/suffixe/
+   *                  rétention EODHD/session fermée sans historique) → inatteignable
+   *                  à jamais ; marqueur terminal (anti-famine working set).
+   *   - null       : fenêtre de simulation pas encore entièrement écoulée (réessayer
+   *                  plus tard, quand les candles du futur existeront).
    *   - VariantResult : entrée+exit résolus
+   *
+   * IMPORTANT (fix 21/05) : on fetche les VRAIES candles de la période du signal
+   * via un time-window [created_at, created_at + window + hold], et on ne résout
+   * qu'une fois ce laps réellement écoulé. Avant, on fetchait les N dernières
+   * candles (N≈âge du signal → 6 min pour un signal frais) → un TP de 20% ne
+   * pouvait jamais être atteint sur 6 candles → grille = pur artefact.
    */
-  private async simulateVariant(row: ShadowSignalRow): Promise<VariantResult | 'no_entry' | 'pending' | 'skip' | null> {
+  private async simulateVariant(row: ShadowSignalRow): Promise<VariantResult | 'no_entry' | 'skip' | null> {
     const entryTimeMs = new Date(row.created_at).getTime();
-    const ageMin = (Date.now() - entryTimeMs) / 60_000;
-    // Fenêtre pullback + horizon de hold complet.
-    const maxCandles = this.variantWindowMin + 60 * MAX_HOLD_HOURS;
-    const replayCount = Math.min(maxCandles, Math.ceil(ageMin));
-    if (replayCount < 5) return null;
+    // Fenêtre complète à simuler : pullback (variantWindowMin) + horizon de hold.
+    const windowMin = this.variantWindowMin + 60 * MAX_HOLD_HOURS;
+    const simEndMs = entryTimeMs + windowMin * 60_000;
+    // Gate temporel : tant que la fenêtre n'est pas écoulée en temps réel, les
+    // candles du futur n'existent pas → on ne peut pas conclure. Réessai au prochain cron.
+    if (Date.now() < simEndMs) return null;
 
-    const candles = await this.fetchCandles(row, replayCount);
-    if (!candles || candles.length === 0) {
-      // Ticker non-couvert (blacklist Binance / suffixe EODHD absent) : si la
-      // fenêtre est déjà écoulée, les candles ne réapparaîtront jamais. On marque
-      // 'skip' (terminal) pour le sortir du working set limit(50) — sinon ces
-      // signaux non-résolubles saturent le batch et affament les signaux
-      // résolubles (famine observée 21/05, grille bloquée à 0).
-      if (ageMin >= this.variantWindowMin) return 'skip';
-      return null;
+    // Fetch fenêtré sur la période exacte du signal (pas les dernières candles).
+    const candles = await this.fetchCandlesWindow(row, entryTimeMs, simEndMs);
+    if (!candles || candles.length < 2) {
+      // Couverture intraday absente sur cette fenêtre. Comme la fenêtre est
+      // écoulée, elle ne réapparaîtra jamais → 'skip' terminal (libère le
+      // working set limit(50), sinon famine).
+      return 'skip';
     }
 
-    // 1. Cherche le 1er pullback sous entry_price*(1-pullback_pct) dans la fenêtre.
+    // 1. Cherche le 1er pullback sous entry_price*(1-pullback_pct) dans la fenêtre pullback.
     const pullbackTrigger = row.entry_price * (1 - this.variantPullbackPct);
     const windowEnd = Math.min(this.variantWindowMin, candles.length);
     let entryIdx = -1;
@@ -360,12 +365,8 @@ export class ShadowExitSimulatorService {
       }
     }
 
-    if (entryIdx === -1) {
-      // Pas de pullback observé. On ne peut conclure 'no_entry' que si la fenêtre
-      // est entièrement écoulée (sinon il peut encore arriver).
-      if (ageMin >= this.variantWindowMin) return 'no_entry';
-      return null;
-    }
+    // Fenêtre entièrement écoulée sans pullback → la variante n'aurait pas tradé.
+    if (entryIdx === -1) return 'no_entry';
 
     // 2. Entrée à ce close, SL élargi + TP relatifs à l'entrée variante.
     const variantEntry = candles[entryIdx].close;
@@ -393,15 +394,10 @@ export class ShadowExitSimulatorService {
       }
     }
 
+    // Fenêtre écoulée sans exit BLOC4 déclenché → time-stop sur la dernière candle.
     if (exitIdx === -1) {
-      const variantEntryTimeMs = entryTimeMs + (entryIdx + 1) * 60_000;
-      const holdMin = (Date.now() - variantEntryTimeMs) / 60_000;
-      if (holdMin >= MAX_HOLD_HOURS * 60) {
-        exitReason = ExitReason.TIME_LIMIT;
-        exitIdx = candles.length - 1;
-      } else {
-        return 'pending';
-      }
+      exitReason = ExitReason.TIME_LIMIT;
+      exitIdx = candles.length - 1;
     }
 
     const exitPrice = candles[exitIdx].close;
@@ -480,6 +476,34 @@ export class ShadowExitSimulatorService {
     // PR #353 — router dual-call (TD + EODHD) si éligible, sinon EODHD-only.
     const series = await this.intradayRouter.getCandles(eodhdTicker, '1m', count, {
       calledBy: 'shadow_exit_sim',
+    });
+    return series ? series.candles.map((c) => ({ close: c.close })) : null;
+  }
+
+  /**
+   * Fetch fenêtré [fromMs, toMs] — les VRAIES candles de la période du signal,
+   * pas les dernières en date. Indispensable pour évaluer des TP larges (la
+   * fenêtre couvre window + MAX_HOLD_HOURS). EODHD-only côté equities (le router
+   * skip TD sur time-window) ; rétention intraday EODHD = 5 jours.
+   */
+  private async fetchCandlesWindow(
+    row: ShadowSignalRow,
+    fromMs: number,
+    toMs: number,
+  ): Promise<Array<{ close: number }> | null> {
+    if (row.asset_class === 'crypto') {
+      const binanceSymbol = this.toBinanceSymbol(row.symbol);
+      if (!binanceSymbol) return null;
+      const candles = await this.binance.getKlinesRange(binanceSymbol, '1m', fromMs, toMs);
+      return candles ? candles.map((c) => ({ close: c.close })) : null;
+    }
+    const eodhdTicker = ensureEodhdSuffix(row.symbol, row.exchange);
+    if (isLikelyOtcForeignOrdinaryUS(eodhdTicker)) return null;
+    const minutes = Math.ceil((toMs - fromMs) / 60_000);
+    const series = await this.intradayRouter.getCandles(eodhdTicker, '1m', minutes, {
+      calledBy: 'shadow_exit_sim',
+      fromTs: Math.floor(fromMs / 1000),
+      toTs: Math.ceil(toMs / 1000),
     });
     return series ? series.candles.map((c) => ({ close: c.close })) : null;
   }
