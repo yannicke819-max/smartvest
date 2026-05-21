@@ -2313,17 +2313,37 @@ export class TopGainersScannerService implements OnModuleInit {
           recordShadowDecision(cand, 'reject_path_eff', persistence);
           continue;
         }
-        // PR #345 + #360 — Filtres TwelveData (Supertrend US + RSI crypto + Supertrend asia 30m). No-op si
-        // flags OFF ou service non injecté. Fail-open total (null TD = pass).
+        // PR #345 + #360 + #368 — Filtres d'entrée TwelveData (Supertrend US/EU/asia
+        // 30m + RSI crypto). No-op si flags OFF ou service non injecté. Fail-open
+        // total (null TD = pass).
+        //
+        // Mode SHADOW (TWELVEDATA_FILTER_*_SHADOW=true) : le filtre s'évalue et
+        // logue dans qw_decision_log ce qu'il AURAIT bloqué, mais laisse la
+        // position s'ouvrir. Permet de mesurer l'edge du filtre d'entrée (combien
+        // de mauvaises entrées il aurait évité) avant de l'activer en dur — on
+        // croise ensuite les rows qw_decision_log (mode=shadow) avec le P&L réel
+        // des positions ouvertes. Le mode live (_ENABLED) bloque comme avant.
         if (this.twelveData) {
-          const supertrendEnabled =
+          const liveUs =
             (this.config.get<string>('TWELVEDATA_FILTER_US_SUPERTREND_ENABLED') ?? 'false') === 'true';
-          const cryptoRsiEnabled =
+          const liveCrypto =
             (this.config.get<string>('TWELVEDATA_FILTER_CRYPTO_RSI_ENABLED') ?? 'false') === 'true';
-          const asiaSupertrendEnabled =
+          const liveAsia =
             (this.config.get<string>('TWELVEDATA_FILTER_ASIA_SUPERTREND_ENABLED') ?? 'false') === 'true';
-          const euSupertrendEnabled =
+          const liveEu =
             (this.config.get<string>('TWELVEDATA_FILTER_EU_SUPERTREND_ENABLED') ?? 'false') === 'true';
+          const shadowUs =
+            (this.config.get<string>('TWELVEDATA_FILTER_US_SUPERTREND_SHADOW') ?? 'false') === 'true';
+          const shadowCrypto =
+            (this.config.get<string>('TWELVEDATA_FILTER_CRYPTO_RSI_SHADOW') ?? 'false') === 'true';
+          const shadowAsia =
+            (this.config.get<string>('TWELVEDATA_FILTER_ASIA_SUPERTREND_SHADOW') ?? 'false') === 'true';
+          const shadowEu =
+            (this.config.get<string>('TWELVEDATA_FILTER_EU_SUPERTREND_SHADOW') ?? 'false') === 'true';
+          const supertrendEnabled = liveUs || shadowUs;
+          const cryptoRsiEnabled = liveCrypto || shadowCrypto;
+          const asiaSupertrendEnabled = liveAsia || shadowAsia;
+          const euSupertrendEnabled = liveEu || shadowEu;
           if (supertrendEnabled || cryptoRsiEnabled || asiaSupertrendEnabled || euSupertrendEnabled) {
             const tdFilter = await evaluateTwelveDataFilters({
               symbol: cand.symbol,
@@ -2335,27 +2355,35 @@ export class TopGainersScannerService implements OnModuleInit {
               twelveData: this.twelveData,
             });
             if (tdFilter.decision !== 'accept') {
-              this.logger.log(
-                `[top-gainers] ${cand.symbol} TwelveData filter ${tdFilter.decision}: ${tdFilter.reason}`,
-              );
-              const qwId =
-                tdFilter.decision === 'reject_supertrend_down'
-                  ? 'TD_SUPERTREND_US'
-                  : tdFilter.decision === 'reject_supertrend_asia_down'
-                    ? 'TD_SUPERTREND_ASIA'
-                    : tdFilter.decision === 'reject_supertrend_eu_down'
-                      ? 'TD_SUPERTREND_EU'
-                      : 'TD_RSI_CRYPTO';
+              const meta = {
+                reject_supertrend_down: { qwId: 'TD_SUPERTREND_US' as const, live: liveUs },
+                reject_rsi_overbought: { qwId: 'TD_RSI_CRYPTO' as const, live: liveCrypto },
+                reject_supertrend_asia_down: { qwId: 'TD_SUPERTREND_ASIA' as const, live: liveAsia },
+                reject_supertrend_eu_down: { qwId: 'TD_SUPERTREND_EU' as const, live: liveEu },
+              }[tdFilter.decision];
+              const isLive = meta.live;
               this.qwLogger?.log({
-                qwId,
+                qwId: meta.qwId,
                 symbol: cand.symbol,
                 assetClass: cand.assetClass,
                 decision: 'block',
                 reason: tdFilter.reason,
                 wouldHavePassedWithoutFlag: true,
+                details: { mode: isLive ? 'live' : 'shadow' },
               });
-              recordShadowDecision(cand, tdFilter.decision, persistence);
-              continue;
+              if (isLive) {
+                this.logger.log(
+                  `[top-gainers] ${cand.symbol} TwelveData filter ${tdFilter.decision}: ${tdFilter.reason}`,
+                );
+                recordShadowDecision(cand, tdFilter.decision, persistence);
+                continue;
+              }
+              // Mode shadow : on logue (qw_decision_log mode=shadow) mais on
+              // n'empêche PAS l'ouverture — la position s'ouvre, son P&L réel
+              // servira à mesurer l'edge du filtre a posteriori.
+              this.logger.log(
+                `[td-entry-shadow] ${cand.symbol} (${cand.assetClass}) WOULD_BLOCK ${tdFilter.decision}: ${tdFilter.reason} — ouverture live laissée passer (mesure)`,
+              );
             }
           }
         }
