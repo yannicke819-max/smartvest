@@ -83,6 +83,12 @@ const EXIT_GRID: ReadonlyArray<{ tp: number; sl: number }> = [
 const MIN_AGE_MIN_BEFORE_REPLAY = 5;
 const MAX_HOLD_HOURS = 3; // ADR-005 §2.4 time-stop
 
+// Fenêtre récente : ne traiter que les signaux des N derniers jours. Sans ça,
+// le worker (order created_at ASC) reste bloqué sur des milliers de vieux
+// signaux ACCEPT non-résolvables (data intraday expirée, tickers blacklistés)
+// et n'atteint jamais les signaux récents → famine, la grille ne se remplit pas.
+const SHADOW_RECENT_DAYS = Number(process.env.SHADOW_RECENT_DAYS ?? '3');
+
 @Injectable()
 export class ShadowExitSimulatorService {
   private readonly logger = new Logger(ShadowExitSimulatorService.name);
@@ -126,6 +132,7 @@ export class ShadowExitSimulatorService {
   private async runInner(): Promise<void> {
     const minAgeMs = MIN_AGE_MIN_BEFORE_REPLAY * 60_000;
     const cutoff = new Date(Date.now() - minAgeMs).toISOString();
+    const recentFloor = new Date(Date.now() - SHADOW_RECENT_DAYS * 86_400_000).toISOString();
 
     const { data, error } = await this.supabase
       .getClient()
@@ -134,6 +141,7 @@ export class ShadowExitSimulatorService {
       .eq('decision', 'ACCEPT')
       .is('simulated_exit_at', null)
       .not('entry_price', 'is', null)
+      .gte('created_at', recentFloor)
       .lte('created_at', cutoff)
       .order('created_at', { ascending: true })
       .limit(50);
@@ -251,12 +259,14 @@ export class ShadowExitSimulatorService {
    */
   private async runVariantInner(): Promise<void> {
     const cutoff = new Date(Date.now() - MIN_AGE_MIN_BEFORE_REPLAY * 60_000).toISOString();
+    const recentFloor = new Date(Date.now() - SHADOW_RECENT_DAYS * 86_400_000).toISOString();
     const { data, error } = await this.supabase
       .getClient()
       .from('gainers_v1_shadow_signals')
       .select('id, symbol, exchange, asset_class, entry_price, entry_path_eff, tp_price, sl_price, created_at')
       .eq('decision', 'ACCEPT')
       .not('entry_price', 'is', null)
+      .gte('created_at', recentFloor)
       .is('variant_exit_at', null)
       .is('variant_no_entry', null)
       .lte('created_at', cutoff)
