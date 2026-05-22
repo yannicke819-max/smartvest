@@ -1179,6 +1179,30 @@ export class LisaController {
     };
   }
 
+  /**
+   * Diagnostic read-only : invoque getLivePrice et renvoie le prix + la SOURCE.
+   * Sert à vérifier le routing provider d'un symbole (ex: confirmer qu'un ticker
+   * coréen `005930.KO` renvoie `source=twelvedata` et non `fallback_unknown`
+   * AVANT d'activer le trading asiatique). Aucune écriture, aucune action de
+   * trading — simple lecture du chemin de prix live.
+   */
+  @Get('debug/live-price/:symbol')
+  async getDebugLivePrice(
+    @Headers() headers: Record<string, string>,
+    @Param('symbol') symbol: string,
+  ) {
+    extractUserId(headers); // throws si non authentifié
+    const quote = await this.lisa.getLivePrice(symbol);
+    return {
+      symbol: quote.symbol,
+      price: quote.price,
+      source: quote.source,
+      asOf: quote.asOf,
+      // Aide à l'interprétation : true = source non fiable, stops/TP skippés.
+      isFallback: quote.source.startsWith('fallback'),
+    };
+  }
+
   @Get('binance/balance')
   getBinanceBalance(@Headers() headers: Record<string, string>) {
     extractUserId(headers); // throws si non authentifié
