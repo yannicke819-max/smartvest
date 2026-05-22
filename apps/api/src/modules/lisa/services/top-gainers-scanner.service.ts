@@ -2131,15 +2131,28 @@ export class TopGainersScannerService implements OnModuleInit {
     // PR #270 — Post-SL : map symbole → dernier timestamp closed_stop. Distinct du
     // recentCloseByKey générique (tout outcome). Ban additionnel par symbole.
     const recentSlBySymbol = new Map<string, number>();
+    // Anti falling-knife : map symbole → { ts, entryPrice } du dernier closed_stop.
+    // Sert au garde de ré-entrée downtrend (cf. plus bas). Capture le prix d'entrée
+    // du trade stoppé pour comparer au prix du candidat.
+    const recentSlEntryBySymbol = new Map<string, { ms: number; entryPrice: number }>();
+    // Anti falling-knife : fenêtre (min) pendant laquelle on refuse une ré-entrée
+    // sur un titre stoppé tant que son prix n'a pas repris au-dessus de l'entrée
+    // stoppée. Complète le post-SL cooldown (blocage dur court) par un blocage
+    // conditionnel plus long. Range [0, 1440], 0 = désactivé.
+    const reentryGuardMin = Math.max(
+      0,
+      Math.min(1440, Number(this.config.get<string>('GAINERS_REENTRY_GUARD_LOOKBACK_MIN') ?? '240')),
+    );
+    const reentryGuardMs = reentryGuardMin * 60_000;
     try {
-      // Query unique : on prend le max(cooldownMs, postSlCooldownMs) pour chercher
-      // assez loin dans le passé pour couvrir les 2 cooldowns.
-      const lookbackMs = Math.max(cooldownMs, postSlCooldownMin * 60_000);
+      // Query unique : on prend le max des fenêtres (cooldown générique, post-SL,
+      // garde anti falling-knife) pour chercher assez loin dans le passé.
+      const lookbackMs = Math.max(cooldownMs, postSlCooldownMin * 60_000, reentryGuardMs);
       const lookbackSinceIso = new Date(Date.now() - lookbackMs).toISOString();
       const { data: recentClosesRaw } = await this.supabase
         .getClient()
         .from('lisa_positions')
-        .select('symbol, direction, exit_timestamp, status')
+        .select('symbol, direction, exit_timestamp, status, entry_price')
         .eq('portfolio_id', portfolioId)
         .neq('status', 'open')
         .gte('exit_timestamp', lookbackSinceIso);
@@ -2157,6 +2170,12 @@ export class TopGainersScannerService implements OnModuleInit {
           const symKey = String(row.symbol).toUpperCase();
           const prev = recentSlBySymbol.get(symKey) ?? 0;
           if (exitMs > prev) recentSlBySymbol.set(symKey, exitMs);
+          // Anti falling-knife : retient le prix d'entrée du stop le plus récent.
+          const prevEntry = recentSlEntryBySymbol.get(symKey);
+          const entryPrice = Number(row.entry_price);
+          if (Number.isFinite(entryPrice) && (!prevEntry || exitMs > prevEntry.ms)) {
+            recentSlEntryBySymbol.set(symKey, { ms: exitMs, entryPrice });
+          }
         }
       }
     } catch (e) {
@@ -2225,6 +2244,31 @@ export class TopGainersScannerService implements OnModuleInit {
             `[top-gainers] ${cand.symbol} POST_SL_COOLDOWN actif (SL il y a ${elapsedMin} min < ${postSlCooldownMin} min) → skip`,
           );
           recordShadowDecision(cand, 'reject_post_sl_cooldown', undefined);
+          continue;
+        }
+      }
+
+      // Anti falling-knife (whipsaw guard) — au-delà du post-SL cooldown dur,
+      // refuse la ré-entrée sur un titre récemment stoppé TANT QUE son prix n'a
+      // pas repris au-dessus de l'entrée stoppée. Évite de racheter un day-gainer
+      // qui fade en faisant des plus bas (incident LPG 21/05 : stop -1.8% →
+      // ré-entrée 62 min plus tard 0.8% PLUS BAS que la 1re entrée → stop -1.6%).
+      // « Catching a falling knife » / « death by a thousand cuts » : on n'autorise
+      // la ré-entrée que si le momentum a réellement repris (prix > entrée stoppée).
+      if (reentryGuardMs > 0) {
+        const lastSl = recentSlEntryBySymbol.get(cand.symbol.toUpperCase());
+        if (
+          lastSl
+          && Date.now() - lastSl.ms < reentryGuardMs
+          && Number.isFinite(lastSl.entryPrice)
+          && lastSl.entryPrice > 0
+          && cand.close <= lastSl.entryPrice
+        ) {
+          const elapsedMin = Math.floor((Date.now() - lastSl.ms) / 60_000);
+          this.logger.log(
+            `[top-gainers] ${cand.symbol} REENTRY_DOWNTREND_GUARD : prix ${cand.close} <= entrée stoppée ${lastSl.entryPrice} (SL il y a ${elapsedMin} min < ${reentryGuardMin} min) → skip falling-knife`,
+          );
+          recordShadowDecision(cand, 'reject_reentry_downtrend', undefined);
           continue;
         }
       }
