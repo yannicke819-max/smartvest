@@ -197,3 +197,39 @@ export function minutesToExchangeClose(symbol: string, at: Date | string | numbe
   if (localMin < openMin || localMin >= closeMin) return null; // hors session
   return closeMin - localMin;
 }
+
+/**
+ * Minutes écoulées depuis l'ouverture de la session de l'exchange du ticker,
+ * en TZ locale (DST-safe). Miroir de minutesToExchangeClose, pour le gate
+ * « opening buffer » (skip les N premières minutes après l'open).
+ *
+ * Le bloc agrégé MARKET_SESSION_HOURS.eu (open 08:00 UTC) est l'horaire d'HIVER ;
+ * en été l'EU ouvre à 07:00 UTC → le buffer bloquait ~1h de trop. Ce helper
+ * lit l'open réel par bourse via IANA TZ.
+ *
+ * @returns minutes ≥ 0 si DANS la session ; `null` si hors session / weekend /
+ *   suffixe inconnu / always-on (crypto/fx).
+ */
+export function minutesSinceExchangeOpen(symbol: string, at: Date | string | number): number | null {
+  if (!symbol) return null;
+  const suffix = extractSuffix(symbol);
+  if (suffix === null) return null;
+  if (ALWAYS_ON_SUFFIXES.has(suffix)) return null;
+  const session: ExchangeSession | undefined = EXCHANGE_SESSIONS[suffix];
+  if (!session) return null;
+
+  let date: Date;
+  if (at instanceof Date) date = at;
+  else if (typeof at === 'number') date = new Date(at < 1e10 ? at * 1000 : at);
+  else date = new Date(at);
+  if (Number.isNaN(date.getTime())) return null;
+
+  const weekday = getLocalWeekday(date, session.tz);
+  if (weekday === 0 || weekday === 6) return null;
+
+  const localMin = toMinutes(getLocalHourMinute(date, session.tz));
+  const openMin = toMinutes(parseTimeString(session.open));
+  const closeMin = toMinutes(parseTimeString(session.close));
+  if (localMin < openMin || localMin >= closeMin) return null; // hors session
+  return localMin - openMin;
+}

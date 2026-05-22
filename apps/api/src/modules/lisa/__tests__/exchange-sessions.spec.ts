@@ -15,6 +15,7 @@ import {
   isInExchangeSession,
   extractSuffix,
   minutesToExchangeClose,
+  minutesSinceExchangeOpen,
 } from '../services/exchange-sessions.helper';
 
 describe('extractSuffix', () => {
@@ -548,5 +549,46 @@ describe('minutesToExchangeClose — force-close per-exchange', () => {
 
   it('suffixe inconnu → null', () => {
     expect(minutesToExchangeClose('XXX.ZZZ', '2026-05-22T06:00:00Z')).toBeNull();
+  });
+});
+
+describe('minutesSinceExchangeOpen — opening buffer (DST-safe)', () => {
+  // 2026-05-22 = été (CEST/BST). EU ouvre 07:00 UTC, pas 08:00 (bug agrégé hiver).
+  it('Paris (.PA) été : 09:06 UTC = 11:06 CEST, open 09:00 → 126 min', () => {
+    expect(minutesSinceExchangeOpen('MC.PA', '2026-05-22T09:06:00Z')).toBe(126);
+  });
+
+  it('LSE (.LSE) été : 09:06 UTC = 10:06 BST, open 08:00 → 126 min', () => {
+    expect(minutesSinceExchangeOpen('HSBA.LSE', '2026-05-22T09:06:00Z')).toBe(126);
+  });
+
+  it('Paris été à 07:30 UTC = 09:30 CEST → 30 min (buffer 90 bloquerait, vrai open 07:00)', () => {
+    expect(minutesSinceExchangeOpen('MC.PA', '2026-05-22T07:30:00Z')).toBe(30);
+  });
+
+  it('Corée (.KO) : 06:00 UTC = 15:00 KST, open 09:00 → 360 min', () => {
+    expect(minutesSinceExchangeOpen('005930.KO', '2026-05-22T06:00:00Z')).toBe(360);
+  });
+
+  it('avant open → null', () => {
+    // 06:30 UTC = 08:30 CEST, avant open Paris 09:00
+    expect(minutesSinceExchangeOpen('MC.PA', '2026-05-22T06:30:00Z')).toBeNull();
+  });
+
+  it('weekend / crypto / suffixe inconnu → null', () => {
+    expect(minutesSinceExchangeOpen('MC.PA', '2026-05-23T09:00:00Z')).toBeNull(); // samedi
+    expect(minutesSinceExchangeOpen('BTCUSDT', '2026-05-22T09:00:00Z')).toBeNull();
+    expect(minutesSinceExchangeOpen('X.ZZZ', '2026-05-22T09:00:00Z')).toBeNull();
+  });
+});
+
+describe('isInExchangeSession — couverture EU étendue (Milan/Madrid/Amsterdam)', () => {
+  // été : CET/CEST → 09:00 local = 07:00 UTC. Mi-séance 09:06 UTC = 11:06 local → ouvert.
+  it.each(['FCA.MI', 'SAN.MC', 'SAN.BME', 'INGA.AMS'])('%s ouvert mi-séance (09:06 UTC été)', (sym) => {
+    expect(isInExchangeSession(sym, '2026-05-22T09:06:00Z')).toBe(true);
+  });
+
+  it.each(['FCA.MI', 'SAN.MC', 'INGA.AMS'])('%s fermé à 16:00 UTC (= 18:00 CEST, après close 17:30)', (sym) => {
+    expect(isInExchangeSession(sym, '2026-05-22T16:00:00Z')).toBe(false);
   });
 });
