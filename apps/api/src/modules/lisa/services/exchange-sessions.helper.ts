@@ -160,3 +160,40 @@ export function isInExchangeSession(symbol: string, at: Date | string | number):
 
   return localMin >= openMin && localMin < closeMin;
 }
+
+/**
+ * Minutes restantes avant la fermeture de la session de l'exchange du ticker,
+ * en TZ locale (DST-safe). Sert au force-close-before-close PAR BOURSE (vs le
+ * bloc agrégé Asie 00:00-08:00 qui fermait les coréennes à 07:45 au lieu de 06:30).
+ *
+ * @returns
+ *   - `number ≥ 0` : minutes jusqu'à close si l'instant est DANS la session.
+ *   - `null` : pas de suffixe, suffixe inconnu, always-on (crypto/fx/commodity),
+ *     weekend, ou hors session (déjà fermé / pas encore ouvert).
+ *
+ * Le caller distingue « approche de close » (valeur ≤ offset) de « hors session »
+ * (null) selon son besoin.
+ */
+export function minutesToExchangeClose(symbol: string, at: Date | string | number): number | null {
+  if (!symbol) return null;
+  const suffix = extractSuffix(symbol);
+  if (suffix === null) return null;
+  if (ALWAYS_ON_SUFFIXES.has(suffix)) return null; // 24/7 → pas de close
+  const session: ExchangeSession | undefined = EXCHANGE_SESSIONS[suffix];
+  if (!session) return null;
+
+  let date: Date;
+  if (at instanceof Date) date = at;
+  else if (typeof at === 'number') date = new Date(at < 1e10 ? at * 1000 : at);
+  else date = new Date(at);
+  if (Number.isNaN(date.getTime())) return null;
+
+  const weekday = getLocalWeekday(date, session.tz);
+  if (weekday === 0 || weekday === 6) return null;
+
+  const localMin = toMinutes(getLocalHourMinute(date, session.tz));
+  const openMin = toMinutes(parseTimeString(session.open));
+  const closeMin = toMinutes(parseTimeString(session.close));
+  if (localMin < openMin || localMin >= closeMin) return null; // hors session
+  return closeMin - localMin;
+}

@@ -44,6 +44,7 @@ import { EodhdCalendarService } from './eodhd-calendar.service';
 import { MacroVetoService } from './macro-veto.service';
 import { GainersUserShadowService, type ShadowDecision } from './gainers-user-shadow.service';
 import { dollarVolumeUsd, passesLiquidityFloor } from './gainers-liquidity.helper';
+import { isInExchangeSession, minutesToExchangeClose } from './exchange-sessions.helper';
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
 // PR6.3 — Shadow wiring (LisaModule import GainersModule pour résolution DI)
 import { GainersShadowRunService } from '../../gainers-scanner/shadow/shadow-run.service';
@@ -2219,6 +2220,20 @@ export class TopGainersScannerService implements OnModuleInit {
       const baseSym = cand.symbol.replace(/USDT$|USDC$/, '').toUpperCase();
       if (openSymbols.has(cand.symbol.toUpperCase()) || openSymbols.has(baseSym)) continue;
 
+      // Gate session par-bourse (DST-safe) — n'ouvre JAMAIS sur un marché fermé.
+      // Le bloc agrégé Asie 00:00-08:00 traitait la Corée (close réel 06:30 UTC)
+      // comme ouverte jusqu'à 08:00 → ouvertures post-cloche sur prix figé,
+      // ingérables (incident 067310.KQ ouverte à 06:37, Corée fermée à 06:30).
+      // Crypto exempt (24/7, pas de suffixe exchange).
+      const candIsCryptoSession = cand.assetClass === 'crypto_major' || cand.assetClass === 'crypto_alt';
+      if (sessionFilterEnabled && !candIsCryptoSession && !isInExchangeSession(cand.symbol, nowUtc)) {
+        this.logger.log(
+          `[top-gainers] ${cand.symbol} marché fermé (session par-bourse) → skip open (pas d'ouverture sur prix figé)`,
+        );
+        recordShadowDecision(cand, 'reject_market_closed', undefined);
+        continue;
+      }
+
       // P19x.3 — Cooldown re-entry : refuse open si même symbol+side fermé < 30 min
       // Le scanner gainers ouvre toujours en 'long' (ligne ~870 expression).
       // Si tu ajoutes des shorts plus tard, garde la même logique par direction.
@@ -2996,7 +3011,19 @@ export class TopGainersScannerService implements OnModuleInit {
       const assetClass = String(pos.asset_class ?? '');
       const cls = sessionClassFor(assetClass);
       if (cls === null) continue; // crypto / fx / commodity → skip
-      if (!isApproachingClose(cls, offsetMin, now)) continue;
+
+      // Asie : fermeture PAR BOURSE (Corée 06:30, Japon 06:00, Chine 07:00, HK 08:00)
+      // au lieu du bloc agrégé 08:00 qui retardait les coréennes à 07:45. Le
+      // per-exchange (DST-safe) déclenche T-offset avant la VRAIE cloche ; le
+      // bloc agrégé reste en backstop si le suffixe n'est pas mappé.
+      if (cls === 'asia') {
+        const mEx = minutesToExchangeClose(String(pos.symbol), now);
+        const approachingPerExchange = mEx !== null && mEx <= offsetMin;
+        const approachingAggregate = isApproachingClose(cls, offsetMin, now);
+        if (!approachingPerExchange && !approachingAggregate) continue;
+      } else if (!isApproachingClose(cls, offsetMin, now)) {
+        continue;
+      }
 
       const quote = await this.lisa.getLivePrice(String(pos.symbol)).catch(() => null);
       if (!quote || !quote.price) {
@@ -3016,8 +3043,9 @@ export class TopGainersScannerService implements OnModuleInit {
       const livePrice = parseFloat(quote.price);
       if (!Number.isFinite(livePrice) || livePrice <= 0) continue;
 
-      const minutesToClose = MARKET_SESSION_HOURS[cls].closeUtcMin
-        - (now.getUTCHours() * 60 + now.getUTCMinutes());
+      const mExClose = cls === 'asia' ? minutesToExchangeClose(String(pos.symbol), now) : null;
+      const minutesToClose = mExClose ?? (MARKET_SESSION_HOURS[cls].closeUtcMin
+        - (now.getUTCHours() * 60 + now.getUTCMinutes()));
       const entry = parseFloat(String(pos.entry_price));
       const pnlPct = Number.isFinite(entry) && entry > 0
         ? ((livePrice - entry) / entry) * 100
