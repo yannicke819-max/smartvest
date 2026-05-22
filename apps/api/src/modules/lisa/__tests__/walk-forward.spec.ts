@@ -166,3 +166,62 @@ describe('walkForward', () => {
     expect(outSorted.hit_at_min).toBe(30);
   });
 });
+
+describe('walkForward — variante trailing-TP (let winners run, MESURE)', () => {
+  const SLIP = 0.003; // 30bps round-trip
+  const ENTRY = 100;
+  const T0 = 1700000000;
+  const trailGrid: SimGrid = {
+    key: 'trail_gb15_60m', tpPct: 0.02, slPct: 0.009, windowMin: 60,
+    direction: 'long', givebackPct: 0.015,
+  };
+
+  it('laisse courir au-delà du TP fixe et sort sur repli 1.5% depuis le pic', () => {
+    // active à +2% (c1 high 103), pic monte à 105 (c2), repli sur c3 → sortie à 105×0.985=103.425
+    const candles = [
+      candle(T0 + 60, 100, 103, 100, 102),   // active (peak→103)
+      candle(T0 + 120, 102, 105, 104, 104.5), // peak→105
+      candle(T0 + 180, 104.5, 104.5, 103, 103.2), // low 103 <= 105×0.985=103.425 → exit
+    ];
+    const r = walkForward(ENTRY, candles, T0, trailGrid);
+    expect(r.outcome).toBe('TP_HIT');
+    expect(r.exit_price).toBeCloseTo(103.425, 3);
+    expect(r.pnl_pct).toBeCloseTo((103.425 - 100) / 100 - SLIP, 4); // ≈ +3.125%
+  });
+
+  it('bat le TP fixe sur le même chemin haussier (baseline sort à +2%, trailing à +3.1%)', () => {
+    const candles = [
+      candle(T0 + 60, 100, 103, 100, 102),
+      candle(T0 + 120, 102, 105, 104, 104.5),
+      candle(T0 + 180, 104.5, 104.5, 103, 103.2),
+    ];
+    const fixed = walkForward(ENTRY, candles, T0, baselineGrid60); // TP 2%
+    const trail = walkForward(ENTRY, candles, T0, trailGrid);
+    expect(fixed.pnl_pct).toBeCloseTo(0.02 - SLIP, 4);     // +1.7%
+    expect((trail.pnl_pct as number)).toBeGreaterThan(fixed.pnl_pct as number);
+  });
+
+  it('plancher SL respecté (repli profond) → SL_HIT à -slPct', () => {
+    const candles = [candle(T0 + 60, 100, 100.5, 99, 99.2)]; // low 99 <= 100×0.991=99.1
+    const r = walkForward(ENTRY, candles, T0, trailGrid);
+    expect(r.outcome).toBe('SL_HIT');
+    expect(r.pnl_pct).toBeCloseTo(-0.009 - SLIP, 4); // -1.2%
+  });
+
+  it('pas de look-ahead : bougie spike-puis-crash → SL_HIT (pas de gain trailing fantôme)', () => {
+    // c1 high 106 (activerait) MAIS low 98 < SL 99.1 → SL_HIT prioritaire, activation n a pas lieu
+    const candles = [candle(T0 + 60, 100, 106, 98, 99)];
+    const r = walkForward(ENTRY, candles, T0, trailGrid);
+    expect(r.outcome).toBe('SL_HIT');
+  });
+
+  it('jamais activé (reste sous +2%) → TIME_LIMIT sur close', () => {
+    const candles = [
+      candle(T0 + 60, 100, 101, 99.5, 100.5),
+      candle(T0 + 120, 100.5, 101.2, 100, 100.8),
+    ];
+    const r = walkForward(ENTRY, candles, T0, trailGrid);
+    expect(r.outcome).toBe('TIME_LIMIT');
+    expect(r.pnl_pct).toBeCloseTo((100.8 - 100) / 100 - SLIP, 4);
+  });
+});
