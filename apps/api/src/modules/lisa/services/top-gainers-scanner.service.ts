@@ -200,6 +200,29 @@ export const GAINERS_FIXED_BASKET: FixedBasketEntry[] = [
 ];
 
 /**
+ * Proxies leveraged or/énergie — env-gated `GAINERS_LEVERAGED_PROXIES_ENABLED`
+ * (default OFF). Mesure 22/05 : le panier non-leveraged (GLD/XLE/GDX…) n'a
+ * généré 0 signal en 48h car ces ETF larges ne crossent jamais le seuil 1-min
+ * (+3% large-cap) même quand le spot or/pétrole "s'envole" sur la séance — un
+ * ETF agrège trop de sous-jacents pour faire un pop 1-min. Les ETF ×2/×3 (NUGT,
+ * JNUG ×2 or ; ERX, GUSH ×2 énergie) amplifient le mouvement et FONT des pops
+ * 1-min de 3%+ → ils passent dans le pipeline existant SANS toucher aux seuils.
+ *
+ * Mêmes gates que le reste (changePct, mcap, liquidité, persistence, path,
+ * plafond A) — aucun bypass. Le plafond `GAINERS_MAX_CHANGE_PCT_LONG` bloquera
+ * un ×2 qui pop >10% (correct : risque de retournement violent amplifié). Le
+ * decay overnight des leveraged ETF n'est pas un souci ici : le scanner est
+ * intraday et force-close avant la cloche US.
+ */
+export const GAINERS_LEVERAGED_PROXIES: FixedBasketEntry[] = [
+  { symbol: 'NUGT.US', approxMarketCapUsd: 700_000_000,   approxAvgVol50d: 5_000_000 },  // ×2 miniers or (Direxion)
+  { symbol: 'JNUG.US', approxMarketCapUsd: 400_000_000,   approxAvgVol50d: 8_000_000 },  // ×2 juniors or (Direxion)
+  { symbol: 'ERX.US',  approxMarketCapUsd: 400_000_000,   approxAvgVol50d: 2_000_000 },  // ×2 énergie (Direxion)
+  { symbol: 'GUSH.US', approxMarketCapUsd: 300_000_000,   approxAvgVol50d: 4_000_000 },  // ×2 E&P pétrole (Direxion)
+  { symbol: 'BOIL.US', approxMarketCapUsd: 600_000_000,   approxAvgVol50d: 6_000_000 },  // ×2 gaz naturel (ProShares)
+];
+
+/**
  * PR #266 — Horaires session UTC (approximatifs, ne tient pas compte du DST
  * change exact). Utilisés pour :
  *   - Filtrage automatique scan : skip un asset class quand bourse fermée.
@@ -1611,10 +1634,12 @@ export class TopGainersScannerService implements OnModuleInit {
    */
   private async fetchFixedBasket(apiKey: string): Promise<TopGainerCandidate[]> {
     const enabled = (this.config.get<string>('GAINERS_FIXED_BASKET_ENABLED') ?? 'true').toLowerCase() !== 'false';
-    if (!enabled || GAINERS_FIXED_BASKET.length === 0) return [];
+    const leveragedOn = (this.config.get<string>('GAINERS_LEVERAGED_PROXIES_ENABLED') ?? 'false').toLowerCase() === 'true';
+    const basket = leveragedOn ? [...GAINERS_FIXED_BASKET, ...GAINERS_LEVERAGED_PROXIES] : GAINERS_FIXED_BASKET;
+    if (!enabled || basket.length === 0) return [];
 
-    const capBySymbol = new Map(GAINERS_FIXED_BASKET.map((e) => [e.symbol.toUpperCase(), e]));
-    const symbols = GAINERS_FIXED_BASKET.map((e) => e.symbol);
+    const capBySymbol = new Map(basket.map((e) => [e.symbol.toUpperCase(), e]));
+    const symbols = basket.map((e) => e.symbol);
     // Batch real-time : premier symbole dans le path, le reste dans `s=`.
     const [first, ...rest] = symbols;
     const sParam = rest.length > 0 ? `&s=${encodeURIComponent(rest.join(','))}` : '';

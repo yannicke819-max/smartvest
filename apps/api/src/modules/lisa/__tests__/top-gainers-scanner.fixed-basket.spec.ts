@@ -8,7 +8,7 @@
  */
 
 import { Logger } from '@nestjs/common';
-import { TopGainersScannerService, GAINERS_FIXED_BASKET } from '../services/top-gainers-scanner.service';
+import { TopGainersScannerService, GAINERS_FIXED_BASKET, GAINERS_LEVERAGED_PROXIES } from '../services/top-gainers-scanner.service';
 
 const mockSupabase = { getClient: jest.fn() } as any;
 const mockLisa = {} as any;
@@ -117,5 +117,37 @@ describe('fetchFixedBasket — gold/energy proxies', () => {
     } as unknown as Response);
     const svc = makeService();
     await expect((svc as any).fetchFixedBasket('test-key')).resolves.toEqual([]);
+  });
+
+  it('does NOT include leveraged proxies by default (env OFF)', async () => {
+    const svc = makeService();
+    await (svc as any).fetchFixedBasket('test-key');
+    const decoded = decodeURIComponent(capturedUrl!);
+    expect(decoded).not.toContain('NUGT.US');
+    expect(decoded).not.toContain('GUSH.US');
+  });
+
+  it('includes leveraged proxies when GAINERS_LEVERAGED_PROXIES_ENABLED=true', async () => {
+    const combined = [...GAINERS_FIXED_BASKET, ...GAINERS_LEVERAGED_PROXIES];
+    global.fetch = jest.fn().mockImplementation(async (url: string) => {
+      capturedUrl = url;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => combined.map((e, i) => ({
+          code: e.symbol, close: 100 + i, high: 102 + i, change_p: 4.5, volume: 5_000_000,
+        })),
+        text: async () => '',
+      } as unknown as Response;
+    });
+    const svc = makeService((key: string) =>
+      key === 'GAINERS_LEVERAGED_PROXIES_ENABLED' ? 'true' : undefined,
+    );
+    const candidates = await (svc as any).fetchFixedBasket('test-key');
+    expect(candidates).toHaveLength(combined.length);
+    const decoded = decodeURIComponent(capturedUrl!);
+    expect(decoded).toContain('NUGT.US');
+    expect(decoded).toContain('GUSH.US');
+    expect(candidates.find((c: any) => c.symbol === 'NUGT.US')).toBeDefined();
   });
 });

@@ -883,6 +883,15 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
       expect(td.quoteCalls).toBe(0);
       expect(await router.getLiveQuote('005930.KO')).toEqual({ price: 1500, source: 'twelvedata' });
     });
+
+    it('EU couvert par défaut (.PA/.LSE) : intraday EODHD différé ~15h → TD-first', async () => {
+      // mesure 22/05 : divergence prix EU réelle 1.76% + bougies EODHD stale ~15-24h.
+      const { router: r1, td: td1 } = makeRouter({}, { price: 72.2, changePct: 1, timestamp: 1 });
+      expect(await r1.getLiveQuote('SESG.PA')).toEqual({ price: 72.2, source: 'twelvedata' });
+      expect(td1.quoteCalls).toBe(1);
+      const { router: r2 } = makeRouter({}, { price: 30.9, changePct: 1, timestamp: 1 });
+      expect(await r2.getLiveQuote('IES.LSE')).toEqual({ price: 30.9, source: 'twelvedata' });
+    });
   });
 });
 
