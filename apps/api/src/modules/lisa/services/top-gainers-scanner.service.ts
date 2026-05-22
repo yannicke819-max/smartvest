@@ -2313,6 +2313,21 @@ export class TopGainersScannerService implements OnModuleInit {
       if (!isCryptoLiq) {
         const minDollarVol = Number(this.config.get<string>('GAINERS_MIN_DOLLAR_VOLUME_USD') ?? '1000000');
         const dollarVol = dollarVolumeUsd(cand.close, cand.avgVol50d, cand.volume);
+        // Fail-closed (MESURE 22/05) : `passesLiquidityFloor` fail-OPEN quand
+        // dollarVol<=0 (volume indispo) → un filtre de risque qui passe quand il
+        // ne peut PAS mesurer le risque. Or l'investigation divergence TD/EODHD
+        // montre que ces noms non-mesurables sont précisément les small-caps EU
+        // illiquides à divergence ±5% (close 5m non fiable → stops bruités) et le
+        // gros du bucket de pertes. Avec GAINERS_LIQUIDITY_FAIL_CLOSED=true, un
+        // equity à liquidité non-mesurable est REJETÉ. Default false (measure-first).
+        const failClosed = (this.config.get<string>('GAINERS_LIQUIDITY_FAIL_CLOSED') ?? 'false').toLowerCase() === 'true';
+        if (failClosed && minDollarVol > 0 && dollarVol <= 0) {
+          this.logger.log(
+            `[top-gainers] ${cand.symbol} liquidité non-mesurable (volume indispo) → skip (fail-closed)`,
+          );
+          recordShadowDecision(cand, 'reject_liquidity', undefined);
+          continue;
+        }
         if (!passesLiquidityFloor(dollarVol, minDollarVol)) {
           this.logger.log(
             `[top-gainers] ${cand.symbol} liquidité $${(dollarVol / 1e6).toFixed(2)}M < min $${(minDollarVol / 1e6).toFixed(2)}M → skip (penny-stock illiquide)`,
