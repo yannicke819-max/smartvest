@@ -80,6 +80,13 @@ export interface SimGrid {
    * Field optionnel pour préserver toutes les grilles LONG existantes sans modification.
    */
   direction?: 'long' | 'short';
+  /**
+   * Trailing take-profit (MESURE, opt-in par grille). Si défini (long only) :
+   * la grille active le trailing à +tpPct puis sort sur un repli de `givebackPct`
+   * depuis le pic, au lieu de fermer sec au TP. `slPct` reste le plancher dur.
+   * Permet de mesurer en shadow si le « let winners run » bat le TP fixe.
+   */
+  givebackPct?: number;
 }
 
 /**
@@ -106,6 +113,10 @@ export function getGridsForAssetClass(assetClass: string): SimGrid[] {
     { key: 'baseline_60m', tpPct: 0.020, slPct: 0.009, windowMin: 60, direction: 'long' },
     { key: 'alt15_30m',    tpPct: 0.015, slPct: 0.006, windowMin: 30, direction: 'long' },
     { key: 'alt15_60m',    tpPct: 0.015, slPct: 0.006, windowMin: 60, direction: 'long' },
+    // Trailing-TP (MESURE) — mêmes activation (+2.0%) et plancher SL (0.9%) que
+    // baseline_60m → comparaison apples-to-apples : ferme-t-on mieux en laissant
+    // courir (sortie sur repli 1.5% depuis le pic) qu'au TP fixe ?
+    { key: 'trail_gb15_60m', tpPct: 0.020, slPct: 0.009, windowMin: 60, direction: 'long', givebackPct: 0.015 },
   ];
 
   if (assetClass !== 'us_equity_small_mid') {
@@ -126,18 +137,6 @@ export function getGridsForAssetClass(assetClass: string): SimGrid[] {
     { key: 'short_calibrated_60m', tpPct: 0.008, slPct: 0.004, windowMin: 60, direction: 'short' },
   ];
 }
-
-/**
- * @deprecated SHORT-SHADOW (11/05/2026) — Préservé pour rétro-compat lecture.
- * Utiliser getGridsForAssetClass(assetClass) pour le nouveau comportement
- * conditionnel par asset class.
- */
-const SIM_GRIDS: SimGrid[] = [
-  { key: 'baseline_30m', tpPct: 0.020, slPct: 0.009, windowMin: 30 },
-  { key: 'baseline_60m', tpPct: 0.020, slPct: 0.009, windowMin: 60 },
-  { key: 'alt15_30m',    tpPct: 0.015, slPct: 0.006, windowMin: 30 },
-  { key: 'alt15_60m',    tpPct: 0.015, slPct: 0.006, windowMin: 60 },
-];
 
 // PR #288 — TZ offset par exchange Asia/Pacific.
 //
@@ -466,6 +465,61 @@ export function walkForward(
   // SHORT : TP en-dessous entry, SL au-dessus, profit si prix descend
   const direction = grid.direction ?? 'long';
   const isShort = direction === 'short';
+
+  // Trailing-TP (long only) : active à +tpPct, puis sort sur repli de
+  // givebackPct depuis le pic. slPct reste le plancher dur. Conservateur :
+  // le pic n'inclut PAS la bougie courante au moment du check (activation et
+  // mise à jour du pic prennent effet à la bougie suivante) → aucun look-ahead
+  // intra-bougie qui flatterait artificiellement la variante (important : on
+  // MESURE, on ne veut pas biaiser en faveur du trailing).
+  if (grid.givebackPct != null && !isShort) {
+    const slPriceT = entry * (1 - grid.slPct);
+    const tpActivation = entry * (1 + grid.tpPct);
+    const cutoffTsT = startTs + grid.windowMin * 60;
+    let peak = entry;
+    let activated = false;
+    let lastT: CandleLike | null = null;
+    for (const c of candles) {
+      if (c.timestamp > cutoffTsT) break;
+      lastT = c;
+      // 1. Plancher SL (tie-break SL-first, cohérent avec la version fixe)
+      if (c.low <= slPriceT) {
+        return {
+          outcome: 'SL_HIT',
+          exit_price: slPriceT,
+          exit_at: new Date(c.timestamp * 1000).toISOString(),
+          pnl_pct: -grid.slPct - SLIPPAGE_TOTAL,
+          hit_at_min: Math.round((c.timestamp - startTs) / 60),
+        };
+      }
+      // 2. Si activé : repli depuis le pic (pic = bougies PRÉCÉDENTES)
+      if (activated) {
+        const trailStop = peak * (1 - grid.givebackPct);
+        if (c.low <= trailStop) {
+          return {
+            outcome: 'TP_HIT',
+            exit_price: trailStop,
+            exit_at: new Date(c.timestamp * 1000).toISOString(),
+            pnl_pct: (trailStop - entry) / entry - SLIPPAGE_TOTAL,
+            hit_at_min: Math.round((c.timestamp - startTs) / 60),
+          };
+        }
+      }
+      // 3. MAJ pic + activation (effet à la bougie suivante)
+      if (c.high > peak) peak = c.high;
+      if (!activated && peak >= tpActivation) activated = true;
+    }
+    if (lastT) {
+      return {
+        outcome: 'TIME_LIMIT',
+        exit_price: lastT.close,
+        exit_at: new Date(lastT.timestamp * 1000).toISOString(),
+        pnl_pct: (lastT.close - entry) / entry - SLIPPAGE_TOTAL,
+        hit_at_min: Math.round((lastT.timestamp - startTs) / 60),
+      };
+    }
+    return { outcome: 'NO_DATA', exit_price: null, exit_at: null, pnl_pct: null, hit_at_min: null };
+  }
 
   const tpPrice = isShort ? entry * (1 - grid.tpPct) : entry * (1 + grid.tpPct);
   const slPrice = isShort ? entry * (1 + grid.slPct) : entry * (1 - grid.slPct);
@@ -1240,15 +1294,19 @@ export class GainersUserShadowService {
       const sim = row.sim_results as Record<string, SimOutcome> | null;
       if (!sim || sim.error) continue;
       const notional = row.notional_usd != null ? Number(row.notional_usd) : 1000;
-      for (const grid of SIM_GRIDS) {
-        const o = sim[grid.key];
-        if (!o || o.pnl_pct == null) continue;
+      // Itère dynamiquement TOUTES les variantes présentes dans sim_results
+      // (baseline/alt15 + short + trailing), pas seulement les 4 SIM_GRIDS
+      // historiques. Les clés non-outcome (price_snapshots) sont skippées par
+      // le guard pnl_pct ci-dessous.
+      for (const gridKey of Object.keys(sim)) {
+        const o = sim[gridKey] as SimOutcome | undefined;
+        if (!o || typeof o !== 'object' || o.pnl_pct == null) continue;
         // PR #289 — Exclure OFF_SESSION du calcul regret stats. Ces rows
         // n'ont pas pu être simulées car capturées hors session de trading
         // (ex: scanner détecte Asia ticker en US session). Pas un échec
         // de gate, juste un constraint structurel — ne pollue pas les KPI.
         if (o.outcome === 'OFF_SESSION') continue;
-        const key = `${row.decision}|${grid.key}`;
+        const key = `${row.decision}|${gridKey}`;
         if (!buckets.has(key)) buckets.set(key, { pnls: [], notional });
         buckets.get(key)!.pnls.push(Number(o.pnl_pct));
       }

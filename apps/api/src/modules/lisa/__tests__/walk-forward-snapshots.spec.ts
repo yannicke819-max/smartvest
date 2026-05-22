@@ -405,29 +405,39 @@ describe('walkForward — direction SHORT (SHORT-SHADOW)', () => {
 // F. SHORT-SHADOW — getGridsForAssetClass (scope strict small/mid US)
 // ============================================================
 describe('getGridsForAssetClass — scope strict SHORT (SHORT-SHADOW)', () => {
-  it('us_equity_small_mid retourne 10 grids (4 LONG + 6 SHORT)', () => {
+  it('us_equity_small_mid retourne 11 grids (5 LONG dont trailing + 6 SHORT)', () => {
     const grids = getGridsForAssetClass('us_equity_small_mid');
-    expect(grids).toHaveLength(10);
+    expect(grids).toHaveLength(11);
     const keys = grids.map((g) => g.key);
     expect(keys).toEqual([
-      'baseline_30m', 'baseline_60m', 'alt15_30m', 'alt15_60m',
+      'baseline_30m', 'baseline_60m', 'alt15_30m', 'alt15_60m', 'trail_gb15_60m',
       'short_baseline_30m', 'short_baseline_60m',
       'short_alt15_30m', 'short_alt15_60m',
       'short_calibrated_30m', 'short_calibrated_60m',
     ]);
   });
 
-  it('us_equity_large retourne 4 grids LONG seulement', () => {
+  it('us_equity_large retourne 5 grids LONG (dont trailing) seulement', () => {
     const grids = getGridsForAssetClass('us_equity_large');
-    expect(grids).toHaveLength(4);
+    expect(grids).toHaveLength(5);
     expect(grids.every((g) => g.direction !== 'short')).toBe(true);
   });
 
-  it('eu_equity, asia_equity, crypto_major retournent 4 grids LONG (scope strict)', () => {
+  it('eu_equity, asia_equity, crypto_major retournent 5 grids LONG (scope strict)', () => {
     for (const cls of ['eu_equity', 'asia_equity', 'crypto_major', 'crypto_alt']) {
       const grids = getGridsForAssetClass(cls);
-      expect(grids).toHaveLength(4);
+      expect(grids).toHaveLength(5);
       expect(grids.every((g) => g.direction !== 'short')).toBe(true);
+    }
+  });
+
+  it('grille trailing présente sur toutes les classes (gb 1.5%, activation +2%, plancher 0.9%)', () => {
+    for (const cls of ['us_equity_small_mid', 'us_equity_large', 'eu_equity', 'asia_equity', 'crypto_major']) {
+      const trail = getGridsForAssetClass(cls).find((g) => g.key === 'trail_gb15_60m');
+      expect(trail).toBeDefined();
+      expect(trail!.givebackPct).toBeCloseTo(0.015, 4);
+      expect(trail!.tpPct).toBeCloseTo(0.02, 4);
+      expect(trail!.slPct).toBeCloseTo(0.009, 4);
     }
   });
 
