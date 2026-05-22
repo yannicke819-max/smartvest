@@ -1028,6 +1028,32 @@ export class GainersUserShadowService {
       },
     ];
 
+    // Backfill asie via TwelveData (MESURE 22/05) — EODHD n'a pas l'intraday
+    // coréen/chinois (→ NO_DATA : 92% des sims asie inexploitables), TD l'a. On
+    // tente TD EN TÊTE de cascade pour les asia equities, en contournant la
+    // blacklist EODHD-driven via getCandlesTdDirect (méthode dédiée, n'affecte pas
+    // le routeur live). Recent-N + filtre client sur [fromTs, toTs] (le sim tourne
+    // ~65 min après capture → les bougies récentes couvrent la fenêtre).
+    // Kill-switch : SHADOW_ASIA_TD_BACKFILL=false. Scope shadow uniquement.
+    const asiaTdEnabled = (process.env.SHADOW_ASIA_TD_BACKFILL ?? 'true').toLowerCase() !== 'false';
+    if (isAsia && router && asiaTdEnabled) {
+      stepDefs.unshift({
+        endpoint: 'td_recent_5m_asia',
+        interval: '5m',
+        rangeMode: false,
+        fn: async () => {
+          const td = await router.getCandlesTdDirect(eodhdTicker, '5m', 60, 'shadow_walkforward_td').catch(() => null);
+          if (!td || td.candles.length === 0) return null;
+          const filtered = td.candles.filter((c) => {
+            const cts = c.timestamp > 1e12 ? Math.floor(c.timestamp / 1000) : c.timestamp;
+            return cts >= fromTs && cts <= toTs;
+          });
+          if (filtered.length === 0) return null;
+          return { candles: filtered, rawCount: td.candles.length, requestedSymbol: eodhdTicker };
+        },
+      });
+    }
+
     // PR #296 Partie B — Yahoo intraday fallback en step5 quand `yahoo` injecté.
     //
     // Justification empirique (curl 09/05/2026 06:26 UTC samedi) :
