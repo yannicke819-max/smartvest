@@ -2767,6 +2767,19 @@ export class TopGainersScannerService implements OnModuleInit {
         }
       }
 
+      // Plafond dur sur la largeur du SL (GAINERS_SL_ATR_MAX_PCT, default 0 = off).
+      // L'élargissement ATR ci-dessus est sinon NON borné → un titre très volatil
+      // peut risquer -3%+ sur une seule position (cas IES.LSE 22/05 : ATR a élargi
+      // le SL eu de -1.80% à -3.34%). Borne le risque queue tout en gardant
+      // l'anti-wick pour les titres modérés. N'affecte pas les SL déjà sous le cap.
+      const atrSlMaxPct = Number(this.config.get<string>('GAINERS_SL_ATR_MAX_PCT') ?? '0');
+      if (atrSlMaxPct > 0 && effectiveSlPct > atrSlMaxPct) {
+        this.logger.log(
+          `[top-gainers] ${cand.symbol} SL capped: ${effectiveSlPct.toFixed(2)}% → ${atrSlMaxPct.toFixed(2)}% (GAINERS_SL_ATR_MAX_PCT)`,
+        );
+        effectiveSlPct = atrSlMaxPct;
+      }
+
       const insertedPosId = await this.openTopGainerPosition(
         userId,
         portfolioId,
