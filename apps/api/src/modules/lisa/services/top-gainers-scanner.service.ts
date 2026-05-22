@@ -2220,6 +2220,20 @@ export class TopGainersScannerService implements OnModuleInit {
       const baseSym = cand.symbol.replace(/USDT$|USDC$/, '').toUpperCase();
       if (openSymbols.has(cand.symbol.toUpperCase()) || openSymbols.has(baseSym)) continue;
 
+      // Plafond changePct LONG — anti chase-the-top (MESURE 22/05, n=469 paired
+      // us_equity_small_mid) : sur les pops sur-étendus (≥10%), le LONG perd
+      // (-0.35/-0.40% mean) alors qu'il est positif sur 5-10% (+0.085%). On
+      // n'ouvre plus de long au-dessus du plafond. GAINERS_MAX_CHANGE_PCT_LONG
+      // (default 0 = off, measure-first). S'applique au gainers (long-only).
+      const maxChangeLong = Number(this.config.get<string>('GAINERS_MAX_CHANGE_PCT_LONG') ?? '0');
+      if (maxChangeLong > 0 && (cand.changePct ?? 0) >= maxChangeLong) {
+        this.logger.log(
+          `[top-gainers] ${cand.symbol} sur-étendu (changePct=${(cand.changePct ?? 0).toFixed(1)}% ≥ ${maxChangeLong}%) → skip long (anti chase-the-top)`,
+        );
+        recordShadowDecision(cand, 'reject_overextended', undefined);
+        continue;
+      }
+
       // Gate session par-bourse (DST-safe) — n'ouvre JAMAIS sur un marché fermé.
       // Le bloc agrégé Asie 00:00-08:00 traitait la Corée (close réel 06:30 UTC)
       // comme ouverte jusqu'à 08:00 → ouvertures post-cloche sur prix figé,
