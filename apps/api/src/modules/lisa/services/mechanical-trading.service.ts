@@ -1988,7 +1988,11 @@ export class MechanicalTradingService {
       // les marchés où EODHD intraday est indispo (Corée/Chine via TwelveData).
       // Opt-in : GAINERS_TRAILING_TP_ENABLED (default off → close TP classique).
       const trailingTpEnabled = (process.env.GAINERS_TRAILING_TP_ENABLED ?? 'false').toLowerCase() === 'true';
-      if (trailingTpEnabled) {
+      // Scope gainers-only : ne pas altérer le TP fixe des positions Lisa swing.
+      // Lookup (caché 60s) effectué uniquement ici → quand le TP est franchi ET
+      // le flag actif, donc rarement.
+      const trailingTpPortfolioId = String((pos as unknown as Record<string, unknown>)['portfolio_id'] ?? '');
+      if (trailingTpEnabled && await this.isGainersStrategy(trailingTpPortfolioId)) {
         const giveback = Math.max(0.2, Math.min(10, Number(process.env.GAINERS_TRAILING_TP_GIVEBACK_PCT ?? '1.5')));
         // Pic = max(MFE persistée, prix courant) — recordMfe ci-dessus a déjà
         // poussé le pic en DB mais l'objet `pos` en mémoire date du début de cycle.
@@ -2043,6 +2047,34 @@ export class MechanicalTradingService {
       }
     } catch { /* fall through to default */ }
     return isHyperActive ? 2.5 : 4;
+  }
+
+  // Cache court (60s) du strategy_mode par portfolio — évite un lookup DB par
+  // position par tick. Utilisé pour scoper le trailing-TP aux portfolios gainers.
+  private gainersStrategyCache = new Map<string, { isGainers: boolean; asOf: number }>();
+
+  /**
+   * true si le portfolio est en mode gainers. Sert à scoper le trailing-TP :
+   * on ne modifie le comportement du TP que pour les positions du scanner
+   * gainers, pas pour d'éventuelles positions Lisa swing (TP fixe voulu là).
+   * Fail-safe : en cas d'échec DB → false (= comportement TP classique).
+   */
+  private async isGainersStrategy(portfolioId: string): Promise<boolean> {
+    if (!portfolioId) return false;
+    const cached = this.gainersStrategyCache.get(portfolioId);
+    if (cached && Date.now() - cached.asOf < 60_000) return cached.isGainers;
+    try {
+      const { data } = await this.supabase.getClient()
+        .from('lisa_session_configs')
+        .select('strategy_mode')
+        .eq('portfolio_id', portfolioId)
+        .maybeSingle();
+      const isGainers = data?.strategy_mode === 'gainers';
+      this.gainersStrategyCache.set(portfolioId, { isGainers, asOf: Date.now() });
+      return isGainers;
+    } catch {
+      return false;
+    }
   }
 
   private async getMinNetProfitGate(portfolioId: string, notional: Decimal): Promise<Decimal> {

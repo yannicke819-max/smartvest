@@ -22,16 +22,18 @@ interface Svc {
   recordMfe: jest.Mock;
   closePosition: jest.Mock;
   checkReactiveSignals: jest.Mock;
+  isGainersStrategy: jest.Mock;
   checkStopTarget: (pos: unknown, isHyperActive?: boolean) => Promise<void>;
 }
 
-function makeSvc(price: string): Svc {
+function makeSvc(price: string, isGainers = true): Svc {
   const svc = Object.create(MechanicalTradingService.prototype) as unknown as Svc;
   svc.lisa = { getLivePrice: async () => ({ price, source: 'twelvedata' }) };
   svc.logger = { warn: jest.fn(), log: jest.fn(), error: jest.fn(), debug: jest.fn() };
   svc.recordMfe = jest.fn(async () => undefined);
   svc.closePosition = jest.fn(async () => undefined);
   svc.checkReactiveSignals = jest.fn(async () => undefined);
+  svc.isGainersStrategy = jest.fn(async () => isGainers);
   return svc;
 }
 
@@ -101,6 +103,15 @@ describe('Trailing take-profit — checkStopTarget', () => {
     await svc.checkStopTarget(makePos({ peak_pre_exit: 108 }));
     expect(svc.closePosition).toHaveBeenCalledTimes(1);
     expect(svc.closePosition.mock.calls[0][2]).toBe('closed_target');
+  });
+
+  it('scope gainers-only : portfolio NON-gainers → close TP classique malgré flag ON', async () => {
+    process.env.GAINERS_TRAILING_TP_ENABLED = 'true';
+    const svc = makeSvc('105', false); // isGainersStrategy → false
+    await svc.checkStopTarget(makePos({ peak_pre_exit: 108 }));
+    expect(svc.closePosition).toHaveBeenCalledTimes(1);
+    expect(svc.closePosition.mock.calls[0][2]).toBe('closed_target');
+    expect(String(svc.closePosition.mock.calls[0][3])).toContain('Take-profit atteint'); // close classique, pas Trailing-TP
   });
 
   it('TP non atteint (prix entre stop et TP) → trailing-TP ne s’active pas', async () => {
