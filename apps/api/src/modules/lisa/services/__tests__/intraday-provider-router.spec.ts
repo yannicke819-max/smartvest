@@ -818,4 +818,70 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
       expect(rows[0].divergence_bps).toBeCloseTo(-27.7, 0);
     });
   });
+
+  // getLiveQuote — source live pour les stops sur marchés non couverts par
+  // EODHD live (Corée/Chine). Indépendant du flag scanner A/B.
+  describe('getLiveQuote — TD-first live price pour stops asie', () => {
+    function makeRouter(env: Record<string, string>, tdQuote: { price: number; changePct: number; timestamp: number } | null) {
+      const eodhd = makeEodhdMock({});
+      const td = makeTdMock({ quote: tdQuote });
+      const router = new IntradayProviderRouter(
+        makeConfig(env),
+        eodhd.service,
+        td.service,
+        makeBlacklistMock(),
+        makeSupabaseMock(),
+      );
+      return { router, td };
+    }
+
+    it('ticker coréen (.KO) → renvoie le prix TD avec source twelvedata', async () => {
+      const { router, td } = makeRouter({}, { price: 70000, changePct: 2.1, timestamp: 1747353600000 });
+      const r = await router.getLiveQuote('005930.KO');
+      expect(r).toEqual({ price: 70000, source: 'twelvedata' });
+      expect(td.lastSymbol).toBe('005930:KRX');
+    });
+
+    it('fonctionne même si le flag scanner A/B est OFF (stops indépendants)', async () => {
+      const { router } = makeRouter({ TWELVEDATA_INTRADAY_SCANNER_ENABLED: 'false' }, { price: 1500, changePct: 1, timestamp: 1 });
+      const r = await router.getLiveQuote('600519.SHG');
+      expect(r).toEqual({ price: 1500, source: 'twelvedata' });
+    });
+
+    it('suffixe hors périmètre (US) → null sans appeler TD', async () => {
+      const { router, td } = makeRouter({}, { price: 180, changePct: 1, timestamp: 1 });
+      const r = await router.getLiveQuote('AAPL.US');
+      expect(r).toBeNull();
+      expect(td.quoteCalls).toBe(0);
+    });
+
+    it('TD échoue (null) → null (caller retombe sur cascade EODHD/fallback)', async () => {
+      const { router } = makeRouter({}, null);
+      const r = await router.getLiveQuote('035720.KQ');
+      expect(r).toBeNull();
+    });
+
+    it('TD renvoie un prix <= 0 → null (jamais de prix non fiable)', async () => {
+      const { router } = makeRouter({}, { price: 0, changePct: 0, timestamp: 1 });
+      const r = await router.getLiveQuote('000001.SHE');
+      expect(r).toBeNull();
+    });
+
+    it('suffixe asie non couvert par TD (.HK/.T/.AU) → null (pas d’add-on TD)', async () => {
+      // Le mapper td-symbol marque HK/T/AU comme UNSUPPORTED_TD_SUFFIXES →
+      // convertToTdSymbol renvoie null → getLiveQuote null (ces marchés
+      // restent sur EODHD, qui les couvre en intraday d’après les logs).
+      const { router, td } = makeRouter({ LIVE_PRICE_TD_SUFFIXES: 'KO,KQ,SHG,SHE,HK' }, { price: 320, changePct: 1, timestamp: 1 });
+      const r = await router.getLiveQuote('0700.HK');
+      expect(r).toBeNull();
+      expect(td.quoteCalls).toBe(0);
+    });
+
+    it('périmètre configurable par restriction (LIVE_PRICE_TD_SUFFIXES=KO) → .SHG hors scope', async () => {
+      const { router, td } = makeRouter({ LIVE_PRICE_TD_SUFFIXES: 'KO' }, { price: 1500, changePct: 1, timestamp: 1 });
+      expect(await router.getLiveQuote('600519.SHG')).toBeNull();
+      expect(td.quoteCalls).toBe(0);
+      expect(await router.getLiveQuote('005930.KO')).toEqual({ price: 1500, source: 'twelvedata' });
+    });
+  });
 });

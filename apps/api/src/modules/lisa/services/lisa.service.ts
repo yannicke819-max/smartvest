@@ -2748,6 +2748,20 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       return { symbol, price: cached.price, asOf: cached.asOf, source: cached.source };
     }
 
+    // 0bis. Asie (Corée/Chine) : EODHD ne couvre pas le live sur ces marchés
+    // (intraday récurremment auto-blacklisté → la cascade EODHD ci-dessous
+    // tomberait en `fallback_unknown` → garde-fou fallback skippe tout stop/TP
+    // → position non protégeable). TwelveData-first pour les suffixes concernés
+    // (KO/KQ/SHG/SHE par défaut). Échec TD → on continue la cascade existante :
+    // jamais de stop sur prix non fiable. No-op (retourne null instantané) pour
+    // tous les autres marchés → US/EU inchangés.
+    const tdLive = await Promise.resolve()
+      .then(() => this.intradayRouter.getLiveQuote(symbol))
+      .catch(() => null);
+    if (tdLive) {
+      return { symbol, price: String(tdLive.price), asOf: now, source: tdLive.source };
+    }
+
     // Hard cap EODHD : si quota jour dépassé, on renvoie le cache même
     // périmé (ou fallback statique) pour ne pas violer la limite 100k/j.
     const quotaStatus = await this.realtimePrice.canCallEodhd();
