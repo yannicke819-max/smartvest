@@ -14,6 +14,7 @@
 import {
   isInExchangeSession,
   extractSuffix,
+  minutesToExchangeClose,
 } from '../services/exchange-sessions.helper';
 
 describe('extractSuffix', () => {
@@ -514,5 +515,38 @@ describe('isInExchangeSession — Edge cases', () => {
 
   it('returns false for invalid date string', () => {
     expect(isInExchangeSession('AAPL.US', 'not-a-date')).toBe(false);
+  });
+});
+
+describe('minutesToExchangeClose — force-close per-exchange', () => {
+  // Corée (.KO/.KQ) : 09:00-15:30 Asia/Seoul = 00:00-06:30 UTC (KST = UTC+9, pas de DST).
+  it('Corée mi-séance (06:00 UTC = 15:00 KST) → 30 min avant close', () => {
+    expect(minutesToExchangeClose('005930.KO', '2026-05-22T06:00:00Z')).toBe(30);
+  });
+
+  it('Corée juste après cloche (06:31 UTC = 15:31 KST) → null (hors session)', () => {
+    expect(minutesToExchangeClose('005930.KO', '2026-05-22T06:31:00Z')).toBeNull();
+  });
+
+  it('Corée tôt en séance (04:00 UTC = 13:00 KST) → 150 min avant close', () => {
+    expect(minutesToExchangeClose('035720.KQ', '2026-05-22T04:00:00Z')).toBe(150);
+  });
+
+  it('Chine (.SHG) à 06:50 UTC = 14:50 Shanghai → 10 min avant close 15:00', () => {
+    expect(minutesToExchangeClose('600519.SHG', '2026-05-22T06:50:00Z')).toBe(10);
+  });
+
+  it('weekend → null', () => {
+    // 2026-05-23 = samedi
+    expect(minutesToExchangeClose('005930.KO', '2026-05-23T04:00:00Z')).toBeNull();
+  });
+
+  it('crypto / sans suffixe → null (always-on, pas de close)', () => {
+    expect(minutesToExchangeClose('BTCUSDT', '2026-05-22T06:00:00Z')).toBeNull();
+    expect(minutesToExchangeClose('BTC-USD.CC', '2026-05-22T06:00:00Z')).toBeNull();
+  });
+
+  it('suffixe inconnu → null', () => {
+    expect(minutesToExchangeClose('XXX.ZZZ', '2026-05-22T06:00:00Z')).toBeNull();
   });
 });

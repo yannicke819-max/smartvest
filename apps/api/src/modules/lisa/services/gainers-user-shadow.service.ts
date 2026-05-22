@@ -43,6 +43,7 @@ export type ShadowDecision =
   | 'reject_supertrend_eu_down' // PR #368 — TwelveData Supertrend 30m direction=down (eu_equity)
   | 'reject_liquidity'          // Filtre dollar-volume : penny-stock illiquide (equity)
   | 'reject_reentry_downtrend'  // Anti falling-knife : ré-entrée post-stop refusée tant que prix < entrée stoppée
+  | 'reject_market_closed'      // Bourse de l'instrument fermée (session par-exchange) → pas d'ouverture sur prix figé
   | 'reject_other';
 
 export interface RecordDecisionInput {
