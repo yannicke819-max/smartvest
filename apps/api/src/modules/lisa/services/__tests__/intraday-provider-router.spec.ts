@@ -883,6 +883,51 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
       expect(td.quoteCalls).toBe(0);
       expect(await router.getLiveQuote('005930.KO')).toEqual({ price: 1500, source: 'twelvedata' });
     });
+
+    it('EU couvert par défaut (.PA/.LSE) : intraday EODHD différé ~15h → TD-first', async () => {
+      // mesure 22/05 : divergence prix EU réelle 1.76% + bougies EODHD stale ~15-24h.
+      const { router: r1, td: td1 } = makeRouter({}, { price: 72.2, changePct: 1, timestamp: 1 });
+      expect(await r1.getLiveQuote('SESG.PA')).toEqual({ price: 72.2, source: 'twelvedata' });
+      expect(td1.quoteCalls).toBe(1);
+      const { router: r2 } = makeRouter({}, { price: 30.9, changePct: 1, timestamp: 1 });
+      expect(await r2.getLiveQuote('IES.LSE')).toEqual({ price: 30.9, source: 'twelvedata' });
+    });
+  });
+});
+
+describe('getCandlesTdDirect — backfill shadow asie (bypass blacklist)', () => {
+  const TD_CANDLES = {
+    symbol: '005930:KRX', interval: '5min',
+    candles: [{ timestamp: 1747000000, open: 1, high: 2, low: 1, close: 1.5, volume: 100 }],
+    asOf: 1747000000000,
+  };
+
+  function makeRouter(td: { quote?: any; candles?: any }, blacklisted: string[] = []) {
+    return new IntradayProviderRouter(
+      makeConfig({ TWELVEDATA_INTRADAY_SCANNER_ENABLED: 'false' }), // flag OFF : prouve le bypass
+      makeEodhdMock({}).service,
+      makeTdMock(td).service,
+      makeBlacklistMock({ blacklisted }),
+      makeSupabaseMock(),
+    );
+  }
+
+  it('coréen blacklisté + flag scanner OFF → TD sert quand même (bypass)', async () => {
+    const router = makeRouter({ candles: TD_CANDLES }, ['005930.KO']);
+    const r = await router.getCandlesTdDirect('005930.KO', '5m', 60);
+    expect(r).not.toBeNull();
+    expect(r!.candles).toHaveLength(1);
+    expect(r!.candles[0].close).toBe(1.5);
+  });
+
+  it('symbole non mappable TD (.HK non couvert) → null', async () => {
+    const router = makeRouter({ candles: TD_CANDLES });
+    expect(await router.getCandlesTdDirect('0700.HK', '5m', 60)).toBeNull();
+  });
+
+  it('TD renvoie vide → null', async () => {
+    const router = makeRouter({ candles: null });
+    expect(await router.getCandlesTdDirect('005930.KO', '5m', 60)).toBeNull();
   });
 });
 

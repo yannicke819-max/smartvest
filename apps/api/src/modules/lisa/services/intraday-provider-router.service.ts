@@ -476,12 +476,16 @@ export class IntradayProviderRouter implements OnModuleInit {
    * le caller retombe sur sa cascade EODHD/fallback existante. Jamais de prix
    * inventé : null = « pas de source TD », pas « prix 0 ».
    *
-   * Périmètre configurable via `LIVE_PRICE_TD_SUFFIXES` (CSV, default KO,KQ,SHG,SHE).
+   * Périmètre configurable via `LIVE_PRICE_TD_SUFFIXES` (CSV). Default couvre
+   * Asie (KO,KQ,SHG,SHE) + EU (LSE,L,PA,AS,AMS,DE,XETRA,SW,MI,TO) : l'intraday
+   * EODHD est différé ~15h sur ces zones (mesure 22/05 : divergence prix réelle
+   * EU 1.76%, jusqu'à 5.6% sur small-caps), TD fournit un quote frais. US natif
+   * reste sur EODHD real-time (frais). Suffixe non mappable → null → fallback.
    */
   async getLiveQuote(eodhdTicker: string): Promise<{ price: number; source: 'twelvedata' } | null> {
     if (!this.td || !eodhdTicker) return null;
     const suffix = eodhdTicker.includes('.') ? eodhdTicker.split('.').pop()!.toUpperCase() : '';
-    const allowed = (this.config.get<string>('LIVE_PRICE_TD_SUFFIXES') ?? 'KO,KQ,SHG,SHE')
+    const allowed = (this.config.get<string>('LIVE_PRICE_TD_SUFFIXES') ?? 'KO,KQ,SHG,SHE,LSE,L,PA,AS,AMS,DE,XETRA,SW,MI,TO')
       .split(',')
       .map((s) => s.trim().toUpperCase())
       .filter((s) => s.length > 0);
