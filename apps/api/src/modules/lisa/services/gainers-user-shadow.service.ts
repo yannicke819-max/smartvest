@@ -1302,15 +1302,30 @@ export class GainersUserShadowService {
     days: number = 7,
   ): Promise<RegretSummary> {
     const since = new Date(Date.now() - days * 86400_000).toISOString();
-    const { data, error } = await this.supabase.getClient()
-      .from('gainers_user_shadow_signals')
-      .select('decision, sim_results, notional_usd')
-      .eq('portfolio_id', portfolioId)
-      .gte('created_at', since)
-      .not('sim_results', 'is', null);
-
-    if (error || !data) {
-      return { since, days, byGate: [], totalRows: 0 };
+    // Pagination obligatoire : sans `.range()`, PostgREST plafonne à 1000 lignes
+    // → un `days=30` ne lisait en réalité que les ~1000 lignes les plus récentes
+    // (instrument à moitié aveugle, biaisé vers le récent). On pagine jusqu'à
+    // épuisement (page < pageSize) ou cap dur anti-runaway.
+    const PAGE = 1000;
+    const MAX_ROWS = 100_000;
+    const data: Array<{ decision: string; sim_results: unknown; notional_usd: number | null }> = [];
+    for (let offset = 0; offset < MAX_ROWS; offset += PAGE) {
+      const { data: page, error } = await this.supabase.getClient()
+        .from('gainers_user_shadow_signals')
+        .select('decision, sim_results, notional_usd')
+        .eq('portfolio_id', portfolioId)
+        .gte('created_at', since)
+        .not('sim_results', 'is', null)
+        .order('created_at', { ascending: false })
+        .range(offset, offset + PAGE - 1);
+      if (error) {
+        // échec en cours de pagination → on agrège ce qu'on a déjà (mieux que rien)
+        if (offset === 0) return { since, days, byGate: [], totalRows: 0 };
+        break;
+      }
+      if (!page || page.length === 0) break;
+      data.push(...(page as typeof data));
+      if (page.length < PAGE) break;
     }
 
     type Bucket = { pnls: number[]; notional: number };
