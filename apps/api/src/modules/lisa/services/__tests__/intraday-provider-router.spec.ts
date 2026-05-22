@@ -885,3 +885,39 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
     });
   });
 });
+
+describe('getCandlesTdDirect — backfill shadow asie (bypass blacklist)', () => {
+  const TD_CANDLES = {
+    symbol: '005930:KRX', interval: '5min',
+    candles: [{ timestamp: 1747000000, open: 1, high: 2, low: 1, close: 1.5, volume: 100 }],
+    asOf: 1747000000000,
+  };
+
+  function makeRouter(td: { quote?: any; candles?: any }, blacklisted: string[] = []) {
+    return new IntradayProviderRouter(
+      makeConfig({ TWELVEDATA_INTRADAY_SCANNER_ENABLED: 'false' }), // flag OFF : prouve le bypass
+      makeEodhdMock({}).service,
+      makeTdMock(td).service,
+      makeBlacklistMock({ blacklisted }),
+      makeSupabaseMock(),
+    );
+  }
+
+  it('coréen blacklisté + flag scanner OFF → TD sert quand même (bypass)', async () => {
+    const router = makeRouter({ candles: TD_CANDLES }, ['005930.KO']);
+    const r = await router.getCandlesTdDirect('005930.KO', '5m', 60);
+    expect(r).not.toBeNull();
+    expect(r!.candles).toHaveLength(1);
+    expect(r!.candles[0].close).toBe(1.5);
+  });
+
+  it('symbole non mappable TD (.HK non couvert) → null', async () => {
+    const router = makeRouter({ candles: TD_CANDLES });
+    expect(await router.getCandlesTdDirect('0700.HK', '5m', 60)).toBeNull();
+  });
+
+  it('TD renvoie vide → null', async () => {
+    const router = makeRouter({ candles: null });
+    expect(await router.getCandlesTdDirect('005930.KO', '5m', 60)).toBeNull();
+  });
+});

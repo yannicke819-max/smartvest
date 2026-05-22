@@ -494,4 +494,28 @@ export class IntradayProviderRouter implements OnModuleInit {
     }
     return null;
   }
+
+  /**
+   * Candles DIRECTEMENT via TwelveData, en contournant la blacklist
+   * (EODHD-driven), l'A/B et le flag scanner. Réservé au BACKFILL SHADOW asie :
+   * EODHD n'a pas l'intraday coréen/chinois (→ NO_DATA) alors que TD l'a, mais
+   * le routeur normal skippe TD sur ces tickers blacklistés (PR #355). Recent-N
+   * (pas de range) : le caller filtre la fenêtre côté client. N'affecte PAS le
+   * chemin live `getCandles` (méthode séparée). Null si TD indispo / symbole non
+   * mappable / échec → le caller retombe sur sa cascade EODHD/Yahoo existante.
+   */
+  async getCandlesTdDirect(
+    eodhdTicker: string,
+    interval: '1m' | '5m',
+    count: number,
+    calledBy = 'shadow_td_direct',
+  ): Promise<{ candles: Array<{ timestamp: number; open: number; high: number; low: number; close: number; volume: number }> } | null> {
+    if (!this.td || !eodhdTicker) return null;
+    const tdSymbol = this.convertToTdSymbol(eodhdTicker);
+    if (!tdSymbol) return null;
+    const tdInterval = interval === '1m' ? '1min' : '5min';
+    const res = await this.td.getCandles(tdSymbol, tdInterval, count, calledBy).catch(() => null);
+    if (!res || !res.candles || res.candles.length === 0) return null;
+    return { candles: res.candles };
+  }
 }
