@@ -2254,12 +2254,27 @@ export class TopGainersScannerService implements OnModuleInit {
       if (postSlCooldownMs > 0) {
         const lastSlMs = recentSlBySymbol.get(cand.symbol.toUpperCase());
         if (lastSlMs && Date.now() - lastSlMs < postSlCooldownMs) {
-          const elapsedMin = Math.floor((Date.now() - lastSlMs) / 60_000);
+          // Bypass forts movers (MESURE shadow regret 22/05 : les rejets
+          // post_sl_cooldown sur les 10-15% valaient +1.52% / 94% win →
+          // le ban temporel aveugle détruit de la valeur sur les vrais movers).
+          // Si changePct >= GAINERS_POST_SL_BYPASS_STRONG_MOVER_PCT (default 0 = off),
+          // on NE rejette PAS ici : on laisse le falling-knife guard (price-aware,
+          // ci-dessous) trancher — il bloquera quand même si le prix est sous
+          // l'entrée stoppée (vrai couteau qui tombe). Le cooldown aveugle ne
+          // s'applique donc plus qu'aux movers faibles.
+          const bypassPct = Number(this.config.get<string>('GAINERS_POST_SL_BYPASS_STRONG_MOVER_PCT') ?? '0');
+          const strongMover = bypassPct > 0 && (cand.changePct ?? 0) >= bypassPct;
+          if (!strongMover) {
+            const elapsedMin = Math.floor((Date.now() - lastSlMs) / 60_000);
+            this.logger.log(
+              `[top-gainers] ${cand.symbol} POST_SL_COOLDOWN actif (SL il y a ${elapsedMin} min < ${postSlCooldownMin} min) → skip`,
+            );
+            recordShadowDecision(cand, 'reject_post_sl_cooldown', undefined);
+            continue;
+          }
           this.logger.log(
-            `[top-gainers] ${cand.symbol} POST_SL_COOLDOWN actif (SL il y a ${elapsedMin} min < ${postSlCooldownMin} min) → skip`,
+            `[top-gainers] ${cand.symbol} POST_SL_COOLDOWN bypass (changePct=${(cand.changePct ?? 0).toFixed(1)}% ≥ ${bypassPct}%) → délégué au falling-knife guard`,
           );
-          recordShadowDecision(cand, 'reject_post_sl_cooldown', undefined);
-          continue;
         }
       }
 
