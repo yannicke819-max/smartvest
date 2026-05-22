@@ -1973,6 +1973,49 @@ export class MechanicalTradingService {
       }
     }
     if (hitTarget) {
+      // ─── Trailing take-profit (anti « sell winners too early », Shefrin-Statman) ─
+      // Au lieu de fermer sec dès que le TP est touché (qui cappe les gagnants),
+      // on LAISSE COURIR au-delà du TP et on ne sort que sur un repli de `giveback`%
+      // depuis le PIC atteint (peak_pre_exit / MFE). Une fois le TP franchi, le
+      // prix de sortie est toujours ≥ TP − giveback → la position ne peut plus
+      // revenir en perte (elle sort sur un gain verrouillé, ou continue de monter).
+      //
+      // Ne touche PAS stop_loss_price → (a) le plancher dur reste le backstop
+      // catastrophe, (b) la sortie reste labellisée closed_target (≠ closed_stop)
+      // donc les stats Kelly/win-rate ne sont pas corrompues.
+      //
+      // Fonctionne SANS indicateurs techniques (RSI/MACD/ATR) → compatible avec
+      // les marchés où EODHD intraday est indispo (Corée/Chine via TwelveData).
+      // Opt-in : GAINERS_TRAILING_TP_ENABLED (default off → close TP classique).
+      const trailingTpEnabled = (process.env.GAINERS_TRAILING_TP_ENABLED ?? 'false').toLowerCase() === 'true';
+      // Scope gainers-only : ne pas altérer le TP fixe des positions Lisa swing.
+      // Lookup (caché 60s) effectué uniquement ici → quand le TP est franchi ET
+      // le flag actif, donc rarement.
+      const trailingTpPortfolioId = String((pos as unknown as Record<string, unknown>)['portfolio_id'] ?? '');
+      if (trailingTpEnabled && await this.isGainersStrategy(trailingTpPortfolioId)) {
+        const giveback = Math.max(0.2, Math.min(10, Number(process.env.GAINERS_TRAILING_TP_GIVEBACK_PCT ?? '1.5')));
+        // Pic = max(MFE persistée, prix courant) — recordMfe ci-dessus a déjà
+        // poussé le pic en DB mais l'objet `pos` en mémoire date du début de cycle.
+        const rawPeak = Number((pos as unknown as Record<string, unknown>)['peak_pre_exit']);
+        const peakPx = Number.isFinite(rawPeak) && rawPeak > 0
+          ? Decimal.max(new Decimal(rawPeak), currentPrice)
+          : currentPrice;
+        const pullbackTrigger = isLong
+          ? peakPx.mul(1 - giveback / 100)
+          : peakPx.mul(1 + giveback / 100);
+        const pulledBack = isLong
+          ? currentPrice.lte(pullbackTrigger)
+          : currentPrice.gte(pullbackTrigger);
+        if (pulledBack) {
+          await this.closePosition(pos.id, quote.price, 'closed_target',
+            `[MÉCANIQUE] Trailing-TP ${pos.symbol} @ ${currentPrice.toFixed(4)} : repli ${giveback}% depuis pic ${peakPx.toFixed(4)} (gain verrouillé, let-winners-run)`);
+          return;
+        }
+        this.logger.log(
+          `[TRAILING_TP] ${pos.symbol} laisse courir au-delà du TP : prix ${currentPrice.toFixed(4)} (pic ${peakPx.toFixed(4)}, sortie si repli ≥ ${giveback}%)`,
+        );
+        return;
+      }
       await this.closePosition(pos.id, quote.price, 'closed_target',
         `[MÉCANIQUE] Take-profit atteint ${pos.symbol} @ ${currentPrice.toFixed(4)} (target=${pos.takeProfitPrice})`);
       return;
@@ -2004,6 +2047,34 @@ export class MechanicalTradingService {
       }
     } catch { /* fall through to default */ }
     return isHyperActive ? 2.5 : 4;
+  }
+
+  // Cache court (60s) du strategy_mode par portfolio — évite un lookup DB par
+  // position par tick. Utilisé pour scoper le trailing-TP aux portfolios gainers.
+  private gainersStrategyCache = new Map<string, { isGainers: boolean; asOf: number }>();
+
+  /**
+   * true si le portfolio est en mode gainers. Sert à scoper le trailing-TP :
+   * on ne modifie le comportement du TP que pour les positions du scanner
+   * gainers, pas pour d'éventuelles positions Lisa swing (TP fixe voulu là).
+   * Fail-safe : en cas d'échec DB → false (= comportement TP classique).
+   */
+  private async isGainersStrategy(portfolioId: string): Promise<boolean> {
+    if (!portfolioId) return false;
+    const cached = this.gainersStrategyCache.get(portfolioId);
+    if (cached && Date.now() - cached.asOf < 60_000) return cached.isGainers;
+    try {
+      const { data } = await this.supabase.getClient()
+        .from('lisa_session_configs')
+        .select('strategy_mode')
+        .eq('portfolio_id', portfolioId)
+        .maybeSingle();
+      const isGainers = data?.strategy_mode === 'gainers';
+      this.gainersStrategyCache.set(portfolioId, { isGainers, asOf: Date.now() });
+      return isGainers;
+    } catch {
+      return false;
+    }
   }
 
   private async getMinNetProfitGate(portfolioId: string, notional: Decimal): Promise<Decimal> {
