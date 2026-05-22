@@ -458,4 +458,40 @@ export class IntradayProviderRouter implements OnModuleInit {
     // partagé avec evaluateTwelveDataFilters Supertrend US).
     return eodhdToTdSymbol(eodhdTicker);
   }
+
+  /**
+   * Quote live TwelveData pour le déclenchement des stops (consommé par
+   * `LisaService.getLivePrice`).
+   *
+   * Motivation : sur les marchés où EODHD ne couvre pas le live (Corée/Chine —
+   * récurrence vérifiée : 163 tickers auto-blacklistés observés 22/05, Samsung
+   * 005930.KO inclus), `getLivePrice` tomberait en `fallback_unknown` → le
+   * garde-fou fallback skippe tout stop/TP → position ouverte non protégeable.
+   * TD fournit une source live réelle pour ces suffixes.
+   *
+   * Indépendant du flag A/B scanner (`TWELVEDATA_INTRADAY_SCANNER_ENABLED`) :
+   * les stops doivent disposer d'une source fiable même si l'A/B intraday est off.
+   *
+   * Renvoie null si : suffixe hors périmètre, TD non mappable, ou TD échoue →
+   * le caller retombe sur sa cascade EODHD/fallback existante. Jamais de prix
+   * inventé : null = « pas de source TD », pas « prix 0 ».
+   *
+   * Périmètre configurable via `LIVE_PRICE_TD_SUFFIXES` (CSV, default KO,KQ,SHG,SHE).
+   */
+  async getLiveQuote(eodhdTicker: string): Promise<{ price: number; source: 'twelvedata' } | null> {
+    if (!this.td || !eodhdTicker) return null;
+    const suffix = eodhdTicker.includes('.') ? eodhdTicker.split('.').pop()!.toUpperCase() : '';
+    const allowed = (this.config.get<string>('LIVE_PRICE_TD_SUFFIXES') ?? 'KO,KQ,SHG,SHE')
+      .split(',')
+      .map((s) => s.trim().toUpperCase())
+      .filter((s) => s.length > 0);
+    if (!allowed.includes(suffix)) return null;
+    const tdSymbol = this.convertToTdSymbol(eodhdTicker);
+    if (!tdSymbol) return null;
+    const q = await this.td.getQuote(tdSymbol, 'live_price').catch(() => null);
+    if (q && Number.isFinite(q.price) && q.price > 0) {
+      return { price: q.price, source: 'twelvedata' };
+    }
+    return null;
+  }
 }
