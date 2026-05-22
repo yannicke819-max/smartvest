@@ -61,6 +61,13 @@ export const EXCHANGE_SESSIONS: Readonly<Record<string, ExchangeSession>> = {
   '.DE':    { tz: 'Europe/Berlin',       open: '09:00', close: '17:30' },
   '.XETRA': { tz: 'Europe/Berlin',       open: '09:00', close: '17:30' },
   '.SW':    { tz: 'Europe/Zurich',       open: '09:00', close: '17:30' },
+  // Euronext / Borsa Italiana / BME — mêmes horaires CET 09:00-17:30. Ajoutés
+  // pour que l'open-gate (isInExchangeSession) et le buffer couvrent TOUS les
+  // EU_EXCHANGES scannés (sinon suffixe inconnu → traité comme fermé en continu).
+  '.AMS':   { tz: 'Europe/Amsterdam',    open: '09:00', close: '17:30' },
+  '.MI':    { tz: 'Europe/Rome',         open: '09:00', close: '17:30' },
+  '.MC':    { tz: 'Europe/Madrid',       open: '09:00', close: '17:30' },
+  '.BME':   { tz: 'Europe/Madrid',       open: '09:00', close: '17:30' },
   '.TO':    { tz: 'America/Toronto',     open: '09:30', close: '16:00' },
   '.NSE':   { tz: 'Asia/Kolkata',        open: '09:15', close: '15:30' },
   '.BSE':   { tz: 'Asia/Kolkata',        open: '09:15', close: '15:30' },

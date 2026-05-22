@@ -44,7 +44,7 @@ import { EodhdCalendarService } from './eodhd-calendar.service';
 import { MacroVetoService } from './macro-veto.service';
 import { GainersUserShadowService, type ShadowDecision } from './gainers-user-shadow.service';
 import { dollarVolumeUsd, passesLiquidityFloor } from './gainers-liquidity.helper';
-import { isInExchangeSession, minutesToExchangeClose } from './exchange-sessions.helper';
+import { isInExchangeSession, minutesToExchangeClose, minutesSinceExchangeOpen } from './exchange-sessions.helper';
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
 // PR6.3 — Shadow wiring (LisaModule import GainersModule pour résolution DI)
 import { GainersShadowRunService } from '../../gainers-scanner/shadow/shadow-run.service';
@@ -2339,19 +2339,27 @@ export class TopGainersScannerService implements OnModuleInit {
       // Configurable via env GAINERS_OPEN_BUFFER_MIN (default 0 = disabled).
       const openBufferMin = Number(this.config.get<string>('GAINERS_OPEN_BUFFER_MIN') ?? '0');
       if (openBufferMin > 0 && cand.assetClass !== 'crypto_major' && cand.assetClass !== 'crypto_alt') {
-        const sessionCls = sessionClassFor(cand.assetClass);
-        if (sessionCls) {
-          const { openUtcMin } = MARKET_SESSION_HOURS[sessionCls];
-          // `nowUtc` = new Date() défini plus haut L1525 (in scope ici)
-          const localNowMin = nowUtc.getUTCHours() * 60 + nowUtc.getUTCMinutes();
-          const localMinsSinceOpen = localNowMin - openUtcMin;
-          if (localMinsSinceOpen >= 0 && localMinsSinceOpen < openBufferMin) {
-            this.logger.log(
-              `[top-gainers] ${cand.symbol} (${sessionCls}) opening buffer ${localMinsSinceOpen}/${openBufferMin}min → skip`,
-            );
-            recordShadowDecision(cand, 'reject_opening_buffer', undefined);
-            continue;
+        // Minutes depuis l'open RÉEL de la bourse (DST-safe, par exchange). Le bloc
+        // agrégé MARKET_SESSION_HOURS est l'horaire d'hiver → en été l'EU ouvrait
+        // « officiellement » à 08:00 UTC alors que la vraie ouverture est 07:00 UTC,
+        // ce qui faisait buffer ~1h de trop chaque matin. Fallback agrégé si le
+        // suffixe n'est pas mappé dans exchange-sessions.
+        let minsSinceOpen: number | null = minutesSinceExchangeOpen(cand.symbol, nowUtc);
+        let clsLabel = 'exchange';
+        if (minsSinceOpen === null) {
+          const sessionCls = sessionClassFor(cand.assetClass);
+          if (sessionCls) {
+            const localNowMin = nowUtc.getUTCHours() * 60 + nowUtc.getUTCMinutes();
+            minsSinceOpen = localNowMin - MARKET_SESSION_HOURS[sessionCls].openUtcMin;
+            clsLabel = sessionCls;
           }
+        }
+        if (minsSinceOpen !== null && minsSinceOpen >= 0 && minsSinceOpen < openBufferMin) {
+          this.logger.log(
+            `[top-gainers] ${cand.symbol} (${clsLabel}) opening buffer ${minsSinceOpen}/${openBufferMin}min → skip`,
+          );
+          recordShadowDecision(cand, 'reject_opening_buffer', undefined);
+          continue;
         }
       }
 
