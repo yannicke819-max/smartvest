@@ -112,3 +112,5 @@ if (maxAtrRatio > 0) {
   candidat à chaque cycle = 50× plus cher que cache + lent.
 - Use intraday range comme proxy : déjà partiellement via `close_to_high_min`.
 - Skip via mcap-class : trop grossier (un mid-cap peut être stable).
+
+<!-- ci: retrigger on empty push, see PR #403 -->
