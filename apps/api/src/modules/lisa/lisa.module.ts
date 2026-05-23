@@ -289,6 +289,11 @@ import { IntradayProviderRouter } from './services/intraday-provider-router.serv
     // PR #358 — export pour AdminQwPipelineToggleController qui expose
     // /admin/qw-pipeline-toggle (toggle runtime QUICK_WINS_PIPELINE_ENABLED).
     QuickWinsPipelineService,
+    // Exports pour AdminEventEngineForceController : force-pull manuel des
+    // caches alimentés par cron quotidien (économic events 03:30 UTC,
+    // ATR cache 21:30 UTC lun-ven).
+    EodhdEconomicEventsService,
+    SymbolAtrCacheService,
   ],
 })
 export class LisaModule {}
