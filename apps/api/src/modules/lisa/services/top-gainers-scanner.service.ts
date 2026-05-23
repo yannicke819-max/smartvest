@@ -2253,6 +2253,23 @@ export class TopGainersScannerService implements OnModuleInit {
       const baseSym = cand.symbol.replace(/USDT$|USDC$/, '').toUpperCase();
       if (openSymbols.has(cand.symbol.toUpperCase()) || openSymbols.has(baseSym)) continue;
 
+      // Phase E-A — Cut signaux âgés (anti-late-entry).
+      // Le scanner cycle peut prendre 10-30s pour processer tous les candidats
+      // (fetch multi-TF, sim, etc.). Pour un signal momentum 1-min, entrer 30s
+      // après détection = entrer après que le pop ait potentiellement retracé.
+      // GAINERS_MAX_SIGNAL_AGE_SEC=0 default = OFF (back-compat). Conseil : 30-60s.
+      const maxSignalAgeSec = Number(this.config.get<string>('GAINERS_MAX_SIGNAL_AGE_SEC') ?? '0');
+      if (maxSignalAgeSec > 0) {
+        const signalAgeSec = (Date.now() - nowUtc.getTime()) / 1000;
+        if (signalAgeSec > maxSignalAgeSec) {
+          this.logger.log(
+            `[top-gainers] ${cand.symbol} signal age ${signalAgeSec.toFixed(1)}s > ${maxSignalAgeSec}s → skip (stale, pop digéré)`,
+          );
+          recordShadowDecision(cand, 'reject_signal_stale', undefined);
+          continue;
+        }
+      }
+
       // Plafond changePct LONG — anti chase-the-top (MESURE 22/05, n=469 paired
       // us_equity_small_mid) : sur les pops sur-étendus (≥10%), le LONG perd
       // (-0.35/-0.40% mean) alors qu'il est positif sur 5-10% (+0.085%). On
