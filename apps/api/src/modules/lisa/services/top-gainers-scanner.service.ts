@@ -2507,7 +2507,14 @@ export class TopGainersScannerService implements OnModuleInit {
       //     no-op silencieux (recent=[] → pas de match).
       //   - Asia + EU : EODHD news coverage médiocre (0% / 13%) → no-op
       const newsAgeHours = Number(this.config.get<string>('GAINERS_NEWS_AGE_FILTER_HOURS') ?? '0');
-      const newsMinSentiment = Number(this.config.get<string>('GAINERS_NEWS_AGE_FILTER_MIN_SENTIMENT') ?? '0.5');
+      // Sentiment net (pos - neg) au lieu de la polarité EODHD (audit 23/05 : 73%
+      // des articles ont polarity > 0.9 — signal saturé / inutilisable). Net
+      // sentiment p90 = 0.15 sur 300 articles échantillonnés → seuil 0.15 garde
+      // top ~10% "réellement positif" et débloque les 80% sur-rejetés à tort.
+      // Rollback : GAINERS_NEWS_MIN_NET_SENTIMENT=0 désactive le filtre net.
+      const newsMinNetSentiment = Number(
+        this.config.get<string>('GAINERS_NEWS_MIN_NET_SENTIMENT') ?? '0.15',
+      );
       const cls = cand.assetClass;
       const filterApplies =
         newsAgeHours > 0 &&
@@ -2519,15 +2526,17 @@ export class TopGainersScannerService implements OnModuleInit {
       if (filterApplies) {
         try {
           const recent = await this.eodhdNews.getRecentNewsForTicker(cand.symbol, newsAgeHours);
-          const strongPos = recent.find(
-            (n) => typeof n.sentiment_polarity === 'number' && n.sentiment_polarity >= newsMinSentiment,
-          );
+          const strongPos = recent.find((n) => {
+            if (typeof n.sentiment_pos !== 'number' || typeof n.sentiment_neg !== 'number') return false;
+            return (n.sentiment_pos - n.sentiment_neg) >= newsMinNetSentiment;
+          });
           if (strongPos) {
+            const net = (strongPos.sentiment_pos ?? 0) - (strongPos.sentiment_neg ?? 0);
             const ageMin = Math.floor(
               (Date.now() - new Date(strongPos.published_at).getTime()) / 60_000,
             );
             this.logger.log(
-              `[top-gainers] ${cand.symbol} news strong_pos (polarity=${strongPos.sentiment_polarity}) il y a ${ageMin}min → skip (Phase 2 anti chase-post-news)`,
+              `[top-gainers] ${cand.symbol} news strong_pos (net=${net.toFixed(3)}) il y a ${ageMin}min → skip (anti chase-post-news)`,
             );
             recordShadowDecision(cand, 'reject_post_news_fresh_strong_pos', undefined);
             continue;
