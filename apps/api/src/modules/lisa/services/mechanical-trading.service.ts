@@ -28,6 +28,7 @@ import {
 } from '@smartvest/ai-analyst';
 import { mapPositionRows } from '../helpers/position.mapper';
 import { isLongPosition } from '../utils/position-direction';
+import { computeBreakEvenStopUpdate } from './trailing-stop.helper';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { PerformanceService } from '../../performance/performance.service';
 import { DecisionLogService } from './decision-log.service';
@@ -1905,6 +1906,44 @@ export class MechanicalTradingService {
     // conditionnel fire-and-forget : n'écrit que si le prix améliore le pic
     // (long = plus haut, short = plus bas). Coût négligeable (~7 open × 1/60s).
     void this.recordMfe(pos.id, currentPrice.toNumber(), isLong);
+
+    // PR D — Trailing-stop break-even (~$529/15j MFE giveback recovery).
+    // Data 23/05/2026 : 20 stops avec MFE +0.48% mean atteint AVANT exit → puis
+    // -1.98% à l'exit = giveback +2.38% par trade. On verrouille un quasi-breakeven
+    // (entry +0.05% pour couvrir frais) dès que la position touche +0.30%.
+    // Env-gated default OFF + scope strict gainers (n'altère pas Lisa swing).
+    const breakEvenEnabled = (process.env.GAINERS_TRAILING_STOP_BREAKEVEN_ENABLED ?? 'false').toLowerCase() === 'true';
+    if (breakEvenEnabled) {
+      const portfolioIdBE = String((pos as unknown as Record<string, unknown>)['portfolio_id'] ?? '');
+      if (portfolioIdBE && await this.isGainersStrategy(portfolioIdBE)) {
+        const activationPct = Number(process.env.GAINERS_TRAILING_STOP_ACTIVATION_PCT ?? '0.003');
+        const lockPct = Number(process.env.GAINERS_TRAILING_STOP_LOCK_PCT ?? '0.0005');
+        // Pic = max(MFE persistée, prix courant). recordMfe au-dessus est async,
+        // mais on lit la valeur EN MÉMOIRE (pos.peak_pre_exit) qui peut être stale
+        // — on fallback sur currentPrice si rien.
+        const rawPeak = Number((pos as unknown as Record<string, unknown>)['peak_pre_exit']);
+        const peakNum = Number.isFinite(rawPeak) && rawPeak > 0
+          ? (isLong ? Math.max(rawPeak, currentPrice.toNumber()) : Math.min(rawPeak, currentPrice.toNumber()))
+          : currentPrice.toNumber();
+        const entryNum = Number(pos.entryPrice);
+        const currentStopNum = stopPrice ? stopPrice.toNumber() : null;
+        const newStop = computeBreakEvenStopUpdate({
+          isLong, entry: entryNum, peak: peakNum, currentStop: currentStopNum,
+          activationPct, lockPct,
+        });
+        if (newStop !== null) {
+          this.logger.log(
+            `[trailing-stop] ${pos.symbol} break-even activated: peak=${peakNum.toFixed(4)} entry=${entryNum.toFixed(4)} stop ${currentStopNum?.toFixed(4) ?? 'null'} → ${newStop.toFixed(4)} (lock ${(lockPct * 100).toFixed(2)}%)`,
+          );
+          // Update DB async. Le prochain cycle (60s) utilisera la nouvelle valeur.
+          // Pas de mutation locale → on évite tout effet de bord dans CE cycle.
+          void this.supabase.getClient()
+            .from('lisa_positions')
+            .update({ stop_loss_price: newStop })
+            .eq('id', pos.id);
+        }
+      }
+    }
 
     const hitStop = stopPrice && (isLong ? currentPrice.lte(stopPrice) : currentPrice.gte(stopPrice));
     const hitTarget = tpPrice && (isLong ? currentPrice.gte(tpPrice) : currentPrice.lte(tpPrice));
