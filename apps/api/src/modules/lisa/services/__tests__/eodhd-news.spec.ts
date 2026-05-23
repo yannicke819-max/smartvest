@@ -3,7 +3,7 @@
  */
 
 import { Logger } from '@nestjs/common';
-import { EodhdNewsService } from '../eodhd-news.service';
+import { EodhdNewsService, toEodhdNewsTicker } from '../eodhd-news.service';
 
 jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
 jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
@@ -31,6 +31,19 @@ function makeSupabase(opts: { ready?: boolean; upsertErr?: string } = {}) {
     } as any,
   };
 }
+
+describe('toEodhdNewsTicker — mapping scanner → EODHD news API', () => {
+  it('crypto USDT → .CC (BTCUSDT → BTC.CC)', () => {
+    expect(toEodhdNewsTicker('BTCUSDT')).toBe('BTC.CC');
+    expect(toEodhdNewsTicker('ETHUSDT')).toBe('ETH.CC');
+    expect(toEodhdNewsTicker('LINKUSDT')).toBe('LINK.CC');
+  });
+  it('equity passthrough (AAP.US, BARC.LSE, 005930.KO)', () => {
+    expect(toEodhdNewsTicker('AAP.US')).toBe('AAP.US');
+    expect(toEodhdNewsTicker('BARC.LSE')).toBe('BARC.LSE');
+    expect(toEodhdNewsTicker('005930.KO')).toBe('005930.KO');
+  });
+});
 
 describe('EodhdNewsService.toRow / computeExternalId', () => {
   it('hash externe stable et déterministe sur (date jour + titre normalisé)', () => {

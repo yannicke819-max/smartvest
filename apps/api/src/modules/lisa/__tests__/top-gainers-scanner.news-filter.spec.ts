@@ -54,8 +54,11 @@ async function shouldRejectByNews(
 ): Promise<{ rejected: boolean; reason?: string }> {
   if (newsAgeHours <= 0) return { rejected: false };
   if (!newsService) return { rejected: false };
-  if (!candidate.symbol.endsWith('.US')) return { rejected: false };
-  if (candidate.assetClass !== 'us_equity_large' && candidate.assetClass !== 'us_equity_small_mid') return { rejected: false };
+  const cls = candidate.assetClass;
+  const inScope =
+    (candidate.symbol.endsWith('.US') && (cls === 'us_equity_large' || cls === 'us_equity_small_mid')) ||
+    cls === 'crypto_major';
+  if (!inScope) return { rejected: false };
   try {
     const recent = await newsService.getRecentNewsForTicker(candidate.symbol, newsAgeHours);
     const strongPos = recent.find(
@@ -125,9 +128,16 @@ describe('Phase 2 — filtre reject_post_news_fresh_strong_pos', () => {
     expect(r.rejected).toBe(false);
   });
 
-  it('Crypto → PASSE (pas de news ticker-spécifique EODHD)', async () => {
-    const news = makeEodhdNewsMock({ BTCUSDT: [makeArticle({ ticker: 'BTCUSDT', ageMinutes: 30, polarity: 0.99 })] });
+  it('Crypto major AVEC news strong_pos → REJETÉ (couverture EODHD .CC)', async () => {
+    const news = makeEodhdNewsMock({ BTCUSDT: [makeArticle({ ticker: 'BTCUSDT', ageMinutes: 30, polarity: 0.95 })] });
     const r = await shouldRejectByNews(candCrypto, news, 4, 0.5);
+    expect(r.rejected).toBe(true);
+  });
+
+  it('Crypto alt (POLUSDT-class) → PASSE (hors crypto_major scope)', async () => {
+    const candCryptoAlt = { symbol: 'POLUSDT', assetClass: 'crypto_alt' };
+    const news = makeEodhdNewsMock({ POLUSDT: [makeArticle({ ticker: 'POLUSDT', ageMinutes: 30, polarity: 0.99 })] });
+    const r = await shouldRejectByNews(candCryptoAlt, news, 4, 0.5);
     expect(r.rejected).toBe(false);
   });
 

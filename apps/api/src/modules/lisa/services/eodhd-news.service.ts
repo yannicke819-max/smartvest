@@ -51,6 +51,20 @@ const EODHD_BASE = 'https://eodhd.com/api/news';
 const FETCH_TIMEOUT_MS = 12_000;
 const MAX_LIMIT = 50;
 
+/**
+ * Mapping ticker scanner → ticker EODHD news.
+ * - Equity : passthrough (AAP.US, BARC.LSE, 005930.KO, …)
+ * - Crypto Binance USDT pairs → format EODHD `<BASE>.CC` (BTCUSDT → BTC.CC).
+ *   Probé 23/05/2026 : 9/10 majors couverts (POL absent, trop récent).
+ *   Sentiment polarity disponible (même schema que news equity).
+ */
+export function toEodhdNewsTicker(scannerSymbol: string): string {
+  if (scannerSymbol.endsWith('USDT')) {
+    return scannerSymbol.slice(0, -4) + '.CC';
+  }
+  return scannerSymbol;
+}
+
 @Injectable()
 export class EodhdNewsService {
   private readonly logger = new Logger(EodhdNewsService.name);
@@ -105,8 +119,12 @@ export class EodhdNewsService {
     const apiKey = this.config.get<string>('EODHD_API_KEY');
     if (!apiKey || apiKey === 'demo') return 0;
 
+    // Mapping scanner symbol → EODHD news symbol (crypto USDT → .CC).
+    // On persiste sous le SCANNER symbol (ticker arg) pour lookup direct côté
+    // filtre Phase 2 (cand.symbol = ce qu'on voit ici).
+    const eodhdSym = toEodhdNewsTicker(ticker);
     const url =
-      `${EODHD_BASE}?s=${encodeURIComponent(ticker)}` +
+      `${EODHD_BASE}?s=${encodeURIComponent(eodhdSym)}` +
       `&from=${fromDate}&to=${toDate}&limit=${MAX_LIMIT}` +
       `&api_token=${encodeURIComponent(apiKey)}&fmt=json`;
 

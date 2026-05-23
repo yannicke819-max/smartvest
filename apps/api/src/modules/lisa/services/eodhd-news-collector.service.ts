@@ -82,11 +82,15 @@ export class EodhdNewsCollectorService {
   }
 
   /**
-   * Récupère l'univers actif côté DB : watchlist_universe (US+EU+Asia) + crypto + basket.
-   * Filtre les classes sans news EODHD (crypto = pas de news ticker-spécifique).
+   * Récupère l'univers actif côté DB : watchlist_universe (US+EU+Asia) + crypto majors.
+   *
+   * Crypto INCLUS (probé 23/05/2026 : EODHD news API supporte format `<BASE>.CC`
+   * pour 9/10 majors avec sentiment). Le mapping USDT → .CC se fait dans
+   * `EodhdNewsService.toEodhdNewsTicker`. On persiste sous le scanner symbol
+   * (BTCUSDT) pour lookup direct par le filtre Phase 2.
    */
   private async fetchActiveUniverse(): Promise<string[]> {
-    if (!this.supabase.isReady()) return [];
+    if (!this.supabase.isReady()) return CRYPTO_MAJORS;
     const { data, error } = await this.supabase
       .getClient()
       .from('watchlist_universe')
@@ -94,10 +98,15 @@ export class EodhdNewsCollectorService {
       .limit(500);
     if (error || !data) {
       this.logger.debug(`[eodhd-news-collector] universe query err: ${error?.message ?? 'no data'}`);
-      return [];
+      return CRYPTO_MAJORS;
     }
-    return (data as Array<{ symbol: string }>)
-      .map((r) => r.symbol)
-      .filter((s) => !s.endsWith('USDT')); // exclu crypto
+    const equity = (data as Array<{ symbol: string }>).map((r) => r.symbol);
+    // Crypto majors ajoutés en tête (10 tickers, news 24/7 utile pour brief).
+    return [...CRYPTO_MAJORS, ...equity];
   }
 }
+
+const CRYPTO_MAJORS = [
+  'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT',
+  'ADAUSDT', 'AVAXUSDT', 'DOTUSDT', 'LINKUSDT', 'POLUSDT',
+];

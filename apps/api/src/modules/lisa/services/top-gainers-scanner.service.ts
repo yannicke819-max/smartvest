@@ -2420,15 +2420,23 @@ export class TopGainersScannerService implements OnModuleInit {
       //
       // Default 0 = OFF. Lit STRICTEMENT la DB (jamais d'appel API live ici)
       // pour rester O(1) et ne pas exploser la quota côté candidate loop.
-      // Crypto + Asia + EU exemptés (EODHD news coverage médiocre hors US).
+      // Périmètre couvert (probé 23/05/2026) :
+      //   - US equity large + small_mid : 67% couverture EODHD news
+      //   - Crypto major (BTC/ETH/BNB/SOL/XRP/ADA/AVAX/DOT/LINK) : couverture via
+      //     EODHD .CC (sentiment dispo, 9/10 majors). POLUSDT pas couvert mais
+      //     no-op silencieux (recent=[] → pas de match).
+      //   - Asia + EU : EODHD news coverage médiocre (0% / 13%) → no-op
       const newsAgeHours = Number(this.config.get<string>('GAINERS_NEWS_AGE_FILTER_HOURS') ?? '0');
       const newsMinSentiment = Number(this.config.get<string>('GAINERS_NEWS_AGE_FILTER_MIN_SENTIMENT') ?? '0.5');
-      if (
+      const cls = cand.assetClass;
+      const filterApplies =
         newsAgeHours > 0 &&
         this.eodhdNews &&
-        cand.symbol.endsWith('.US') &&
-        (cand.assetClass === 'us_equity_large' || cand.assetClass === 'us_equity_small_mid')
-      ) {
+        (
+          (cand.symbol.endsWith('.US') && (cls === 'us_equity_large' || cls === 'us_equity_small_mid')) ||
+          cls === 'crypto_major'
+        );
+      if (filterApplies) {
         try {
           const recent = await this.eodhdNews.getRecentNewsForTicker(cand.symbol, newsAgeHours);
           const strongPos = recent.find(
