@@ -197,26 +197,71 @@ export class DailyCatalystBriefService {
     return p as unknown as DailyCatalystBrief;
   }
 
-  /** Parse JSON robuste — tolère markdown fences si Gemini en met malgré le prompt. */
+  /**
+   * Parse JSON robuste — 2 stratégies :
+   *   1) Strip fences markdown + JSON.parse direct (cas nominal du prompt)
+   *   2) Fallback : extraire le 1er bloc `{...}` balanced de la réponse
+   *      (cas Gemini qui ajoute prose avant/après malgré l'instruction)
+   */
   parseBriefJson(content: string, dateFallback: string): DailyCatalystBrief | null {
+    const candidates: string[] = [];
     const stripped = content
       .replace(/^```(?:json)?\s*/i, '')
       .replace(/\s*```\s*$/i, '')
       .trim();
-    try {
-      const parsed = JSON.parse(stripped) as Partial<DailyCatalystBrief>;
-      if (!parsed || typeof parsed !== 'object') return null;
-      if (typeof parsed.summary !== 'string') return null;
-      return {
-        date: parsed.date ?? dateFallback,
-        macro_events: Array.isArray(parsed.macro_events) ? parsed.macro_events.slice(0, 10) : [],
-        tickers_to_watch: Array.isArray(parsed.tickers_to_watch) ? parsed.tickers_to_watch.slice(0, 10) : [],
-        tickers_to_avoid: Array.isArray(parsed.tickers_to_avoid) ? parsed.tickers_to_avoid.slice(0, 10) : [],
-        sectors_in_focus: Array.isArray(parsed.sectors_in_focus) ? parsed.sectors_in_focus.slice(0, 10) : [],
-        summary: parsed.summary,
-      };
-    } catch {
-      return null;
+    candidates.push(stripped);
+    const balanced = DailyCatalystBriefService.extractFirstBalancedObject(content);
+    if (balanced && balanced !== stripped) candidates.push(balanced);
+
+    for (const candidate of candidates) {
+      try {
+        const parsed = JSON.parse(candidate) as Partial<DailyCatalystBrief>;
+        if (!parsed || typeof parsed !== 'object') continue;
+        if (typeof parsed.summary !== 'string') continue;
+        return {
+          date: parsed.date ?? dateFallback,
+          macro_events: Array.isArray(parsed.macro_events) ? parsed.macro_events.slice(0, 10) : [],
+          tickers_to_watch: Array.isArray(parsed.tickers_to_watch) ? parsed.tickers_to_watch.slice(0, 10) : [],
+          tickers_to_avoid: Array.isArray(parsed.tickers_to_avoid) ? parsed.tickers_to_avoid.slice(0, 10) : [],
+          sectors_in_focus: Array.isArray(parsed.sectors_in_focus) ? parsed.sectors_in_focus.slice(0, 10) : [],
+          summary: parsed.summary,
+        };
+      } catch {
+        continue;
+      }
     }
+    return null;
+  }
+
+  /**
+   * Extrait le 1er objet JSON balanced d'une chaîne. Gère strings/escapes pour
+   * ne pas compter les `{` `}` à l'intérieur de literals string. Retourne null
+   * si pas d'objet balanced trouvé.
+   */
+  static extractFirstBalancedObject(input: string): string | null {
+    const start = input.indexOf('{');
+    if (start < 0) return null;
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    for (let i = start; i < input.length; i++) {
+      const ch = input[i];
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (inString) {
+        if (ch === '\\') escape = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') inString = true;
+      else if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) return input.slice(start, i + 1);
+      }
+    }
+    return null;
   }
 }
