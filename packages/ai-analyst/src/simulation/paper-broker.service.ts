@@ -651,6 +651,43 @@ export class PaperBrokerService {
       return position; // état d'avant, déjà cohérent avec la DB
     }
 
+    // Miroir paper_trades — UPDATE en aval pour débloquer P9 ML refit.
+    // paper_trades est une table audit séparée alimentée par le scanner
+    // au INSERT seulement (top-gainers-scanner.service.ts:3674). Sans cette
+    // mise à jour miroir, paper_trades reste à status='open' pour toujours
+    // → P9 logistic regression `insufficient_sample` perpétuel.
+    //
+    // Best-effort : wrap try/catch isolé. Si l'UPDATE échoue (race, row
+    // absente pour les positions Lisa LLM non-scanner, etc.) → log warn,
+    // close lisa_positions reste effective. Zéro impact sur le trading réel.
+    try {
+      const entryTs = new Date(position.entryTimestamp).getTime();
+      const closedTs = new Date(now).getTime();
+      const holdSec = Math.max(0, Math.floor((closedTs - entryTs) / 1000));
+      const outcomeLabel = pnlPct > 0 ? 'win' : pnlPct < 0 ? 'loss' : 'flat';
+      const { error: mirErr } = await this.supabase
+        .from('paper_trades')
+        .update({
+          status: cmd.reason,
+          closed_at: now,
+          exit_price: exitPx.toFixed(10),
+          pnl_usd: netPnl.toFixed(2),
+          pnl_pct: pnlPct,
+          hold_duration_seconds: holdSec,
+          outcome_label: outcomeLabel,
+          updated_at: now,
+        })
+        .eq('scanner_position_id', cmd.positionId)
+        .eq('status', 'open');
+      if (mirErr) {
+        // eslint-disable-next-line no-console
+        console.warn(`[PAPER_BROKER] paper_trades mirror update failed for ${cmd.positionId}: ${mirErr.message}`);
+      }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn(`[PAPER_BROKER] paper_trades mirror exception for ${cmd.positionId}: ${String(e).slice(0, 200)}`);
+    }
+
     return {
       ...position,
       status: cmd.reason,
