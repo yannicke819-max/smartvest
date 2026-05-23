@@ -109,6 +109,10 @@ import { KellyRecomputeService } from './services/kelly-recompute.service';
 import { TwelveDataService } from './services/twelve-data.service';
 // PR #352 — Router intraday TD-first avec fallback EODHD (flag-gated)
 import { IntradayProviderRouter } from './services/intraday-provider-router.service';
+// R&D batch — services env-gated OFF par défaut (audit 23/05 propositions sérieuses)
+import { GeminiRiskManagerService } from './services/research/gemini-risk-manager.service';
+import { CryptoFundingFadeService } from './services/research/crypto-funding-fade.service';
+import { EventNarrativeInterpreterService } from './services/research/event-narrative-interpreter.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule, BotLabModule, GainersModule],
@@ -242,6 +246,10 @@ import { IntradayProviderRouter } from './services/intraday-provider-router.serv
     TwelveDataService,
     // PR #352 — Router intraday TD-first (flag OFF par défaut → passthrough EODHD)
     IntradayProviderRouter,
+    // R&D batch (23/05 propositions sérieuses, ENV-gated OFF par défaut)
+    GeminiRiskManagerService,
+    CryptoFundingFadeService,
+    EventNarrativeInterpreterService,
   ],
   exports: [
     LisaService,

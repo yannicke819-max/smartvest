@@ -37,6 +37,7 @@ import { AdminThresholdTunerController } from './admin-threshold-tuner.controlle
 import { AdminProvidersStatusController } from './admin-providers-status.controller';
 import { AdminQwPipelineToggleController } from './admin-qw-pipeline-toggle.controller';
 import { AdminEventEngineForceController } from './admin-event-engine-force.controller';
+import { AdminResearchController } from './admin-research.controller';
 
 @Module({
   imports: [SupabaseModule, forwardRef(() => LisaModule), GainersModule],
@@ -61,6 +62,8 @@ import { AdminEventEngineForceController } from './admin-event-engine-force.cont
     AdminQwPipelineToggleController,
     // Force-pull caches event-engine (économic events + ATR) sans attendre cron.
     AdminEventEngineForceController,
+    // R&D : exploitation dataset propriétaire top_gainers_log + cross-region.
+    AdminResearchController,
   ],
 })
 export class AdminModule {}
