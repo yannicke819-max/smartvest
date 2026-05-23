@@ -12,6 +12,10 @@ jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
 
 const cfg = (env: Record<string, string> = {}) => ({ get: (k: string) => env[k] }) as any;
 
+const econ = (upcoming: any[] = []) => ({
+  getUpcomingEvents: async () => upcoming,
+}) as any;
+
 function makeSupabase(opts: { ready?: boolean; latestPayload?: unknown; insertErr?: string }) {
   const inserted: unknown[] = [];
   return {
@@ -61,7 +65,7 @@ const SAMPLE_BRIEF_JSON = JSON.stringify({
 describe('DailyCatalystBriefService', () => {
   describe('parseBriefJson', () => {
     it('parse JSON pur produit par Gemini', () => {
-      const svc = new DailyCatalystBriefService(cfg(), makeSupabase({}).svc, makeLlm(''));
+      const svc = new DailyCatalystBriefService(cfg(), makeSupabase({}).svc, makeLlm(''), econ());
       const b = svc.parseBriefJson(SAMPLE_BRIEF_JSON, '2026-05-23');
       expect(b).not.toBeNull();
       expect(b!.summary).toContain('PCE');
@@ -69,7 +73,7 @@ describe('DailyCatalystBriefService', () => {
     });
 
     it("tolère les fences markdown ```json ... ```", () => {
-      const svc = new DailyCatalystBriefService(cfg(), makeSupabase({}).svc, makeLlm(''));
+      const svc = new DailyCatalystBriefService(cfg(), makeSupabase({}).svc, makeLlm(''), econ());
       const wrapped = '```json\n' + SAMPLE_BRIEF_JSON + '\n```';
       const b = svc.parseBriefJson(wrapped, '2026-05-23');
       expect(b).not.toBeNull();
@@ -77,7 +81,7 @@ describe('DailyCatalystBriefService', () => {
     });
 
     it('limite chaque liste à 10 items (anti-flood)', () => {
-      const svc = new DailyCatalystBriefService(cfg(), makeSupabase({}).svc, makeLlm(''));
+      const svc = new DailyCatalystBriefService(cfg(), makeSupabase({}).svc, makeLlm(''), econ());
       const huge = JSON.stringify({
         date: '2026-05-23',
         macro_events: Array.from({ length: 50 }, (_, i) => ({ event: `E${i}` })),
@@ -90,17 +94,17 @@ describe('DailyCatalystBriefService', () => {
     });
 
     it('renvoie null si JSON invalide', () => {
-      const svc = new DailyCatalystBriefService(cfg(), makeSupabase({}).svc, makeLlm(''));
+      const svc = new DailyCatalystBriefService(cfg(), makeSupabase({}).svc, makeLlm(''), econ());
       expect(svc.parseBriefJson('not json at all', '2026-05-23')).toBeNull();
     });
 
     it("renvoie null si payload sans 'summary'", () => {
-      const svc = new DailyCatalystBriefService(cfg(), makeSupabase({}).svc, makeLlm(''));
+      const svc = new DailyCatalystBriefService(cfg(), makeSupabase({}).svc, makeLlm(''), econ());
       expect(svc.parseBriefJson(JSON.stringify({ date: '2026-05-23' }), '2026-05-23')).toBeNull();
     });
 
     it('fallback date si absente', () => {
-      const svc = new DailyCatalystBriefService(cfg(), makeSupabase({}).svc, makeLlm(''));
+      const svc = new DailyCatalystBriefService(cfg(), makeSupabase({}).svc, makeLlm(''), econ());
       const b = svc.parseBriefJson(JSON.stringify({ summary: 'ok' }), '2026-05-23');
       expect(b!.date).toBe('2026-05-23');
     });
@@ -109,7 +113,7 @@ describe('DailyCatalystBriefService', () => {
   describe('generateAndPersistBrief', () => {
     it('appelle Gemini + persiste dans decision_log (kind=daily_catalyst_brief)', async () => {
       const sb = makeSupabase({});
-      const svc = new DailyCatalystBriefService(cfg(), sb.svc, makeLlm(SAMPLE_BRIEF_JSON));
+      const svc = new DailyCatalystBriefService(cfg(), sb.svc, makeLlm(SAMPLE_BRIEF_JSON), econ());
       const b = await svc.generateAndPersistBrief();
       expect(b).not.toBeNull();
       expect(b!.summary).toContain('PCE');
@@ -122,21 +126,21 @@ describe('DailyCatalystBriefService', () => {
 
     it('LLM échoue → null, pas de crash, pas de persist', async () => {
       const sb = makeSupabase({});
-      const svc = new DailyCatalystBriefService(cfg(), sb.svc, makeLlm('', { fail: true }));
+      const svc = new DailyCatalystBriefService(cfg(), sb.svc, makeLlm('', { fail: true }), econ());
       expect(await svc.generateAndPersistBrief()).toBeNull();
       expect(sb.inserted).toHaveLength(0);
     });
 
     it('LLM renvoie texte non-JSON → null, pas de persist', async () => {
       const sb = makeSupabase({});
-      const svc = new DailyCatalystBriefService(cfg(), sb.svc, makeLlm('Désolé, je ne peux pas répondre.'));
+      const svc = new DailyCatalystBriefService(cfg(), sb.svc, makeLlm('Désolé, je ne peux pas répondre.'), econ());
       expect(await svc.generateAndPersistBrief()).toBeNull();
       expect(sb.inserted).toHaveLength(0);
     });
 
     it('Supabase indispo → renvoie le brief mais skip persist (pas de crash)', async () => {
       const sb = makeSupabase({ ready: false });
-      const svc = new DailyCatalystBriefService(cfg(), sb.svc, makeLlm(SAMPLE_BRIEF_JSON));
+      const svc = new DailyCatalystBriefService(cfg(), sb.svc, makeLlm(SAMPLE_BRIEF_JSON), econ());
       const b = await svc.generateAndPersistBrief();
       expect(b).not.toBeNull();
       expect(sb.inserted).toHaveLength(0);
@@ -146,13 +150,13 @@ describe('DailyCatalystBriefService', () => {
   describe('getLatestBrief', () => {
     it('retourne le dernier brief si présent', async () => {
       const payload = { date: '2026-05-23', summary: 'test', tickers_to_watch: [] };
-      const svc = new DailyCatalystBriefService(cfg(), makeSupabase({ latestPayload: payload }).svc, makeLlm(''));
+      const svc = new DailyCatalystBriefService(cfg(), makeSupabase({ latestPayload: payload }).svc, makeLlm(''), econ());
       const b = await svc.getLatestBrief();
       expect(b).toEqual(payload);
     });
 
     it('null si aucun brief encore', async () => {
-      const svc = new DailyCatalystBriefService(cfg(), makeSupabase({}).svc, makeLlm(''));
+      const svc = new DailyCatalystBriefService(cfg(), makeSupabase({}).svc, makeLlm(''), econ());
       expect(await svc.getLatestBrief()).toBeNull();
     });
   });
@@ -160,14 +164,14 @@ describe('DailyCatalystBriefService', () => {
   describe('cronDailyBrief (env-gated)', () => {
     it("ne fait rien si GEMINI_DAILY_BRIEF_ENABLED=false (default)", async () => {
       const sb = makeSupabase({});
-      const svc = new DailyCatalystBriefService(cfg(), sb.svc, makeLlm(SAMPLE_BRIEF_JSON));
+      const svc = new DailyCatalystBriefService(cfg(), sb.svc, makeLlm(SAMPLE_BRIEF_JSON), econ());
       await svc.cronDailyBrief();
       expect(sb.inserted).toHaveLength(0);
     });
 
     it('génère + persiste si enabled=true', async () => {
       const sb = makeSupabase({});
-      const svc = new DailyCatalystBriefService(cfg({ GEMINI_DAILY_BRIEF_ENABLED: 'true' }), sb.svc, makeLlm(SAMPLE_BRIEF_JSON));
+      const svc = new DailyCatalystBriefService(cfg({ GEMINI_DAILY_BRIEF_ENABLED: 'true' }), sb.svc, makeLlm(SAMPLE_BRIEF_JSON), econ());
       await svc.cronDailyBrief();
       expect(sb.inserted).toHaveLength(1);
     });

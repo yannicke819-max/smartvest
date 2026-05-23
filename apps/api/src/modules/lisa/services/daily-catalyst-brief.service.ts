@@ -27,6 +27,7 @@ import { Cron } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
+import { EodhdEconomicEventsService } from './eodhd-economic-events.service';
 
 export interface DailyCatalystBrief {
   date: string;
@@ -39,6 +40,10 @@ export interface DailyCatalystBrief {
 
 const SYSTEM_PROMPT = `You are a financial markets analyst producing a daily catalyst brief for an automated momentum trading system.
 
+You will receive VERIFIED economic events from EODHD calendar as CONTEXT.
+DO NOT invent additional events. Your job is to SYNTHESIZE and STRUCTURE the
+verified data, adding sector context where useful (semis, consumer, energy…).
+
 Output STRICT JSON matching this schema (no markdown, no backticks):
 {
   "date": "YYYY-MM-DD",
@@ -50,11 +55,16 @@ Output STRICT JSON matching this schema (no markdown, no backticks):
 }
 
 Rules:
-- Tickers MUST use EODHD suffix format: US (AAPL.US), LSE (BARC.LSE), PA (MC.PA), DE (SAP.DE), KO (005930.KO), SHG (600519.SHG), SHE (000001.SHE), HK (0700.HK), T (7203.T).
-- Crypto pairs use Binance format: BTCUSDT, ETHUSDT.
+- Use ONLY events from the VERIFIED EVENTS section provided in the user message.
+- If VERIFIED EVENTS is empty, still produce a brief but be explicit in summary
+  that no high-impact events are scheduled.
+- Tickers MUST use EODHD suffix format: US (AAPL.US), LSE (BARC.LSE), PA (MC.PA),
+  DE (SAP.DE), KO (005930.KO), SHG (600519.SHG), SHE (000001.SHE), HK (0700.HK),
+  T (7203.T). Crypto: BTCUSDT, ETHUSDT.
 - Be concise. Max 5 entries per list. No fluff.
-- Focus on next 24-48h actionable items only.
-- If you don't know an event for sure, OMIT it. Never fabricate.`;
+- For "tickers_to_watch" / "tickers_to_avoid", use sector/macro reasoning only
+  (e.g. "PCE Wednesday → rate-sensitive techs in focus"). Never invent specific
+  earnings dates not in the verified context.`;
 
 @Injectable()
 export class DailyCatalystBriefService {
@@ -65,6 +75,7 @@ export class DailyCatalystBriefService {
     private readonly config: ConfigService,
     private readonly supabase: SupabaseService,
     private readonly llm: ScannerLlmRouterService,
+    private readonly economicEvents: EodhdEconomicEventsService,
   ) {
     this.enabled = (this.config.get<string>('GEMINI_DAILY_BRIEF_ENABLED') ?? 'false').toLowerCase() === 'true';
     if (this.enabled) this.logger.log('[daily-brief] enabled — cron 04:00 UTC daily');
@@ -83,10 +94,21 @@ export class DailyCatalystBriefService {
 
   async generateAndPersistBrief(): Promise<DailyCatalystBrief | null> {
     const today = new Date().toISOString().slice(0, 10);
+
+    // Grounding : injecter les economic events vérifiés EODHD (anti-hallucination).
+    const upcoming = await this.economicEvents.getUpcomingEvents(48).catch(() => []);
+    const verifiedSection = upcoming.length > 0
+      ? upcoming
+          .map((e) => `- ${e.event_date.slice(0, 16).replace('T', ' ')} UTC | ${e.country} | ${e.event_name}${e.importance ? ` (importance=${e.importance})` : ''}`)
+          .join('\n')
+      : '(no high/medium-impact macro events in the next 48h per EODHD calendar)';
+
     const userPrompt =
       `Today is ${today} (UTC). Produce the catalyst brief for the next 24-48h trading window. ` +
       `Cover US, EU (LSE/Euronext/XETRA), Asia (Korea/HK/Japan/China) and crypto majors. ` +
-      `Output strict JSON only.`;
+      `Output strict JSON only.\n\n` +
+      `## VERIFIED EVENTS (source: EODHD economic-events API, do not invent more)\n` +
+      verifiedSection;
 
     let llmResult;
     try {
