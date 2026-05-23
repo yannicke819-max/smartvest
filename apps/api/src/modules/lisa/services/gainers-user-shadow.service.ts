@@ -45,6 +45,7 @@ export type ShadowDecision =
   | 'reject_reentry_downtrend'  // Anti falling-knife : ré-entrée post-stop refusée tant que prix < entrée stoppée
   | 'reject_market_closed'      // Bourse de l'instrument fermée (session par-exchange) → pas d'ouverture sur prix figé
   | 'reject_overextended'       // Anti chase-the-top : pop ≥ plafond changePct long (LONG perd sur les sur-étendus)
+  | 'reject_post_news_fresh_strong_pos' // Phase 2 — news EODHD sentiment ≥ X dans T heures → on chase the top, expectancy -0.18 à -0.79%
   | 'reject_other';
 
 export interface RecordDecisionInput {

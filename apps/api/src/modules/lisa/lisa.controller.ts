@@ -12,6 +12,7 @@ import { SupabaseService } from '../supabase/supabase.service';
 import { AssetClassTpslService } from './services/asset-class-tpsl.service';
 import { QuickWinsStatsService } from './services/quick-wins-stats.service';
 import { RiskStateService } from './services/risk-state.service';
+import { DailyCatalystBriefService } from './services/daily-catalyst-brief.service';
 import { DailySessionService } from './services/daily-session.service';
 import { ProfitSweepService } from './services/profit-sweep.service';
 import { MacroModeService, type MacroMode } from './services/macro-mode.service';
@@ -57,6 +58,7 @@ export class LisaController {
     private readonly assetClassTpsl: AssetClassTpslService,
     private readonly qwStats: QuickWinsStatsService,
     private readonly riskState: RiskStateService,
+    private readonly dailyCatalystBrief: DailyCatalystBriefService,
   ) {}
 
   // ─────────────────────────────────────────────────────────────────
@@ -1207,6 +1209,28 @@ export class LisaController {
   getBinanceBalance(@Headers() headers: Record<string, string>) {
     extractUserId(headers); // throws si non authentifié
     return this.lisa.fetchBinanceBalance();
+  }
+
+  /**
+   * Daily catalyst brief — couche d'intelligence Gemini, env-gated.
+   * Renvoie le dernier brief généré (cron 04:00 UTC). Null si pas encore généré.
+   */
+  @Get('daily-catalyst-brief')
+  async getDailyCatalystBrief(@Headers() headers: Record<string, string>) {
+    extractUserId(headers);
+    const brief = await this.dailyCatalystBrief.getLatestBrief();
+    return { brief, generated: brief !== null };
+  }
+
+  /**
+   * Daily catalyst brief — déclenchement manuel (dev/debug).
+   * Utile pour bootstrap le 1er brief sans attendre 04:00 UTC.
+   */
+  @Post('daily-catalyst-brief/generate')
+  async generateDailyCatalystBrief(@Headers() headers: Record<string, string>) {
+    extractUserId(headers);
+    const brief = await this.dailyCatalystBrief.generateAndPersistBrief();
+    return { brief, ok: brief !== null };
   }
 
   @Get('eodhd/stats')
