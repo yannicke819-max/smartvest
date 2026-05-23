@@ -410,6 +410,59 @@ P3-C — Le scanner rebound-tp scanne par défaut **`sp500`** (~200 mega-caps US
 
 ---
 
+## RÈGLE OPÉRATIONNELLE PERMANENTE — APPLIQUER UNE MIGRATION SUPABASE
+
+Source de vérité unique : `.github/workflows/apply-supabase-migrations.yml`.
+Le secret `SUPABASE_ACCESS_TOKEN` (PAT Supabase, type `sbp_*`) vit côté
+GitHub Actions, jamais en clair localement ni côté Fly. **Ne JAMAIS demander
+au user d'appliquer la migration manuellement** tant qu'on a accès au repo.
+
+### Le chemin qui marche
+
+1. Migration `supabase/migrations/NNNN_xxx.sql` mergée sur `main` (idempotente :
+   `CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, etc.).
+2. Push une branche `migrations-trigger-<slug>` depuis `origin/main` :
+   ```bash
+   git fetch origin main
+   git checkout -b migrations-trigger-<NNNN>-<slug> origin/main
+   git push -u origin migrations-trigger-<NNNN>-<slug>
+   ```
+3. Le workflow `Apply Supabase migrations (manual)` se déclenche sur le
+   pattern `migrations-trigger-*`, exécute `scripts/apply-migrations.mjs`
+   contre la Management API Supabase, et **poste le résultat en commentaire
+   sur Issue #131**.
+4. Vérifier le résultat via `mcp__github__issue_read get_comments` sur Issue
+   #131 (commentaire le plus récent avec `(sha <head-sha>)`). Chercher
+   `0 échecs` et la ligne `NNNN_xxx.sql OK` (ou `SKIP` si déjà appliquée).
+5. **Cleanup** : `git push origin :migrations-trigger-<NNNN>-<slug>` puis
+   `git branch -D <slug>` local. La branche n'a aucune raison de rester
+   après que le workflow a tourné.
+
+### Ce qu'on n'a PAS le droit d'oublier
+
+- **La migration DOIT être sur `main` AVANT de pusher la branche trigger** :
+  le workflow checkout `ref: main`, il ne lira jamais la branche trigger
+  elle-même. Workflow ordering : migration merge → main → trigger push.
+- **Triggers acceptés** : `workflow_dispatch` (UI bouton) OU push de
+  `migrations-trigger-*` OU tag `apply-migrations-*`. Le push de branche
+  est la voie programmatique préférée pour les agents.
+- **Auto-apply au boot Fly** : le Dockerfile lance déjà `apply-migrations.mjs`
+  au démarrage du container, donc si le déploiement Fly tourne après le merge
+  de la migration, elle peut déjà avoir été appliquée. Le trigger workflow
+  reste idempotent (SKIP), aucun risque de double-apply.
+- **Ne pas tenter d'appliquer via `SUPABASE_SERVICE_ROLE_KEY`** : ce JWT
+  fonctionne pour PostgREST (rows) mais PAS pour DDL. Seul le PAT
+  `SUPABASE_ACCESS_TOKEN` (Management API, type `sbp_*`) peut faire du DDL.
+- **Ne pas demander au user d'appliquer manuellement** tant que cette procédure
+  est disponible. Si elle échoue, fallback Supabase Studio SQL editor (manuel
+  utilisateur), mais c'est la solution de dernier recours, pas la première option.
+
+Cas vérifié 23/05/2026 : migration `0153_eodhd_news_persistence.sql` appliquée
+en ~10 secondes via push branche `migrations-trigger-0153-eodhd-news`, résultat
+posté Issue #131 commentaire 4524443665 (`149 migrations · 149 appliquées · 0 échecs`).
+
+---
+
 ## RÈGLE OPÉRATIONNELLE PERMANENTE — DEPLOY FLY (P18h.2)
 
 **Ne jamais utiliser `flyctl deploy` directement** — toujours :
