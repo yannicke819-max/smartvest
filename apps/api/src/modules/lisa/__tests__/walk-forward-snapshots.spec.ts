@@ -423,12 +423,28 @@ describe('getGridsForAssetClass — scope strict SHORT (SHORT-SHADOW)', () => {
     expect(grids.every((g) => g.direction !== 'short')).toBe(true);
   });
 
-  it('eu_equity, asia_equity, crypto_major retournent 5 grids LONG (scope strict)', () => {
-    for (const cls of ['eu_equity', 'asia_equity', 'crypto_major', 'crypto_alt']) {
+  it('eu_equity, asia_equity, crypto_alt retournent 5 grids LONG (scope strict)', () => {
+    for (const cls of ['eu_equity', 'asia_equity', 'crypto_alt']) {
       const grids = getGridsForAssetClass(cls);
       expect(grids).toHaveLength(5);
       expect(grids.every((g) => g.direction !== 'short')).toBe(true);
     }
+  });
+
+  it('crypto_major retourne 5 LONG + 6 SHORT crypto (vol-adjusted TP/SL)', () => {
+    const grids = getGridsForAssetClass('crypto_major');
+    expect(grids).toHaveLength(11);
+    const shortKeys = grids.filter((g) => g.direction === 'short').map((g) => g.key);
+    expect(shortKeys).toEqual([
+      'short_crypto_baseline_30m', 'short_crypto_baseline_60m',
+      'short_crypto_tight_30m', 'short_crypto_tight_60m',
+      'short_crypto_wide_30m', 'short_crypto_wide_60m',
+    ]);
+    // baseline crypto = TP 1% / SL 2% (asymétrique fade)
+    const baseline = grids.find((g) => g.key === 'short_crypto_baseline_60m')!;
+    expect(baseline.tpPct).toBeCloseTo(0.010);
+    expect(baseline.slPct).toBeCloseTo(0.020);
+    expect(baseline.direction).toBe('short');
   });
 
   it('grille trailing présente sur toutes les classes (gb 1.5%, activation +2%, plancher 0.9%)', () => {

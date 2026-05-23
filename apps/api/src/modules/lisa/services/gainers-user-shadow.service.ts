@@ -121,11 +121,32 @@ export function getGridsForAssetClass(assetClass: string): SimGrid[] {
     { key: 'trail_gb15_60m', tpPct: 0.020, slPct: 0.009, windowMin: 60, direction: 'long', givebackPct: 0.015 },
   ];
 
-  if (assetClass !== 'us_equity_small_mid') {
+  if (assetClass !== 'us_equity_small_mid' && assetClass !== 'crypto_major') {
     return longGrids;
   }
 
-  // SHORT grids — SCOPE STRICT us_equity_small_mid uniquement
+  // SHORT grids — SCOPE us_equity_small_mid + crypto_major
+  // Crypto a volatilité 2-3× supérieure à equity small/mid → TP/SL plus larges
+  // ajustés pour capter mean-reversion sans être stoppé sur le bruit normal.
+  // Justification empirique (23/05/2026, n=1778 crypto major signals) :
+  //   - LONG >7% pop : -0.92% mean, 14% WR → 86% perdent en LONG = 86% target TP en SHORT
+  //   - 86% × 1% TP - 14% × 2% SL = +0.58% expectancy théorique (à confirmer measurement)
+  if (assetClass === 'crypto_major') {
+    return [
+      ...longGrids,
+      // Spec user (23/05) : TP 1.0% / SL 2.0% — fade asymétrique
+      { key: 'short_crypto_baseline_30m', tpPct: 0.010, slPct: 0.020, windowMin: 30, direction: 'short' },
+      { key: 'short_crypto_baseline_60m', tpPct: 0.010, slPct: 0.020, windowMin: 60, direction: 'short' },
+      // Tighter scalp — capture rapide du retracement
+      { key: 'short_crypto_tight_30m', tpPct: 0.005, slPct: 0.010, windowMin: 30, direction: 'short' },
+      { key: 'short_crypto_tight_60m', tpPct: 0.005, slPct: 0.010, windowMin: 60, direction: 'short' },
+      // Wider — laisse courir un vrai dump
+      { key: 'short_crypto_wide_30m', tpPct: 0.020, slPct: 0.040, windowMin: 30, direction: 'short' },
+      { key: 'short_crypto_wide_60m', tpPct: 0.020, slPct: 0.040, windowMin: 60, direction: 'short' },
+    ];
+  }
+
+  // SHORT grids — us_equity_small_mid (existant)
   return [
     ...longGrids,
     // Mirror LONG baseline (apples-to-apples comparison)
