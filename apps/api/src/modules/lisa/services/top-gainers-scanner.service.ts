@@ -42,6 +42,7 @@ import { AssetClassTpSlConfigService } from './asset-class-tpsl-config.service';
 import { EodhdQuotaService } from './eodhd-quota.service';
 import { EodhdCalendarService } from './eodhd-calendar.service';
 import { EodhdNewsService } from './eodhd-news.service';
+import { SymbolAtrCacheService } from './symbol-atr-cache.service';
 import { MacroVetoService } from './macro-veto.service';
 import { GainersUserShadowService, type ShadowDecision } from './gainers-user-shadow.service';
 import { dollarVolumeUsd, passesLiquidityFloor } from './gainers-liquidity.helper';
@@ -632,6 +633,12 @@ export class TopGainersScannerService implements OnModuleInit {
      * pour ne pas casser la position des params déjà utilisés dans les tests.
      */
     @Optional() private readonly eodhdNews?: EodhdNewsService,
+    /**
+     * Phase C — Cache ATR par symbole (volatilité native). @Optional pour
+     * back-compat tests. Quand undefined ou env GAINERS_MAX_ATR_RATIO_PCT=0,
+     * no-op silencieux. Append en fin pour ne pas casser les tests existants.
+     */
+    @Optional() private readonly symbolAtrCache?: SymbolAtrCacheService,
   ) {}
 
   /**
@@ -2266,6 +2273,24 @@ export class TopGainersScannerService implements OnModuleInit {
             `[top-gainers] ${cand.symbol} signal age ${signalAgeSec.toFixed(1)}s > ${maxSignalAgeSec}s → skip (stale, pop digéré)`,
           );
           recordShadowDecision(cand, 'reject_signal_stale', undefined);
+          continue;
+        }
+      }
+
+      // Phase C — Gate volatilité native (ATR/close > seuil).
+      // Constat data 15j : 86% stops EU/Asia small-cap viennent de tickers ATR>3%.
+      // Skip si l'ATR daily / close > X% (default 2.5%, aligné Stratégie 2
+      // Regime Detection). Fail-open si cache vide ou stale (>48h).
+      // Crypto exempt (cache equity only en V1).
+      // GAINERS_MAX_ATR_RATIO_PCT=0 default = OFF (back-compat).
+      const maxAtrRatioPct = Number(this.config.get<string>('GAINERS_MAX_ATR_RATIO_PCT') ?? '0');
+      if (maxAtrRatioPct > 0 && this.symbolAtrCache && !cand.symbol.endsWith('USDT')) {
+        const ratio = await this.symbolAtrCache.getAtrRatio(cand.symbol);
+        if (ratio !== null && ratio > maxAtrRatioPct) {
+          this.logger.log(
+            `[top-gainers] ${cand.symbol} ATR ratio ${ratio.toFixed(2)}% > ${maxAtrRatioPct}% → skip (volatile regime)`,
+          );
+          recordShadowDecision(cand, 'reject_volatile_regime', undefined);
           continue;
         }
       }

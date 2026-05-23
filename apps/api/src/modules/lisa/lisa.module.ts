@@ -64,6 +64,7 @@ import { ScannerLlmRouterService } from './services/scanner-llm-router.service';
 import { DailyCatalystBriefService } from './services/daily-catalyst-brief.service';
 import { EodhdNewsService } from './services/eodhd-news.service';
 import { EodhdNewsCollectorService } from './services/eodhd-news-collector.service';
+import { SymbolAtrCacheService } from './services/symbol-atr-cache.service';
 import { EodhdEconomicEventsService } from './services/eodhd-economic-events.service';
 import { MacroVetoService } from './services/macro-veto.service';
 // Phase B — Weekly P9 ML refit cron auto-logging insights
@@ -190,6 +191,7 @@ import { IntradayProviderRouter } from './services/intraday-provider-router.serv
     // Étape 1 — news EODHD persistées (fondation grounding Gemini)
     EodhdNewsService,
     EodhdNewsCollectorService,
+    SymbolAtrCacheService,
     EodhdEconomicEventsService,
     // PR Action 3 — LLM macro veto cron hourly (gate scanner cycle entries)
     MacroVetoService,
