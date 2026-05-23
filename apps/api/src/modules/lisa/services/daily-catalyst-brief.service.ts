@@ -135,7 +135,27 @@ export class DailyCatalystBriefService {
       return brief;
     }
 
-    const { error } = await this.supabase.getClient().from('lisa_decision_log').insert({
+    // FIX: lisa_decision_log.portfolio_id est NOT NULL → on insère 1 ligne par
+    // portfolio en mode gainers actif. Sans ça, l'insert échouait silencieusement
+    // et getLatestBrief retournait toujours null malgré que Gemini réponde.
+    const { data: portfolios, error: cfgErr } = await this.supabase
+      .getClient()
+      .from('lisa_session_configs')
+      .select('portfolio_id')
+      .eq('strategy_mode', 'gainers')
+      .eq('autopilot_enabled', true);
+    if (cfgErr) {
+      this.logger.warn(`[daily-brief] cannot list gainers portfolios: ${cfgErr.message}`);
+      return brief;
+    }
+    const targetPortfolios = (portfolios ?? []) as Array<{ portfolio_id: string }>;
+    if (targetPortfolios.length === 0) {
+      this.logger.log('[daily-brief] no active gainers portfolio → skip persist (brief generated but not stored)');
+      return brief;
+    }
+
+    const rows = targetPortfolios.map((p) => ({
+      portfolio_id: p.portfolio_id,
       kind: 'daily_catalyst_brief',
       summary: brief.summary.slice(0, 500),
       rationale: `Gemini daily catalyst brief — provider=${llmResult.providerId} costUsd=${llmResult.costUsd.toFixed(6)}`,
@@ -146,12 +166,14 @@ export class DailyCatalystBriefService {
         llm_latency_ms: llmResult.latencyMs,
         fallback_used: llmResult.fallbackUsed,
       },
-    });
+    }));
+
+    const { error } = await this.supabase.getClient().from('lisa_decision_log').insert(rows);
     if (error) {
       this.logger.warn(`[daily-brief] persist failed: ${error.message}`);
     } else {
       this.logger.log(
-        `[daily-brief] persisted (events=${brief.macro_events?.length ?? 0} watch=${brief.tickers_to_watch?.length ?? 0} avoid=${brief.tickers_to_avoid?.length ?? 0})`,
+        `[daily-brief] persisted ${rows.length}× (events=${brief.macro_events?.length ?? 0} watch=${brief.tickers_to_watch?.length ?? 0} avoid=${brief.tickers_to_avoid?.length ?? 0})`,
       );
     }
     return brief;

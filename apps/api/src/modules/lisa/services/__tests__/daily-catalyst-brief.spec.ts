@@ -16,29 +16,42 @@ const econ = (upcoming: any[] = []) => ({
   getUpcomingEvents: async () => upcoming,
 }) as any;
 
-function makeSupabase(opts: { ready?: boolean; latestPayload?: unknown; insertErr?: string }) {
+function makeSupabase(opts: { ready?: boolean; latestPayload?: unknown; insertErr?: string; portfolios?: Array<{ portfolio_id: string }> }) {
   const inserted: unknown[] = [];
+  // Default: 1 portfolio en gainers actif (cas prod normal)
+  const portfolios = opts.portfolios !== undefined ? opts.portfolios : [{ portfolio_id: 'p1' }];
   return {
     inserted,
     svc: {
       isReady: () => opts.ready !== false,
       getClient: () => ({
-        from: (_t: string) => ({
-          insert: async (row: unknown) => {
-            inserted.push(row);
-            return { error: opts.insertErr ? { message: opts.insertErr } : null };
-          },
-          select: () => ({
-            eq: () => ({
-              order: () => ({
-                limit: async () => ({
-                  data: opts.latestPayload !== undefined ? [{ payload: opts.latestPayload }] : [],
-                  error: null,
+        from: (table: string) => {
+          if (table === 'lisa_session_configs') {
+            // FIX-PR: select gainers portfolios — chain .eq().eq()
+            return {
+              select: () => ({
+                eq: () => ({ eq: async () => ({ data: portfolios, error: null }) }),
+              }),
+            };
+          }
+          // lisa_decision_log
+          return {
+            insert: async (row: unknown) => {
+              inserted.push(row);
+              return { error: opts.insertErr ? { message: opts.insertErr } : null };
+            },
+            select: () => ({
+              eq: () => ({
+                order: () => ({
+                  limit: async () => ({
+                    data: opts.latestPayload !== undefined ? [{ payload: opts.latestPayload }] : [],
+                    error: null,
+                  }),
                 }),
               }),
             }),
-          }),
-        }),
+          };
+        },
       }),
     } as any,
   };
@@ -118,10 +131,13 @@ describe('DailyCatalystBriefService', () => {
       expect(b).not.toBeNull();
       expect(b!.summary).toContain('PCE');
       expect(sb.inserted).toHaveLength(1);
-      const row = sb.inserted[0] as { kind: string; payload: any };
-      expect(row.kind).toBe('daily_catalyst_brief');
-      expect(row.payload.summary).toContain('PCE');
-      expect(row.payload.llm_provider).toBe('gemini-flash-lite');
+      // FIX-PR: insert reçoit un array de rows (1 par portfolio gainers actif)
+      const rows = sb.inserted[0] as Array<{ portfolio_id: string; kind: string; payload: any }>;
+      expect(rows).toHaveLength(1);
+      expect(rows[0].portfolio_id).toBe('p1');
+      expect(rows[0].kind).toBe('daily_catalyst_brief');
+      expect(rows[0].payload.summary).toContain('PCE');
+      expect(rows[0].payload.llm_provider).toBe('gemini-flash-lite');
     });
 
     it('LLM échoue → null, pas de crash, pas de persist', async () => {
@@ -144,6 +160,24 @@ describe('DailyCatalystBriefService', () => {
       const b = await svc.generateAndPersistBrief();
       expect(b).not.toBeNull();
       expect(sb.inserted).toHaveLength(0);
+    });
+
+    it('FIX-PR: aucun portfolio gainers actif → skip persist (pas de crash NOT NULL portfolio_id)', async () => {
+      const sb = makeSupabase({ portfolios: [] });
+      const svc = new DailyCatalystBriefService(cfg(), sb.svc, makeLlm(SAMPLE_BRIEF_JSON), econ());
+      const b = await svc.generateAndPersistBrief();
+      expect(b).not.toBeNull();
+      expect(sb.inserted).toHaveLength(0);
+    });
+
+    it('FIX-PR: 2 portfolios gainers → 1 insert avec 2 rows (1 par portfolio)', async () => {
+      const sb = makeSupabase({ portfolios: [{ portfolio_id: 'p1' }, { portfolio_id: 'p2' }] });
+      const svc = new DailyCatalystBriefService(cfg(), sb.svc, makeLlm(SAMPLE_BRIEF_JSON), econ());
+      await svc.generateAndPersistBrief();
+      expect(sb.inserted).toHaveLength(1);
+      const rows = sb.inserted[0] as Array<{ portfolio_id: string }>;
+      expect(rows).toHaveLength(2);
+      expect(rows.map((r) => r.portfolio_id)).toEqual(['p1', 'p2']);
     });
   });
 
