@@ -41,6 +41,7 @@ import { PersistenceProbabilityService } from './persistence-probability.service
 import { AssetClassTpSlConfigService } from './asset-class-tpsl-config.service';
 import { EodhdQuotaService } from './eodhd-quota.service';
 import { EodhdCalendarService } from './eodhd-calendar.service';
+import { EodhdNewsService } from './eodhd-news.service';
 import { MacroVetoService } from './macro-veto.service';
 import { GainersUserShadowService, type ShadowDecision } from './gainers-user-shadow.service';
 import { dollarVolumeUsd, passesLiquidityFloor } from './gainers-liquidity.helper';
@@ -624,6 +625,13 @@ export class TopGainersScannerService implements OnModuleInit {
      * eu 3.25%, etc.). Le flag GAINERS_TPSL_MATRIX_ENABLED gate l'activation.
      */
     @Optional() private readonly tpSlConfig?: AssetClassTpSlConfigService,
+    /**
+     * Phase 2 — EODHD news persisté (Étape 1 fondation). @Optional pour back-compat
+     * tests existants. Quand undefined ou env GAINERS_NEWS_AGE_FILTER_HOURS=0 →
+     * news filter no-op silencieux. Activé via env. Append en fin de signature
+     * pour ne pas casser la position des params déjà utilisés dans les tests.
+     */
+    @Optional() private readonly eodhdNews?: EodhdNewsService,
   ) {}
 
   /**
@@ -2399,6 +2407,45 @@ export class TopGainersScannerService implements OnModuleInit {
           }
         } catch {
           // Earnings fetch fail = proceed (fail-safe, ne bloque pas le trade)
+        }
+      }
+
+      // Phase 2 — Filtre news pré-trade : skip si news EODHD strong_pos (≥ X)
+      // dans les N heures pré-entrée. Justification empirique (23/05/2026,
+      // cross-réf 87 trades US/15j) :
+      //   - trades sans news 24h pré-entry : +0.08% mean (n=29, WR 48%)
+      //   - trades avec news strong_pos 24h : -0.18% mean (n=58, WR 41%)
+      //   - inertie : T-1h = -0.79% / T-4h = -0.36% / T-24h = -0.47%
+      // Plus la news est fraîche, pire on entre (on chase the top).
+      //
+      // Default 0 = OFF. Lit STRICTEMENT la DB (jamais d'appel API live ici)
+      // pour rester O(1) et ne pas exploser la quota côté candidate loop.
+      // Crypto + Asia + EU exemptés (EODHD news coverage médiocre hors US).
+      const newsAgeHours = Number(this.config.get<string>('GAINERS_NEWS_AGE_FILTER_HOURS') ?? '0');
+      const newsMinSentiment = Number(this.config.get<string>('GAINERS_NEWS_AGE_FILTER_MIN_SENTIMENT') ?? '0.5');
+      if (
+        newsAgeHours > 0 &&
+        this.eodhdNews &&
+        cand.symbol.endsWith('.US') &&
+        (cand.assetClass === 'us_equity_large' || cand.assetClass === 'us_equity_small_mid')
+      ) {
+        try {
+          const recent = await this.eodhdNews.getRecentNewsForTicker(cand.symbol, newsAgeHours);
+          const strongPos = recent.find(
+            (n) => typeof n.sentiment_polarity === 'number' && n.sentiment_polarity >= newsMinSentiment,
+          );
+          if (strongPos) {
+            const ageMin = Math.floor(
+              (Date.now() - new Date(strongPos.published_at).getTime()) / 60_000,
+            );
+            this.logger.log(
+              `[top-gainers] ${cand.symbol} news strong_pos (polarity=${strongPos.sentiment_polarity}) il y a ${ageMin}min → skip (Phase 2 anti chase-post-news)`,
+            );
+            recordShadowDecision(cand, 'reject_post_news_fresh_strong_pos', undefined);
+            continue;
+          }
+        } catch {
+          // News fetch fail = proceed (fail-safe)
         }
       }
 
