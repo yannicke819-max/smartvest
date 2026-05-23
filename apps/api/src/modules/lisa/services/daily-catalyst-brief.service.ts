@@ -157,6 +157,9 @@ export class DailyCatalystBriefService {
     const rows = targetPortfolios.map((p) => ({
       portfolio_id: p.portfolio_id,
       kind: 'daily_catalyst_brief',
+      // triggered_by est NOT NULL + CHECK constraint (valeurs limitées). On
+      // utilise 'autopilot_cron' (sémantique compatible : cron périodique).
+      triggered_by: 'autopilot_cron',
       summary: brief.summary.slice(0, 500),
       rationale: `Gemini daily catalyst brief — provider=${llmResult.providerId} costUsd=${llmResult.costUsd.toFixed(6)}`,
       payload: {
