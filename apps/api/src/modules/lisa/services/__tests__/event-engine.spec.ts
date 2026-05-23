@@ -35,6 +35,9 @@ function makeSupabase(opts: {
             return {
               select: () => ({
                 eq: () => ({
+                  // D-3 chain : eq().limit() direct (forceCloseExpired)
+                  limit: async () => ({ data: [], error: null }),
+                  // D-1 chain : eq().gte().lte().limit() (takePreSnapshots)
                   gte: () => ({
                     lte: () => ({
                       limit: async () => ({ data: opts.scheduledTrades ?? [], error: null }),
@@ -42,6 +45,7 @@ function makeSupabase(opts: {
                     }),
                   }),
                 }),
+                // listUpcoming chain : select().gte().lte().order()
                 gte: () => ({ lte: () => ({ order: async () => ({ data: opts.scheduledTrades ?? [], error: null }) }) }),
               }),
               insert: async (row: unknown) => { inserts.push(row); return { error: null }; },
@@ -111,7 +115,7 @@ describe('EventEngineService.tick (scaffolding)', () => {
     const sb = makeSupabase();
     const svc = new EventEngineService(cfg(), sb.svc, makeLisa());
     expect(svc.isEnabled()).toBe(false);
-    expect(await svc.tick()).toEqual({ scheduled: 0, snapshotsTaken: 0 });
+    expect(await svc.tick()).toEqual({ scheduled: 0, snapshotsTaken: 0, triggered: 0, forceClosed: 0 });
     expect(sb.inserts).toHaveLength(0);
   });
 
@@ -181,5 +185,252 @@ describe('EventEngineService.listUpcoming', () => {
     const sb = makeSupabase({ ready: false });
     const svc = new EventEngineService(cfg(), sb.svc, makeLisa());
     expect(await svc.listUpcoming(48)).toEqual([]);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────
+// D-2 — evaluateTriggers
+// ──────────────────────────────────────────────────────────────────
+
+function makeTriggerSupabase(opts: {
+  preSnapshotRows: Array<{ id: number; snapshot_price: number; event_date: string; symbol: string; event_name?: string; event_country?: string; status?: string; snapshot_taken_at?: string | null }>;
+}) {
+  const updates: Array<{ id: unknown; row: Record<string, unknown> }> = [];
+  return {
+    updates,
+    svc: {
+      isReady: () => true,
+      getClient: () => ({
+        from: (t: string) => {
+          if (t === 'event_engine_trades') {
+            return {
+              select: () => ({
+                eq: (_col: string, value: string) => ({
+                  // Pre-snapshot path
+                  gte: () => ({
+                    lte: () => ({
+                      limit: async () => ({
+                        data: value === 'pre_snapshot'
+                          ? opts.preSnapshotRows.map((r) => ({
+                              id: r.id, event_name: r.event_name ?? 'Test Event',
+                              event_country: r.event_country ?? 'US',
+                              event_date: r.event_date, symbol: r.symbol,
+                              status: 'pre_snapshot', snapshot_price: r.snapshot_price,
+                              snapshot_taken_at: r.snapshot_taken_at ?? new Date().toISOString(),
+                            }))
+                          : [],
+                        error: null,
+                      }),
+                    }),
+                  }),
+                }),
+                gte: () => ({ lte: () => ({ in: async () => ({ data: [], error: null }) }) }),
+              }),
+              insert: async () => ({ error: null }),
+              update: (row: Record<string, unknown>) => ({
+                eq: async (_col: string, id: unknown) => { updates.push({ id, row }); return { error: null }; },
+              }),
+            };
+          }
+          if (t === 'eodhd_economic_events') {
+            return { select: () => ({ gte: () => ({ lte: () => ({ in: async () => ({ data: [], error: null }) }) }) }) };
+          }
+          return {};
+        },
+      }),
+    } as any,
+  };
+}
+
+describe('EventEngineService.evaluateTriggers (D-2)', () => {
+  it('delta > 0.3% → status=triggered direction=long', async () => {
+    const pastEvent = new Date(Date.now() - 7 * 60_000).toISOString();  // event T-7min, in [T-10, T-5] window
+    const sb = makeTriggerSupabase({
+      preSnapshotRows: [{ id: 1, snapshot_price: 100, event_date: pastEvent, symbol: 'SPY.US' }],
+    });
+    const svc = new EventEngineService(cfg({ EVENT_ENGINE_ENABLED: 'true' }), sb.svc, makeLisa({ price: 100.50 }));
+    const r = await svc.evaluateTriggers(new Date());
+    expect(r).toBe(1);
+    const upd = sb.updates[0]?.row;
+    expect(upd?.status).toBe('triggered');
+    expect(upd?.trigger_direction).toBe('long');
+    expect(Number(upd?.trigger_delta_pct)).toBeCloseTo(0.5, 1);
+  });
+
+  it('delta < -0.3% → status=triggered direction=short', async () => {
+    const pastEvent = new Date(Date.now() - 7 * 60_000).toISOString();
+    const sb = makeTriggerSupabase({
+      preSnapshotRows: [{ id: 1, snapshot_price: 100, event_date: pastEvent, symbol: 'SPY.US' }],
+    });
+    const svc = new EventEngineService(cfg({ EVENT_ENGINE_ENABLED: 'true' }), sb.svc, makeLisa({ price: 99.40 }));
+    const r = await svc.evaluateTriggers(new Date());
+    expect(r).toBe(1);
+    const upd = sb.updates[0]?.row;
+    expect(upd?.status).toBe('triggered');
+    expect(upd?.trigger_direction).toBe('short');
+  });
+
+  it('delta < seuil → status=skipped (pas de direction valide)', async () => {
+    const pastEvent = new Date(Date.now() - 7 * 60_000).toISOString();
+    const sb = makeTriggerSupabase({
+      preSnapshotRows: [{ id: 1, snapshot_price: 100, event_date: pastEvent, symbol: 'SPY.US' }],
+    });
+    const svc = new EventEngineService(cfg({ EVENT_ENGINE_ENABLED: 'true' }), sb.svc, makeLisa({ price: 100.10 }));
+    const r = await svc.evaluateTriggers(new Date());
+    expect(r).toBe(0);
+    const upd = sb.updates[0]?.row;
+    expect(upd?.status).toBe('skipped');
+    expect(upd?.trigger_direction).toBeNull();
+  });
+
+  it('source fallback → skip silencieux (anti-bug)', async () => {
+    const pastEvent = new Date(Date.now() - 7 * 60_000).toISOString();
+    const sb = makeTriggerSupabase({
+      preSnapshotRows: [{ id: 1, snapshot_price: 100, event_date: pastEvent, symbol: 'SPY.US' }],
+    });
+    const svc = new EventEngineService(
+      cfg({ EVENT_ENGINE_ENABLED: 'true' }),
+      sb.svc,
+      makeLisa({ price: 0, source: 'fallback_unknown' }),
+    );
+    expect(await svc.evaluateTriggers(new Date())).toBe(0);
+    expect(sb.updates).toHaveLength(0);
+  });
+
+  it('seuil configurable EVENT_ENGINE_MIN_TRIGGER_DELTA_PCT', async () => {
+    const pastEvent = new Date(Date.now() - 7 * 60_000).toISOString();
+    const sb1 = makeTriggerSupabase({ preSnapshotRows: [{ id: 1, snapshot_price: 100, event_date: pastEvent, symbol: 'SPY.US' }] });
+    const sb2 = makeTriggerSupabase({ preSnapshotRows: [{ id: 1, snapshot_price: 100, event_date: pastEvent, symbol: 'SPY.US' }] });
+    // delta 0.4% : avec seuil 0.5% → skipped, avec seuil 0.3% → triggered
+    const strict = new EventEngineService(cfg({ EVENT_ENGINE_ENABLED: 'true', EVENT_ENGINE_MIN_TRIGGER_DELTA_PCT: '0.005' }), sb1.svc, makeLisa({ price: 100.40 }));
+    const lax = new EventEngineService(cfg({ EVENT_ENGINE_ENABLED: 'true', EVENT_ENGINE_MIN_TRIGGER_DELTA_PCT: '0.003' }), sb2.svc, makeLisa({ price: 100.40 }));
+    expect(await strict.evaluateTriggers(new Date())).toBe(0);
+    expect(await lax.evaluateTriggers(new Date())).toBe(1);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────
+// D-3 — forceCloseExpired
+// ──────────────────────────────────────────────────────────────────
+
+function makeForceCloseSupabase(opts: {
+  triggeredRows: Array<{ id: number; event_name?: string; event_date: string; symbol: string; trigger_price: number; trigger_direction: 'long' | 'short'; raw_payload?: { window_min?: number } }>;
+}) {
+  const updates: Array<{ id: unknown; row: Record<string, unknown> }> = [];
+  return {
+    updates,
+    svc: {
+      isReady: () => true,
+      getClient: () => ({
+        from: (t: string) => {
+          if (t === 'event_engine_trades') {
+            return {
+              select: () => ({
+                eq: (_col: string, value: string) => ({
+                  limit: async () => ({
+                    data: value === 'triggered'
+                      ? opts.triggeredRows.map((r) => ({
+                          id: r.id,
+                          event_name: r.event_name ?? 'Test Event',
+                          event_date: r.event_date,
+                          symbol: r.symbol,
+                          trigger_price: r.trigger_price,
+                          trigger_direction: r.trigger_direction,
+                          trigger_taken_at: new Date().toISOString(),
+                          raw_payload: r.raw_payload ?? { window_min: 30 },
+                        }))
+                      : [],
+                    error: null,
+                  }),
+                  gte: () => ({ lte: () => ({ limit: async () => ({ data: [], error: null }) }) }),
+                }),
+              }),
+              update: (row: Record<string, unknown>) => ({
+                eq: async (_col: string, id: unknown) => { updates.push({ id, row }); return { error: null }; },
+              }),
+            };
+          }
+          return {};
+        },
+      }),
+    } as any,
+  };
+}
+
+describe('EventEngineService.forceCloseExpired (D-3)', () => {
+  it('long en gain : pnl_net = gross - 0.1% frais', async () => {
+    // Event T-31min, window 30 → close deadline T-1min (expirée)
+    const event = new Date(Date.now() - 31 * 60_000).toISOString();
+    const sb = makeForceCloseSupabase({
+      triggeredRows: [{ id: 1, event_date: event, symbol: 'SPY.US', trigger_price: 100, trigger_direction: 'long' }],
+    });
+    const svc = new EventEngineService(cfg({ EVENT_ENGINE_ENABLED: 'true' }), sb.svc, makeLisa({ price: 101.50 }));
+    const r = await svc.forceCloseExpired(new Date());
+    expect(r).toBe(1);
+    const upd = sb.updates[0]?.row;
+    expect(upd?.status).toBe('force_closed');
+    expect(upd?.exit_price).toBe(101.50);
+    // gross = 1.5%, net = 1.5% - 0.1% = 1.4%
+    expect(Number(upd?.realized_pnl_pct)).toBeCloseTo(1.4, 2);
+  });
+
+  it('long en perte : pnl_net négatif inclut frais', async () => {
+    const event = new Date(Date.now() - 31 * 60_000).toISOString();
+    const sb = makeForceCloseSupabase({
+      triggeredRows: [{ id: 1, event_date: event, symbol: 'SPY.US', trigger_price: 100, trigger_direction: 'long' }],
+    });
+    const svc = new EventEngineService(cfg({ EVENT_ENGINE_ENABLED: 'true' }), sb.svc, makeLisa({ price: 99.20 }));
+    await svc.forceCloseExpired(new Date());
+    const upd = sb.updates[0]?.row;
+    // gross = -0.8%, net = -0.8% - 0.1% = -0.9%
+    expect(Number(upd?.realized_pnl_pct)).toBeCloseTo(-0.9, 2);
+  });
+
+  it('short en gain : prix baisse → pnl_net positif', async () => {
+    const event = new Date(Date.now() - 31 * 60_000).toISOString();
+    const sb = makeForceCloseSupabase({
+      triggeredRows: [{ id: 1, event_date: event, symbol: 'SPY.US', trigger_price: 100, trigger_direction: 'short' }],
+    });
+    const svc = new EventEngineService(cfg({ EVENT_ENGINE_ENABLED: 'true' }), sb.svc, makeLisa({ price: 98.50 }));
+    await svc.forceCloseExpired(new Date());
+    const upd = sb.updates[0]?.row;
+    // gross = +1.5% (short de 100→98.5), net = 1.4%
+    expect(upd?.trigger_direction).toBeUndefined();  // pas dans le UPDATE
+    expect(Number(upd?.realized_pnl_pct)).toBeCloseTo(1.4, 2);
+  });
+
+  it('window non expirée → skip (pas de close)', async () => {
+    // Event T-10min, window 30 → close deadline T+20min (futur)
+    const event = new Date(Date.now() - 10 * 60_000).toISOString();
+    const sb = makeForceCloseSupabase({
+      triggeredRows: [{ id: 1, event_date: event, symbol: 'SPY.US', trigger_price: 100, trigger_direction: 'long' }],
+    });
+    const svc = new EventEngineService(cfg({ EVENT_ENGINE_ENABLED: 'true' }), sb.svc, makeLisa({ price: 102 }));
+    expect(await svc.forceCloseExpired(new Date())).toBe(0);
+    expect(sb.updates).toHaveLength(0);
+  });
+
+  it('source fallback → ne close pas (réessaie tick suivant)', async () => {
+    const event = new Date(Date.now() - 31 * 60_000).toISOString();
+    const sb = makeForceCloseSupabase({
+      triggeredRows: [{ id: 1, event_date: event, symbol: 'SPY.US', trigger_price: 100, trigger_direction: 'long' }],
+    });
+    const svc = new EventEngineService(
+      cfg({ EVENT_ENGINE_ENABLED: 'true' }),
+      sb.svc,
+      makeLisa({ price: 0, source: 'fallback_unknown' }),
+    );
+    expect(await svc.forceCloseExpired(new Date())).toBe(0);
+    expect(sb.updates).toHaveLength(0);
+  });
+
+  it('window_min custom respecté (event_category 20min)', async () => {
+    // Event T-21min, window 20 → close deadline T-1min (expirée)
+    const event = new Date(Date.now() - 21 * 60_000).toISOString();
+    const sb = makeForceCloseSupabase({
+      triggeredRows: [{ id: 1, event_date: event, symbol: 'SPY.US', trigger_price: 100, trigger_direction: 'long', raw_payload: { window_min: 20 } }],
+    });
+    const svc = new EventEngineService(cfg({ EVENT_ENGINE_ENABLED: 'true' }), sb.svc, makeLisa({ price: 100.5 }));
+    expect(await svc.forceCloseExpired(new Date())).toBe(1);
   });
 });

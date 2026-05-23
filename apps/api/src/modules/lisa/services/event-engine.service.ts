@@ -42,6 +42,14 @@ interface ScheduledTrade {
 const WATCH_HORIZON_MIN = 30;        // Scout events dans les 30 prochaines min
 const PRE_SNAPSHOT_OFFSET_MIN = 5;   // Snapshot prix T-5min
 
+// D-2 — Fenêtre trigger : T+5min → T+10min après event.
+// Avant T+5min : volatilité trop chaotique (gaps, premier rebond).
+// Après T+10min : direction stabilisée, on entre si delta > seuil.
+const TRIGGER_DELAY_MIN = 5;
+const TRIGGER_WINDOW_MIN = 10;
+// Delta directionnel minimal pour valider un trigger (default 0.3%).
+const DEFAULT_MIN_TRIGGER_DELTA_PCT = 0.003;
+
 @Injectable()
 export class EventEngineService {
   private readonly logger = new Logger(EventEngineService.name);
@@ -72,8 +80,8 @@ export class EventEngineService {
   }
 
   /** Visible pour tests/CLI. */
-  async tick(): Promise<{ scheduled: number; snapshotsTaken: number }> {
-    if (!this.supabase.isReady()) return { scheduled: 0, snapshotsTaken: 0 };
+  async tick(): Promise<{ scheduled: number; snapshotsTaken: number; triggered: number; forceClosed: number }> {
+    if (!this.supabase.isReady()) return { scheduled: 0, snapshotsTaken: 0, triggered: 0, forceClosed: 0 };
     const now = new Date();
 
     // 1. Schedule events à venir (next 30min, importance high/medium)
@@ -82,7 +90,13 @@ export class EventEngineService {
     // 2. Take snapshots pour events à T-5min
     const snapshotsTaken = await this.takePreSnapshots(now);
 
-    return { scheduled, snapshotsTaken };
+    // 3. D-2 — Évalue les triggers post-event T+5min → T+10min
+    const triggered = await this.evaluateTriggers(now);
+
+    // 4. D-3 — Force-close des trades triggered dont le window est expiré
+    const forceClosed = await this.forceCloseExpired(now);
+
+    return { scheduled, snapshotsTaken, triggered, forceClosed };
   }
 
   /**
@@ -169,6 +183,161 @@ export class EventEngineService {
       }
     }
     return taken;
+  }
+
+  /**
+   * Phase D-2 — Évalue les triggers post-event.
+   *
+   * Pour chaque row status='pre_snapshot' dont l'event_date est dans
+   * [now - TRIGGER_WINDOW_MIN, now - TRIGGER_DELAY_MIN] :
+   *   - Fetch prix courant
+   *   - delta = (current - snapshot) / snapshot
+   *   - Si |delta| >= minDeltaPct → trigger 'long' (delta>0) ou 'short' (delta<0)
+   *     - status='triggered', trigger_price/direction/delta/taken_at persistés
+   *   - Sinon → status='skipped' (pas assez de mouvement, pas d'edge)
+   *
+   * V1 (shadow only) : on ENREGISTRE le trigger mais on N'OUVRE PAS de position.
+   * D-3 ajoutera la force-close à T+window pour mesurer le P&L théorique.
+   */
+  async evaluateTriggers(now: Date): Promise<number> {
+    const triggerWindowStart = new Date(now.getTime() - TRIGGER_WINDOW_MIN * 60_000);
+    const triggerWindowEnd = new Date(now.getTime() - TRIGGER_DELAY_MIN * 60_000);
+    const minDeltaPct = Number(
+      this.config.get<string>('EVENT_ENGINE_MIN_TRIGGER_DELTA_PCT') ?? String(DEFAULT_MIN_TRIGGER_DELTA_PCT),
+    );
+
+    const { data: rows, error } = await this.supabase
+      .getClient()
+      .from('event_engine_trades')
+      .select('id, event_name, event_country, event_date, symbol, status, snapshot_price, snapshot_taken_at')
+      .eq('status', 'pre_snapshot')
+      .gte('event_date', triggerWindowStart.toISOString())
+      .lte('event_date', triggerWindowEnd.toISOString())
+      .limit(50);
+    if (error || !rows || rows.length === 0) return 0;
+
+    let triggered = 0;
+    for (const row of rows as ScheduledTrade[]) {
+      const snapshotPrice = Number(row.snapshot_price);
+      if (!Number.isFinite(snapshotPrice) || snapshotPrice <= 0) continue;
+      const quote = await this.lisa.getLivePrice(row.symbol).catch(() => null);
+      if (!quote) continue;
+      const currentPrice = typeof quote.price === 'number' ? quote.price : Number(quote.price);
+      if (!Number.isFinite(currentPrice) || currentPrice <= 0) continue;
+      if (typeof quote.source === 'string' && quote.source.startsWith('fallback')) continue;
+
+      const deltaPct = (currentPrice - snapshotPrice) / snapshotPrice;
+      let newStatus: 'triggered' | 'skipped';
+      let direction: 'long' | 'short' | null = null;
+
+      if (Math.abs(deltaPct) >= minDeltaPct) {
+        newStatus = 'triggered';
+        direction = deltaPct > 0 ? 'long' : 'short';
+      } else {
+        newStatus = 'skipped';
+      }
+
+      const { error: updErr } = await this.supabase.getClient()
+        .from('event_engine_trades')
+        .update({
+          status: newStatus,
+          trigger_price: currentPrice,
+          trigger_direction: direction,
+          trigger_delta_pct: deltaPct * 100,  // stocké en %
+          trigger_taken_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', row.id);
+      if (!updErr) {
+        if (newStatus === 'triggered') {
+          triggered++;
+          this.logger.log(
+            `[event-engine] TRIGGER ${row.symbol} ${direction} delta=${(deltaPct * 100).toFixed(2)}% (snapshot=${snapshotPrice} now=${currentPrice}) event="${row.event_name}"`,
+          );
+        } else {
+          this.logger.debug(
+            `[event-engine] skip ${row.symbol} delta=${(deltaPct * 100).toFixed(2)}% < ${(minDeltaPct * 100).toFixed(2)}% event="${row.event_name}"`,
+          );
+        }
+      }
+    }
+    return triggered;
+  }
+
+  /**
+   * Phase D-3 — Force-close des trades triggered dont la fenêtre est expirée.
+   *
+   * Pour chaque row status='triggered' dont event_date + windowMin < now :
+   *   - Fetch prix courant (exit_price)
+   *   - Compute realized_pnl_pct = (exit - trigger_price) / trigger_price (long)
+   *     OU (trigger_price - exit) / trigger_price (short)
+   *   - status='force_closed'
+   *
+   * V1 SHADOW : on N'EXÉCUTE PAS un ordre réel. On enregistre juste le P&L
+   * théorique qu'aurait fait un trade ouvert au trigger et fermé au force-close.
+   * Permet de mesurer l'edge sur 30 jours de prod sans risque.
+   */
+  async forceCloseExpired(now: Date): Promise<number> {
+    const { data: rows, error } = await this.supabase
+      .getClient()
+      .from('event_engine_trades')
+      .select('id, event_name, event_date, symbol, trigger_price, trigger_direction, trigger_taken_at, raw_payload')
+      .eq('status', 'triggered')
+      .limit(50);
+    if (error || !rows || rows.length === 0) return 0;
+
+    let closed = 0;
+    for (const row of rows as Array<{
+      id: number;
+      event_name: string;
+      event_date: string;
+      symbol: string;
+      trigger_price: number | string;
+      trigger_direction: 'long' | 'short';
+      trigger_taken_at: string | null;
+      raw_payload: { window_min?: number } | null;
+    }>) {
+      const windowMin = Number(row.raw_payload?.window_min ?? 30);
+      const eventTs = new Date(row.event_date).getTime();
+      const closeDeadline = eventTs + windowMin * 60_000;
+      if (now.getTime() < closeDeadline) continue;  // pas encore le moment
+
+      const triggerPrice = Number(row.trigger_price);
+      if (!Number.isFinite(triggerPrice) || triggerPrice <= 0) continue;
+
+      const quote = await this.lisa.getLivePrice(row.symbol).catch(() => null);
+      if (!quote) continue;
+      const exitPrice = typeof quote.price === 'number' ? quote.price : Number(quote.price);
+      if (!Number.isFinite(exitPrice) || exitPrice <= 0) continue;
+      // Fallback price → on N'enregistre PAS (donnée non fiable), on retentera tick suivant
+      if (typeof quote.source === 'string' && quote.source.startsWith('fallback')) continue;
+
+      // Compute PnL net selon direction (frais 0.10% RT modélisés)
+      const grossPct = row.trigger_direction === 'long'
+        ? (exitPrice - triggerPrice) / triggerPrice
+        : (triggerPrice - exitPrice) / triggerPrice;
+      const FEES_RT_PCT = 0.001;  // 0.10% aller+retour
+      const netPct = grossPct - FEES_RT_PCT;
+
+      const { error: updErr } = await this.supabase.getClient()
+        .from('event_engine_trades')
+        .update({
+          status: 'force_closed',
+          exit_price: exitPrice,
+          exit_reason: 'force_close_window_expired',
+          exit_taken_at: new Date().toISOString(),
+          realized_pnl_pct: netPct * 100,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', row.id);
+      if (!updErr) {
+        closed++;
+        this.logger.log(
+          `[event-engine] FORCE-CLOSE ${row.symbol} ${row.trigger_direction} pnl_net=${(netPct * 100).toFixed(3)}% (trigger=${triggerPrice} exit=${exitPrice}) event="${row.event_name}"`,
+        );
+      }
+    }
+    return closed;
   }
 
   /**
