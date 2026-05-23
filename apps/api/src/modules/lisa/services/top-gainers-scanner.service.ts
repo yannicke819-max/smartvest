@@ -2267,6 +2267,44 @@ export class TopGainersScannerService implements OnModuleInit {
         continue;
       }
 
+      // PR A — Gate horaire LONG. Data mining 15j (23/05/2026, n=7000 signaux) :
+      //   - LONG mean H8 (EU open) = -0.60%, H19 (US close) = -1.01%, H22 = -0.93%, H0-H5 = -0.5%
+      //   - LONG mean H13-H17 (US active) = neutre à légèrement positif (+0.03 à +0.27%)
+      //   - Pertes évitées potentielles = ~$2 200/15j si gate bien calibré
+      // Logique : whitelist > blacklist > all-open.
+      // GAINERS_LONG_HOUR_WHITELIST_UTC=13,14,15,16,17 → SEULEMENT ces heures OK
+      // GAINERS_LONG_HOUR_BLACKLIST_UTC=8,19,22,23,0,1,2,3,4 → ces heures KO
+      // Crypto exempt par défaut (24/7, le pattern horaire vient des equities US).
+      // Override via GAINERS_LONG_HOUR_GATE_CRYPTO=true pour gater aussi crypto.
+      const whitelistRaw = (this.config.get<string>('GAINERS_LONG_HOUR_WHITELIST_UTC') ?? '').trim();
+      const blacklistRaw = (this.config.get<string>('GAINERS_LONG_HOUR_BLACKLIST_UTC') ?? '').trim();
+      const cryptoGated = (this.config.get<string>('GAINERS_LONG_HOUR_GATE_CRYPTO') ?? 'false').toLowerCase() === 'true';
+      const isCryptoCandHourGate = cand.assetClass === 'crypto_major' || cand.assetClass === 'crypto_alt';
+      const gateApplies = (whitelistRaw.length > 0 || blacklistRaw.length > 0) && (cryptoGated || !isCryptoCandHourGate);
+      if (gateApplies) {
+        const hourUtc = nowUtc.getUTCHours();
+        // ⚠️ Number('') === 0 en JS → filtrer les tokens vides AVANT le map.
+        const parseList = (s: string): Set<number> => {
+          if (s.length === 0) return new Set();
+          return new Set(
+            s.split(',').map((x) => x.trim()).filter((x) => x.length > 0)
+              .map((x) => Number(x)).filter((n) => Number.isFinite(n) && n >= 0 && n <= 23),
+          );
+        };
+        const whitelist = parseList(whitelistRaw);
+        const blacklist = parseList(blacklistRaw);
+        if (whitelist.size > 0 && !whitelist.has(hourUtc)) {
+          this.logger.log(`[top-gainers] ${cand.symbol} hour ${hourUtc}h UTC hors whitelist {${[...whitelist].sort((a,b)=>a-b).join(',')}} → skip long (gate horaire)`);
+          recordShadowDecision(cand, 'reject_hour_not_whitelisted', undefined);
+          continue;
+        }
+        if (whitelist.size === 0 && blacklist.has(hourUtc)) {
+          this.logger.log(`[top-gainers] ${cand.symbol} hour ${hourUtc}h UTC blacklist {${[...blacklist].sort((a,b)=>a-b).join(',')}} → skip long (gate horaire)`);
+          recordShadowDecision(cand, 'reject_hour_blacklisted', undefined);
+          continue;
+        }
+      }
+
       // Gate session par-bourse (DST-safe) — n'ouvre JAMAIS sur un marché fermé.
       // Le bloc agrégé Asie 00:00-08:00 traitait la Corée (close réel 06:30 UTC)
       // comme ouverte jusqu'à 08:00 → ouvertures post-cloche sur prix figé,
