@@ -50,6 +50,7 @@ export type ShadowDecision =
   | 'reject_hour_not_whitelisted' // PR A — gate horaire LONG : whitelist active, heure hors fenêtre (default whitelist 13-17 UTC)
   | 'reject_signal_stale'       // Phase E-A — signal détecté il y a > N sec, le pop est déjà digéré (anti-late-entry)
   | 'reject_volatile_regime'    // Phase C — symbole structurellement volatile (ATR/close > seuil), SL cassé par bruit
+  | 'reject_stagflation_hedge_guard'  // Audit 23/05 — ticker dans watchlist stagflation_hedge, -$3,463 historiques (env-gated)
   | 'reject_other';
 
 export interface RecordDecisionInput {

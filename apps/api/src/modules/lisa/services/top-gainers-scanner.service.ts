@@ -39,6 +39,11 @@ import { PersistenceProbabilityService } from './persistence-probability.service
 // PR #365 — matrice TP/SL par asset_class (Hurst asia tp=3.90%, eu=3.25%).
 // Le scanner Gainers Direct (PR #250) ignorait cette matrice à l'ouverture.
 import { AssetClassTpSlConfigService } from './asset-class-tpsl-config.service';
+import {
+  parseStagflationHedgeGuardConfig,
+  shouldSkipStagflationHedge,
+  type StagflationHedgeGuardConfig,
+} from './stagflation-hedge-guard.helper';
 import { EodhdQuotaService } from './eodhd-quota.service';
 import { EodhdCalendarService } from './eodhd-calendar.service';
 import { EodhdNewsService } from './eodhd-news.service';
@@ -389,6 +394,12 @@ export class TopGainersScannerService implements OnModuleInit {
   private allCandidatesCache: { candidates: TopGainerCandidate[]; asOf: number } | null = null;
   private readonly ALL_CANDIDATES_CACHE_TTL_MS = 15 * 60_000; // 15 min
 
+  /**
+   * Stagflation hedge guard config — parsée 1× au constructor depuis env.
+   * Default OFF, immutable. Cf. stagflation-hedge-guard.helper.ts.
+   */
+  private readonly stagflationHedgeGuard: StagflationHedgeGuardConfig;
+
   // ─────────────────────────────────────────────────────────────────
   // Observability — état diagnostique read-only exposé via
   // GET /admin/gainers/scanner-status. N'influence pas la logique scanner.
@@ -639,7 +650,19 @@ export class TopGainersScannerService implements OnModuleInit {
      * no-op silencieux. Append en fin pour ne pas casser les tests existants.
      */
     @Optional() private readonly symbolAtrCache?: SymbolAtrCacheService,
-  ) {}
+  ) {
+    // Parse stagflation hedge guard config 1× au boot. ConfigService.get retourne
+    // toujours string|undefined ; on convertit via le helper pur.
+    this.stagflationHedgeGuard = parseStagflationHedgeGuardConfig({
+      STAGFLATION_HEDGE_GUARD_ENABLED: this.config.get<string>('STAGFLATION_HEDGE_GUARD_ENABLED'),
+      STAGFLATION_HEDGE_GUARD_TICKERS: this.config.get<string>('STAGFLATION_HEDGE_GUARD_TICKERS'),
+    });
+    if (this.stagflationHedgeGuard.enabled) {
+      this.logger.log(
+        `[stagflation-guard] ENABLED — ${this.stagflationHedgeGuard.tickers.size} tickers blacklistés`,
+      );
+    }
+  }
 
   /**
    * P8 — Resolve config min persistence score.
@@ -2293,6 +2316,19 @@ export class TopGainersScannerService implements OnModuleInit {
           recordShadowDecision(cand, 'reject_volatile_regime', undefined);
           continue;
         }
+      }
+
+      // Stagflation hedge guard — bloque les tickers du watchlist
+      // `stagflation_hedge` (métaux/énergie/défensifs/govt bonds).
+      // Justif. empirique : 25 trades historiques sur ces classes ont
+      // perdu -$3,463 (3 force-closes à -100%). OFF par défaut (env-gated).
+      // Cf. stagflation-hedge-guard.helper.ts pour la liste et le rationale.
+      if (shouldSkipStagflationHedge(cand.symbol, this.stagflationHedgeGuard)) {
+        this.logger.log(
+          `[top-gainers] ${cand.symbol} stagflation_hedge guard → skip (defensive)`,
+        );
+        recordShadowDecision(cand, 'reject_stagflation_hedge_guard', undefined);
+        continue;
       }
 
       // Plafond changePct LONG — anti chase-the-top (MESURE 22/05, n=469 paired
