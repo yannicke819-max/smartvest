@@ -117,7 +117,7 @@ describe('PaperBrokerService.closePosition — paper_trades mirror', () => {
 
     const ptCall = sb._updateCalls.find((c) => c.table === 'paper_trades');
     expect(ptCall).toBeDefined();
-    expect(ptCall!.payload.status).toBe('closed_target');
+    expect(ptCall!.payload.status).toBe('closed'); // paper_trades CHECK : 'open'/'closed'/'cancelled'
     expect(ptCall!.payload.outcome_label).toBe(1); // SMALLINT : 1 = win
     expect(ptCall!.payload.hold_duration_seconds).toBeGreaterThan(0);
     expect(ptCall!.filters).toEqual(

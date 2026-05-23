@@ -667,10 +667,14 @@ export class PaperBrokerService {
       // outcome_label SMALLINT : 1 = win (pnl > 0), 0 = loss/flat (pnl ≤ 0).
       // Aligné avec persistence-probability.service.ts:348.
       const outcomeLabel = pnlPct > 0 ? 1 : 0;
+      // paper_trades.status est sous CHECK ('open', 'closed', 'cancelled').
+      // lisa_positions.status a une granularité plus fine ('closed_target',
+      // 'closed_stop', etc) → on simplifie à 'closed' ici. Le détail précis
+      // reste dans lisa_positions, lié via scanner_position_id.
       const { error: mirErr } = await this.supabase
         .from('paper_trades')
         .update({
-          status: cmd.reason,
+          status: 'closed',
           closed_at: now,
           exit_price: exitPx.toFixed(10),
           pnl_usd: netPnl.toFixed(2),

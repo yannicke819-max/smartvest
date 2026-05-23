@@ -16,9 +16,15 @@
 -- miroir est fermée (filtré par status != 'open' côté lisa_positions).
 -- Re-exécution silencieuse = no-op.
 
+-- Note : paper_trades.status est sous CHECK ('open', 'closed', 'cancelled')
+-- alors que lisa_positions.status a une granularité plus fine
+-- ('closed_target', 'closed_stop', 'closed_invalidated', etc). On simplifie
+-- à 'closed' pour respecter le CHECK ; le détail précis reste dans
+-- lisa_positions (joint via scanner_position_id si besoin).
+
 UPDATE public.paper_trades pt
 SET
-  status = lp.status,
+  status = 'closed',
   closed_at = lp.exit_timestamp,
   exit_price = lp.exit_price,
   pnl_usd = lp.realized_pnl_usd,
