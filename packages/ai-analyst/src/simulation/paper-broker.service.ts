@@ -664,7 +664,9 @@ export class PaperBrokerService {
       const entryTs = new Date(position.entryTimestamp).getTime();
       const closedTs = new Date(now).getTime();
       const holdSec = Math.max(0, Math.floor((closedTs - entryTs) / 1000));
-      const outcomeLabel = pnlPct > 0 ? 'win' : pnlPct < 0 ? 'loss' : 'flat';
+      // outcome_label SMALLINT : 1 = win (pnl > 0), 0 = loss/flat (pnl ≤ 0).
+      // Aligné avec persistence-probability.service.ts:348.
+      const outcomeLabel = pnlPct > 0 ? 1 : 0;
       const { error: mirErr } = await this.supabase
         .from('paper_trades')
         .update({

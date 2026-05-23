@@ -27,11 +27,9 @@ SET
     0,
     EXTRACT(EPOCH FROM (lp.exit_timestamp - lp.entry_timestamp))::INT
   ),
-  outcome_label = CASE
-    WHEN lp.realized_pnl_pct > 0 THEN 'win'
-    WHEN lp.realized_pnl_pct < 0 THEN 'loss'
-    ELSE 'flat'
-  END,
+  -- outcome_label SMALLINT : 1 = win (pnl > 0), 0 = loss/flat (pnl ≤ 0).
+  -- Mapping aligné avec persistence-probability.service.ts:348.
+  outcome_label = CASE WHEN lp.realized_pnl_pct > 0 THEN 1 ELSE 0 END,
   updated_at = NOW()
 FROM public.lisa_positions lp
 WHERE pt.scanner_position_id = lp.id
