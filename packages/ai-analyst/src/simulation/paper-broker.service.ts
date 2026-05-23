@@ -603,6 +603,44 @@ export class PaperBrokerService {
       ? 0
       : netPnl.dividedBy(entryNotional).mul(100).toNumber();
 
+    // R5 sanity inline — issue #409. Le SanityR5Service NestJS (apps/api) protège
+    // MechanicalTradingService.closePosition mais PAS ce path (paper-broker dans
+    // packages/ai-analyst, cross-package). Avec strategy_mode=gainers, 100 % des
+    // closes passent ici → mode non protégé.
+    // Bug récurrent : SEE.LSE −$1574 (14/05 exit_price=0), URA/PPLT/CPER −$2200
+    // (30/04 force-close-at-zero) = ~$3 000+ historique évitable.
+    // Defaults alignés avec SanityR5Service : ratio 0.5, pnl_pct −50, ENABLED=true.
+    const r5Enabled = (process.env.R5_SANITY_ENABLED ?? 'true').toLowerCase() === 'true';
+    if (r5Enabled) {
+      const minRatio = Number(process.env.R5_EXIT_PRICE_MIN_RATIO ?? '0.5');
+      const minPnlPct = Number(process.env.R5_PNL_PCT_MIN_THRESHOLD ?? '-50');
+      const exitPxN = exitPx.toNumber();
+      const entryPxN = entryPx.toNumber();
+      let r5Block: { code: string; detail: string } | null = null;
+      if (!Number.isFinite(exitPxN) || exitPxN <= 0) {
+        r5Block = { code: 'R5_EXIT_PRICE_ZERO', detail: `exit_price=${exitPxN}` };
+      } else if (Number.isFinite(entryPxN) && entryPxN > 0 && exitPxN < entryPxN * minRatio) {
+        r5Block = {
+          code: 'R5_EXIT_BELOW_RATIO',
+          detail: `exit=${exitPxN} entry=${entryPxN} ratio=${(exitPxN / entryPxN).toFixed(4)} min=${minRatio}`,
+        };
+      } else if (Number.isFinite(pnlPct) && pnlPct < minPnlPct) {
+        r5Block = {
+          code: 'R5_PNL_BELOW_THRESHOLD',
+          detail: `pnl_pct=${pnlPct.toFixed(3)} threshold=${minPnlPct}`,
+        };
+      }
+      if (r5Block) {
+        const err = new Error(
+          `[R5_SANITY_BLOCK_PAPER] ${position.symbol} positionId=${cmd.positionId} ${r5Block.code} ${r5Block.detail} — position kept open, retry next tick`,
+        );
+        (err as Error & { code?: string }).code = r5Block.code;
+        // eslint-disable-next-line no-console
+        console.error(err.message);
+        throw err;
+      }
+    }
+
     const now = new Date().toISOString();
 
     // 🛡️ Patch B : UPDATE atomique avec WHERE status='open'.
