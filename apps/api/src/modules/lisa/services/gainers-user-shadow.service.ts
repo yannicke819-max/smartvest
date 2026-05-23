@@ -48,6 +48,7 @@ export type ShadowDecision =
   | 'reject_post_news_fresh_strong_pos' // Phase 2 — news EODHD sentiment ≥ X dans T heures → on chase the top, expectancy -0.18 à -0.79%
   | 'reject_hour_blacklisted'   // PR A — gate horaire LONG : heure UTC dans la blacklist (H8/19/22/0-4 sont -$2200/15j)
   | 'reject_hour_not_whitelisted' // PR A — gate horaire LONG : whitelist active, heure hors fenêtre (default whitelist 13-17 UTC)
+  | 'reject_signal_stale'       // Phase E-A — signal détecté il y a > N sec, le pop est déjà digéré (anti-late-entry)
   | 'reject_other';
 
 export interface RecordDecisionInput {
