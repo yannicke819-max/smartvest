@@ -62,6 +62,7 @@ import { IntradayCacheService } from './services/intraday-cache.service';
 import { PersistenceProbabilityService } from './services/persistence-probability.service';
 import { ScannerLlmRouterService } from './services/scanner-llm-router.service';
 import { DailyCatalystBriefService } from './services/daily-catalyst-brief.service';
+import { EventEngineService } from './services/event-engine.service';
 import { EodhdNewsService } from './services/eodhd-news.service';
 import { EodhdNewsCollectorService } from './services/eodhd-news-collector.service';
 import { SymbolAtrCacheService } from './services/symbol-atr-cache.service';
@@ -188,6 +189,8 @@ import { IntradayProviderRouter } from './services/intraday-provider-router.serv
     ScannerLlmRouterService,
     // Daily catalyst brief via Gemini (cron 04:00 UTC, env-gated)
     DailyCatalystBriefService,
+    // Phase D-1 — Event-driven engine scheduling + pre-snapshot (cron 1min)
+    EventEngineService,
     // Étape 1 — news EODHD persistées (fondation grounding Gemini)
     EodhdNewsService,
     EodhdNewsCollectorService,
