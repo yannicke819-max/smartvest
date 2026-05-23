@@ -84,6 +84,10 @@ export class EodhdNewsCollectorService {
   /**
    * Récupère l'univers actif côté DB : watchlist_universe (US+EU+Asia) + crypto majors.
    *
+   * FIX 23/05/2026 : la colonne s'appelle `tickers` (text[]) PAS `symbol`. Avant
+   * fix : query 404 → fallback crypto seul (10 tickers) → on perdait ~80 tickers
+   * equity de l'univers et la DB news était sous-alimentée.
+   *
    * Crypto INCLUS (probé 23/05/2026 : EODHD news API supporte format `<BASE>.CC`
    * pour 9/10 majors avec sentiment). Le mapping USDT → .CC se fait dans
    * `EodhdNewsService.toEodhdNewsTicker`. On persiste sous le scanner symbol
@@ -94,13 +98,22 @@ export class EodhdNewsCollectorService {
     const { data, error } = await this.supabase
       .getClient()
       .from('watchlist_universe')
-      .select('symbol')
+      .select('tickers')
       .limit(500);
     if (error || !data) {
       this.logger.debug(`[eodhd-news-collector] universe query err: ${error?.message ?? 'no data'}`);
       return CRYPTO_MAJORS;
     }
-    const equity = (data as Array<{ symbol: string }>).map((r) => r.symbol);
+    // Flatten le text[] de chaque row + dedupe.
+    const seen = new Set<string>();
+    const equity: string[] = [];
+    for (const row of data as Array<{ tickers?: string[] | null }>) {
+      const list = Array.isArray(row.tickers) ? row.tickers : [];
+      for (const t of list) {
+        const sym = String(t).trim().toUpperCase();
+        if (sym.length > 0 && !seen.has(sym)) { seen.add(sym); equity.push(sym); }
+      }
+    }
     // Crypto majors ajoutés en tête (10 tickers, news 24/7 utile pour brief).
     return [...CRYPTO_MAJORS, ...equity];
   }
