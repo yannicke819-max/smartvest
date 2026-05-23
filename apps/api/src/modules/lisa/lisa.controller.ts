@@ -13,6 +13,7 @@ import { AssetClassTpslService } from './services/asset-class-tpsl.service';
 import { QuickWinsStatsService } from './services/quick-wins-stats.service';
 import { RiskStateService } from './services/risk-state.service';
 import { DailyCatalystBriefService } from './services/daily-catalyst-brief.service';
+import { EventEngineService } from './services/event-engine.service';
 import { DailySessionService } from './services/daily-session.service';
 import { ProfitSweepService } from './services/profit-sweep.service';
 import { MacroModeService, type MacroMode } from './services/macro-mode.service';
@@ -59,6 +60,7 @@ export class LisaController {
     private readonly qwStats: QuickWinsStatsService,
     private readonly riskState: RiskStateService,
     private readonly dailyCatalystBrief: DailyCatalystBriefService,
+    private readonly eventEngine: EventEngineService,
   ) {}
 
   // ─────────────────────────────────────────────────────────────────
@@ -1231,6 +1233,33 @@ export class LisaController {
     extractUserId(headers);
     const brief = await this.dailyCatalystBrief.generateAndPersistBrief();
     return { brief, ok: brief !== null };
+  }
+
+  /**
+   * Phase D-1 — Event-driven engine : liste les events watchés / snapshots
+   * pris pour les prochaines `hours` heures (default 48h).
+   * Visu/debug. Pas d'écriture.
+   */
+  @Get('event-engine/upcoming')
+  async getEventEngineUpcoming(
+    @Headers() headers: Record<string, string>,
+    @Query('hours') hoursRaw?: string,
+  ) {
+    extractUserId(headers);
+    const hours = Math.max(1, Math.min(168, Number(hoursRaw ?? '48') || 48));
+    const events = await this.eventEngine.listUpcoming(hours);
+    return { hours, count: events.length, events };
+  }
+
+  /**
+   * Phase D-1 — trigger manuel du tick (debug/bootstrap).
+   * Effet réel : schedule + snapshots. Aucune position ouverte (V1).
+   */
+  @Post('event-engine/tick')
+  async triggerEventEngineTick(@Headers() headers: Record<string, string>) {
+    extractUserId(headers);
+    const result = await this.eventEngine.tick();
+    return result;
   }
 
   @Get('eodhd/stats')
