@@ -3441,7 +3441,7 @@ export class TopGainersScannerService implements OnModuleInit {
     userId: string,
     portfolioId: string,
     cand: TopGainerCandidate & { score: number; assetClass: TopGainerAssetClass },
-    persistence?: PersistenceResult,
+    persistence?: PersistenceWithPath,
     // PR Hardcodes-fix — toute la sizing config arrive par overrides depuis
     // scanPortfolio (qui a lu lisa_session_configs). Plus aucune valeur
     // hardcodée — capital, notional, position pct, cash reserve, TP, SL.
@@ -3540,6 +3540,24 @@ export class TopGainersScannerService implements OnModuleInit {
       this.logger.log(
         `[top-gainers] ${cand.symbol} opened DIRECT (entry=$${livePriceNum.toFixed(4)} qty=${openedPos.quantity} sl=${stopPrice} tp=${tpPrice} score=${cand.score})`,
       );
+
+      // P1 OpenPositionRiskMonitor — persiste pathEff / persistence @ entry sur
+      // lisa_positions pour permettre au cron risk monitor de calculer Δ depuis l'entrée.
+      // Best-effort : si update échoue, la position s'ouvre quand même mais le
+      // risk monitor sera dégradé pour cette position (sub_B fallback neutre).
+      if (persistence?.pathQuality?.overallEfficiency != null || persistence?.persistenceScore != null) {
+        await this.supabase.getClient()
+          .from('lisa_positions')
+          .update({
+            path_eff_at_entry: persistence?.pathQuality?.overallEfficiency ?? null,
+            persistence_score_at_entry: persistence?.persistenceScore ?? null,
+            persistence_count_at_entry: persistence?.persistenceCount ?? null,
+          })
+          .eq('id', openedPos.id)
+          .then(({ error }) => {
+            if (error) this.logger.debug(`[top-gainers] risk-monitor features update ${openedPos.id} failed: ${error.message}`);
+          });
+      }
 
       // Audit decision_log non-bloquant
       await this.decisionLog.append({
