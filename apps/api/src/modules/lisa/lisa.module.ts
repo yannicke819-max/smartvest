@@ -113,6 +113,7 @@ import { IntradayProviderRouter } from './services/intraday-provider-router.serv
 import { GeminiRiskManagerService } from './services/research/gemini-risk-manager.service';
 import { CryptoFundingFadeService } from './services/research/crypto-funding-fade.service';
 import { EventNarrativeInterpreterService } from './services/research/event-narrative-interpreter.service';
+import { HourlyEdgeAnalyzerService } from './services/research/hourly-edge-analyzer.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule, BotLabModule, GainersModule],
@@ -250,6 +251,7 @@ import { EventNarrativeInterpreterService } from './services/research/event-narr
     GeminiRiskManagerService,
     CryptoFundingFadeService,
     EventNarrativeInterpreterService,
+    HourlyEdgeAnalyzerService,
   ],
   exports: [
     LisaService,
