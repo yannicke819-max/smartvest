@@ -87,6 +87,12 @@ import {
 import { TickerBlacklistService } from './ticker-blacklist.service';
 import { CorrelationGuardService } from './correlation-guard.service';
 import {
+  computeEntryConvictionScore,
+  decideSizingMultiplier,
+  parseConvictionSizingConfig,
+  type ConvictionSizingConfig,
+} from './thesis-health-score.helper';
+import {
   EARLY_RETURN_REASONS,
   type EarlyReturnReason,
   type GainersScannerStatus,
@@ -423,6 +429,13 @@ export class TopGainersScannerService implements OnModuleInit {
   private readonly stagflationHedgeGuard: StagflationHedgeGuardConfig;
 
   /**
+   * Feature #2 — Sizing calibré sur la conviction. Default OFF.
+   * Parsed once au constructor. Si enabled, calcule conviction score @ entry
+   * et scale notional par mult ∈ {0, 0.7, 1.0, 1.5}.
+   */
+  private convictionSizing!: { enabled: boolean; cfg: ConvictionSizingConfig };
+
+  /**
    * Data-driven gates per-class (audit 23-24/05). Default toutes envs vides = OFF.
    * S'ajoute aux gates existants (additif, OR logique).
    */
@@ -723,6 +736,23 @@ export class TopGainersScannerService implements OnModuleInit {
     if (this.tickerSizeMult.multipliers.size > 0) {
       this.logger.log(
         `[ticker-size-mult] ENABLED — ${this.tickerSizeMult.multipliers.size} tickers boostés/réduits`,
+      );
+    }
+
+    // Feature #2 — Conviction-calibrated sizing. Default OFF (back-compat).
+    this.convictionSizing = parseConvictionSizingConfig({
+      CONVICTION_SIZING_ENABLED: this.config.get<string>('CONVICTION_SIZING_ENABLED'),
+      CONVICTION_SIZING_MULT_LOW: this.config.get<string>('CONVICTION_SIZING_MULT_LOW'),
+      CONVICTION_SIZING_MULT_HIGH: this.config.get<string>('CONVICTION_SIZING_MULT_HIGH'),
+      CONVICTION_SIZING_LOW_THRESHOLD: this.config.get<string>('CONVICTION_SIZING_LOW_THRESHOLD'),
+      CONVICTION_SIZING_HIGH_THRESHOLD: this.config.get<string>('CONVICTION_SIZING_HIGH_THRESHOLD'),
+      CONVICTION_SIZING_SKIP_IF_NEGATIVE: this.config.get<string>('CONVICTION_SIZING_SKIP_IF_NEGATIVE'),
+      CONVICTION_SIZING_MAX_MULTIPLIER: this.config.get<string>('CONVICTION_SIZING_MAX_MULTIPLIER'),
+    });
+    if (this.convictionSizing.enabled) {
+      const { multLow, multHigh, lowThreshold, highThreshold, skipIfNegative } = this.convictionSizing.cfg;
+      this.logger.log(
+        `[conviction-sizing] ENABLED — mult ${multLow}/${multHigh} thresholds ${lowThreshold}/${highThreshold} skipNeg=${skipIfNegative}`,
       );
     }
   }
@@ -3583,12 +3613,38 @@ export class TopGainersScannerService implements OnModuleInit {
     // Ticker size multiplier data-driven (audit 23/05).
     // Default 1.0 (no-op) si symbole pas dans la config. Cap [0.1, 3.0] côté helper.
     const sizeMult = getTickerSizeMultiplier(cand.symbol, this.tickerSizeMult);
-    const effectiveNotional = Math.round(baseNotional * sizeMult * 100) / 100;
+    const tickerScaledNotional = baseNotional * sizeMult;
     if (sizeMult !== 1.0) {
       this.logger.log(
-        `[top-gainers] ${cand.symbol} size-mult ×${sizeMult} → notional $${baseNotional.toFixed(2)} → $${effectiveNotional.toFixed(2)}`,
+        `[top-gainers] ${cand.symbol} ticker-size-mult ×${sizeMult} → notional $${baseNotional.toFixed(2)} → $${tickerScaledNotional.toFixed(2)}`,
       );
     }
+
+    // Feature #2 — Conviction-calibrated sizing. Default OFF (mult = 1.0).
+    // Score @ entry basé sur (pathEff, persistence, ch1m) du candidat.
+    // Si enabled et composite < 0 (skipIfNegative=true par défaut) → mult=0 → SKIP open.
+    let convictionMult = 1.0;
+    let convictionScore = 0;
+    if (this.convictionSizing.enabled) {
+      convictionScore = computeEntryConvictionScore({
+        pathEff: persistence?.pathQuality?.overallEfficiency ?? null,
+        persistence: persistence?.persistenceScore ?? null,
+        ch1mPct: typeof cand.changePct === 'number' && Number.isFinite(cand.changePct) ? cand.changePct : null,
+      });
+      convictionMult = decideSizingMultiplier(convictionScore, this.convictionSizing.cfg);
+      if (convictionMult === 0) {
+        this.logger.log(
+          `[conviction-sizing] ${cand.symbol} SKIP open — score ${convictionScore.toFixed(3)} < 0 (thèse déjà cassée à l'entry)`,
+        );
+        return null;
+      }
+      if (convictionMult !== 1.0) {
+        this.logger.log(
+          `[conviction-sizing] ${cand.symbol} score=${convictionScore.toFixed(3)} → mult ×${convictionMult.toFixed(2)}`,
+        );
+      }
+    }
+    const effectiveNotional = Math.round(tickerScaledNotional * convictionMult * 100) / 100;
 
     // PR #250 — DÉCOUPLAGE COMPLET du pipeline LLM Lisa.
     //
