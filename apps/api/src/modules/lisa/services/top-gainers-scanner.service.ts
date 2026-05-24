@@ -77,6 +77,12 @@ import {
   type GainersScannerStatus,
   type PerExchangeResult,
 } from './gainers-scanner-status.types';
+import {
+  parsePerClassPathEffOverrides,
+  resolveEffectivePathEffFloor,
+  describeOverrides,
+  type PerClassPathEffOverrides,
+} from './gainers-path-eff-per-class.helper';
 
 interface EodhdScreenerRow {
   code: string;
@@ -359,6 +365,12 @@ export class TopGainersScannerService implements OnModuleInit {
   private readonly logger = new Logger(TopGainersScannerService.name);
   private scanIntervalMinutes = 15;
   private lastTickAt: Date | null = null;
+  /**
+   * Per-class pathEff floor overrides (analyse 30j mai 2026 : US bande
+   * [0.40-0.50] WR 79 % inexploité). Parsed une fois au boot, immutable.
+   * Default toutes vides → back-compat 100 %.
+   */
+  private pathEffOverrides: PerClassPathEffOverrides = {};
 
   /** P9-UX — Cache des cycles per-portfolio (évite re-query DB à chaque tick). */
   private cycleCache = new Map<string, { cycle: number; asOf: number }>();
@@ -752,6 +764,18 @@ export class TopGainersScannerService implements OnModuleInit {
    * UI dynamique (changement live sans reboot) = deferred PR2.
    */
   onModuleInit(): void {
+    // Per-class pathEff floor overrides (data-driven, analyse 30j mai 2026).
+    // Default toutes vides → back-compat. Aucun fly secret nécessaire pour ne rien changer.
+    this.pathEffOverrides = parsePerClassPathEffOverrides({
+      GAINERS_MIN_PATH_EFFICIENCY_US: this.config.get<string>('GAINERS_MIN_PATH_EFFICIENCY_US'),
+      GAINERS_MIN_PATH_EFFICIENCY_EU: this.config.get<string>('GAINERS_MIN_PATH_EFFICIENCY_EU'),
+      GAINERS_MIN_PATH_EFFICIENCY_CRYPTO: this.config.get<string>('GAINERS_MIN_PATH_EFFICIENCY_CRYPTO'),
+    });
+    const desc = describeOverrides(this.pathEffOverrides);
+    if (desc) {
+      this.logger.log(`[path-eff-per-class] ENABLED — ${desc}`);
+    }
+
     const raw = this.config.get<string>('SCAN_INTERVAL_MINUTES');
     const parsed = parseInt(String(raw ?? '1'), 10);
     const validated = Number.isFinite(parsed)
@@ -2672,9 +2696,16 @@ export class TopGainersScannerService implements OnModuleInit {
         const effectiveMinScore = isAsia
           ? Math.min(1, minScore + asiaStrictnessBoost)
           : minScore;
-        const effectiveMinPathEff = (isAsia && minPathEff != null)
-          ? Math.min(1, minPathEff + asiaStrictnessBoost)
-          : minPathEff;
+        // Floor pathEff effectif :
+        //   - asia → baseFloor + asiaStrictnessBoost (préservé)
+        //   - us_/eu_/crypto_ → override per-class env si défini (data-driven mai 2026)
+        //   - sinon → baseFloor
+        const effectiveMinPathEff = resolveEffectivePathEffFloor(
+          minPathEff,
+          cand.assetClass,
+          this.pathEffOverrides,
+          asiaStrictnessBoost,
+        );
 
         // Integer gate: Math.round avoids float off-by-one (4/6=0.6666 < 0.67 was
         // silently excluding 4/6-TF candidates). 0.67×6=4.02 → rounds to 4.
