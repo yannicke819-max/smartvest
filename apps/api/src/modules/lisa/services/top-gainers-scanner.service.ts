@@ -86,6 +86,7 @@ import {
 } from '@smartvest/ai-analyst';
 import { TickerBlacklistService } from './ticker-blacklist.service';
 import { CorrelationGuardService } from './correlation-guard.service';
+import { AdaptiveCooldownService } from './adaptive-cooldown.service';
 import {
   computeEntryConvictionScore,
   decideSizingMultiplier,
@@ -698,6 +699,11 @@ export class TopGainersScannerService implements OnModuleInit {
      * ou guard disabled (env flag), aucun effet → back-compat 100 %.
      */
     @Optional() private readonly correlationGuard?: CorrelationGuardService,
+    /**
+     * Feature #4 — Adaptive cooldown per symbol (death-trap detection 30j history).
+     * @Optional pour back-compat tests existants.
+     */
+    @Optional() private readonly adaptiveCooldown?: AdaptiveCooldownService,
     // Sizing A/B test (research) — Optional pour back-compat tests.
     @Optional() private readonly sizingAbTest?: SizingABTestService,
   ) {
@@ -2530,9 +2536,17 @@ export class TopGainersScannerService implements OnModuleInit {
       // PR #270 — Post-SL cooldown : si dernier closed_stop < postSlCooldownMin → skip.
       // Empêche le pattern observé 07/05/2026 : SL → mini-rebond technique →
       // re-open → SL again sur le même downtrend.
-      if (postSlCooldownMs > 0) {
+      // Feature #4 — Cooldown adaptatif per-symbol (si activé) : remplace le
+      // cooldown fixe par une valeur dérivée de l'historique 30j du symbole
+      // (death-trap symbols → 180min, mid-risk → 120min, safe → fallback).
+      const symbolCooldownMin = this.adaptiveCooldown?.getCooldownForSymbol(
+        cand.symbol.toUpperCase(),
+        postSlCooldownMin,
+      ) ?? postSlCooldownMin;
+      const symbolCooldownMs = symbolCooldownMin * 60_000;
+      if (symbolCooldownMs > 0) {
         const lastSlMs = recentSlBySymbol.get(cand.symbol.toUpperCase());
-        if (lastSlMs && Date.now() - lastSlMs < postSlCooldownMs) {
+        if (lastSlMs && Date.now() - lastSlMs < symbolCooldownMs) {
           // Bypass forts movers (MESURE shadow regret 22/05 : les rejets
           // post_sl_cooldown sur les 10-15% valaient +1.52% / 94% win →
           // le ban temporel aveugle détruit de la valeur sur les vrais movers).
@@ -2545,8 +2559,9 @@ export class TopGainersScannerService implements OnModuleInit {
           const strongMover = bypassPct > 0 && (cand.changePct ?? 0) >= bypassPct;
           if (!strongMover) {
             const elapsedMin = Math.floor((Date.now() - lastSlMs) / 60_000);
+            const adaptiveTag = symbolCooldownMin !== postSlCooldownMin ? ' [adaptive]' : '';
             this.logger.log(
-              `[top-gainers] ${cand.symbol} POST_SL_COOLDOWN actif (SL il y a ${elapsedMin} min < ${postSlCooldownMin} min) → skip`,
+              `[top-gainers] ${cand.symbol} POST_SL_COOLDOWN${adaptiveTag} actif (SL il y a ${elapsedMin} min < ${symbolCooldownMin} min) → skip`,
             );
             recordShadowDecision(cand, 'reject_post_sl_cooldown', undefined);
             continue;
