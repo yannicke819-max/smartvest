@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger, NotFoundException, Inject, forwardRef } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException, Inject, forwardRef, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHmac, randomUUID } from 'node:crypto';
 import Decimal from 'decimal.js';
@@ -43,6 +43,7 @@ import { LisaPerformanceAnalyticsService } from './lisa-performance-analytics.se
 import { EodhdTechnicalService } from './eodhd-technical.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
 import { IntradayProviderRouter } from './intraday-provider-router.service';
+import { MultiTimeframePersistenceService } from './multi-tf-persistence.service';
 import { BinanceMarketService } from './binance-market.service';
 import { EodhdMacroService } from './eodhd-macro.service';
 import { EodhdScreenerService } from './eodhd-screener.service';
@@ -143,6 +144,10 @@ export class LisaService {
     private readonly redditService: RedditService,
     // PR #353 — Router intraday dual-call EODHD + TD pour summarizePositions.
     private readonly intradayRouter: IntradayProviderRouter,
+    // Risk-monitor extension : capture pathEff/persistence @ entry pour positions
+    // ouvertes via le pipeline LLM (en plus du scanner). @Optional pour ne pas casser
+    // les tests existants qui instancient LisaService avec un sous-ensemble de deps.
+    @Optional() private readonly mtfPersistence?: MultiTimeframePersistenceService,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
     if (anthropicKey) {
@@ -2149,6 +2154,14 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
             if (error) this.logger.warn(`Failed to persist autonomy_rules for ${pos.id}: ${error.message}`);
           });
 
+        // Risk-monitor extension : capture pathEff/persistence/market_ch1m @ entry
+        // pour positions ouvertes via le pipeline LLM (en plus du scanner gainers).
+        // Best-effort : si mtfPersistence indisponible ou échec, le risk-monitor sera
+        // dégradé pour cette position (Sub-B/A null → Sub-C carry).
+        if (this.mtfPersistence) {
+          void this.captureRiskMonitorFeaturesAtEntry(pos.id, String(expression.symbol), Number(quote.price));
+        }
+
         await this.logDecision(portfolioId, 'position_opened', {
           summary: `Opened ${expression.symbol}: ${alloc.pctCapital}% (${alloc.amountUsd} USD) at ${quote.price} stop=${stopLossPrice}`,
           rationale: String(thesis.summary),
@@ -2687,6 +2700,66 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
   }
 
   /** Public price fetch — used by MechanicalTradingService (no Claude cost). */
+  /**
+   * Risk-monitor extension : capture pathEff + persistence + market_ch1m @ open
+   * pour une position venant d'être créée. Best-effort silencieux.
+   * - pathEff/persistence via mtfPersistence.analyze
+   * - market_ch1m via lookup du symbole dans top_gainers_log (snapshot le plus proche
+   *   de l'entry, capture toutes classes uniformément)
+   */
+  private async captureRiskMonitorFeaturesAtEntry(
+    positionId: string,
+    symbol: string,
+    livePrice: number,
+  ): Promise<void> {
+    try {
+      const update: Record<string, unknown> = {};
+      // mtfPersistence — récupère pathEff + persistence multi-TF temps réel
+      if (this.mtfPersistence && livePrice > 0) {
+        try {
+          const analyzed = await this.mtfPersistence.analyze({ symbol, currentPrice: livePrice });
+          if (analyzed) {
+            if (analyzed.pathQuality?.overallEfficiency != null) {
+              update.path_eff_at_entry = analyzed.pathQuality.overallEfficiency;
+            }
+            if (analyzed.persistenceScore != null) {
+              update.persistence_score_at_entry = analyzed.persistenceScore;
+            }
+            if (analyzed.persistenceCount) {
+              update.persistence_count_at_entry = analyzed.persistenceCount;
+            }
+          }
+        } catch (e) {
+          this.logger.debug(`[risk-monitor-capture] mtfPersistence ${symbol}: ${String(e).slice(0, 120)}`);
+        }
+      }
+      // market_ch1m : lookup top_gainers_log au plus proche de maintenant (proxy entry)
+      try {
+        const { data } = await this.supabase.getClient()
+          .from('top_gainers_log')
+          .select('change_pct')
+          .eq('symbol', symbol)
+          .order('captured_at', { ascending: false })
+          .limit(1);
+        if (data?.[0]?.change_pct != null) {
+          update.market_ch1m_at_entry = Number(data[0].change_pct);
+        }
+      } catch (e) {
+        this.logger.debug(`[risk-monitor-capture] top_gainers_log ${symbol}: ${String(e).slice(0, 120)}`);
+      }
+      if (Object.keys(update).length === 0) return;
+      const { error } = await this.supabase.getClient()
+        .from('lisa_positions')
+        .update(update)
+        .eq('id', positionId);
+      if (error) {
+        this.logger.debug(`[risk-monitor-capture] update ${positionId}: ${error.message}`);
+      }
+    } catch (e) {
+      this.logger.debug(`[risk-monitor-capture] exception ${symbol}: ${String(e).slice(0, 150)}`);
+    }
+  }
+
   async getLivePrice(symbol: string): Promise<{ symbol: string; price: string; asOf: string; source: string }> {
     return this.fetchLivePrice(symbol);
   }

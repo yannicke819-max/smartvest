@@ -273,32 +273,38 @@ export class OpenPositionRiskMonitorService {
   }
 
   /**
-   * Sub-A — fetch market proxy ch1m at_entry vs now.
-   * Crypto : BTCUSDT depuis top_gainers_log (très fréquent, ~6 captures/min).
-   * US/EU/Asia : null pour l'instant (extension P5 future).
+   * Sub-A — momentum delta du SYMBOLE LUI-MÊME (toutes classes : crypto, US, EU, Asia).
+   *
+   * Approche directe : compare le ch1m du symbole à l'open vs maintenant via top_gainers_log
+   * (le scanner capture ~6 snapshots/min pour TOUS les symboles qui apparaissent dans
+   * les classements top movers, donc couvre les positions actives quel que soit l'asset class).
+   *
+   * Avantages vs proxy de classe :
+   *   - Pas d'hypothèse de corrélation (AAPL ne suit pas toujours SPY 1:1)
+   *   - Unique source pour toutes les classes
+   *   - Aucune dépendance externe (data déjà capturée par scanner)
+   *
+   * Si le symbole n'a aucune capture dans top_gainers_log (rare : LLM thèse sur small-cap
+   * non-scannée), Sub-A retourne null et le composite repose sur B+C.
    */
   private async computeMarketMomentum(pos: OpenPositionRow): Promise<{ atEntry: number | null; now: number | null }> {
-    if (!pos.asset_class.startsWith('crypto')) {
-      return { atEntry: pos.market_ch1m_at_entry ?? null, now: null };
-    }
-    const proxy = 'BTCUSDT';
-    // ch1m @ entry : prends la valeur stockée si dispo, sinon lookup au plus proche
+    // ch1m @ entry : valeur stockée si dispo (capturée à l'open), sinon lookup top_gainers_log
     let atEntry = pos.market_ch1m_at_entry;
     if (atEntry == null) {
       const { data } = await this.supabase.getClient()
         .from('top_gainers_log')
         .select('change_pct, captured_at')
-        .eq('symbol', proxy)
+        .eq('symbol', pos.symbol)
         .lte('captured_at', pos.entry_timestamp)
         .order('captured_at', { ascending: false })
         .limit(1);
       atEntry = data?.[0]?.change_pct != null ? Number(data[0].change_pct) : null;
     }
-    // ch1m now : dernier snapshot disponible
+    // ch1m now : dernier snapshot du symbole
     const { data: latest } = await this.supabase.getClient()
       .from('top_gainers_log')
       .select('change_pct, captured_at')
-      .eq('symbol', proxy)
+      .eq('symbol', pos.symbol)
       .order('captured_at', { ascending: false })
       .limit(1);
     const now = latest?.[0]?.change_pct != null ? Number(latest[0].change_pct) : null;

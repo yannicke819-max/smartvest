@@ -3541,18 +3541,28 @@ export class TopGainersScannerService implements OnModuleInit {
         `[top-gainers] ${cand.symbol} opened DIRECT (entry=$${livePriceNum.toFixed(4)} qty=${openedPos.quantity} sl=${stopPrice} tp=${tpPrice} score=${cand.score})`,
       );
 
-      // P1 OpenPositionRiskMonitor — persiste pathEff / persistence @ entry sur
-      // lisa_positions pour permettre au cron risk monitor de calculer Δ depuis l'entrée.
-      // Best-effort : si update échoue, la position s'ouvre quand même mais le
-      // risk monitor sera dégradé pour cette position (sub_B fallback neutre).
-      if (persistence?.pathQuality?.overallEfficiency != null || persistence?.persistenceScore != null) {
+      // P1 OpenPositionRiskMonitor — persiste pathEff / persistence / market_ch1m
+      // @ entry sur lisa_positions pour permettre au cron risk monitor de calculer
+      // Δ depuis l'entrée. Best-effort : si update échoue, la position s'ouvre
+      // quand même mais le risk monitor sera dégradé pour cette position.
+      const riskFeatures: Record<string, unknown> = {};
+      if (persistence?.pathQuality?.overallEfficiency != null) {
+        riskFeatures.path_eff_at_entry = persistence.pathQuality.overallEfficiency;
+      }
+      if (persistence?.persistenceScore != null) {
+        riskFeatures.persistence_score_at_entry = persistence.persistenceScore;
+      }
+      if (persistence?.persistenceCount) {
+        riskFeatures.persistence_count_at_entry = persistence.persistenceCount;
+      }
+      // Sub-A : ch1m du symbole lui-même (= candidate.changePct au moment de l'open)
+      if (typeof cand.changePct === 'number' && Number.isFinite(cand.changePct)) {
+        riskFeatures.market_ch1m_at_entry = cand.changePct;
+      }
+      if (Object.keys(riskFeatures).length > 0) {
         await this.supabase.getClient()
           .from('lisa_positions')
-          .update({
-            path_eff_at_entry: persistence?.pathQuality?.overallEfficiency ?? null,
-            persistence_score_at_entry: persistence?.persistenceScore ?? null,
-            persistence_count_at_entry: persistence?.persistenceCount ?? null,
-          })
+          .update(riskFeatures)
           .eq('id', openedPos.id)
           .then(({ error }) => {
             if (error) this.logger.debug(`[top-gainers] risk-monitor features update ${openedPos.id} failed: ${error.message}`);
