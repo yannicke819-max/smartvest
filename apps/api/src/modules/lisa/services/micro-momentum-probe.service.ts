@@ -22,7 +22,7 @@ import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/commo
 import { Cron } from '@nestjs/schedule';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { BinanceMarketService } from './binance-market.service';
-import { PriceSample, evaluateMicroTrigger, forwardReturnNet } from './micro-momentum.helper';
+import { PriceSample, evaluateMicroTrigger, forwardReturnNet, computeMicroFeatures } from './micro-momentum.helper';
 
 const DEFAULT_MAJORS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT', 'DOTUSDT', 'LINKUSDT', 'POLUSDT'];
 const HORIZONS_MIN = [1, 3, 5, 15];
@@ -66,6 +66,29 @@ export class MicroMomentumProbeService implements OnModuleInit, OnModuleDestroy 
 
   onModuleDestroy(): void {
     if (this.timer) clearInterval(this.timer);
+  }
+
+  /**
+   * Miracle #2 — Expose la vélocité instantanée d'un symbole pour gating à
+   * l'entrée par le scanner. Lit depuis le buffer mémoire local (probe cron).
+   *
+   * Retourne null si :
+   *   - probe désactivé (MICRO_MOMENTUM_ENABLED=false)
+   *   - symbole pas dans la liste tracked (probe ne sait pas)
+   *   - buffer trop court pour calculer (<3 samples)
+   *
+   * Le caller décide quoi faire de null (typiquement allow par défaut).
+   */
+  getRecentVelocity(symbol: string): { velocityPctPerS: number; runLength: number; samples: number } | null {
+    if (!this.enabled) return null;
+    const buf = this.buffers.get(symbol.toUpperCase());
+    if (!buf || buf.length < 3) return null;
+    const f = computeMicroFeatures(buf);
+    return {
+      velocityPctPerS: f.velocityPctPerS,
+      runLength: f.runLength,
+      samples: buf.length,
+    };
   }
 
   /** Un tick d'échantillonnage : fetch batch, push buffers, détecte triggers. */

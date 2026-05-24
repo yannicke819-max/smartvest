@@ -87,6 +87,18 @@ import {
 import { TickerBlacklistService } from './ticker-blacklist.service';
 import { CorrelationGuardService } from './correlation-guard.service';
 import { AdaptiveCooldownService } from './adaptive-cooldown.service';
+import { MicroMomentumProbeService } from './micro-momentum-probe.service';
+import {
+  parseReverseMomentumConfig,
+  planOpens,
+  computeSlTpForDirection,
+  type ReverseMomentumConfig,
+} from './reverse-momentum.helper';
+import {
+  parseMicroMomentumGateConfig,
+  evaluateMicroGate,
+  type MicroMomentumGateConfig,
+} from './micro-momentum-gate.helper';
 import {
   computeEntryConvictionScore,
   decideSizingMultiplier,
@@ -437,6 +449,16 @@ export class TopGainersScannerService implements OnModuleInit {
   private convictionSizing!: { enabled: boolean; cfg: ConvictionSizingConfig };
 
   /**
+   * Miracle #1 — Reverse Momentum. Default long_only (back-compat). Quand
+   * 'short_only' ou 'both', le scanner ouvre des SHORT (le tristement célèbre WR
+   * inverse statistique des 20 % LONG actuels).
+   */
+  private reverseMomentum!: ReverseMomentumConfig;
+
+  /** Miracle #2 — micro-momentum gate. */
+  private microGate!: MicroMomentumGateConfig;
+
+  /**
    * Data-driven gates per-class (audit 23-24/05). Default toutes envs vides = OFF.
    * S'ajoute aux gates existants (additif, OR logique).
    */
@@ -704,6 +726,11 @@ export class TopGainersScannerService implements OnModuleInit {
      * @Optional pour back-compat tests existants.
      */
     @Optional() private readonly adaptiveCooldown?: AdaptiveCooldownService,
+    /**
+     * Miracle #2 — Micro-momentum gate (vélocité 6s à l'entrée).
+     * @Optional pour back-compat tests existants.
+     */
+    @Optional() private readonly microProbe?: MicroMomentumProbeService,
     // Sizing A/B test (research) — Optional pour back-compat tests.
     @Optional() private readonly sizingAbTest?: SizingABTestService,
   ) {
@@ -759,6 +786,29 @@ export class TopGainersScannerService implements OnModuleInit {
       const { multLow, multHigh, lowThreshold, highThreshold, skipIfNegative } = this.convictionSizing.cfg;
       this.logger.log(
         `[conviction-sizing] ENABLED — mult ${multLow}/${multHigh} thresholds ${lowThreshold}/${highThreshold} skipNeg=${skipIfNegative}`,
+      );
+    }
+
+    // Miracle #1 — Reverse momentum (default long_only).
+    this.reverseMomentum = parseReverseMomentumConfig({
+      REVERSE_MOMENTUM_MODE: this.config.get<string>('REVERSE_MOMENTUM_MODE'),
+      REVERSE_MOMENTUM_SHORT_RATIO: this.config.get<string>('REVERSE_MOMENTUM_SHORT_RATIO'),
+    });
+    if (this.reverseMomentum.mode !== 'long_only') {
+      this.logger.log(
+        `[reverse-momentum] ENABLED — mode=${this.reverseMomentum.mode} shortRatio=${this.reverseMomentum.shortSizeRatio.toFixed(2)}`,
+      );
+    }
+
+    // Miracle #2 — Micro-momentum gate (vélocité instantanée à l'entrée).
+    this.microGate = parseMicroMomentumGateConfig({
+      MICRO_MOMENTUM_GATE_ENABLED: this.config.get<string>('MICRO_MOMENTUM_GATE_ENABLED'),
+      MICRO_MOMENTUM_GATE_MIN_VELOCITY_PCT_S: this.config.get<string>('MICRO_MOMENTUM_GATE_MIN_VELOCITY_PCT_S'),
+      MICRO_MOMENTUM_GATE_MIN_RUN: this.config.get<string>('MICRO_MOMENTUM_GATE_MIN_RUN'),
+    });
+    if (this.microGate.enabled) {
+      this.logger.log(
+        `[micro-momentum-gate] ENABLED — minVel=${this.microGate.minVelocityPctPerS.toExponential(2)}/s minRun=${this.microGate.minRunLength}`,
       );
     }
   }
@@ -3581,6 +3631,53 @@ export class TopGainersScannerService implements OnModuleInit {
   }
 
   /**
+   * Miracle #1 — Capture des features @ entry par direction (LONG ou SHORT).
+   * Best-effort silencieux : tout échec → log debug, ne bloque pas la suite.
+   */
+  private async postOpenSideEffects(
+    positionId: string,
+    _qty: unknown,
+    _portfolioId: string,
+    cand: { symbol: string; changePct: number | undefined },
+    direction: 'long' | 'short',
+    _livePriceNum: number,
+    _stopPrice: string,
+    _tpPrice: string,
+    _notionalUsd: number,
+    _effectiveTp: number,
+    _effectiveSl: number,
+    _effectiveCapital: number,
+    _effectivePositionPct: number,
+    persistence: { pathQuality?: { overallEfficiency?: number | null } | null; persistenceScore?: number | null; persistenceCount?: string | null } | undefined,
+  ): Promise<void> {
+    const riskFeatures: Record<string, unknown> = {};
+    if (persistence?.pathQuality?.overallEfficiency != null) {
+      riskFeatures.path_eff_at_entry = persistence.pathQuality.overallEfficiency;
+    }
+    if (persistence?.persistenceScore != null) {
+      riskFeatures.persistence_score_at_entry = persistence.persistenceScore;
+    }
+    if (persistence?.persistenceCount) {
+      riskFeatures.persistence_count_at_entry = persistence.persistenceCount;
+    }
+    if (typeof cand.changePct === 'number' && Number.isFinite(cand.changePct)) {
+      // Note : pour une SHORT, on garde quand même ch1m positif au moment de l'open ;
+      // le risk-monitor delta interprétera correctement (cher au scénario SHORT, on
+      // surveille si le ch1m s'effrite — ce qui valide la thèse SHORT).
+      riskFeatures.market_ch1m_at_entry = cand.changePct;
+    }
+    if (Object.keys(riskFeatures).length > 0) {
+      const { error } = await this.supabase.getClient()
+        .from('lisa_positions')
+        .update(riskFeatures)
+        .eq('id', positionId);
+      if (error) {
+        this.logger.debug(`[reverse-momentum] ${direction} features update ${positionId} failed: ${error.message}`);
+      }
+    }
+  }
+
+  /**
    * PR #250 — Ouvre une position via paperBroker.openPositionDirect (path
    * direct, bypass complet du pipeline LLM). Skip generateThesis (LLM call),
    * skip INSERT lisa_proposals, skip approveProposal. Latence ~250 ms vs
@@ -3702,10 +3799,6 @@ export class TopGainersScannerService implements OnModuleInit {
         }
       }
 
-      // Compute stop/TP prices from pcts (long only par scanner)
-      const stopPrice = (livePriceNum * (1 - effectiveSl / 100)).toFixed(8);
-      const tpPrice = (livePriceNum * (1 + effectiveTp / 100)).toFixed(8);
-
       // Feature #1 — Cross-position correlation guard (post 24/05 cascade).
       // Refuse l'ouverture si la position serait trop corrélée aux opens
       // actuels (avg |Pearson 30j| > seuil). Best-effort : skip si guard
@@ -3735,56 +3828,77 @@ export class TopGainersScannerService implements OnModuleInit {
         }
       }
 
-      const openedPos = await this.lisa.getPaperBroker().openPositionDirect({
-        portfolioId,
-        symbol: cand.symbol,
-        assetClass: cand.assetClass,
-        direction: 'long',
-        venue: cand.exchange ?? 'unknown',
-        capitalAllocationUsd: effectiveNotional.toFixed(2),
-        livePrice: livePriceNum.toFixed(8),
-        stopLossPrice: stopPrice,
-        takeProfitPrice: tpPrice,
-        horizonDays: 1,
-        source: 'scanner_top_gainers',
-        // Bug #314 #M3 — ouverture atomique anti-race scanner/autopilot :
-        // si fourni, openPositionDirect passe par try_open_position (check
-        // cap + insert sous verrou advisory). Absent (caller legacy/test) →
-        // INSERT direct inchangé.
-        maxOpenPositions: overrides?.maxOpenPositions,
-      });
+      // Miracle #1 — Reverse momentum : plan détermine si on ouvre LONG, SHORT ou les deux.
+      // Default 'long_only' = comportement actuel. Si 'both', notional réparti selon shortSizeRatio.
+      const plan = planOpens(this.reverseMomentum);
+      let primaryOpenedPosId: string | null = null;
+      for (const item of plan) {
+        const directionalNotional = Math.round(effectiveNotional * item.notionalMultiplier * 100) / 100;
+        if (directionalNotional < 50) {
+          this.logger.debug(`[reverse-momentum] ${cand.symbol} ${item.direction} notional $${directionalNotional} < $50 min — skip`);
+          continue;
+        }
+        // Miracle #2 — Micro-momentum gate : skip si la vélocité 6s n'est pas
+        // alignée avec la direction (LONG nécessite asc, SHORT nécessite desc).
+        // Skip silencieux si symbole pas tracké par le probe (allow par défaut).
+        if (this.microGate.enabled && this.microProbe) {
+          const v = this.microProbe.getRecentVelocity(cand.symbol);
+          const verdict = evaluateMicroGate({
+            direction: item.direction,
+            velocityPctPerS: v?.velocityPctPerS ?? null,
+            runLength: v?.runLength ?? null,
+          }, this.microGate);
+          if (!verdict.pass) {
+            this.logger.log(
+              `[micro-momentum-gate] ${cand.symbol} ${item.direction} SKIP — ${verdict.reason}`,
+            );
+            continue;
+          }
+        }
+        const { stopLoss, takeProfit } = computeSlTpForDirection(livePriceNum, effectiveSl, effectiveTp, item.direction);
+        const stopPriceStr = stopLoss.toFixed(8);
+        const tpPriceStr = takeProfit.toFixed(8);
+
+        const openedPos = await this.lisa.getPaperBroker().openPositionDirect({
+          portfolioId,
+          symbol: cand.symbol,
+          assetClass: cand.assetClass,
+          direction: item.direction,
+          venue: cand.exchange ?? 'unknown',
+          capitalAllocationUsd: directionalNotional.toFixed(2),
+          livePrice: livePriceNum.toFixed(8),
+          stopLossPrice: stopPriceStr,
+          takeProfitPrice: tpPriceStr,
+          horizonDays: 1,
+          source: 'scanner_top_gainers',
+          maxOpenPositions: overrides?.maxOpenPositions,
+        });
+
+        // Audit log + features capture pour CETTE direction (best-effort)
+        await this.postOpenSideEffects(
+          openedPos.id, openedPos.quantity, portfolioId, cand, item.direction,
+          livePriceNum, stopPriceStr, tpPriceStr, directionalNotional,
+          effectiveTp, effectiveSl, effectiveCapital, effectivePositionPct, persistence,
+        ).catch((e) => this.logger.debug(`[top-gainers] post-open side effects ${item.direction} failed: ${String(e).slice(0, 120)}`));
+
+        if (primaryOpenedPosId === null) primaryOpenedPosId = openedPos.id;
+      }
+      if (primaryOpenedPosId === null) return null;
+      // Variable openedPos remplacée par primaryOpenedPosId pour la suite : on stub pour la compat.
+      const openedPos = { id: primaryOpenedPosId, quantity: 0 };
+      // stopPrice / tpPrice (legacy variables consumées plus bas dans le log) :
+      // on les recompose pour le log final basé sur la dernière direction du plan
+      const lastItem = plan[plan.length - 1];
+      const { stopLoss: _legacySl, takeProfit: _legacyTp } = computeSlTpForDirection(livePriceNum, effectiveSl, effectiveTp, lastItem.direction);
+      const stopPrice = _legacySl.toFixed(8);
+      const tpPrice = _legacyTp.toFixed(8);
 
       this.logger.log(
-        `[top-gainers] ${cand.symbol} opened DIRECT (entry=$${livePriceNum.toFixed(4)} qty=${openedPos.quantity} sl=${stopPrice} tp=${tpPrice} score=${cand.score})`,
+        `[top-gainers] ${cand.symbol} opened DIRECT (entry=$${livePriceNum.toFixed(4)} plan=${plan.map(p => p.direction).join('+')} sl=${stopPrice} tp=${tpPrice} score=${cand.score})`,
       );
 
-      // P1 OpenPositionRiskMonitor — persiste pathEff / persistence / market_ch1m
-      // @ entry sur lisa_positions pour permettre au cron risk monitor de calculer
-      // Δ depuis l'entrée. Best-effort : si update échoue, la position s'ouvre
-      // quand même mais le risk monitor sera dégradé pour cette position.
-      const riskFeatures: Record<string, unknown> = {};
-      if (persistence?.pathQuality?.overallEfficiency != null) {
-        riskFeatures.path_eff_at_entry = persistence.pathQuality.overallEfficiency;
-      }
-      if (persistence?.persistenceScore != null) {
-        riskFeatures.persistence_score_at_entry = persistence.persistenceScore;
-      }
-      if (persistence?.persistenceCount) {
-        riskFeatures.persistence_count_at_entry = persistence.persistenceCount;
-      }
-      // Sub-A : ch1m du symbole lui-même (= candidate.changePct au moment de l'open)
-      if (typeof cand.changePct === 'number' && Number.isFinite(cand.changePct)) {
-        riskFeatures.market_ch1m_at_entry = cand.changePct;
-      }
-      if (Object.keys(riskFeatures).length > 0) {
-        await this.supabase.getClient()
-          .from('lisa_positions')
-          .update(riskFeatures)
-          .eq('id', openedPos.id)
-          .then(({ error }) => {
-            if (error) this.logger.debug(`[top-gainers] risk-monitor features update ${openedPos.id} failed: ${error.message}`);
-          });
-      }
+      // Note : features @ entry (path_eff, persistence, market_ch1m) déjà persistées
+      // par direction via postOpenSideEffects() pendant la boucle plan.
 
       // Audit decision_log non-bloquant
       await this.decisionLog.append({
