@@ -44,6 +44,14 @@ import {
   shouldSkipStagflationHedge,
   type StagflationHedgeGuardConfig,
 } from './stagflation-hedge-guard.helper';
+import {
+  parsePerClassHourBlacklist,
+  shouldSkipByPerClassHourGate,
+  parseTickerSizeMultCsv,
+  getTickerSizeMultiplier,
+  type PerClassHourBlacklistConfig,
+  type TickerSizeMultConfig,
+} from './data-driven-gates.helper';
 import { EodhdQuotaService } from './eodhd-quota.service';
 import { EodhdCalendarService } from './eodhd-calendar.service';
 import { EodhdNewsService } from './eodhd-news.service';
@@ -400,6 +408,13 @@ export class TopGainersScannerService implements OnModuleInit {
    */
   private readonly stagflationHedgeGuard: StagflationHedgeGuardConfig;
 
+  /**
+   * Data-driven gates per-class (audit 23-24/05). Default toutes envs vides = OFF.
+   * S'ajoute aux gates existants (additif, OR logique).
+   */
+  private readonly perClassHourGate: PerClassHourBlacklistConfig;
+  private readonly tickerSizeMult: TickerSizeMultConfig;
+
   // ─────────────────────────────────────────────────────────────────
   // Observability — état diagnostique read-only exposé via
   // GET /admin/gainers/scanner-status. N'influence pas la logique scanner.
@@ -660,6 +675,32 @@ export class TopGainersScannerService implements OnModuleInit {
     if (this.stagflationHedgeGuard.enabled) {
       this.logger.log(
         `[stagflation-guard] ENABLED — ${this.stagflationHedgeGuard.tickers.size} tickers blacklistés`,
+      );
+    }
+
+    // Data-driven gates per-class (audit 23-24/05)
+    this.perClassHourGate = parsePerClassHourBlacklist({
+      GAINERS_HOUR_BLACKLIST_ASIA_UTC: this.config.get<string>('GAINERS_HOUR_BLACKLIST_ASIA_UTC'),
+      GAINERS_HOUR_BLACKLIST_US_UTC: this.config.get<string>('GAINERS_HOUR_BLACKLIST_US_UTC'),
+      GAINERS_HOUR_BLACKLIST_EU_UTC: this.config.get<string>('GAINERS_HOUR_BLACKLIST_EU_UTC'),
+      GAINERS_HOUR_BLACKLIST_CRYPTO_UTC: this.config.get<string>('GAINERS_HOUR_BLACKLIST_CRYPTO_UTC'),
+    });
+    const gateSummary = [
+      this.perClassHourGate.asia_equity.size > 0 ? `asia=[${[...this.perClassHourGate.asia_equity].sort((a,b)=>a-b).join(',')}]` : null,
+      this.perClassHourGate.us_equity_large.size > 0 ? `us=[${[...this.perClassHourGate.us_equity_large].sort((a,b)=>a-b).join(',')}]` : null,
+      this.perClassHourGate.eu_equity.size > 0 ? `eu=[${[...this.perClassHourGate.eu_equity].sort((a,b)=>a-b).join(',')}]` : null,
+      this.perClassHourGate.crypto_major.size > 0 ? `crypto=[${[...this.perClassHourGate.crypto_major].sort((a,b)=>a-b).join(',')}]` : null,
+    ].filter((x): x is string => x !== null);
+    if (gateSummary.length > 0) {
+      this.logger.log(`[per-class-hour-gate] ENABLED — ${gateSummary.join(' ')}`);
+    }
+
+    this.tickerSizeMult = parseTickerSizeMultCsv(
+      this.config.get<string>('GAINERS_PREFERRED_TICKERS_SIZE_MULT'),
+    );
+    if (this.tickerSizeMult.multipliers.size > 0) {
+      this.logger.log(
+        `[ticker-size-mult] ENABLED — ${this.tickerSizeMult.multipliers.size} tickers boostés/réduits`,
       );
     }
   }
@@ -2383,6 +2424,17 @@ export class TopGainersScannerService implements OnModuleInit {
         }
       }
 
+      // Gate horaire PAR CLASSE (audit 23-24/05 data-driven).
+      // S'ajoute au gate global ci-dessus. Default OFF (toutes envs vides).
+      // Recommandation : GAINERS_HOUR_BLACKLIST_ASIA_UTC=0,1,2 (asia @ H00-02 = -$1300 / 91 trades, WR 26%).
+      if (shouldSkipByPerClassHourGate(cand.assetClass, nowUtc.getUTCHours(), this.perClassHourGate)) {
+        this.logger.log(
+          `[top-gainers] ${cand.symbol} (${cand.assetClass}) hour ${nowUtc.getUTCHours()}h UTC blacklist par-classe → skip long`,
+        );
+        recordShadowDecision(cand, 'reject_hour_blacklisted', undefined);
+        continue;
+      }
+
       // Gate session par-bourse (DST-safe) — n'ouvre JAMAIS sur un marché fermé.
       // Le bloc agrégé Asie 00:00-08:00 traitait la Corée (close réel 06:30 UTC)
       // comme ouverte jusqu'à 08:00 → ouvertures post-cloche sur prix figé,
@@ -3484,8 +3536,18 @@ export class TopGainersScannerService implements OnModuleInit {
     // (caller hors scanPortfolio = legacy / test).
     const effectiveCapital = overrides?.capitalUsd ?? FALLBACK_CAPITAL_USD;
     const effectivePositionPct = overrides?.positionPct ?? FALLBACK_POSITION_PCT;
-    const effectiveNotional = overrides?.positionNotionalUsd
+    const baseNotional = overrides?.positionNotionalUsd
       ?? (effectiveCapital * (effectivePositionPct / 100));
+
+    // Ticker size multiplier data-driven (audit 23/05).
+    // Default 1.0 (no-op) si symbole pas dans la config. Cap [0.1, 3.0] côté helper.
+    const sizeMult = getTickerSizeMultiplier(cand.symbol, this.tickerSizeMult);
+    const effectiveNotional = Math.round(baseNotional * sizeMult * 100) / 100;
+    if (sizeMult !== 1.0) {
+      this.logger.log(
+        `[top-gainers] ${cand.symbol} size-mult ×${sizeMult} → notional $${baseNotional.toFixed(2)} → $${effectiveNotional.toFixed(2)}`,
+      );
+    }
 
     // PR #250 — DÉCOUPLAGE COMPLET du pipeline LLM Lisa.
     //
