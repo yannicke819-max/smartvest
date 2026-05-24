@@ -85,6 +85,7 @@ import {
   formatFilterLog,
 } from '@smartvest/ai-analyst';
 import { TickerBlacklistService } from './ticker-blacklist.service';
+import { CorrelationGuardService } from './correlation-guard.service';
 import {
   EARLY_RETURN_REASONS,
   type EarlyReturnReason,
@@ -678,6 +679,12 @@ export class TopGainersScannerService implements OnModuleInit {
      * no-op silencieux. Append en fin pour ne pas casser les tests existants.
      */
     @Optional() private readonly symbolAtrCache?: SymbolAtrCacheService,
+    /**
+     * Feature #1 — Cross-position correlation guard (post-incident 24/05 cascade).
+     * @Optional pour back-compat tests existants (specs scanner). Quand undefined
+     * ou guard disabled (env flag), aucun effet → back-compat 100 %.
+     */
+    @Optional() private readonly correlationGuard?: CorrelationGuardService,
     // Sizing A/B test (research) — Optional pour back-compat tests.
     @Optional() private readonly sizingAbTest?: SizingABTestService,
   ) {
@@ -3627,6 +3634,35 @@ export class TopGainersScannerService implements OnModuleInit {
       // Compute stop/TP prices from pcts (long only par scanner)
       const stopPrice = (livePriceNum * (1 - effectiveSl / 100)).toFixed(8);
       const tpPrice = (livePriceNum * (1 + effectiveTp / 100)).toFixed(8);
+
+      // Feature #1 — Cross-position correlation guard (post 24/05 cascade).
+      // Refuse l'ouverture si la position serait trop corrélée aux opens
+      // actuels (avg |Pearson 30j| > seuil). Best-effort : skip si guard
+      // disabled, no_open_positions, ou erreur fetch.
+      if (this.correlationGuard?.isEnabled()) {
+        try {
+          const { data: openRows } = await this.supabase.getClient()
+            .from('lisa_positions')
+            .select('symbol, asset_class')
+            .eq('portfolio_id', portfolioId)
+            .eq('status', 'open');
+          const opens = ((openRows ?? []) as Array<{ symbol: string; asset_class: string }>)
+            .filter((r) => r.symbol !== cand.symbol);
+          const assessment = await this.correlationGuard.assessNewPosition(
+            { symbol: cand.symbol, assetClass: String(cand.assetClass) },
+            opens.map((o) => ({ symbol: o.symbol, assetClass: o.asset_class })),
+          );
+          if (assessment.reject) {
+            this.logger.log(
+              `[correlation-guard] ${cand.symbol} REJECTED — ${assessment.reason} ` +
+              `(avg=${assessment.avgCorr?.toFixed(2)} max=${assessment.maxCorr?.toFixed(2)} on ${assessment.perPosition.length} opens)`,
+            );
+            return null;
+          }
+        } catch (e) {
+          this.logger.debug(`[correlation-guard] ${cand.symbol} exception (skip guard): ${String(e).slice(0, 120)}`);
+        }
+      }
 
       const openedPos = await this.lisa.getPaperBroker().openPositionDirect({
         portfolioId,
