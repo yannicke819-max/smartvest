@@ -64,6 +64,7 @@ import { ScannerLlmRouterService } from './services/scanner-llm-router.service';
 import { DailyCatalystBriefService } from './services/daily-catalyst-brief.service';
 import { OpenPositionRiskMonitorService } from './services/open-position-risk-monitor.service';
 import { CorrelationGuardService } from './services/correlation-guard.service';
+import { DailyRetrospectiveService } from './services/daily-retrospective.service';
 import { EventEngineService } from './services/event-engine.service';
 import { EodhdNewsService } from './services/eodhd-news.service';
 import { EodhdNewsCollectorService } from './services/eodhd-news-collector.service';
@@ -191,6 +192,8 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     OpenPositionRiskMonitorService,
     // Feature #1 — Cross-position correlation guard (anti-cascade 24/05)
     CorrelationGuardService,
+    // Feature #3 — Rétrospective journalière narrative (Gemini Pro 22:00 UTC)
+    DailyRetrospectiveService,
     // P19a — Yahoo Finance intraday fallback (Korea KOSPI, small-caps, etc.)
     YahooIntradayService,
     // P19i — Intraday OHLCV cache Supabase (last_known < 15 min, fallback chain)
