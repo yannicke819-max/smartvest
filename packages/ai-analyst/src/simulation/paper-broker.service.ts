@@ -603,6 +603,44 @@ export class PaperBrokerService {
       ? 0
       : netPnl.dividedBy(entryNotional).mul(100).toNumber();
 
+    // R5 sanity inline — issue #409. Le SanityR5Service NestJS (apps/api) protège
+    // MechanicalTradingService.closePosition mais PAS ce path (paper-broker dans
+    // packages/ai-analyst, cross-package). Avec strategy_mode=gainers, 100 % des
+    // closes passent ici → mode non protégé.
+    // Bug récurrent : SEE.LSE −$1574 (14/05 exit_price=0), URA/PPLT/CPER −$2200
+    // (30/04 force-close-at-zero) = ~$3 000+ historique évitable.
+    // Defaults alignés avec SanityR5Service : ratio 0.5, pnl_pct −50, ENABLED=true.
+    const r5Enabled = (process.env.R5_SANITY_ENABLED ?? 'true').toLowerCase() === 'true';
+    if (r5Enabled) {
+      const minRatio = Number(process.env.R5_EXIT_PRICE_MIN_RATIO ?? '0.5');
+      const minPnlPct = Number(process.env.R5_PNL_PCT_MIN_THRESHOLD ?? '-50');
+      const exitPxN = exitPx.toNumber();
+      const entryPxN = entryPx.toNumber();
+      let r5Block: { code: string; detail: string } | null = null;
+      if (!Number.isFinite(exitPxN) || exitPxN <= 0) {
+        r5Block = { code: 'R5_EXIT_PRICE_ZERO', detail: `exit_price=${exitPxN}` };
+      } else if (Number.isFinite(entryPxN) && entryPxN > 0 && exitPxN < entryPxN * minRatio) {
+        r5Block = {
+          code: 'R5_EXIT_BELOW_RATIO',
+          detail: `exit=${exitPxN} entry=${entryPxN} ratio=${(exitPxN / entryPxN).toFixed(4)} min=${minRatio}`,
+        };
+      } else if (Number.isFinite(pnlPct) && pnlPct < minPnlPct) {
+        r5Block = {
+          code: 'R5_PNL_BELOW_THRESHOLD',
+          detail: `pnl_pct=${pnlPct.toFixed(3)} threshold=${minPnlPct}`,
+        };
+      }
+      if (r5Block) {
+        const err = new Error(
+          `[R5_SANITY_BLOCK_PAPER] ${position.symbol} positionId=${cmd.positionId} ${r5Block.code} ${r5Block.detail} — position kept open, retry next tick`,
+        );
+        (err as Error & { code?: string }).code = r5Block.code;
+        // eslint-disable-next-line no-console
+        console.error(err.message);
+        throw err;
+      }
+    }
+
     const now = new Date().toISOString();
 
     // 🛡️ Patch B : UPDATE atomique avec WHERE status='open'.
@@ -649,6 +687,49 @@ export class PaperBrokerService {
       // eslint-disable-next-line no-console
       console.warn(`[PAPER_BROKER] closePosition ${cmd.positionId} race detected — already closed by another actor, skipping double-close`);
       return position; // état d'avant, déjà cohérent avec la DB
+    }
+
+    // Miroir paper_trades — UPDATE en aval pour débloquer P9 ML refit.
+    // paper_trades est une table audit séparée alimentée par le scanner
+    // au INSERT seulement (top-gainers-scanner.service.ts:3674). Sans cette
+    // mise à jour miroir, paper_trades reste à status='open' pour toujours
+    // → P9 logistic regression `insufficient_sample` perpétuel.
+    //
+    // Best-effort : wrap try/catch isolé. Si l'UPDATE échoue (race, row
+    // absente pour les positions Lisa LLM non-scanner, etc.) → log warn,
+    // close lisa_positions reste effective. Zéro impact sur le trading réel.
+    try {
+      const entryTs = new Date(position.entryTimestamp).getTime();
+      const closedTs = new Date(now).getTime();
+      const holdSec = Math.max(0, Math.floor((closedTs - entryTs) / 1000));
+      // outcome_label SMALLINT : 1 = win (pnl > 0), 0 = loss/flat (pnl ≤ 0).
+      // Aligné avec persistence-probability.service.ts:348.
+      const outcomeLabel = pnlPct > 0 ? 1 : 0;
+      // paper_trades.status est sous CHECK ('open', 'closed', 'cancelled').
+      // lisa_positions.status a une granularité plus fine ('closed_target',
+      // 'closed_stop', etc) → on simplifie à 'closed' ici. Le détail précis
+      // reste dans lisa_positions, lié via scanner_position_id.
+      const { error: mirErr } = await this.supabase
+        .from('paper_trades')
+        .update({
+          status: 'closed',
+          closed_at: now,
+          exit_price: exitPx.toFixed(10),
+          pnl_usd: netPnl.toFixed(2),
+          pnl_pct: pnlPct,
+          hold_duration_seconds: holdSec,
+          outcome_label: outcomeLabel,
+          updated_at: now,
+        })
+        .eq('scanner_position_id', cmd.positionId)
+        .eq('status', 'open');
+      if (mirErr) {
+        // eslint-disable-next-line no-console
+        console.warn(`[PAPER_BROKER] paper_trades mirror update failed for ${cmd.positionId}: ${mirErr.message}`);
+      }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn(`[PAPER_BROKER] paper_trades mirror exception for ${cmd.positionId}: ${String(e).slice(0, 200)}`);
     }
 
     return {

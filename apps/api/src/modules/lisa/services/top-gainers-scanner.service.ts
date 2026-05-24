@@ -39,6 +39,20 @@ import { PersistenceProbabilityService } from './persistence-probability.service
 // PR #365 — matrice TP/SL par asset_class (Hurst asia tp=3.90%, eu=3.25%).
 // Le scanner Gainers Direct (PR #250) ignorait cette matrice à l'ouverture.
 import { AssetClassTpSlConfigService } from './asset-class-tpsl-config.service';
+import {
+  parseStagflationHedgeGuardConfig,
+  shouldSkipStagflationHedge,
+  type StagflationHedgeGuardConfig,
+} from './stagflation-hedge-guard.helper';
+import {
+  parsePerClassHourBlacklist,
+  shouldSkipByPerClassHourGate,
+  parseTickerSizeMultCsv,
+  getTickerSizeMultiplier,
+  type PerClassHourBlacklistConfig,
+  type TickerSizeMultConfig,
+} from './data-driven-gates.helper';
+import { SizingABTestService } from './research/sizing-ab-test.service';
 import { EodhdQuotaService } from './eodhd-quota.service';
 import { EodhdCalendarService } from './eodhd-calendar.service';
 import { EodhdNewsService } from './eodhd-news.service';
@@ -402,6 +416,19 @@ export class TopGainersScannerService implements OnModuleInit {
   private allCandidatesCache: { candidates: TopGainerCandidate[]; asOf: number } | null = null;
   private readonly ALL_CANDIDATES_CACHE_TTL_MS = 15 * 60_000; // 15 min
 
+  /**
+   * Stagflation hedge guard config — parsée 1× au constructor depuis env.
+   * Default OFF, immutable. Cf. stagflation-hedge-guard.helper.ts.
+   */
+  private readonly stagflationHedgeGuard: StagflationHedgeGuardConfig;
+
+  /**
+   * Data-driven gates per-class (audit 23-24/05). Default toutes envs vides = OFF.
+   * S'ajoute aux gates existants (additif, OR logique).
+   */
+  private readonly perClassHourGate: PerClassHourBlacklistConfig;
+  private readonly tickerSizeMult: TickerSizeMultConfig;
+
   // ─────────────────────────────────────────────────────────────────
   // Observability — état diagnostique read-only exposé via
   // GET /admin/gainers/scanner-status. N'influence pas la logique scanner.
@@ -658,7 +685,47 @@ export class TopGainersScannerService implements OnModuleInit {
      * ou guard disabled (env flag), aucun effet → back-compat 100 %.
      */
     @Optional() private readonly correlationGuard?: CorrelationGuardService,
-  ) {}
+    // Sizing A/B test (research) — Optional pour back-compat tests.
+    @Optional() private readonly sizingAbTest?: SizingABTestService,
+  ) {
+    // Parse stagflation hedge guard config 1× au boot. ConfigService.get retourne
+    // toujours string|undefined ; on convertit via le helper pur.
+    this.stagflationHedgeGuard = parseStagflationHedgeGuardConfig({
+      STAGFLATION_HEDGE_GUARD_ENABLED: this.config.get<string>('STAGFLATION_HEDGE_GUARD_ENABLED'),
+      STAGFLATION_HEDGE_GUARD_TICKERS: this.config.get<string>('STAGFLATION_HEDGE_GUARD_TICKERS'),
+    });
+    if (this.stagflationHedgeGuard.enabled) {
+      this.logger.log(
+        `[stagflation-guard] ENABLED — ${this.stagflationHedgeGuard.tickers.size} tickers blacklistés`,
+      );
+    }
+
+    // Data-driven gates per-class (audit 23-24/05)
+    this.perClassHourGate = parsePerClassHourBlacklist({
+      GAINERS_HOUR_BLACKLIST_ASIA_UTC: this.config.get<string>('GAINERS_HOUR_BLACKLIST_ASIA_UTC'),
+      GAINERS_HOUR_BLACKLIST_US_UTC: this.config.get<string>('GAINERS_HOUR_BLACKLIST_US_UTC'),
+      GAINERS_HOUR_BLACKLIST_EU_UTC: this.config.get<string>('GAINERS_HOUR_BLACKLIST_EU_UTC'),
+      GAINERS_HOUR_BLACKLIST_CRYPTO_UTC: this.config.get<string>('GAINERS_HOUR_BLACKLIST_CRYPTO_UTC'),
+    });
+    const gateSummary = [
+      this.perClassHourGate.asia_equity.size > 0 ? `asia=[${[...this.perClassHourGate.asia_equity].sort((a,b)=>a-b).join(',')}]` : null,
+      this.perClassHourGate.us_equity_large.size > 0 ? `us=[${[...this.perClassHourGate.us_equity_large].sort((a,b)=>a-b).join(',')}]` : null,
+      this.perClassHourGate.eu_equity.size > 0 ? `eu=[${[...this.perClassHourGate.eu_equity].sort((a,b)=>a-b).join(',')}]` : null,
+      this.perClassHourGate.crypto_major.size > 0 ? `crypto=[${[...this.perClassHourGate.crypto_major].sort((a,b)=>a-b).join(',')}]` : null,
+    ].filter((x): x is string => x !== null);
+    if (gateSummary.length > 0) {
+      this.logger.log(`[per-class-hour-gate] ENABLED — ${gateSummary.join(' ')}`);
+    }
+
+    this.tickerSizeMult = parseTickerSizeMultCsv(
+      this.config.get<string>('GAINERS_PREFERRED_TICKERS_SIZE_MULT'),
+    );
+    if (this.tickerSizeMult.multipliers.size > 0) {
+      this.logger.log(
+        `[ticker-size-mult] ENABLED — ${this.tickerSizeMult.multipliers.size} tickers boostés/réduits`,
+      );
+    }
+  }
 
   /**
    * P8 — Resolve config min persistence score.
@@ -2326,6 +2393,19 @@ export class TopGainersScannerService implements OnModuleInit {
         }
       }
 
+      // Stagflation hedge guard — bloque les tickers du watchlist
+      // `stagflation_hedge` (métaux/énergie/défensifs/govt bonds).
+      // Justif. empirique : 25 trades historiques sur ces classes ont
+      // perdu -$3,463 (3 force-closes à -100%). OFF par défaut (env-gated).
+      // Cf. stagflation-hedge-guard.helper.ts pour la liste et le rationale.
+      if (shouldSkipStagflationHedge(cand.symbol, this.stagflationHedgeGuard)) {
+        this.logger.log(
+          `[top-gainers] ${cand.symbol} stagflation_hedge guard → skip (defensive)`,
+        );
+        recordShadowDecision(cand, 'reject_stagflation_hedge_guard', undefined);
+        continue;
+      }
+
       // Plafond changePct LONG — anti chase-the-top (MESURE 22/05, n=469 paired
       // us_equity_small_mid) : sur les pops sur-étendus (≥10%), le LONG perd
       // (-0.35/-0.40% mean) alors qu'il est positif sur 5-10% (+0.085%). On
@@ -2376,6 +2456,17 @@ export class TopGainersScannerService implements OnModuleInit {
           recordShadowDecision(cand, 'reject_hour_blacklisted', undefined);
           continue;
         }
+      }
+
+      // Gate horaire PAR CLASSE (audit 23-24/05 data-driven).
+      // S'ajoute au gate global ci-dessus. Default OFF (toutes envs vides).
+      // Recommandation : GAINERS_HOUR_BLACKLIST_ASIA_UTC=0,1,2 (asia @ H00-02 = -$1300 / 91 trades, WR 26%).
+      if (shouldSkipByPerClassHourGate(cand.assetClass, nowUtc.getUTCHours(), this.perClassHourGate)) {
+        this.logger.log(
+          `[top-gainers] ${cand.symbol} (${cand.assetClass}) hour ${nowUtc.getUTCHours()}h UTC blacklist par-classe → skip long`,
+        );
+        recordShadowDecision(cand, 'reject_hour_blacklisted', undefined);
+        continue;
       }
 
       // Gate session par-bourse (DST-safe) — n'ouvre JAMAIS sur un marché fermé.
@@ -2538,7 +2629,14 @@ export class TopGainersScannerService implements OnModuleInit {
       //     no-op silencieux (recent=[] → pas de match).
       //   - Asia + EU : EODHD news coverage médiocre (0% / 13%) → no-op
       const newsAgeHours = Number(this.config.get<string>('GAINERS_NEWS_AGE_FILTER_HOURS') ?? '0');
-      const newsMinSentiment = Number(this.config.get<string>('GAINERS_NEWS_AGE_FILTER_MIN_SENTIMENT') ?? '0.5');
+      // Sentiment net (pos - neg) au lieu de la polarité EODHD (audit 23/05 : 73%
+      // des articles ont polarity > 0.9 — signal saturé / inutilisable). Net
+      // sentiment p90 = 0.15 sur 300 articles échantillonnés → seuil 0.15 garde
+      // top ~10% "réellement positif" et débloque les 80% sur-rejetés à tort.
+      // Rollback : GAINERS_NEWS_MIN_NET_SENTIMENT=0 désactive le filtre net.
+      const newsMinNetSentiment = Number(
+        this.config.get<string>('GAINERS_NEWS_MIN_NET_SENTIMENT') ?? '0.15',
+      );
       const cls = cand.assetClass;
       const filterApplies =
         newsAgeHours > 0 &&
@@ -2550,15 +2648,17 @@ export class TopGainersScannerService implements OnModuleInit {
       if (filterApplies) {
         try {
           const recent = await this.eodhdNews.getRecentNewsForTicker(cand.symbol, newsAgeHours);
-          const strongPos = recent.find(
-            (n) => typeof n.sentiment_polarity === 'number' && n.sentiment_polarity >= newsMinSentiment,
-          );
+          const strongPos = recent.find((n) => {
+            if (typeof n.sentiment_pos !== 'number' || typeof n.sentiment_neg !== 'number') return false;
+            return (n.sentiment_pos - n.sentiment_neg) >= newsMinNetSentiment;
+          });
           if (strongPos) {
+            const net = (strongPos.sentiment_pos ?? 0) - (strongPos.sentiment_neg ?? 0);
             const ageMin = Math.floor(
               (Date.now() - new Date(strongPos.published_at).getTime()) / 60_000,
             );
             this.logger.log(
-              `[top-gainers] ${cand.symbol} news strong_pos (polarity=${strongPos.sentiment_polarity}) il y a ${ageMin}min → skip (Phase 2 anti chase-post-news)`,
+              `[top-gainers] ${cand.symbol} news strong_pos (net=${net.toFixed(3)}) il y a ${ageMin}min → skip (anti chase-post-news)`,
             );
             recordShadowDecision(cand, 'reject_post_news_fresh_strong_pos', undefined);
             continue;
@@ -3477,8 +3577,18 @@ export class TopGainersScannerService implements OnModuleInit {
     // (caller hors scanPortfolio = legacy / test).
     const effectiveCapital = overrides?.capitalUsd ?? FALLBACK_CAPITAL_USD;
     const effectivePositionPct = overrides?.positionPct ?? FALLBACK_POSITION_PCT;
-    const effectiveNotional = overrides?.positionNotionalUsd
+    const baseNotional = overrides?.positionNotionalUsd
       ?? (effectiveCapital * (effectivePositionPct / 100));
+
+    // Ticker size multiplier data-driven (audit 23/05).
+    // Default 1.0 (no-op) si symbole pas dans la config. Cap [0.1, 3.0] côté helper.
+    const sizeMult = getTickerSizeMultiplier(cand.symbol, this.tickerSizeMult);
+    const effectiveNotional = Math.round(baseNotional * sizeMult * 100) / 100;
+    if (sizeMult !== 1.0) {
+      this.logger.log(
+        `[top-gainers] ${cand.symbol} size-mult ×${sizeMult} → notional $${baseNotional.toFixed(2)} → $${effectiveNotional.toFixed(2)}`,
+      );
+    }
 
     // PR #250 — DÉCOUPLAGE COMPLET du pipeline LLM Lisa.
     //
@@ -3636,6 +3746,17 @@ export class TopGainersScannerService implements OnModuleInit {
           .catch((e) =>
             this.logger.debug(`[top-gainers] persistPaperTrade ${cand.symbol} failed: ${String(e).slice(0, 120)}`),
           );
+      }
+
+      // Sizing A/B shadow tracking (research). Best-effort, ne throw jamais.
+      if (this.sizingAbTest) {
+        this.sizingAbTest.recordSignal({
+          symbol: cand.symbol,
+          assetClass: cand.assetClass,
+          scannerPositionId: openedPos.id,
+        }).catch((e) =>
+          this.logger.debug(`[sizing-ab] recordSignal ${cand.symbol} failed: ${String(e).slice(0, 120)}`),
+        );
       }
 
       return openedPos.id;

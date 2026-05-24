@@ -111,6 +111,12 @@ import { KellyRecomputeService } from './services/kelly-recompute.service';
 import { TwelveDataService } from './services/twelve-data.service';
 // PR #352 — Router intraday TD-first avec fallback EODHD (flag-gated)
 import { IntradayProviderRouter } from './services/intraday-provider-router.service';
+// R&D batch — services env-gated OFF par défaut (audit 23/05 propositions sérieuses)
+import { GeminiRiskManagerService } from './services/research/gemini-risk-manager.service';
+import { CryptoFundingFadeService } from './services/research/crypto-funding-fade.service';
+import { EventNarrativeInterpreterService } from './services/research/event-narrative-interpreter.service';
+import { HourlyEdgeAnalyzerService } from './services/research/hourly-edge-analyzer.service';
+import { SizingABTestService } from './services/research/sizing-ab-test.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule, BotLabModule, GainersModule],
@@ -248,6 +254,12 @@ import { IntradayProviderRouter } from './services/intraday-provider-router.serv
     TwelveDataService,
     // PR #352 — Router intraday TD-first (flag OFF par défaut → passthrough EODHD)
     IntradayProviderRouter,
+    // R&D batch (23/05 propositions sérieuses, ENV-gated OFF par défaut)
+    GeminiRiskManagerService,
+    CryptoFundingFadeService,
+    EventNarrativeInterpreterService,
+    HourlyEdgeAnalyzerService,
+    SizingABTestService,
   ],
   exports: [
     LisaService,
@@ -295,6 +307,11 @@ import { IntradayProviderRouter } from './services/intraday-provider-router.serv
     // PR #358 — export pour AdminQwPipelineToggleController qui expose
     // /admin/qw-pipeline-toggle (toggle runtime QUICK_WINS_PIPELINE_ENABLED).
     QuickWinsPipelineService,
+    // Exports pour AdminEventEngineForceController : force-pull manuel des
+    // caches alimentés par cron quotidien (économic events 03:30 UTC,
+    // ATR cache 21:30 UTC lun-ven).
+    EodhdEconomicEventsService,
+    SymbolAtrCacheService,
   ],
 })
 export class LisaModule {}

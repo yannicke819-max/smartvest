@@ -139,15 +139,28 @@ export class EodhdEconomicEventsService {
     return { fetched: events.length, persisted: rows.length };
   }
 
-  /** Lit les events des prochaines `windowHours` heures (default 48h). */
+  /**
+   * Lit les events des prochaines `windowHours` heures (default 48h).
+   *
+   * Filtre country : par défaut US/EU/UK/JP/CN/DE/FR uniquement. EODHD remonte
+   * ~470 events/semaine dont la majorité Malaysia, Singapore, Finland, Kyrgyzstan…
+   * Gemini ne sait pas ranker ce bruit (importance=null partout car EODHD ne
+   * surface pas le champ dans le payload). On garde les juridictions qui
+   * bougent les marchés cross-asset (USD/EUR/JPY/CNY/GBP).
+   *
+   * Override possible via `ECONOMIC_EVENTS_COUNTRIES` (CSV) si on veut élargir.
+   */
   async getUpcomingEvents(windowHours = 48): Promise<PersistedEconomicEvent[]> {
     if (!this.supabase.isReady()) return [];
     const now = new Date().toISOString();
     const cutoff = new Date(Date.now() + windowHours * 3600_000).toISOString();
+    const countriesCsv = this.config.get<string>('ECONOMIC_EVENTS_COUNTRIES') ?? 'US,EU,UK,JP,CN,DE,FR';
+    const allowedCountries = countriesCsv.split(',').map((c) => c.trim().toUpperCase()).filter(Boolean);
     const { data, error } = await this.supabase
       .getClient()
       .from('eodhd_economic_events')
       .select('event_name, country, event_date, importance, actual, previous, estimate, unit')
+      .in('country', allowedCountries)
       .gte('event_date', now)
       .lte('event_date', cutoff)
       .order('event_date', { ascending: true })

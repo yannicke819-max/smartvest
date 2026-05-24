@@ -154,6 +154,11 @@ export class SymbolAtrCacheService {
       if (atr === null || atr <= 0) return false;
       const lastClose = candles[candles.length - 1].close;
       if (!Number.isFinite(lastClose) || lastClose <= 0) return false;
+      // Anti-bug parsing EODHD : certains EOD remontent close=0.0005 (ex TIPS.US
+      // 23/05) → atrRatioPct=40% pollue le scanner. Sanity bound : skip tout
+      // ticker dont le close last < $1 (penny stocks rarement candidats scanner
+      // de toute façon, tradeoff conservateur).
+      if (lastClose < 1) return false;
       const atrRatioPct = (atr / lastClose) * 100;
 
       if (!this.supabase.isReady()) return false;

@@ -111,6 +111,30 @@ describe('DailyCatalystBriefService', () => {
       expect(svc.parseBriefJson('not json at all', '2026-05-23')).toBeNull();
     });
 
+    it('extrait JSON balanced même avec prose avant/après (cas Gemini réel)', () => {
+      const svc = new DailyCatalystBriefService(cfg(), makeSupabase({}).svc, makeLlm(''), econ());
+      const messy =
+        "Here is your daily catalyst brief:\n\n" +
+        SAMPLE_BRIEF_JSON +
+        "\n\nLet me know if you need adjustments.";
+      const b = svc.parseBriefJson(messy, '2026-05-23');
+      expect(b).not.toBeNull();
+      expect(b!.summary).toContain('PCE');
+    });
+
+    it('extrait JSON balanced même avec fences mal placées', () => {
+      const svc = new DailyCatalystBriefService(cfg(), makeSupabase({}).svc, makeLlm(''), econ());
+      const messy = "Analysis:\n```json\n" + SAMPLE_BRIEF_JSON + "\n```\nDone.";
+      const b = svc.parseBriefJson(messy, '2026-05-23');
+      expect(b).not.toBeNull();
+    });
+
+    it('extractFirstBalancedObject ignore les { dans les strings', () => {
+      const tricky = 'prose {"summary": "contains } and { chars", "date": "x"} trailing';
+      const extracted = DailyCatalystBriefService.extractFirstBalancedObject(tricky);
+      expect(extracted).toBe('{"summary": "contains } and { chars", "date": "x"}');
+    });
+
     it("renvoie null si payload sans 'summary'", () => {
       const svc = new DailyCatalystBriefService(cfg(), makeSupabase({}).svc, makeLlm(''), econ());
       expect(svc.parseBriefJson(JSON.stringify({ date: '2026-05-23' }), '2026-05-23')).toBeNull();
