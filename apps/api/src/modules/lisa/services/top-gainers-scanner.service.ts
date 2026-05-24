@@ -87,12 +87,18 @@ import {
 import { TickerBlacklistService } from './ticker-blacklist.service';
 import { CorrelationGuardService } from './correlation-guard.service';
 import { AdaptiveCooldownService } from './adaptive-cooldown.service';
+import { MicroMomentumProbeService } from './micro-momentum-probe.service';
 import {
   parseReverseMomentumConfig,
   planOpens,
   computeSlTpForDirection,
   type ReverseMomentumConfig,
 } from './reverse-momentum.helper';
+import {
+  parseMicroMomentumGateConfig,
+  evaluateMicroGate,
+  type MicroMomentumGateConfig,
+} from './micro-momentum-gate.helper';
 import {
   computeEntryConvictionScore,
   decideSizingMultiplier,
@@ -449,6 +455,9 @@ export class TopGainersScannerService implements OnModuleInit {
    */
   private reverseMomentum!: ReverseMomentumConfig;
 
+  /** Miracle #2 — micro-momentum gate. */
+  private microGate!: MicroMomentumGateConfig;
+
   /**
    * Data-driven gates per-class (audit 23-24/05). Default toutes envs vides = OFF.
    * S'ajoute aux gates existants (additif, OR logique).
@@ -717,6 +726,11 @@ export class TopGainersScannerService implements OnModuleInit {
      * @Optional pour back-compat tests existants.
      */
     @Optional() private readonly adaptiveCooldown?: AdaptiveCooldownService,
+    /**
+     * Miracle #2 — Micro-momentum gate (vélocité 6s à l'entrée).
+     * @Optional pour back-compat tests existants.
+     */
+    @Optional() private readonly microProbe?: MicroMomentumProbeService,
     // Sizing A/B test (research) — Optional pour back-compat tests.
     @Optional() private readonly sizingAbTest?: SizingABTestService,
   ) {
@@ -783,6 +797,18 @@ export class TopGainersScannerService implements OnModuleInit {
     if (this.reverseMomentum.mode !== 'long_only') {
       this.logger.log(
         `[reverse-momentum] ENABLED — mode=${this.reverseMomentum.mode} shortRatio=${this.reverseMomentum.shortSizeRatio.toFixed(2)}`,
+      );
+    }
+
+    // Miracle #2 — Micro-momentum gate (vélocité instantanée à l'entrée).
+    this.microGate = parseMicroMomentumGateConfig({
+      MICRO_MOMENTUM_GATE_ENABLED: this.config.get<string>('MICRO_MOMENTUM_GATE_ENABLED'),
+      MICRO_MOMENTUM_GATE_MIN_VELOCITY_PCT_S: this.config.get<string>('MICRO_MOMENTUM_GATE_MIN_VELOCITY_PCT_S'),
+      MICRO_MOMENTUM_GATE_MIN_RUN: this.config.get<string>('MICRO_MOMENTUM_GATE_MIN_RUN'),
+    });
+    if (this.microGate.enabled) {
+      this.logger.log(
+        `[micro-momentum-gate] ENABLED — minVel=${this.microGate.minVelocityPctPerS.toExponential(2)}/s minRun=${this.microGate.minRunLength}`,
       );
     }
   }
@@ -3811,6 +3837,23 @@ export class TopGainersScannerService implements OnModuleInit {
         if (directionalNotional < 50) {
           this.logger.debug(`[reverse-momentum] ${cand.symbol} ${item.direction} notional $${directionalNotional} < $50 min — skip`);
           continue;
+        }
+        // Miracle #2 — Micro-momentum gate : skip si la vélocité 6s n'est pas
+        // alignée avec la direction (LONG nécessite asc, SHORT nécessite desc).
+        // Skip silencieux si symbole pas tracké par le probe (allow par défaut).
+        if (this.microGate.enabled && this.microProbe) {
+          const v = this.microProbe.getRecentVelocity(cand.symbol);
+          const verdict = evaluateMicroGate({
+            direction: item.direction,
+            velocityPctPerS: v?.velocityPctPerS ?? null,
+            runLength: v?.runLength ?? null,
+          }, this.microGate);
+          if (!verdict.pass) {
+            this.logger.log(
+              `[micro-momentum-gate] ${cand.symbol} ${item.direction} SKIP — ${verdict.reason}`,
+            );
+            continue;
+          }
         }
         const { stopLoss, takeProfit } = computeSlTpForDirection(livePriceNum, effectiveSl, effectiveTp, item.direction);
         const stopPriceStr = stopLoss.toFixed(8);
