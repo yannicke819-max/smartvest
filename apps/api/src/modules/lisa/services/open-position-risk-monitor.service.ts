@@ -220,7 +220,6 @@ export class OpenPositionRiskMonitorService {
     ctx: { marketAtEntry: number | null; marketNow: number | null; pathEffNow: number | null; persistenceNow: number | null },
   ): Promise<number | null> {
     try {
-      const livePrice = ctx.marketNow == null ? Number(pos.entry_price) : null;
       const live = await this.lisa.getLivePrice(pos.symbol);
       const livePx = Number(live?.price ?? 0);
       if (livePx <= 0 || (typeof live?.source === 'string' && live.source.startsWith('fallback'))) {
@@ -421,7 +420,7 @@ export class OpenPositionRiskMonitorService {
   ): Promise<void> {
     await this.decisionLog.append({
       portfolioId: pos.portfolio_id,
-      kind: 'position_opened', // P3 fallback : kind validé par CHECK constraint, on encode l'info dans summary
+      kind: 'risk_monitor_action', // ajouté par migration 0158
       summary: `[RISK_MONITOR] ${verdict} ${pos.symbol} composite=${composite.toFixed(3)}`,
       rationale: `OpenPositionRiskMonitorService verdict mécanique sur thesis_health_score signé.`,
       payload: {
