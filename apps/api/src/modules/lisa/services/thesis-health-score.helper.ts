@@ -154,6 +154,123 @@ export function decideVerdict(
   return 'HOLD';
 }
 
+// =============================================================================
+// Feature #2 — Sizing calibré sur la conviction d'entrée
+// =============================================================================
+
+export interface ConvictionSizingConfig {
+  /** Si true, mult=0 (SKIP) quand composite < 0. Default true. */
+  skipIfNegative: boolean;
+  /** Multiplier pour composite ∈ [0, lowThreshold]. Default 0.7. */
+  multLow: number;
+  /** Multiplier pour composite ∈ [highThreshold, 1.0]. Default 1.5. */
+  multHigh: number;
+  /** Seuil bas : sub-mult appliqué en-dessous. Default 0.30. */
+  lowThreshold: number;
+  /** Seuil haut : sub-mult appliqué au-dessus. Default 0.60. */
+  highThreshold: number;
+  /** Cap dur du multiplicateur final. Sécurité. Default 2.0. */
+  maxMultiplier: number;
+}
+
+export const DEFAULT_CONVICTION_SIZING: ConvictionSizingConfig = {
+  skipIfNegative: true,
+  multLow: 0.7,
+  multHigh: 1.5,
+  lowThreshold: 0.30,
+  highThreshold: 0.60,
+  maxMultiplier: 2.0,
+};
+
+export interface EntryConvictionInput {
+  /** pathEff @ open ∈ [0, 1] ; ~0.50 = neutre, > 0.70 = clean trend */
+  pathEff: number | null;
+  /** persistenceScore @ open ∈ [0, 1] ; 4/6 = 0.67 = standard threshold */
+  persistence: number | null;
+  /** ch1m % @ open (ex 4.5 % de pump) ; > 5 % = très fort */
+  ch1mPct: number | null;
+}
+
+/**
+ * Compute un "conviction score" ∈ [-1, +1] basé sur la qualité du setup au moment
+ * de l'ouverture (pas un delta — c'est le score brut du candidat).
+ *
+ * Normalisation :
+ *   pathEff      : (v - 0.55) / 0.30  clampé [-1, +1]   (0.55 = neutre)
+ *   persistence  : (v - 0.50) / 0.30  clampé [-1, +1]
+ *   ch1m         : min(v / 5.0, 1.0)  (5 % = strong, plus = clamp)
+ *
+ * Moyenne des features dispos. Si TOUTES null → 0 (sizing standard).
+ */
+export function computeEntryConvictionScore(input: EntryConvictionInput): number {
+  const parts: number[] = [];
+  if (input.pathEff != null && Number.isFinite(input.pathEff)) {
+    parts.push(Math.max(-1, Math.min(1, (input.pathEff - 0.55) / 0.30)));
+  }
+  if (input.persistence != null && Number.isFinite(input.persistence)) {
+    parts.push(Math.max(-1, Math.min(1, (input.persistence - 0.50) / 0.30)));
+  }
+  if (input.ch1mPct != null && Number.isFinite(input.ch1mPct)) {
+    parts.push(Math.max(-1, Math.min(1, input.ch1mPct / 5.0)));
+  }
+  if (parts.length === 0) return 0;
+  return parts.reduce((s, v) => s + v, 0) / parts.length;
+}
+
+/**
+ * Décide le multiplicateur de sizing selon le composite d'entrée.
+ *   composite < 0 (si skipIfNegative=true)    → 0 (SKIP open)
+ *   composite ∈ [0, lowThreshold]              → multLow (default 0.7)
+ *   composite ∈ [lowThreshold, highThreshold]  → 1.0 (sizing standard)
+ *   composite > highThreshold                  → multHigh (default 1.5)
+ * Toujours clampé ∈ [0, maxMultiplier].
+ *
+ * Si composite est NaN/null (cas où on n'a pas pu le calculer), retourne 1.0
+ * (sizing standard) — back-compat safe.
+ */
+export function decideSizingMultiplier(
+  composite: number | null,
+  cfg: ConvictionSizingConfig = DEFAULT_CONVICTION_SIZING,
+): number {
+  if (composite == null || !Number.isFinite(composite)) return 1.0;
+  if (composite < 0) return cfg.skipIfNegative ? 0 : cfg.multLow;
+  let mult: number;
+  if (composite < cfg.lowThreshold) mult = cfg.multLow;
+  else if (composite > cfg.highThreshold) mult = cfg.multHigh;
+  else mult = 1.0;
+  return Math.max(0, Math.min(cfg.maxMultiplier, mult));
+}
+
+/**
+ * Parse config depuis env vars.
+ */
+export function parseConvictionSizingConfig(env: {
+  CONVICTION_SIZING_ENABLED?: string | undefined;
+  CONVICTION_SIZING_MULT_LOW?: string | undefined;
+  CONVICTION_SIZING_MULT_HIGH?: string | undefined;
+  CONVICTION_SIZING_LOW_THRESHOLD?: string | undefined;
+  CONVICTION_SIZING_HIGH_THRESHOLD?: string | undefined;
+  CONVICTION_SIZING_SKIP_IF_NEGATIVE?: string | undefined;
+  CONVICTION_SIZING_MAX_MULTIPLIER?: string | undefined;
+}): { enabled: boolean; cfg: ConvictionSizingConfig } {
+  const enabled = (env.CONVICTION_SIZING_ENABLED ?? 'false').toLowerCase() === 'true';
+  const parseFloat01 = (raw: string | undefined, def: number, min: number, max: number): number => {
+    const n = Number.parseFloat(raw ?? '');
+    return Number.isFinite(n) && n >= min && n <= max ? n : def;
+  };
+  return {
+    enabled,
+    cfg: {
+      skipIfNegative: (env.CONVICTION_SIZING_SKIP_IF_NEGATIVE ?? 'true').toLowerCase() !== 'false',
+      multLow: parseFloat01(env.CONVICTION_SIZING_MULT_LOW, DEFAULT_CONVICTION_SIZING.multLow, 0, 2),
+      multHigh: parseFloat01(env.CONVICTION_SIZING_MULT_HIGH, DEFAULT_CONVICTION_SIZING.multHigh, 0, 3),
+      lowThreshold: parseFloat01(env.CONVICTION_SIZING_LOW_THRESHOLD, DEFAULT_CONVICTION_SIZING.lowThreshold, 0, 1),
+      highThreshold: parseFloat01(env.CONVICTION_SIZING_HIGH_THRESHOLD, DEFAULT_CONVICTION_SIZING.highThreshold, 0, 1),
+      maxMultiplier: parseFloat01(env.CONVICTION_SIZING_MAX_MULTIPLIER, DEFAULT_CONVICTION_SIZING.maxMultiplier, 0.5, 5),
+    },
+  };
+}
+
 /**
  * Point d'entrée principal : input → ThesisHealthResult complet.
  */
