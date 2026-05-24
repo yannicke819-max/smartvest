@@ -52,6 +52,7 @@ import {
   type PerClassHourBlacklistConfig,
   type TickerSizeMultConfig,
 } from './data-driven-gates.helper';
+import { SizingABTestService } from './research/sizing-ab-test.service';
 import { EodhdQuotaService } from './eodhd-quota.service';
 import { EodhdCalendarService } from './eodhd-calendar.service';
 import { EodhdNewsService } from './eodhd-news.service';
@@ -665,6 +666,8 @@ export class TopGainersScannerService implements OnModuleInit {
      * no-op silencieux. Append en fin pour ne pas casser les tests existants.
      */
     @Optional() private readonly symbolAtrCache?: SymbolAtrCacheService,
+    // Sizing A/B test (research) — Optional pour back-compat tests.
+    @Optional() private readonly sizingAbTest?: SizingABTestService,
   ) {
     // Parse stagflation hedge guard config 1× au boot. ConfigService.get retourne
     // toujours string|undefined ; on convertit via le helper pur.
@@ -3648,6 +3651,17 @@ export class TopGainersScannerService implements OnModuleInit {
           .catch((e) =>
             this.logger.debug(`[top-gainers] persistPaperTrade ${cand.symbol} failed: ${String(e).slice(0, 120)}`),
           );
+      }
+
+      // Sizing A/B shadow tracking (research). Best-effort, ne throw jamais.
+      if (this.sizingAbTest) {
+        this.sizingAbTest.recordSignal({
+          symbol: cand.symbol,
+          assetClass: cand.assetClass,
+          scannerPositionId: openedPos.id,
+        }).catch((e) =>
+          this.logger.debug(`[sizing-ab] recordSignal ${cand.symbol} failed: ${String(e).slice(0, 120)}`),
+        );
       }
 
       return openedPos.id;

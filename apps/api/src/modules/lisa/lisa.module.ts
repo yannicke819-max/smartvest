@@ -114,6 +114,7 @@ import { GeminiRiskManagerService } from './services/research/gemini-risk-manage
 import { CryptoFundingFadeService } from './services/research/crypto-funding-fade.service';
 import { EventNarrativeInterpreterService } from './services/research/event-narrative-interpreter.service';
 import { HourlyEdgeAnalyzerService } from './services/research/hourly-edge-analyzer.service';
+import { SizingABTestService } from './services/research/sizing-ab-test.service';
 
 @Module({
   imports: [SupabaseModule, PerformanceModule, BotLabModule, GainersModule],
@@ -252,6 +253,7 @@ import { HourlyEdgeAnalyzerService } from './services/research/hourly-edge-analy
     CryptoFundingFadeService,
     EventNarrativeInterpreterService,
     HourlyEdgeAnalyzerService,
+    SizingABTestService,
   ],
   exports: [
     LisaService,
