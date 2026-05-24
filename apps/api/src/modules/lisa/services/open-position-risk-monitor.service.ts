@@ -31,11 +31,17 @@ import { SupabaseService } from '../../supabase/supabase.service';
 import { MultiTimeframePersistenceService } from './multi-tf-persistence.service';
 import { LisaService } from './lisa.service';
 import { DecisionLogService } from './decision-log.service';
+import { ScannerLlmRouterService } from './scanner-llm-router.service';
 import {
   evaluateThesisHealth,
   type RiskVerdict,
   type ThesisHealthResult,
 } from './thesis-health-score.helper';
+import {
+  buildGeminiVerdictUserPrompt,
+  parseGeminiVerdict,
+  GEMINI_VERDICT_SYSTEM_PROMPT,
+} from './gemini-thesis-verdict.helper';
 
 interface OpenPositionRow {
   id: string;
@@ -66,6 +72,7 @@ export class OpenPositionRiskMonitorService {
   private enabled = false;
   private perClass: PerClassEnabled = { crypto: false, us: false, eu: false, asia: false };
   private maxActionsPerCycle = 1;
+  private geminiEnabled = false;
 
   constructor(
     private readonly config: ConfigService,
@@ -73,6 +80,7 @@ export class OpenPositionRiskMonitorService {
     private readonly lisa: LisaService,
     private readonly mtfPersistence: MultiTimeframePersistenceService,
     private readonly decisionLog: DecisionLogService,
+    private readonly llmRouter: ScannerLlmRouterService,
   ) {}
 
   onModuleInit(): void {
@@ -85,9 +93,12 @@ export class OpenPositionRiskMonitorService {
     };
     const maxRaw = Number.parseInt(this.config.get<string>('RISK_MONITOR_MAX_ACTIONS_PER_CYCLE') ?? '1', 10);
     this.maxActionsPerCycle = Number.isFinite(maxRaw) && maxRaw >= 0 && maxRaw <= 20 ? maxRaw : 1;
+    // P5 — Gemini Sub-C : nécessite RISK_MONITOR_GEMINI_ENABLED=true ET router activé
+    this.geminiEnabled = (this.config.get<string>('RISK_MONITOR_GEMINI_ENABLED') ?? 'false').toLowerCase() === 'true'
+      && this.llmRouter.isEnabled();
     if (this.enabled) {
       const cls = Object.entries(this.perClass).filter(([, v]) => v).map(([k]) => k).join(',') || 'none';
-      this.logger.log(`[risk-monitor] ENABLED — classes=${cls} maxActions/cycle=${this.maxActionsPerCycle}`);
+      this.logger.log(`[risk-monitor] ENABLED — classes=${cls} maxActions/cycle=${this.maxActionsPerCycle} gemini=${this.geminiEnabled}`);
     }
   }
 
@@ -177,6 +188,17 @@ export class OpenPositionRiskMonitorService {
       this.logger.debug(`[risk-monitor] mtfPersistence ${pos.symbol}: ${String(e).slice(0, 150)}`);
     }
 
+    // Sub-C : Gemini Flash-Lite (P5). Désactivé par défaut, opt-in via env.
+    // Coût ~$0.0002/call, donc 12 calls/h × N positions ≈ marginal.
+    const llmScore = this.geminiEnabled
+      ? await this.computeGeminiScore(pos, {
+          marketAtEntry,
+          marketNow,
+          pathEffNow,
+          persistenceNow,
+        })
+      : null;
+
     return evaluateThesisHealth({
       marketCh1mAtEntry: marketAtEntry,
       marketCh1mNow: marketNow,
@@ -184,8 +206,70 @@ export class OpenPositionRiskMonitorService {
       pathEffNow,
       persistenceAtEntry: pos.persistence_score_at_entry,
       persistenceNow,
-      llmScore: null, // P5 ajoutera Gemini
+      llmScore,
     });
+  }
+
+  /**
+   * P5 — Sub-C Gemini. Construit le prompt avec le contexte enrichi, appelle
+   * le router (timeout 4s, 1 retry), parse le JSON verdict. Best-effort :
+   * tout échec → return null → poids re-normalisé sur A+B.
+   */
+  private async computeGeminiScore(
+    pos: OpenPositionRow,
+    ctx: { marketAtEntry: number | null; marketNow: number | null; pathEffNow: number | null; persistenceNow: number | null },
+  ): Promise<number | null> {
+    try {
+      const livePrice = ctx.marketNow == null ? Number(pos.entry_price) : null;
+      const live = await this.lisa.getLivePrice(pos.symbol);
+      const livePx = Number(live?.price ?? 0);
+      if (livePx <= 0 || (typeof live?.source === 'string' && live.source.startsWith('fallback'))) {
+        return null;
+      }
+      const entry = Number(pos.entry_price);
+      const unrealPct = entry > 0 ? ((livePx - entry) / entry) * 100 : 0;
+      const ageMin = Math.round((Date.now() - new Date(pos.entry_timestamp).getTime()) / 60_000);
+      const tpDistPct = pos.take_profit_price != null
+        ? ((Number(pos.take_profit_price) - livePx) / livePx) * 100
+        : null;
+      const slDistPct = pos.stop_loss_price != null
+        ? ((Number(pos.stop_loss_price) - livePx) / livePx) * 100
+        : null;
+      const userPrompt = buildGeminiVerdictUserPrompt({
+        symbol: pos.symbol,
+        assetClass: pos.asset_class,
+        openedAt: pos.entry_timestamp,
+        ageMinutes: ageMin,
+        entryPrice: entry,
+        livePrice: livePx,
+        unrealPnlPct: unrealPct,
+        pathEffAtEntry: pos.path_eff_at_entry,
+        pathEffNow: ctx.pathEffNow,
+        persistenceAtEntry: pos.persistence_score_at_entry,
+        persistenceNow: ctx.persistenceNow,
+        marketCh1mAtEntry: ctx.marketAtEntry,
+        marketCh1mNow: ctx.marketNow,
+        tpDistancePct: tpDistPct,
+        slDistancePct: slDistPct,
+      });
+      const resp = await this.llmRouter.call({
+        system: GEMINI_VERDICT_SYSTEM_PROMPT,
+        user: userPrompt,
+        temperature: 0.2,
+        maxTokens: 120,
+        timeoutMs: 4000,
+      });
+      const parsed = parseGeminiVerdict(resp.content);
+      if (!parsed) {
+        this.logger.debug(`[risk-monitor] Gemini ${pos.symbol} parse failed: ${resp.content.slice(0, 100)}`);
+        return null;
+      }
+      this.logger.debug(`[risk-monitor] Gemini ${pos.symbol} score=${parsed.score.toFixed(2)} (${parsed.rationale})`);
+      return parsed.score;
+    } catch (e) {
+      this.logger.debug(`[risk-monitor] Gemini ${pos.symbol} exception: ${String(e).slice(0, 150)}`);
+      return null;
+    }
   }
 
   /**
