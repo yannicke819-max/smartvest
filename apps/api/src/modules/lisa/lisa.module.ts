@@ -67,6 +67,7 @@ import { CorrelationGuardService } from './services/correlation-guard.service';
 import { DailyRetrospectiveService } from './services/daily-retrospective.service';
 import { AdaptiveCooldownService } from './services/adaptive-cooldown.service';
 import { EarlyExitGuardService } from './services/early-exit-guard.service';
+import { FeatureABTuningService } from './services/feature-ab-tuning.service';
 import { EventEngineService } from './services/event-engine.service';
 import { EodhdNewsService } from './services/eodhd-news.service';
 import { EodhdNewsCollectorService } from './services/eodhd-news-collector.service';
@@ -200,6 +201,8 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     AdaptiveCooldownService,
     // Miracle #3 — Early exit guard via Gemini (T+5-15min on opens)
     EarlyExitGuardService,
+    // Miracle #4 — Auto-tuning A/B (snapshot daily + analyze 14j window)
+    FeatureABTuningService,
     // P19a — Yahoo Finance intraday fallback (Korea KOSPI, small-caps, etc.)
     YahooIntradayService,
     // P19i — Intraday OHLCV cache Supabase (last_known < 15 min, fallback chain)
