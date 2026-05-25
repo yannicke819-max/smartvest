@@ -30,3 +30,4 @@ export * from './backtest/engine';
 export * from './backtest/metrics';
 export * from './backtest/runner';
 export * from './scoring/continuous-score';
+export * from './decisions/trading-decision';
