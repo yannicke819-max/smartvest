@@ -17,8 +17,6 @@
 
 -- CONCURRENTLY omitted: migration runner wraps SQL in a transaction block,
 -- and CREATE INDEX CONCURRENTLY cannot run inside a transaction (error 25001).
--- Non-concurrent creation briefly locks writes on lisa_positions, acceptable
--- here given the small row count (dozens, not millions).
 CREATE UNIQUE INDEX IF NOT EXISTS idx_lisa_positions_unique_open_symbol
   ON lisa_positions (portfolio_id, symbol)
   WHERE status = 'open';
