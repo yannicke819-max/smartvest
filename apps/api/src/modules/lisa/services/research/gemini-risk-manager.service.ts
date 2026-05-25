@@ -22,7 +22,7 @@
  */
 
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron } from '@nestjs/schedule';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../../supabase/supabase.service';
 import { ScannerLlmRouterService } from '../scanner-llm-router.service';
@@ -157,8 +157,21 @@ export class GeminiRiskManagerService {
     }
   }
 
-  /** Cron toutes les 5 min — eval thèse pour chaque position open. */
-  @Cron('*/5 * * * *')
+  /**
+   * Cron toutes les minutes (P19-EXT 25/05) — eval thèse pour chaque position open.
+   *
+   * Passage 5min → 60s : réactivité news/prix sur positions ouvertes. Coût LLM
+   * marginal négligeable ($0.40 → $2/jour max). Bénéfice : détection thèse
+   * cassée jusqu'à 4 min plus tôt sur news chocs (Iran/Hormuz/Fed/profit
+   * warning). Garde-fou : cooldown re-entry 60min empêche le sur-trading même
+   * si Gemini oscille verdict.
+   *
+   * Parallélisation Promise.all pour latence cycle ≤ 5s (vs ~20s séquentiel).
+   *
+   * Évaluation positions cappée à 20 (cf. fetchOpenPositions limit). Si plus
+   * de 20 positions ouvertes simultanément, augmenter le cap.
+   */
+  @Cron(CronExpression.EVERY_MINUTE)
   async cronEvalOpenPositions(): Promise<void> {
     if (!this.enabled) return;
     if (!this.supabase.isReady()) return;
@@ -166,16 +179,22 @@ export class GeminiRiskManagerService {
       const positions = await this.fetchOpenPositions();
       if (positions.length === 0) return;
       // Pré-fetch news macro 1× pour tout le cycle (cache 5 min, partagé).
-      // Passe les symbols ouverts pour que StockTwits/Twitter fetchent aussi
-      // les flux ciblés (en plus du flux global EODHD + Reddit hot).
+      // Le cache 5min absorbe les cycles minute pour éviter de spammer
+      // EODHD/StockTwits/Reddit/Twitter — 1 fetch news / 5 min suffit.
       const heldSymbols = positions.map(p => p.symbol);
       if (this.useMacroNews) await this.getMacroNews(heldSymbols);
-      this.logger.log(`[risk-manager] eval ${positions.length} open positions`);
-      for (const pos of positions) {
-        await this.assessThesis(pos).catch((e) => {
-          this.logger.warn(`[risk-manager] ${pos.symbol} assessment failed: ${String(e).slice(0, 200)}`);
-        });
-      }
+      this.logger.log(`[risk-manager] eval ${positions.length} open positions (parallel)`);
+      // Parallélisation : tous les calls Gemini Flash-Lite en concurrent
+      // (~700-1500ms each → cycle ≤ 5s au lieu de ~20s séquentiel).
+      // Errors per-position isolées, n'arrêtent pas le batch.
+      await Promise.all(
+        positions.map((pos) =>
+          this.assessThesis(pos).catch((e) => {
+            this.logger.warn(`[risk-manager] ${pos.symbol} assessment failed: ${String(e).slice(0, 200)}`);
+            return null;
+          }),
+        ),
+      );
     } catch (e) {
       this.logger.warn(`[risk-manager] cron failed: ${String(e).slice(0, 200)}`);
     }
