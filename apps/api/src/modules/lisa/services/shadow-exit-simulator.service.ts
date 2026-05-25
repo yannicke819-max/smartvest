@@ -187,7 +187,22 @@ export class ShadowExitSimulatorService {
     if (replayCount < 5) return null;
 
     const candles = await this.fetchCandles(row, replayCount);
-    if (!candles || candles.length === 0) return null;
+    if (!candles || candles.length === 0) {
+      // Signal is past the time-stop window but no intraday coverage available
+      // (e.g. EODHD doesn't serve 1m for this exchange on our plan, market
+      // closed at fetch time, or ticker blacklisted with no TD fallback).
+      // Resolve as TIME_LIMIT at entry to stop EODHD spam on every retry cycle.
+      if (ageMin >= MAX_HOLD_HOURS * 60) {
+        return {
+          exitPrice: row.entry_price,
+          exitAt: new Date().toISOString(),
+          exitReason: String(ExitReason.TIME_LIMIT),
+          pnlPct: 0,
+          slippagePct: null,
+        };
+      }
+      return null;
+    }
 
     // Build PositionSnapshot from BLOC 4 contract
     const initial: PositionSnapshot = {
@@ -484,7 +499,19 @@ export class ShadowExitSimulatorService {
     const series = await this.intradayRouter.getCandles(eodhdTicker, '1m', count, {
       calledBy: 'shadow_exit_sim',
     });
-    return series ? series.candles.map((c) => ({ close: c.close })) : null;
+    if (series && series.candles.length > 0) return series.candles.map((c) => ({ close: c.close }));
+
+    // EODHD ne couvre pas l'intraday 1m pour les bourses asiatiques sur notre
+    // plan (KO/KQ/SHG/SHE/HK/T → HTTP_200_EMPTY systématique). getCandlesTdDirect
+    // contourne la blacklist EODHD et le flag A/B — conçu exactement pour ce cas
+    // (cf. commentaire méthode). Null si TD indispo/symbole non mappable → fallback
+    // TIME_LIMIT dans simulateOne si signal assez vieux.
+    if (/\.(KO|KQ|SHG|SHE|HK|T)$/.test(eodhdTicker)) {
+      const td = await this.intradayRouter.getCandlesTdDirect(eodhdTicker, '1m', count, 'shadow_exit_sim_td');
+      if (td && td.candles.length > 0) return td.candles.map((c) => ({ close: c.close }));
+    }
+
+    return null;
   }
 
   /**
