@@ -1,6 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
 import { DEAD_NSE_TICKERS } from '@smartvest/ai-analyst';
+import { SupabaseService } from '../../supabase/supabase.service';
 
 /**
  * Bug #R10 + PR #337 — Blacklist tickers EODHD confirmés inutiles.
@@ -57,8 +59,52 @@ export interface BlacklistStats {
 export class TickerBlacklistService {
   private readonly logger = new Logger(TickerBlacklistService.name);
   private readonly records = new Map<string, StrikeRecord>();
+  /**
+   * Whitelist des symbols actuellement en position ouverte — exempts de
+   * l'auto-blacklist 24h. Sinon on perdrait l'accès live price EODHD pour
+   * nos holdings, plus aucun fallback possible quand TwelveData renvoie
+   * un quote stale (bug LSE/Euronext 25/05/2026).
+   * Refraîchi par MechanicalTradingService à chaque cycle 60s.
+   */
+  private protectedSymbols = new Set<string>();
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    /** Optional pour back-compat tests : runtime prod l'injecte toujours. */
+    @Optional() private readonly supabase?: SupabaseService,
+  ) {}
+
+  /**
+   * Met à jour la liste des symbols protégés contre l'auto-blacklist.
+   * Peut être appelée manuellement (test) — sinon refresh automatique 60s.
+   */
+  setProtectedSymbols(symbols: string[]): void {
+    this.protectedSymbols = new Set(symbols.map((s) => s.toUpperCase()));
+  }
+
+  /**
+   * Cron 60s — refresh la whitelist depuis lisa_positions (status='open').
+   * Self-contained, pas besoin de plomberie depuis MechanicalTradingService.
+   */
+  @Cron(CronExpression.EVERY_MINUTE)
+  async refreshProtectedSymbols(): Promise<void> {
+    if (!this.supabase || !this.supabase.isReady()) return;
+    try {
+      const { data } = await this.supabase.getClient()
+        .from('lisa_positions')
+        .select('symbol')
+        .eq('status', 'open')
+        .limit(200);
+      const symbols = (data ?? []).map((p: { symbol: string }) => p.symbol);
+      const before = this.protectedSymbols.size;
+      this.setProtectedSymbols(symbols);
+      if (before !== this.protectedSymbols.size) {
+        this.logger.log(`[ticker-blacklist] protected symbols refreshed : ${before} → ${this.protectedSymbols.size}`);
+      }
+    } catch (e) {
+      this.logger.debug(`[ticker-blacklist] refresh protected failed: ${String(e).slice(0, 120)}`);
+    }
+  }
 
   /**
    * True si le ticker doit être skip (blacklist statique OU dynamique active).
@@ -91,6 +137,14 @@ export class TickerBlacklistService {
   recordStrike(ticker: string, reason = 'HTTP_404', now: number = Date.now()): void {
     if (!ticker) return;
     const upper = ticker.toUpperCase();
+    // Hotfix 25/05 — skip auto-blacklist si le ticker est en position ouverte.
+    // Sinon on perd l'accès EODHD pour nos holdings (bug LSE/Euronext :
+    // EODHD intraday renvoie HTTP_200_EMPTY ces jours-ci → 3 strikes en
+    // quelques minutes → blacklist 24h → plus de fallback price possible).
+    if (this.protectedSymbols.has(upper)) {
+      this.logger.debug(`[ticker-blacklist] ${upper} strike ignored (protected — open position)`);
+      return;
+    }
     const threshold = this.strikesThreshold();
     const windowMs = STRIKE_WINDOW_HOURS * 3600 * 1000;
     const ttlMs = this.ttlHours() * 3600 * 1000;
