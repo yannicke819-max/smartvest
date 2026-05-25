@@ -43,10 +43,10 @@ async function main() {
   const since24h = new Date(Date.now() - 24 * 3600_000).toISOString();
   const { data: openLogs } = await sb
     .from('lisa_decision_log')
-    .select('kind, payload, created_at, summary')
+    .select('kind, payload, timestamp, summary')
     .in('kind', ['position_opened', 'opportunity_scout_opened'])
-    .gte('created_at', since24h)
-    .order('created_at', { ascending: false })
+    .gte('timestamp', since24h)
+    .order('timestamp', { ascending: false })
     .limit(500);
 
   // Index par position_id
@@ -111,15 +111,15 @@ async function main() {
   // 7. News positives détectées par scout aujourd'hui
   const { data: scoutLogs } = await sb
     .from('lisa_decision_log')
-    .select('created_at, summary, payload')
+    .select('timestamp, summary, payload')
     .eq('kind', 'opportunity_scout_opened')
-    .gte('created_at', sinceToday)
-    .order('created_at', { ascending: false });
+    .gte('timestamp', sinceToday)
+    .order('timestamp', { ascending: false });
 
   if (scoutLogs && scoutLogs.length > 0) {
     console.log(`\n─── OPPORTUNITY SCOUT AUJOURD'HUI (${scoutLogs.length} opens) ───`);
     for (const log of scoutLogs as any[]) {
-      const t = log.created_at.slice(11,16);
+      const t = log.timestamp.slice(11,16);
       const news = log.payload?.news_title?.slice(0, 80) ?? '?';
       const sector = log.payload?.sector ?? '?';
       const conf = log.payload?.confidence ? Number(log.payload.confidence).toFixed(2) : '?';
@@ -130,10 +130,10 @@ async function main() {
   // 8. RiskManager auto-closes aujourd'hui
   const { data: rmLogs } = await sb
     .from('lisa_decision_log')
-    .select('created_at, summary, payload')
+    .select('timestamp, summary, payload')
     .eq('kind', 'risk_manager_thesis_broken')
-    .gte('created_at', sinceToday)
-    .order('created_at', { ascending: false });
+    .gte('timestamp', sinceToday)
+    .order('timestamp', { ascending: false });
 
   if (rmLogs && rmLogs.length > 0) {
     const closed = (rmLogs as any[]).filter(l => l.payload?.auto_closed === true);
@@ -142,7 +142,7 @@ async function main() {
     console.log(`  Auto-closed : ${closed.length}`);
     console.log(`  Shadow log  : ${shadow.length}`);
     for (const log of closed.slice(0, 10)) {
-      const t = log.created_at.slice(11,16);
+      const t = log.timestamp.slice(11,16);
       const sym = log.payload?.symbol ?? '?';
       const conf = log.payload?.confidence ? Number(log.payload.confidence).toFixed(2) : '?';
       const reason = log.payload?.reason?.slice(0, 80) ?? '?';

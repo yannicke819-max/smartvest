@@ -3932,6 +3932,36 @@ export class TopGainersScannerService implements OnModuleInit {
           effectiveTp, effectiveSl, effectiveCapital, effectivePositionPct, persistence,
         ).catch((e) => this.logger.debug(`[top-gainers] post-open side effects ${item.direction} failed: ${String(e).slice(0, 120)}`));
 
+        // Bug fix 25/05 — audit decision_log par DIRECTION (sinon SHORT du
+        // reverse-momentum est orpheline d'audit). Avant : 1 seul log par
+        // candidat (la primary), donc 50% des opens reverse n'apparaissaient
+        // pas dans audit-positions-today / decision_log analytics.
+        await this.decisionLog.append({
+          portfolioId,
+          kind: 'position_opened',
+          summary: `[GAINERS_DIRECT] ${cand.symbol} ${item.direction.toUpperCase()} opened — score=${cand.score} entry=$${livePriceNum.toFixed(4)}`,
+          rationale: `Scanner Gainers déterministe direction=${item.direction}. ` +
+            `tp=${effectiveTp}% sl=${effectiveSl}% notional=$${directionalNotional.toFixed(2)} ` +
+            `(plan ${plan.map(p => p.direction).join('+')}, ratio×${item.notionalMultiplier.toFixed(2)}).`,
+          payload: {
+            symbol: cand.symbol,
+            asset_class: cand.assetClass,
+            exchange: cand.exchange,
+            direction: item.direction,
+            score: cand.score,
+            change_pct: cand.changePct,
+            entry_price: livePriceNum,
+            stop_loss_price: parseFloat(stopPriceStr),
+            take_profit_price: parseFloat(tpPriceStr),
+            quantity: openedPos.quantity,
+            notional_usd: directionalNotional.toFixed(2),
+            source: 'scanner_top_gainers_direct',
+            position_id: openedPos.id,
+            plan_directions: plan.map(p => p.direction).join('+'),
+          },
+          triggeredBy: 'autopilot_cron',
+        }).catch(() => { /* non-bloquant */ });
+
         if (primaryOpenedPosId === null) primaryOpenedPosId = openedPos.id;
       }
       if (primaryOpenedPosId === null) return null;
@@ -3949,32 +3979,8 @@ export class TopGainersScannerService implements OnModuleInit {
       );
 
       // Note : features @ entry (path_eff, persistence, market_ch1m) déjà persistées
-      // par direction via postOpenSideEffects() pendant la boucle plan.
-
-      // Audit decision_log non-bloquant
-      await this.decisionLog.append({
-        portfolioId,
-        kind: 'position_opened',
-        summary: `[GAINERS_DIRECT] ${cand.symbol} opened — score=${cand.score} entry=$${livePriceNum.toFixed(4)}`,
-        rationale: `Scanner Gainers déterministe (PR #250) — bypass pipeline LLM. ` +
-          `tp=${effectiveTp}% sl=${effectiveSl}% notional=$${effectiveNotional.toFixed(2)} ` +
-          `capital=$${effectiveCapital.toFixed(2)} positionPct=${effectivePositionPct}%.`,
-        payload: {
-          symbol: cand.symbol,
-          asset_class: cand.assetClass,
-          exchange: cand.exchange,
-          score: cand.score,
-          change_pct: cand.changePct,
-          entry_price: livePriceNum,
-          stop_loss_price: parseFloat(stopPrice),
-          take_profit_price: parseFloat(tpPrice),
-          quantity: openedPos.quantity,
-          notional_usd: effectiveNotional.toFixed(2),
-          source: 'scanner_top_gainers_direct',
-          position_id: openedPos.id,
-        },
-        triggeredBy: 'autopilot_cron',
-      }).catch(() => { /* non-bloquant */ });
+      // par direction via postOpenSideEffects() ; decision_log écrit par direction
+      // dans la boucle plan (fix 25/05 — avant : seule la primary était loggée).
 
       // P8 + PR #4 — best-effort persist paper_trades pour boucle apprentissage P9
       if (persistence) {
