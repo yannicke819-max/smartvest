@@ -25,7 +25,7 @@ const exchangeToSession: Record<string, 'us' | 'eu' | 'asia'> = {
 // Re-implementation locale de isMarketOpen pour test (mirror scanner code)
 const SESSION_HOURS = {
   us:   { openUtcMin: 13 * 60 + 30, closeUtcMin: 20 * 60 },
-  eu:   { openUtcMin:  8 * 60,      closeUtcMin: 16 * 60 + 30 },
+  eu:   { openUtcMin:  7 * 60,      closeUtcMin: 16 * 60 + 30 },
   asia: { openUtcMin:  0,           closeUtcMin:  8 * 60 },
 };
 
@@ -123,7 +123,7 @@ describe('PR follow-up — EU weekend skip (sessionAware mode)', () => {
 
   it('isMarketOpen("eu") returns FALSE on Saturday in EU window', () => {
     // Saturday 2026-05-09T10:00:00Z = 12:00 CEST samedi
-    // Inside EU window 08:00-16:30 UTC mais Saturday → must be false
+    // Inside EU window 07:00-16:30 UTC mais Saturday → must be false
     const saturdayInWindow = new Date('2026-05-09T10:00:00Z');
     expect(isMarketOpen('eu', saturdayInWindow)).toBe(false);
   });
@@ -140,9 +140,15 @@ describe('PR follow-up — EU weekend skip (sessionAware mode)', () => {
   });
 
   it('isMarketOpen("eu") returns FALSE Wed before open', () => {
-    // Wed 07:30 UTC = before 08:00 UTC open
-    const wedBeforeOpen = new Date('2026-05-13T07:30:00Z');
+    // Wed 06:30 UTC = before 07:00 UTC open (EU summer hours)
+    const wedBeforeOpen = new Date('2026-05-13T06:30:00Z');
     expect(isMarketOpen('eu', wedBeforeOpen)).toBe(false);
+  });
+
+  it('isMarketOpen("eu") returns TRUE Wed 07:30 UTC (was bug: 08:00 hardcoded blocked EU summer open)', () => {
+    // Wed 07:30 UTC = 09:30 CEST = Paris/XETRA open 30 min ago
+    const wedSummerMorning = new Date('2026-05-13T07:30:00Z');
+    expect(isMarketOpen('eu', wedSummerMorning)).toBe(true);
   });
 
   it('isMarketOpen("eu") returns FALSE Wed after close', () => {

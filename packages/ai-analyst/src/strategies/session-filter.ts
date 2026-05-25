@@ -26,7 +26,8 @@ export const MARKET_SESSION_HOURS: Record<
   { openUtcMin: number; closeUtcMin: number }
 > = {
   us:   { openUtcMin: 14 * 60 + 30, closeUtcMin: 21 * 60 },
-  eu:   { openUtcMin:  8 * 60,      closeUtcMin: 16 * 60 + 30 },
+  // EU: 07:00 UTC en été (Paris/XETRA 09:00 CEST, LSE 08:00 BST). Hiver: dérive 1h.
+  eu:   { openUtcMin:  7 * 60,      closeUtcMin: 16 * 60 + 30 },
   asia: { openUtcMin:  0,           closeUtcMin:  8 * 60 },
 };
 
