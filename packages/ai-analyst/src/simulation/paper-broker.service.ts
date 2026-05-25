@@ -348,6 +348,15 @@ export class PaperBrokerService {
     const now = new Date().toISOString();
     const livePrice = new Decimal(cmd.livePrice);
     const notional = new Decimal(cmd.capitalAllocationUsd);
+    // P19-staleness-OPEN (25/05) — refuse l'open si le quote est stale ou fallback.
+    // Sinon le scanner ouvre des paires LONG/SHORT sur un prix figé vendredi
+    // (incident TwelveData LSE/Euronext/SIX 25/05). Le check sur close existait
+    // déjà via R5 sanity, mais pas sur l'open — oversight critique.
+    if (cmd.livePriceSource && (cmd.livePriceSource.startsWith('stale_') || cmd.livePriceSource.startsWith('fallback'))) {
+      throw new Error(
+        `openPositionDirect rejected: live price source=${cmd.livePriceSource} (stale/fallback). symbol=${cmd.symbol} price=${cmd.livePrice}. No open on non-live quote.`,
+      );
+    }
     if (livePrice.isZero() || livePrice.isNegative()) {
       throw new Error(`Invalid live price: ${cmd.livePrice}`);
     }

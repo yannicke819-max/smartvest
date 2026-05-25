@@ -146,6 +146,14 @@ export const OpenPositionDirectCommand = z.object({
    * Absent → INSERT direct, comportement legacy inchangé.
    */
   maxOpenPositions: z.number().int().positive().optional(),
+  /**
+   * P19-staleness-OPEN (25/05) — source du quote utilisé pour `livePrice`.
+   * Si fourni et commence par `stale_` ou `fallback_`, l'open est REJETÉ
+   * avec un throw. Évite d'ouvrir une position sur un prix figé vendredi
+   * (incident TwelveData LSE/Euronext/SIX 25/05). Optionnel pour back-compat
+   * tests existants ; en prod toujours fourni par le scanner.
+   */
+  livePriceSource: z.string().optional(),
 });
 export type OpenPositionDirectCommand = z.infer<typeof OpenPositionDirectCommand>;
 
