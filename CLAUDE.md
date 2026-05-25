@@ -499,6 +499,102 @@ Pour TOUTE PR que tu ouvres sur ce repo :
 
 ---
 
+## RÈGLE OPÉRATIONNELLE — INVENTAIRE FLY SECRETS (état prod 25/05/2026)
+
+Source de vérité = `fly secrets list -a smartvest`. Cette section documente la
+**rationale** des secrets non-évidents, pas leurs valeurs (volatiles).
+
+### `GAINERS_HOUR_BLACKLIST_<CLASS>_UTC` — calibration HourlyEdgeAnalyzer
+
+Heures UTC bloquées par classe×marché, **issues de l'analyse horaire historique
+base** (HourlyEdgeAnalyzer). Ne PAS interpréter comme des bugs ni les retirer
+sans nouvelle analyse — ce sont des fenêtres identifiées comme historiquement
+déficitaires sur ce(s) marché(s).
+
+| Secret | Valeur typique | Raison |
+|---|---|---|
+| `GAINERS_HOUR_BLACKLIST_US_UTC` | `17,18` | Post-lunch US (13h–14h ET) — chop / lethargy |
+| `GAINERS_HOUR_BLACKLIST_ASIA_UTC` | `0,1` | Opening auctions Nikkei (09:00 JST) + Hang Seng (08–09:30 HKT) — volatilité non-directionnelle |
+| `GAINERS_HOUR_BLACKLIST_EU_UTC` | (calibré) | Issues même analyse — préserver tel quel |
+| `GAINERS_LONG_HOUR_BLACKLIST_UTC` | (calibré global) | Long side global, distinct du per-class |
+| `GAINERS_HOUR_GATE_PER_CLASS_OVERRIDES_GLOBAL` | `true` | Per-class blacklist remplace toujours global (cf. fix #11a3051) |
+
+Si l'utilisateur demande à neutraliser ces filtres, **demander confirmation explicite**
+— c'est rarement le bon move sans re-analyse historique.
+
+### Catégories de secrets actifs prod
+
+**Core infra** : `SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
+`SUPABASE_ANON_KEY`, `SUPABASE_ACCESS_TOKEN` (PAT pour DDL via Management API),
+`CORS_ORIGIN`, `ADMIN_TOKEN`, `NO_CACHE`.
+
+**Market data providers** : `EODHD_API_KEY`, `BINANCE_API_KEY`/`BINANCE_SECRET_KEY`,
+`TWELVEDATA_API_KEY`, `FRED_API_KEY`. Exécution : `BINANCE_EXECUTION_ENABLED`.
+
+**LLM** : `ANTHROPIC_API_KEY` (Claude Opus persona Lisa), `GEMINI_API_KEY` (Risk
+Manager + Opportunity Scout + Daily Brief news), `CLAUDE_MODEL_OPUS`,
+`LLM_ROUTER_ENABLED` + `LLM_ROUTER_DAILY_BUDGET_USD` + `LLM_ROUTER_FALLBACK_ON_BUDGET`,
+`SCANNER_LLM_ROUTER_ENABLED`.
+
+**Scanner gainers (gating fonctionnel)** :
+- Source : `STRATEGY_MODE`, `SCAN_INTERVAL_MINUTES`
+- Risque/sizing : `GAINERS_SL_ATR_MULTIPLIER`, `GAINERS_SL_ATR_MAX_PCT`, `GAINERS_MAX_ATR_RATIO_PCT`, `GAINERS_OPEN_BUFFER_MIN`, `GAINERS_MAX_SIGNAL_AGE_SEC`
+- Caps : `GAINERS_MAX_CHANGE_PCT_LONG`, `GAINERS_MAX_CHANGE_PCT_LONG_US_LARGE`, `GAINERS_MAX_CHANGE_PCT_LONG_EU`, `GAINERS_MAX_CHANGE_PCT_LONG_ASIA`
+- Earnings : `GAINERS_EARNINGS_FILTER_DAYS`
+- News : `GAINERS_NEWS_AGE_FILTER_HOURS`, `GAINERS_NEWS_AGE_FILTER_MIN_SENTIMENT`, `GAINERS_CONSUME_DAILY_BRIEF`
+- Path qualité : `GAINERS_MIN_PATH_EFFICIENCY_US`
+- High-grading & rotation : `GAINERS_HIGH_GRADING_ENABLED`, `GAINERS_CAPITAL_ROTATION_ENABLED`, `GAINERS_PREFERRED_TICKERS_SIZE_MULT`, `GAINERS_LEVERAGED_PROXIES_ENABLED`
+- Macro veto : `GAINERS_MACRO_VETO_ENABLED`
+- Trailing : `GAINERS_TRAILING_TP_ENABLED`, `GAINERS_TRAILING_STOP_BREAKEVEN_ENABLED`
+- Shadow legacy : `GAINERS_V1_SHADOW`
+
+**Risk monitors** (par classe + global Gemini) : `RISK_MONITOR_ENABLED`,
+`RISK_MONITOR_ENABLED_US/EU/ASIA/CRYPTO`, `RISK_MONITOR_GEMINI_ENABLED`,
+`GEMINI_RISK_MANAGER_ENABLED`.
+
+**Features Tier 1+2** (active toggles 24-25/05) : `EARLY_EXIT_GUARD_ENABLED`,
+`MICRO_MOMENTUM_ENABLED`, `MICRO_MOMENTUM_GATE_ENABLED`, `REVERSE_MOMENTUM_MODE`,
+`ADAPTIVE_COOLDOWN_ENABLED`, `CORRELATION_GUARD_ENABLED`, `CONVICTION_SIZING_ENABLED`
+(+ `CONVICTION_SIZING_MULT_HIGH/LOW`, `CONVICTION_SIZING_SKIP_IF_NEGATIVE`),
+`CONTINUOUS_SCORING_ENABLED`, `STAGFLATION_HEDGE_GUARD_ENABLED`,
+`CRYPTO_FUNDING_FADE_ENABLED`, `FEATURE_AB_TUNING_ENABLED`,
+`DEBATE_GATE_ENABLED` (T1 wired 25/05), `DAILY_RETROSPECTIVE_ENABLED`,
+`HOURLY_EDGE_ANALYZER_ENABLED`, `EVENT_ENGINE_ENABLED`,
+`EVENT_NARRATIVE_INTERPRETER_ENABLED`, `SYMBOL_ATR_CACHE_REFRESH_ENABLED`.
+
+**A/B testing** (sizing notionnel ÷ max_pos par bucket) : `SIZING_AB_TEST_ENABLED`,
+`SIZING_AB_BUCKET_A_NOTIONAL`, `SIZING_AB_BUCKET_A_MAX_POS`,
+`SIZING_AB_BUCKET_B_NOTIONAL`, `SIZING_AB_BUCKET_B_MAX_POS`.
+
+**TwelveData filters** (PRO + AB ratio + shadow legacy) : `TWELVEDATA_PRO_ENABLED`,
+`TWELVEDATA_AB_TEST_ENABLED`, `TWELVEDATA_INTRADAY_AB_RATIO`,
+`TWELVEDATA_INTRADAY_AB_TEST_RATIO`, `TWELVEDATA_INTRADAY_SCANNER_ENABLED`,
+`TWELVEDATA_SCANNER_ENABLED`, `TWELVEDATA_FILTER_CRYPTO_RSI_ENABLED`,
+`TWELVEDATA_FILTER_US_SUPERTREND_ENABLED` (+ `_SHADOW`),
+`TWELVEDATA_FILTER_EU_SUPERTREND_ENABLED` (+ `_SHADOW`),
+`TWELVEDATA_FILTER_ASIA_SUPERTREND_ENABLED`.
+
+**Quick Wins pipeline** : `QUICK_WINS_PIPELINE_ENABLED`,
+`QUICK_WINS_TWELVEDATA_RSI_CRYPTO`, `QUICK_WINS_TWELVEDATA_SUPERTREND_US_LARGE`,
+`QW_7_COOLDOWN_MIN`, `QW_8_MULTIPLIER`.
+
+**Marché/scanner avancé** : `MARKET_SNAPSHOT_CRYPTO_VIA_LIVE_PRICE`,
+`MARKET_SNAPSHOT_WEEKEND_SKIP_ENABLED`, `SCANNER_SESSION_AWARE`,
+`SCANNER_SCREENER_PAGE_SIZE`, `SCANNER_UNIVERSE_MAX_TICKERS`,
+`CRYPTO_SIMULATOR_ENABLED`, `BINANCE_WS_HEALTH_LOG_ENABLED`,
+`ENABLE_REACTIVE_EXITS`, `RUN_BACKFILL_POST_SL_ON_BOOT`.
+
+**Other** : `SNIPER_MODE_UNLOCK_CODE` (Section 6 bis), `EODHD_NEWS_PERSIST_ENABLED`,
+`EODHD_ECONOMIC_EVENTS_ENABLED`, `GEMINI_DAILY_BRIEF_ENABLED`.
+
+### Secrets explicitement ABSENTS de la prod (à ne pas réintroduire sans raison)
+
+- `TWELVEDATA_FILTER_CRYPTO_RSI_SHADOW` — non setté (PR-shadow non déployé)
+- `GAINERS_LIQUIDITY_FAIL_CLOSED` — non setté (mode liquidity policy = open par défaut)
+- `GAINERS_CONVICTION_SIZING_ENABLED` — n'existe pas avec ce nom : utiliser `CONVICTION_SIZING_ENABLED` (sans préfixe GAINERS_)
+
+---
+
 ## 1. Positionnement produit (non négociable)
 
 SmartVest est une **plateforme d'investissement personnel** opérant selon un modèle de **délégation contrôlée**.
