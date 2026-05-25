@@ -2142,7 +2142,12 @@ export class MechanicalTradingService {
    */
   private isFallbackSource(source: string | undefined): boolean {
     if (!source) return true; // pas de source = suspect
-    return source.startsWith('fallback');
+    // P19-staleness — `stale_*` est aussi non-actionable. TD `/quote` et
+    // EODHD `/real-time` retournent `data.close` = EOD close si marché fermé.
+    // LisaService.tagStaleness rebaptise `twelvedata` → `stale_twelvedata` si
+    // asOf > 180s. Sans cette extension, mechanical-trading exécutait stop/TP
+    // sur prix figés post-cloche (= close à entry = break-even artificiel).
+    return source.startsWith('fallback') || source.startsWith('stale_');
   }
 
   /**

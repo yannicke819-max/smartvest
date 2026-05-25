@@ -617,7 +617,14 @@ export class PaperBrokerService {
       const exitPxN = exitPx.toNumber();
       const entryPxN = entryPx.toNumber();
       let r5Block: { code: string; detail: string } | null = null;
-      if (!Number.isFinite(exitPxN) || exitPxN <= 0) {
+      // P19-staleness — refuse close si source = `stale_*` ou `fallback_*`.
+      // Évite l'incident découvert 25/05 : TD `/quote` retourne data.close =
+      // EOD close si marché fermé → exit_price = entry_price systématique →
+      // break-even artificiel sur force-close-before-close + early-exit.
+      const src = cmd.livePriceSource;
+      if (src && (src.startsWith('stale_') || src.startsWith('fallback'))) {
+        r5Block = { code: 'R5_LIVE_PRICE_STALE_OR_FALLBACK', detail: `source=${src}` };
+      } else if (!Number.isFinite(exitPxN) || exitPxN <= 0) {
         r5Block = { code: 'R5_EXIT_PRICE_ZERO', detail: `exit_price=${exitPxN}` };
       } else if (Number.isFinite(entryPxN) && entryPxN > 0 && exitPxN < entryPxN * minRatio) {
         r5Block = {

@@ -119,6 +119,21 @@ export class EarlyExitGuardService {
       this.logger.debug(`[early-exit-guard] ${pos.symbol} skip — live price fallback (${live?.source})`);
       return false;
     }
+    // P19-staleness — un quote `twelvedata` / `eodhd` peut être un EOD close
+    // post-cloche : prix figé = close systématique à entry_price (= break-even
+    // artificiel). Si asOf > 180s, on refuse de fermer sur ce prix.
+    // 180s = 3× la durée d'une candle 1m, tolère les illiquidités mais bloque
+    // les EOD closes.
+    if (live?.asOf) {
+      const asOfMs = Date.parse(live.asOf);
+      const ageSec = Number.isFinite(asOfMs) ? (Date.now() - asOfMs) / 1000 : 0;
+      if (ageSec > 180) {
+        this.logger.warn(
+          `[early-exit-guard] ${pos.symbol} skip — STALE quote (source=${live.source} asOf=${live.asOf} age=${Math.round(ageSec)}s > 180s). Likely post-close EOD value.`,
+        );
+        return false;
+      }
+    }
     const entry = Number(pos.entry_price);
     const direction = (pos.direction === 'short') ? 'short' : 'long';
     const ageMin = Math.round((Date.now() - new Date(pos.entry_timestamp).getTime()) / 60_000);
@@ -187,6 +202,7 @@ export class EarlyExitGuardService {
         positionId: pos.id,
         reason: 'closed_invalidated',
         livePrice: livePx.toFixed(8),
+        livePriceSource: live?.source,
         rationale: `early-exit-guard FADE Gemini : ${verdict.rationale}`,
       });
       await this.decisionLog.append({

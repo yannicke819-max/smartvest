@@ -838,14 +838,16 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
     it('ticker coréen (.KO) → renvoie le prix TD avec source twelvedata', async () => {
       const { router, td } = makeRouter({}, { price: 70000, changePct: 2.1, timestamp: 1747353600000 });
       const r = await router.getLiveQuote('005930.KO');
-      expect(r).toEqual({ price: 70000, source: 'twelvedata' });
+      // P19-staleness — getLiveQuote retourne désormais quoteTsMs pour permettre
+      // au caller de détecter une staleness (post-cloche EOD close).
+      expect(r).toEqual({ price: 70000, source: 'twelvedata', quoteTsMs: 1747353600000 });
       expect(td.lastSymbol).toBe('005930:KRX');
     });
 
     it('fonctionne même si le flag scanner A/B est OFF (stops indépendants)', async () => {
       const { router } = makeRouter({ TWELVEDATA_INTRADAY_SCANNER_ENABLED: 'false' }, { price: 1500, changePct: 1, timestamp: 1 });
       const r = await router.getLiveQuote('600519.SHG');
-      expect(r).toEqual({ price: 1500, source: 'twelvedata' });
+      expect(r).toEqual({ price: 1500, source: 'twelvedata', quoteTsMs: 1 });
     });
 
     it('suffixe hors périmètre (US) → null sans appeler TD', async () => {
@@ -881,16 +883,16 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
       const { router, td } = makeRouter({ LIVE_PRICE_TD_SUFFIXES: 'KO' }, { price: 1500, changePct: 1, timestamp: 1 });
       expect(await router.getLiveQuote('600519.SHG')).toBeNull();
       expect(td.quoteCalls).toBe(0);
-      expect(await router.getLiveQuote('005930.KO')).toEqual({ price: 1500, source: 'twelvedata' });
+      expect(await router.getLiveQuote('005930.KO')).toEqual({ price: 1500, source: 'twelvedata', quoteTsMs: 1 });
     });
 
     it('EU couvert par défaut (.PA/.LSE) : intraday EODHD différé ~15h → TD-first', async () => {
       // mesure 22/05 : divergence prix EU réelle 1.76% + bougies EODHD stale ~15-24h.
       const { router: r1, td: td1 } = makeRouter({}, { price: 72.2, changePct: 1, timestamp: 1 });
-      expect(await r1.getLiveQuote('SESG.PA')).toEqual({ price: 72.2, source: 'twelvedata' });
+      expect(await r1.getLiveQuote('SESG.PA')).toEqual({ price: 72.2, source: 'twelvedata', quoteTsMs: 1 });
       expect(td1.quoteCalls).toBe(1);
       const { router: r2 } = makeRouter({}, { price: 30.9, changePct: 1, timestamp: 1 });
-      expect(await r2.getLiveQuote('IES.LSE')).toEqual({ price: 30.9, source: 'twelvedata' });
+      expect(await r2.getLiveQuote('IES.LSE')).toEqual({ price: 30.9, source: 'twelvedata', quoteTsMs: 1 });
     });
   });
 });

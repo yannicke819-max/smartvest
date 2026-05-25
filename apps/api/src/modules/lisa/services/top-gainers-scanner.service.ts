@@ -63,6 +63,7 @@ import { GainersUserShadowService, type ShadowDecision } from './gainers-user-sh
 import { dollarVolumeUsd, passesLiquidityFloor } from './gainers-liquidity.helper';
 import { isInExchangeSession, minutesToExchangeClose, minutesSinceExchangeOpen } from './exchange-sessions.helper';
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
+import { parseLlmJson } from './llm-json-parser.helper';
 // PR6.3 — Shadow wiring (LisaModule import GainersModule pour résolution DI)
 import { GainersShadowRunService } from '../../gainers-scanner/shadow/shadow-run.service';
 import { GainersBloc1Service, SHADOW_BLOC1_FULL_CONFIG } from '../../gainers-scanner/bloc1/gainers-bloc1.service';
@@ -3361,6 +3362,7 @@ export class TopGainersScannerService implements OnModuleInit {
       pnlPct: number;
       ageMs: number;
       currentPrice: number;
+      priceSource: string;
     };
     const stagnants: Stagnant[] = [];
     for (const pos of openPositions) {
@@ -3368,9 +3370,10 @@ export class TopGainersScannerService implements OnModuleInit {
       if (ageMs < STAGNANT_MIN_AGE_MS) continue;
       const quote = await this.lisa.getLivePrice(String(pos.symbol)).catch(() => null);
       if (!quote || !quote.price) continue;
-      // 🛡️ BUG #M (cohérence) — skip fallback source pour la rotation stagnante
-      // (incident SEE.LSE : source='fallback_unknown' renvoie sentinel '0').
-      if (quote.source && quote.source.startsWith('fallback')) {
+      // 🛡️ BUG #M (cohérence) — skip fallback + stale source pour la rotation
+      // stagnante (incident SEE.LSE : source='fallback_unknown' renvoie sentinel '0').
+      // P19-staleness : aussi `stale_*` (TD `/quote` post-cloche EOD close).
+      if (quote.source && (quote.source.startsWith('fallback') || quote.source.startsWith('stale_'))) {
         this.logger.warn(`[stagnant-rotation] ${pos.symbol}: source=${quote.source} → skip`);
         continue;
       }
@@ -3379,7 +3382,7 @@ export class TopGainersScannerService implements OnModuleInit {
       if (!Number.isFinite(livePrice) || livePrice <= 0 || !Number.isFinite(entry) || entry <= 0) continue;
       const pnlPct = ((livePrice - entry) / entry) * 100;
       if (Math.abs(pnlPct) > STAGNANT_PNL_PCT) continue;
-      stagnants.push({ pos, pnlPct, ageMs, currentPrice: livePrice });
+      stagnants.push({ pos, pnlPct, ageMs, currentPrice: livePrice, priceSource: quote.source });
     }
     if (stagnants.length === 0) return { rotated: false };
 
@@ -3436,6 +3439,7 @@ export class TopGainersScannerService implements OnModuleInit {
         positionId: String(target.pos.id),
         reason: 'closed_invalidated',
         livePrice: String(target.currentPrice),
+        livePriceSource: target.priceSource,
         rationale: `[ROTATION] Capital rotation → ${candidate.symbol} (score=${candidate.score} persistence=${persistence.persistenceCount} path=${pathEff?.toFixed(2) ?? 'n/a'}) — ` +
           `close stagnant ${target.pos.symbol} age=${(target.ageMs / 60000).toFixed(0)}min pnl=${target.pnlPct.toFixed(2)}% ` +
           `netEV=$${expectedGainNet.toFixed(2)}`,
@@ -3530,9 +3534,12 @@ export class TopGainersScannerService implements OnModuleInit {
       }
       // 🛡️ BUG #M (cohérence) — skip fallback source pour le force-close before
       // close (incident SEE.LSE : source='fallback_unknown' renvoie sentinel '0').
-      if (quote.source && quote.source.startsWith('fallback')) {
+      // P19-staleness — étend à `stale_*` : TD `/quote` retourne data.close =
+      // EOD close si marché fermé → force-close se faisait à entry_price exact
+      // (break-even artificiel). Cf. LisaService.tagStaleness.
+      if (quote.source && (quote.source.startsWith('fallback') || quote.source.startsWith('stale_'))) {
         this.logger.warn(
-          `[force-close] ${portfolioId.slice(0, 8)} ${pos.symbol}: source=${quote.source} (fallback) → skip`,
+          `[force-close] ${portfolioId.slice(0, 8)} ${pos.symbol}: source=${quote.source} (non-actionable) → skip`,
         );
         continue;
       }
@@ -3552,6 +3559,7 @@ export class TopGainersScannerService implements OnModuleInit {
           positionId: String(pos.id),
           reason: 'closed_invalidated',
           livePrice: String(livePrice),
+          livePriceSource: quote.source,
           rationale:
             `[FORCE_CLOSE_BEFORE_CLOSE] ${cls.toUpperCase()} market closing in ${minutesToClose}min ` +
             `(offset=${offsetMin}min) — pnl=${pnlPct.toFixed(2)}%`,
@@ -3624,7 +3632,12 @@ export class TopGainersScannerService implements OnModuleInit {
 
       const quote = await this.lisa.getLivePrice(String(pos.symbol)).catch(() => null);
       const source = quote?.source ?? '';
-      const hasLivePrice = !!(quote && quote.price && !source.startsWith('fallback'));
+      // P19-staleness — `stale_*` est aussi non-live (EOD close post-cloche).
+      // Une position sans quote frais EST orphan → on libère le capital
+      // proprement à entry_price (pnl=0) plutôt que de simuler un close
+      // sur quote stale.
+      const isNonLive = !source || source.startsWith('fallback') || source.startsWith('stale_');
+      const hasLivePrice = !!(quote && quote.price && !isNonLive);
       if (hasLivePrice) continue; // live price disponible → pas orphan
 
       const entry = parseFloat(String(pos.entry_price));
@@ -4103,7 +4116,13 @@ export class TopGainersScannerService implements OnModuleInit {
         temperature: 0.1,
         maxTokens: 128,
       });
-      const parsed = JSON.parse(res.content) as { pass: boolean; signal_quality: number; reason: string };
+      // P19-llm-parse — Gemini ignore "no markdown" et fence avec ```json…```.
+      // parseLlmJson strippe les backticks puis fallback balanced-extract.
+      const parsed = parseLlmJson<{ pass: boolean; signal_quality: number; reason: string }>(res.content);
+      if (!parsed) {
+        this.logger.warn(`[scanner-llm:signal] ${cand.symbol} parse fail content=${res.content.slice(0, 120)}`);
+        return fallback;
+      }
       this.logger.log(
         `[scanner-llm:signal] symbol=${cand.symbol} provider=${res.providerId} latencyMs=${res.latencyMs} costUsd=${res.costUsd.toFixed(6)} pass=${parsed.pass} signal_quality=${parsed.signal_quality}`,
       );
@@ -4133,7 +4152,13 @@ export class TopGainersScannerService implements OnModuleInit {
         temperature: 0.1,
         maxTokens: 128,
       });
-      const ranked: string[] = JSON.parse(res.content);
+      // P19-llm-parse — voir parseLlmJson. Sans ce fix, ranking tombait
+      // en fallback déterministe à chaque cycle (logs prod 25/05).
+      const ranked = parseLlmJson<string[]>(res.content);
+      if (!ranked || !Array.isArray(ranked)) {
+        this.logger.warn(`[scanner-llm:ranking] parse fail content=${res.content.slice(0, 120)}`);
+        return top;
+      }
       const reordered = [
         ...ranked
           .map((sym) => top.find((c) => c.symbol === sym))
@@ -4180,7 +4205,12 @@ export class TopGainersScannerService implements OnModuleInit {
         temperature: 0.2,
         maxTokens: 128,
       });
-      const parsed = JSON.parse(res.content) as { summary: string; category: string; conviction_score: number };
+      // P19-llm-parse — robust parse pour Gemini fence backticks.
+      const parsed = parseLlmJson<{ summary: string; category: string; conviction_score: number }>(res.content);
+      if (!parsed) {
+        this.logger.warn(`[scanner-llm:thesis] ${cand.symbol} parse fail content=${res.content.slice(0, 120)}`);
+        return fallback;
+      }
       this.logger.log(
         `[scanner-llm:thesis] symbol=${cand.symbol} provider=${res.providerId} latencyMs=${res.latencyMs} costUsd=${res.costUsd.toFixed(6)} category=${parsed.category} conviction=${parsed.conviction_score}`,
       );
