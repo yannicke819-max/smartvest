@@ -27,7 +27,8 @@ import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../../supabase/supabase.service';
 import { ScannerLlmRouterService } from '../scanner-llm-router.service';
 import { EodhdNewsService } from '../eodhd-news.service';
-import { EodhdEnrichmentService, type EodhdNewsItem } from '../eodhd-enrichment.service';
+import { type EodhdNewsItem } from '../eodhd-enrichment.service';
+import { NewsAggregatorService } from '../news-aggregator.service';
 import { parseLlmJson } from '../llm-json-parser.helper';
 import { MechanicalTradingService } from '../mechanical-trading.service';
 
@@ -76,7 +77,7 @@ export class GeminiRiskManagerService {
     private readonly supabase: SupabaseService,
     private readonly llm: ScannerLlmRouterService,
     private readonly eodhdNews: EodhdNewsService,
-    private readonly eodhdEnrichment: EodhdEnrichmentService,
+    private readonly newsAggregator: NewsAggregatorService,
     private readonly mechanical: MechanicalTradingService,
   ) {
     this.enabled = (this.config.get<string>('GEMINI_RISK_MANAGER_ENABLED') ?? 'false').toLowerCase() === 'true';
@@ -95,20 +96,25 @@ export class GeminiRiskManagerService {
    * Filtre : sentiment négatif OU mots-clés geopolitical/macro (Fed, CPI, Iran,
    * Hormuz, oil, etc.) car ce sont les seules pertinentes pour casser une thèse.
    */
-  private async getMacroNews(): Promise<EodhdNewsItem[]> {
+  private async getMacroNews(heldSymbols: string[] = []): Promise<EodhdNewsItem[]> {
     if (!this.useMacroNews) return [];
     if (this.macroNewsCache && Date.now() - this.macroNewsCache.asOf < this.MACRO_NEWS_CACHE_MS) {
       return this.macroNewsCache.data;
     }
     try {
-      const all = await this.eodhdEnrichment.fetchRecentNews(undefined, 30);
-      const MACRO_KEYWORDS = /\b(fed|fomc|cpi|nfp|gdp|ecb|boe|boj|inflation|recession|tariff|iran|hormuz|opec|oil|brent|wti|gold|war|sanctions|geopolitic|china|trade war|yields?|treasur)\b/i;
-      const filtered = all.filter((n) => {
+      // Multi-source : EODHD news global + StockTwits trending + Reddit hot + Twitter symbols
+      // Cap retail social 30% appliqué côté aggregator (Reuters/Bloomberg priorisés).
+      const aggr = await this.newsAggregator.aggregate(heldSymbols, 30);
+      const MACRO_KEYWORDS = /\b(fed|fomc|cpi|nfp|gdp|ecb|boe|boj|inflation|recession|tariff|iran|hormuz|opec|oil|brent|wti|gold|war|sanctions|geopolitic|china|trade war|yields?|treasur|hike|rate cut|powell|lagarde|stimulus|tightening|easing)\b/i;
+      const filtered = aggr.items.filter((n) => {
         const isNegative = typeof n.sentiment === 'number' && n.sentiment < -0.2;
         const isMacro = MACRO_KEYWORDS.test(`${n.title} ${n.contentPreview ?? ''}`);
         return isNegative || isMacro;
-      }).slice(0, 8);
+      }).slice(0, 10);
       this.macroNewsCache = { data: filtered, asOf: Date.now() };
+      this.logger.debug(
+        `[risk-manager] macro news : ${aggr.items.length} brut → ${filtered.length} retenu (sources : ${aggr.sources.map(s => `${s.provider}=${s.count}`).join(', ')})`,
+      );
       return filtered;
     } catch (e) {
       this.logger.warn(`[risk-manager] macro news fetch failed: ${String(e).slice(0, 200)}`);
@@ -124,8 +130,11 @@ export class GeminiRiskManagerService {
     try {
       const positions = await this.fetchOpenPositions();
       if (positions.length === 0) return;
-      // Pré-fetch news macro 1× pour tout le cycle (cache 5 min, partagé)
-      if (this.useMacroNews) await this.getMacroNews();
+      // Pré-fetch news macro 1× pour tout le cycle (cache 5 min, partagé).
+      // Passe les symbols ouverts pour que StockTwits/Twitter fetchent aussi
+      // les flux ciblés (en plus du flux global EODHD + Reddit hot).
+      const heldSymbols = positions.map(p => p.symbol);
+      if (this.useMacroNews) await this.getMacroNews(heldSymbols);
       this.logger.log(`[risk-manager] eval ${positions.length} open positions`);
       for (const pos of positions) {
         await this.assessThesis(pos).catch((e) => {

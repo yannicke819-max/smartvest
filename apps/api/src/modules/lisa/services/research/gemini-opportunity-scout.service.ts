@@ -35,7 +35,8 @@ import { Cron } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../../supabase/supabase.service';
 import { ScannerLlmRouterService } from '../scanner-llm-router.service';
-import { EodhdEnrichmentService, type EodhdNewsItem } from '../eodhd-enrichment.service';
+import { type EodhdNewsItem } from '../eodhd-enrichment.service';
+import { NewsAggregatorService } from '../news-aggregator.service';
 import { LisaService } from '../lisa.service';
 import { parseLlmJson } from '../llm-json-parser.helper';
 
@@ -115,7 +116,7 @@ export class GeminiOpportunityScoutService {
     private readonly config: ConfigService,
     private readonly supabase: SupabaseService,
     private readonly llm: ScannerLlmRouterService,
-    private readonly eodhdEnrichment: EodhdEnrichmentService,
+    private readonly newsAggregator: NewsAggregatorService,
     private readonly lisa: LisaService,
   ) {
     this.enabled = (this.config.get<string>('GEMINI_OPPORTUNITY_SCOUT_ENABLED') ?? 'false').toLowerCase() === 'true';
@@ -140,7 +141,11 @@ export class GeminiOpportunityScoutService {
     if (!this.supabase.isReady()) return;
     try {
       // 1. Fetch news positives
-      const allNews = await this.eodhdEnrichment.fetchRecentNews(undefined, 30).catch(() => []);
+      // Multi-source : EODHD news global + StockTwits trending + Reddit hot
+       // (Twitter ticker-specific — irrélevant pour macro broad, mais l'aggregator
+       // sera cap retail social à 30% pour éviter le biais r/wallstreetbets).
+      const aggr = await this.newsAggregator.aggregate([], 30).catch(() => null);
+      const allNews = aggr?.items ?? [];
       const positives = allNews.filter((n) => {
         const isPositive = typeof n.sentiment === 'number' && n.sentiment > 0.4;
         const hasPositiveKw = POSITIVE_KEYWORDS.test(`${n.title} ${n.contentPreview ?? ''}`);
