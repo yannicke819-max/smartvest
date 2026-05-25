@@ -33,3 +33,4 @@ export * from './scoring/continuous-score';
 export * from './decisions/trading-decision';
 export * from './decisions/signal-half-life';
 export * from './decisions/debate-orchestrator';
+export * from './decisions/strategy-lifecycle';
