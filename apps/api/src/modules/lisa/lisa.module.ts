@@ -117,10 +117,7 @@ import { TwelveDataService } from './services/twelve-data.service';
 import { IntradayProviderRouter } from './services/intraday-provider-router.service';
 // R&D batch — services env-gated OFF par défaut (audit 23/05 propositions sérieuses)
 import { GeminiRiskManagerService } from './services/research/gemini-risk-manager.service';
-// HOTFIX 25/05 11:50 UTC — désactivé : injecte PaperBrokerService qui n'est
-// PAS @Injectable() (PaperBrokerDeps manual) → crash bootstrap NestJS → API
-// down → erreurs CORS front. Re-enable après refactor via MechanicalTradingService.
-// import { GeminiOpportunityScoutService } from './services/research/gemini-opportunity-scout.service';
+import { GeminiOpportunityScoutService } from './services/research/gemini-opportunity-scout.service';
 import { CryptoFundingFadeService } from './services/research/crypto-funding-fade.service';
 import { EventNarrativeInterpreterService } from './services/research/event-narrative-interpreter.service';
 import { HourlyEdgeAnalyzerService } from './services/research/hourly-edge-analyzer.service';
@@ -272,7 +269,7 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     IntradayProviderRouter,
     // R&D batch (23/05 propositions sérieuses, ENV-gated OFF par défaut)
     GeminiRiskManagerService,
-    // GeminiOpportunityScoutService, // HOTFIX 25/05 — voir commentaire import
+    GeminiOpportunityScoutService,
     CryptoFundingFadeService,
     EventNarrativeInterpreterService,
     HourlyEdgeAnalyzerService,
