@@ -499,6 +499,176 @@ Pour TOUTE PR que tu ouvres sur ce repo :
 
 ---
 
+## RÈGLE OPÉRATIONNELLE — CALIBRATION GATES SCANNER (25/05/2026)
+
+Décisions prises soir 25/05 après backtest funnel sur shadow signals Thu+Fri
+(`scripts/backtest-thu-fri-funnel.ts`, `persistence-distrib.ts`,
+`unset-persistence-and-analyze-patheff.ts`). Sample 2j = 786 candidats.
+
+### Persistence multi-TF — DÉSACTIVÉ pour mode `gainers`
+
+`lisa_session_configs.gainers_min_persistence_score = 0` (UPDATE prod appliqué
+sur portfolio `58439d86`).
+
+**Rationale** : le concept de persistence multi-TF (1m/5m/10m/15m/30m/1h) est
+solide pour swing trades 3-7j mais **inadapté au scalp 60min top-gainers**. Par
+construction, un pump explosif sur la 1m (la signature exacte des pépites)
+donne `persistenceScore ≈ 0` car les TF longs sont encore flats au moment de
+la détection.
+
+**Donnée** : sur 310 candidats `reject_persistence` Thu+Fri, 82% ont score=0.00
+(0/6 TF) — bucket qui contient ~47 TP_HIT cachés (winRate global rejected = 75%,
++67% sum pnl). Les pépites MKA.LSE (+16.85% en 1m) et IES.LSE (+38.67% en 1m)
+auraient été bloquées sans ce unset.
+
+**Garde-fou** : le gate reste opérationnel en infra (code path intact). Réactivable
+en passant le seuil > 0 si l'aval (DebateGate + Gemini Risk Manager + ConvictionSizing)
+ne filtre pas suffisamment le surplus de bruit. Ne PAS retirer la mécanique persistence
+du code — elle reste utile pour les modes `investment`/`harvest` futurs (Lisa LLM
+swing 3-7j) si on les active à seuil 0.67.
+
+### Path efficiency US — seuil 0.40 → 0.30
+
+`GAINERS_MIN_PATH_EFFICIENCY_US=0.30` (Fly secret).
+
+**Rationale** : path_eff filtre correctement le chop / pump-and-dump (gate sain
+sous 0.30 : winRate ≤ 33%, sumPnl -17 à -24%) MAIS le seuil 0.40 coupait la
+veine des gagnants propres.
+
+**Donnée** : bucket 0.40-0.50 = 87 candidats Thu+Fri rejetés à tort — 14 TP_HIT
++ 9 SL_HIT, winRate **53%**, sumPnl **+11.88%**. À 0.30 : +92 candidats/j
+récupérés, +23 TP_HIT en 2j équivalents, sumPnl sauvés +10.75%. À 0.20 ça bascule
+négatif (-6.73%), à 0.10 toxique (-30%) — DONC 0.30 est le sweet spot.
+
+**Note** : seul `us_equity_large` + `us_equity_small_mid` impactés par cette
+valeur. EU/Asia/crypto restent au default code (probablement 0.5) — à monitorer
+sur quelques jours avant d'étendre. Le bucket 0.40-0.50 contient toutes classes
+confondues donc des pépites EU/Asia/crypto sont probablement aussi ratées au
+default 0.5 — à valider via per-class breakdown si besoin.
+
+### Caveat méthodologique
+
+Sample 2j (Thu+Fri 22-23/05) → trends indicatifs uniquement, pas significatif
+statistiquement. La table `gainers_user_shadow_signals` ne capture **qu'une partie
+des gates** (persistence / path_eff / cooldown / RSI / opening_buffer) — les
+gates en aval (DebateGate, ConvictionSizing, MicroMomentumGate, StaleGuard,
+ConvictionSizing veto, MacroVeto Gemini) ne sont pas dans le funnel shadow et
+restent à mesurer via cross-check `lisa_decision_log`.
+
+### À monitorer 24-72h post-changement
+
+1. Volume `accept` daily : attendu ~20/j → ~40/j (doublé)
+2. Win rate `paper_trades` closed : surveiller si effondrement < 30%
+3. `[risk-manager-v2] THESIS_BROKEN` auto-closes : doivent monter mécaniquement
+4. `/admin/debate-gate/metrics?hours=24` block ratio : si > 60% sur Asia/EU c'est
+   le filet qui prend le relais correctement
+5. Si winRate paper s'effondre OU drawdown jour > 5% → rollback persistence
+   (`gainers_min_persistence_score = 0.33`) en priorité, path_eff en second.
+
+### Fichiers de référence
+
+- `scripts/backtest-thu-fri-funnel.ts` — funnel complet par gate + outcomes simulés
+- `scripts/persistence-distrib.ts` — distribution par score bucket
+- `scripts/unset-persistence-and-analyze-patheff.ts` — UPDATE persistence + scénarios path_eff
+
+---
+
+## RÈGLE OPÉRATIONNELLE — INVENTAIRE FLY SECRETS (état prod 25/05/2026)
+
+Source de vérité = `fly secrets list -a smartvest`. Cette section documente la
+**rationale** des secrets non-évidents, pas leurs valeurs (volatiles).
+
+### `GAINERS_HOUR_BLACKLIST_<CLASS>_UTC` — calibration HourlyEdgeAnalyzer
+
+Heures UTC bloquées par classe×marché, **issues de l'analyse horaire historique
+base** (HourlyEdgeAnalyzer). Ne PAS interpréter comme des bugs ni les retirer
+sans nouvelle analyse — ce sont des fenêtres identifiées comme historiquement
+déficitaires sur ce(s) marché(s).
+
+| Secret | Valeur typique | Raison |
+|---|---|---|
+| `GAINERS_HOUR_BLACKLIST_US_UTC` | `17,18` | Post-lunch US (13h–14h ET) — chop / lethargy |
+| `GAINERS_HOUR_BLACKLIST_ASIA_UTC` | `0,1` | Opening auctions Nikkei (09:00 JST) + Hang Seng (08–09:30 HKT) — volatilité non-directionnelle |
+| `GAINERS_HOUR_BLACKLIST_EU_UTC` | (calibré) | Issues même analyse — préserver tel quel |
+| `GAINERS_LONG_HOUR_BLACKLIST_UTC` | (calibré global) | Long side global, distinct du per-class |
+| `GAINERS_HOUR_GATE_PER_CLASS_OVERRIDES_GLOBAL` | `true` | Per-class blacklist remplace toujours global (cf. fix #11a3051) |
+
+Si l'utilisateur demande à neutraliser ces filtres, **demander confirmation explicite**
+— c'est rarement le bon move sans re-analyse historique.
+
+### Catégories de secrets actifs prod
+
+**Core infra** : `SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
+`SUPABASE_ANON_KEY`, `SUPABASE_ACCESS_TOKEN` (PAT pour DDL via Management API),
+`CORS_ORIGIN`, `ADMIN_TOKEN`, `NO_CACHE`.
+
+**Market data providers** : `EODHD_API_KEY`, `BINANCE_API_KEY`/`BINANCE_SECRET_KEY`,
+`TWELVEDATA_API_KEY`, `FRED_API_KEY`. Exécution : `BINANCE_EXECUTION_ENABLED`.
+
+**LLM** : `ANTHROPIC_API_KEY` (Claude Opus persona Lisa), `GEMINI_API_KEY` (Risk
+Manager + Opportunity Scout + Daily Brief news), `CLAUDE_MODEL_OPUS`,
+`LLM_ROUTER_ENABLED` + `LLM_ROUTER_DAILY_BUDGET_USD` + `LLM_ROUTER_FALLBACK_ON_BUDGET`,
+`SCANNER_LLM_ROUTER_ENABLED`.
+
+**Scanner gainers (gating fonctionnel)** :
+- Source : `STRATEGY_MODE`, `SCAN_INTERVAL_MINUTES`
+- Risque/sizing : `GAINERS_SL_ATR_MULTIPLIER`, `GAINERS_SL_ATR_MAX_PCT`, `GAINERS_MAX_ATR_RATIO_PCT`, `GAINERS_OPEN_BUFFER_MIN`, `GAINERS_MAX_SIGNAL_AGE_SEC`
+- Caps : `GAINERS_MAX_CHANGE_PCT_LONG`, `GAINERS_MAX_CHANGE_PCT_LONG_US_LARGE`, `GAINERS_MAX_CHANGE_PCT_LONG_EU`, `GAINERS_MAX_CHANGE_PCT_LONG_ASIA`
+- Earnings : `GAINERS_EARNINGS_FILTER_DAYS`
+- News : `GAINERS_NEWS_AGE_FILTER_HOURS`, `GAINERS_NEWS_AGE_FILTER_MIN_SENTIMENT`, `GAINERS_CONSUME_DAILY_BRIEF`
+- Path qualité : `GAINERS_MIN_PATH_EFFICIENCY_US`
+- High-grading & rotation : `GAINERS_HIGH_GRADING_ENABLED`, `GAINERS_CAPITAL_ROTATION_ENABLED`, `GAINERS_PREFERRED_TICKERS_SIZE_MULT`, `GAINERS_LEVERAGED_PROXIES_ENABLED`
+- Macro veto : `GAINERS_MACRO_VETO_ENABLED`
+- Trailing : `GAINERS_TRAILING_TP_ENABLED`, `GAINERS_TRAILING_STOP_BREAKEVEN_ENABLED`
+- Shadow legacy : `GAINERS_V1_SHADOW`
+
+**Risk monitors** (par classe + global Gemini) : `RISK_MONITOR_ENABLED`,
+`RISK_MONITOR_ENABLED_US/EU/ASIA/CRYPTO`, `RISK_MONITOR_GEMINI_ENABLED`,
+`GEMINI_RISK_MANAGER_ENABLED`.
+
+**Features Tier 1+2** (active toggles 24-25/05) : `EARLY_EXIT_GUARD_ENABLED`,
+`MICRO_MOMENTUM_ENABLED`, `MICRO_MOMENTUM_GATE_ENABLED`, `REVERSE_MOMENTUM_MODE`,
+`ADAPTIVE_COOLDOWN_ENABLED`, `CORRELATION_GUARD_ENABLED`, `CONVICTION_SIZING_ENABLED`
+(+ `CONVICTION_SIZING_MULT_HIGH/LOW`, `CONVICTION_SIZING_SKIP_IF_NEGATIVE`),
+`CONTINUOUS_SCORING_ENABLED`, `STAGFLATION_HEDGE_GUARD_ENABLED`,
+`CRYPTO_FUNDING_FADE_ENABLED`, `FEATURE_AB_TUNING_ENABLED`,
+`DEBATE_GATE_ENABLED` (T1 wired 25/05), `DAILY_RETROSPECTIVE_ENABLED`,
+`HOURLY_EDGE_ANALYZER_ENABLED`, `EVENT_ENGINE_ENABLED`,
+`EVENT_NARRATIVE_INTERPRETER_ENABLED`, `SYMBOL_ATR_CACHE_REFRESH_ENABLED`.
+
+**A/B testing** (sizing notionnel ÷ max_pos par bucket) : `SIZING_AB_TEST_ENABLED`,
+`SIZING_AB_BUCKET_A_NOTIONAL`, `SIZING_AB_BUCKET_A_MAX_POS`,
+`SIZING_AB_BUCKET_B_NOTIONAL`, `SIZING_AB_BUCKET_B_MAX_POS`.
+
+**TwelveData filters** (PRO + AB ratio + shadow legacy) : `TWELVEDATA_PRO_ENABLED`,
+`TWELVEDATA_AB_TEST_ENABLED`, `TWELVEDATA_INTRADAY_AB_RATIO`,
+`TWELVEDATA_INTRADAY_AB_TEST_RATIO`, `TWELVEDATA_INTRADAY_SCANNER_ENABLED`,
+`TWELVEDATA_SCANNER_ENABLED`, `TWELVEDATA_FILTER_CRYPTO_RSI_ENABLED`,
+`TWELVEDATA_FILTER_US_SUPERTREND_ENABLED` (+ `_SHADOW`),
+`TWELVEDATA_FILTER_EU_SUPERTREND_ENABLED` (+ `_SHADOW`),
+`TWELVEDATA_FILTER_ASIA_SUPERTREND_ENABLED`.
+
+**Quick Wins pipeline** : `QUICK_WINS_PIPELINE_ENABLED`,
+`QUICK_WINS_TWELVEDATA_RSI_CRYPTO`, `QUICK_WINS_TWELVEDATA_SUPERTREND_US_LARGE`,
+`QW_7_COOLDOWN_MIN`, `QW_8_MULTIPLIER`.
+
+**Marché/scanner avancé** : `MARKET_SNAPSHOT_CRYPTO_VIA_LIVE_PRICE`,
+`MARKET_SNAPSHOT_WEEKEND_SKIP_ENABLED`, `SCANNER_SESSION_AWARE`,
+`SCANNER_SCREENER_PAGE_SIZE`, `SCANNER_UNIVERSE_MAX_TICKERS`,
+`CRYPTO_SIMULATOR_ENABLED`, `BINANCE_WS_HEALTH_LOG_ENABLED`,
+`ENABLE_REACTIVE_EXITS`, `RUN_BACKFILL_POST_SL_ON_BOOT`.
+
+**Other** : `SNIPER_MODE_UNLOCK_CODE` (Section 6 bis), `EODHD_NEWS_PERSIST_ENABLED`,
+`EODHD_ECONOMIC_EVENTS_ENABLED`, `GEMINI_DAILY_BRIEF_ENABLED`.
+
+### Secrets explicitement ABSENTS de la prod (à ne pas réintroduire sans raison)
+
+- `TWELVEDATA_FILTER_CRYPTO_RSI_SHADOW` — non setté (PR-shadow non déployé)
+- `GAINERS_LIQUIDITY_FAIL_CLOSED` — non setté (mode liquidity policy = open par défaut)
+- `GAINERS_CONVICTION_SIZING_ENABLED` — n'existe pas avec ce nom : utiliser `CONVICTION_SIZING_ENABLED` (sans préfixe GAINERS_)
+
+---
+
 ## 1. Positionnement produit (non négociable)
 
 SmartVest est une **plateforme d'investissement personnel** opérant selon un modèle de **délégation contrôlée**.
