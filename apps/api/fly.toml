@@ -9,6 +9,8 @@ primary_region = "cdg"
 [env]
   NODE_ENV = "production"
   API_PORT = "3001"
+  GEMINI_RISK_MANAGER_ENABLED = "true"
+  GEMINI_RISK_MANAGER_AUTO_CLOSE_MIN_CONFIDENCE = "0.8"
 
 [http_service]
   internal_port = 3001
