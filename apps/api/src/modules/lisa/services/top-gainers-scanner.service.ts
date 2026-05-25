@@ -100,6 +100,12 @@ import {
   type MicroMomentumGateConfig,
 } from './micro-momentum-gate.helper';
 import {
+  parseMaxChangePerClassConfig,
+  resolveMaxChangePct,
+  describeOverrides as describeMaxChangeOverrides,
+  type MaxChangePerClassConfig,
+} from './max-change-per-class.helper';
+import {
   computeEntryConvictionScore,
   decideSizingMultiplier,
   parseConvictionSizingConfig,
@@ -459,6 +465,13 @@ export class TopGainersScannerService implements OnModuleInit {
   private microGate!: MicroMomentumGateConfig;
 
   /**
+   * Per-class "anti chase-the-top" threshold override (data-driven 25/05).
+   * Default toutes vides → utilise GAINERS_MAX_CHANGE_PCT_LONG global.
+   * Quand activé, chaque classe a son seuil propre (asia 30 %, us 15 %, etc.).
+   */
+  private maxChangePerClass!: MaxChangePerClassConfig;
+
+  /**
    * Data-driven gates per-class (audit 23-24/05). Default toutes envs vides = OFF.
    * S'ajoute aux gates existants (additif, OR logique).
    */
@@ -810,6 +823,19 @@ export class TopGainersScannerService implements OnModuleInit {
       this.logger.log(
         `[micro-momentum-gate] ENABLED — minVel=${this.microGate.minVelocityPctPerS.toExponential(2)}/s minRun=${this.microGate.minRunLength}`,
       );
+    }
+
+    // Per-class "anti chase-the-top" threshold override (data-driven 25/05).
+    this.maxChangePerClass = parseMaxChangePerClassConfig({
+      GAINERS_MAX_CHANGE_PCT_LONG_ASIA: this.config.get<string>('GAINERS_MAX_CHANGE_PCT_LONG_ASIA'),
+      GAINERS_MAX_CHANGE_PCT_LONG_EU: this.config.get<string>('GAINERS_MAX_CHANGE_PCT_LONG_EU'),
+      GAINERS_MAX_CHANGE_PCT_LONG_US_LARGE: this.config.get<string>('GAINERS_MAX_CHANGE_PCT_LONG_US_LARGE'),
+      GAINERS_MAX_CHANGE_PCT_LONG_US_SMALL_MID: this.config.get<string>('GAINERS_MAX_CHANGE_PCT_LONG_US_SMALL_MID'),
+      GAINERS_MAX_CHANGE_PCT_LONG_CRYPTO: this.config.get<string>('GAINERS_MAX_CHANGE_PCT_LONG_CRYPTO'),
+    });
+    const maxChangeOverrideDesc = describeMaxChangeOverrides(this.maxChangePerClass);
+    if (maxChangeOverrideDesc) {
+      this.logger.log(`[max-change-per-class] ENABLED — ${maxChangeOverrideDesc}`);
     }
   }
 
@@ -2493,14 +2519,15 @@ export class TopGainersScannerService implements OnModuleInit {
       }
 
       // Plafond changePct LONG — anti chase-the-top (MESURE 22/05, n=469 paired
-      // us_equity_small_mid) : sur les pops sur-étendus (≥10%), le LONG perd
-      // (-0.35/-0.40% mean) alors qu'il est positif sur 5-10% (+0.085%). On
-      // n'ouvre plus de long au-dessus du plafond. GAINERS_MAX_CHANGE_PCT_LONG
-      // (default 0 = off, measure-first). S'applique au gainers (long-only).
-      const maxChangeLong = Number(this.config.get<string>('GAINERS_MAX_CHANGE_PCT_LONG') ?? '0');
+      // us_equity_small_mid). Per-class override (data-driven 25/05) : asia gagne
+      // dans [10-30 %], donc plafond 10 % détruit son edge. Override via env
+      // GAINERS_MAX_CHANGE_PCT_LONG_<CLASS> (asia 30, us 15, etc.).
+      const maxChangeGlobal = Number(this.config.get<string>('GAINERS_MAX_CHANGE_PCT_LONG') ?? '0');
+      const maxChangeLong = resolveMaxChangePct(String(cand.assetClass), this.maxChangePerClass, maxChangeGlobal);
       if (maxChangeLong > 0 && (cand.changePct ?? 0) >= maxChangeLong) {
+        const overrideTag = maxChangeLong !== maxChangeGlobal ? ` [per-class ${cand.assetClass}]` : '';
         this.logger.log(
-          `[top-gainers] ${cand.symbol} sur-étendu (changePct=${(cand.changePct ?? 0).toFixed(1)}% ≥ ${maxChangeLong}%) → skip long (anti chase-the-top)`,
+          `[top-gainers] ${cand.symbol} sur-étendu (changePct=${(cand.changePct ?? 0).toFixed(1)}% ≥ ${maxChangeLong}%)${overrideTag} → skip long (anti chase-the-top)`,
         );
         recordShadowDecision(cand, 'reject_overextended', undefined);
         continue;
