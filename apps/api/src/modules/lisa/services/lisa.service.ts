@@ -2811,6 +2811,43 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
   }
 
   private async fetchLivePrice(symbol: string): Promise<{ symbol: string; price: string; asOf: string; source: string }> {
+    const raw = await this.fetchLivePriceInner(symbol);
+    return this.tagStaleness(raw);
+  }
+
+  /**
+   * P19-staleness — Tag les quotes périmés avec préfixe `stale_<source>`.
+   *
+   * Cas catché : TD `/quote` et EODHD `/real-time` retournent `data.close` =
+   * dernier OHLC close, qui post-cloche est l'EOD close de la session précédente.
+   * `data.timestamp` (TD ms / EODHD sec) est alors lointain. Sans ce tag, les
+   * consumers voient `source='twelvedata'` (non-fallback) et exécutent des
+   * actions destructives (close à l'EOD close = break-even artificiel).
+   *
+   * Seuil 180s = 3× durée d'une candle 1m. Tolère illiquidité intra-session
+   * tout en bloquant tout quote > 3 min (post-cloche garanti).
+   *
+   * `fallback*` n'est pas re-taggé (déjà non-actionnable). `stale_*` non plus
+   * (idempotent). Consumers existants (`isFallbackSource` qui catche
+   * `startsWith('fallback')`) doivent être étendus pour aussi catcher `stale_`.
+   */
+  private tagStaleness(q: { symbol: string; price: string; asOf: string; source: string }):
+    { symbol: string; price: string; asOf: string; source: string }
+  {
+    if (!q.source || q.source.startsWith('fallback') || q.source.startsWith('stale_')) return q;
+    const asOfMs = Date.parse(q.asOf);
+    if (!Number.isFinite(asOfMs)) return q;
+    const ageSec = (Date.now() - asOfMs) / 1000;
+    if (ageSec > 180) {
+      this.logger.debug(
+        `[live-price] ${q.symbol} STALE quote tagged (source=${q.source} → stale_${q.source}, age=${Math.round(ageSec)}s)`,
+      );
+      return { ...q, source: `stale_${q.source}` };
+    }
+    return q;
+  }
+
+  private async fetchLivePriceInner(symbol: string): Promise<{ symbol: string; price: string; asOf: string; source: string }> {
     const eodhKey = this.config.get<string>('EODHD_API_KEY');
     const now = new Date().toISOString();
     let eodhdTicker: string | null = null;
@@ -2832,7 +2869,13 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       .then(() => this.intradayRouter.getLiveQuote(symbol))
       .catch(() => null);
     if (tdLive) {
-      return { symbol, price: String(tdLive.price), asOf: now, source: tdLive.source };
+      // P19-staleness — asOf = vrai timestamp du quote TD (pas now). Permet
+      // aux consumers (early-exit-guard, R5 sanity) de détecter quote stale
+      // post-cloche. data.close de /quote = EOD close si marché fermé.
+      const tdAsOf = Number.isFinite(tdLive.quoteTsMs) && tdLive.quoteTsMs > 0
+        ? new Date(tdLive.quoteTsMs).toISOString()
+        : now;
+      return { symbol, price: String(tdLive.price), asOf: tdAsOf, source: tdLive.source };
     }
 
     // Hard cap EODHD : si quota jour dépassé, on renvoie le cache même
@@ -2864,9 +2907,17 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
           const data = await res.json() as Record<string, unknown>;
           const price = data['close'] ?? data['previousClose'] ?? data['open'];
           if (price && Number(price) > 0) {
+            // P19-staleness — EODHD /real-time renvoie `timestamp` (Unix sec).
+            // Post-cloche, ce timestamp est celui du dernier tick = peut être
+            // l'EOD close de la session précédente. On propage le vrai asOf
+            // pour que les consumers détectent la staleness.
+            const tsSec = Number(data['timestamp']);
+            const eodhdAsOf = Number.isFinite(tsSec) && tsSec > 0
+              ? new Date(tsSec * 1000).toISOString()
+              : now;
             this.logEodhdCall({ ticker: symbol, eodhdTicker, source: 'eodhd', success: true, statusCode: res.status, latencyMs, priceUsd: Number(price), calledBy: 'live_price' });
-            this.realtimePrice.setCached(symbol, String(price), 'eodhd', now);
-            return { symbol, price: String(price), asOf: now, source: 'eodhd' };
+            this.realtimePrice.setCached(symbol, String(price), 'eodhd', eodhdAsOf);
+            return { symbol, price: String(price), asOf: eodhdAsOf, source: 'eodhd' };
           }
           this.logEodhdCall({ ticker: symbol, eodhdTicker, source: 'eodhd', success: false, statusCode: res.status, latencyMs, calledBy: 'live_price', errorMessage: 'empty_price_field' });
         } else {

@@ -338,8 +338,12 @@ export class OpenPositionRiskMonitorService {
   private async applyClose(pos: OpenPositionRow, composite: number): Promise<boolean> {
     const live = await this.lisa.getLivePrice(pos.symbol);
     const livePrice = Number(live?.price ?? 0);
-    if (livePrice <= 0 || (typeof live?.source === 'string' && live.source.startsWith('fallback'))) {
-      this.logger.warn(`[risk-monitor] ${pos.symbol} CLOSE_NOW skipped — live price unavailable (source=${live?.source})`);
+    // P19-staleness — catche aussi `stale_*` : TD `/quote` retourne EOD close
+    // post-cloche → close se faisait à entry = break-even artificiel.
+    const srcUnusable = typeof live?.source === 'string'
+      && (live.source.startsWith('fallback') || live.source.startsWith('stale_'));
+    if (livePrice <= 0 || srcUnusable) {
+      this.logger.warn(`[risk-monitor] ${pos.symbol} CLOSE_NOW skipped — live price unavailable/stale (source=${live?.source})`);
       return false;
     }
     const broker = this.lisa.getPaperBroker();
@@ -347,6 +351,7 @@ export class OpenPositionRiskMonitorService {
       positionId: pos.id,
       reason: 'closed_invalidated',
       livePrice: livePrice.toFixed(8),
+      livePriceSource: live?.source,
       rationale: `risk_monitor CLOSE_NOW composite=${composite.toFixed(3)} (thèse cassée)`,
     });
     await this.auditAction(pos, 'CLOSE_NOW', composite, { live_price: livePrice });

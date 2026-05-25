@@ -155,5 +155,12 @@ export const ClosePositionCommand = z.object({
   livePrice: z.string(),
   /** Narrative pour le decision log */
   rationale: z.string(),
+  /**
+   * P19-staleness — source du quote (`twelvedata`, `eodhd`, `fallback_*`,
+   * `stale_*`...). Optionnel pour back-compat ; si fourni, le paper-broker
+   * R5 sanity rejette le close quand source = `stale_*` ou `fallback_*`,
+   * évitant les closes break-even artificiels sur EOD close post-cloche.
+   */
+  livePriceSource: z.string().optional(),
 });
 export type ClosePositionCommand = z.infer<typeof ClosePositionCommand>;

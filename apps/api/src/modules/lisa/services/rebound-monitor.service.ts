@@ -245,6 +245,8 @@ export class ReboundMonitorService {
    */
   private isFallbackSource(source: string): boolean {
     if (!source) return true;
-    return source.startsWith('fallback');
+    // P19-staleness — `stale_*` est aussi non-actionable (quote périmé,
+    // typique EOD close post-cloche TD/EODHD). Cf. LisaService.tagStaleness.
+    return source.startsWith('fallback') || source.startsWith('stale_');
   }
 }

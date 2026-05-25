@@ -482,7 +482,7 @@ export class IntradayProviderRouter implements OnModuleInit {
    * EU 1.76%, jusqu'à 5.6% sur small-caps), TD fournit un quote frais. US natif
    * reste sur EODHD real-time (frais). Suffixe non mappable → null → fallback.
    */
-  async getLiveQuote(eodhdTicker: string): Promise<{ price: number; source: 'twelvedata' } | null> {
+  async getLiveQuote(eodhdTicker: string): Promise<{ price: number; source: 'twelvedata'; quoteTsMs: number } | null> {
     if (!this.td || !eodhdTicker) return null;
     const suffix = eodhdTicker.includes('.') ? eodhdTicker.split('.').pop()!.toUpperCase() : '';
     const allowed = (this.config.get<string>('LIVE_PRICE_TD_SUFFIXES') ?? 'KO,KQ,SHG,SHE,LSE,L,PA,AS,AMS,DE,XETRA,SW,MI,TO')
@@ -494,7 +494,12 @@ export class IntradayProviderRouter implements OnModuleInit {
     if (!tdSymbol) return null;
     const q = await this.td.getQuote(tdSymbol, 'live_price').catch(() => null);
     if (q && Number.isFinite(q.price) && q.price > 0) {
-      return { price: q.price, source: 'twelvedata' };
+      // P19-staleness — propage le timestamp TD pour que le caller détecte un
+      // quote stale (post-cloche, candle figée). data.close de l'endpoint /quote
+      // peut être l'EOD close de la session précédente si le marché est fermé.
+      // Sans timestamp, lisa.service.ts:fetchLivePrice écrasait asOf=now → guards
+      // consumer (early-exit-guard, R5 sanity) ne détectaient jamais la staleness.
+      return { price: q.price, source: 'twelvedata', quoteTsMs: q.timestamp };
     }
     return null;
   }
