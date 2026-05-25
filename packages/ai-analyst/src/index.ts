@@ -36,3 +36,4 @@ export * from './decisions/debate-orchestrator';
 export * from './decisions/strategy-lifecycle';
 export * from './decisions/macro-regime';
 export * from './decisions/volatility-cartography';
+export * from './decisions/shadow-to-debate-bridge';
