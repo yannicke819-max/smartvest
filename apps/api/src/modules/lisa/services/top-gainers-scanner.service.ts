@@ -2547,13 +2547,11 @@ export class TopGainersScannerService implements OnModuleInit {
       const blacklistRaw = (this.config.get<string>('GAINERS_LONG_HOUR_BLACKLIST_UTC') ?? '').trim();
       const cryptoGated = (this.config.get<string>('GAINERS_LONG_HOUR_GATE_CRYPTO') ?? 'false').toLowerCase() === 'true';
       const isCryptoCandHourGate = cand.assetClass === 'crypto_major' || cand.assetClass === 'crypto_alt';
-      // Per-class override mode (analyse 25/05) : si activé ET la classe a une
-      // blacklist per-class non-vide, on SKIP le gate global pour cette classe.
-      // Permet par ex. d'autoriser asia@8h même si global blacklist 8h.
-      const perClassOverridesGlobal =
-        (this.config.get<string>('GAINERS_HOUR_GATE_PER_CLASS_OVERRIDES_GLOBAL') ?? 'false').toLowerCase() === 'true';
-      const classHasOverride = perClassOverridesGlobal && hasPerClassOverride(String(cand.assetClass), this.perClassHourGate);
-      const gateApplies = !classHasOverride
+      // Si la classe a une blacklist per-class configurée, elle REMPLACE le gate
+      // global (pas d'OR additif). Permet d'autoriser asia@8h même si global
+      // blacklist inclut 8h. Le gate per-class ci-dessous gère alors seul l'heure.
+      const classHasPerClassConfig = hasPerClassOverride(String(cand.assetClass), this.perClassHourGate);
+      const gateApplies = !classHasPerClassConfig
         && (whitelistRaw.length > 0 || blacklistRaw.length > 0)
         && (cryptoGated || !isCryptoCandHourGate);
       if (gateApplies) {
@@ -2581,8 +2579,8 @@ export class TopGainersScannerService implements OnModuleInit {
       }
 
       // Gate horaire PAR CLASSE (audit 23-24/05 data-driven).
-      // S'ajoute au gate global ci-dessus. Default OFF (toutes envs vides).
-      // Recommandation : GAINERS_HOUR_BLACKLIST_ASIA_UTC=0,1,2 (asia @ H00-02 = -$1300 / 91 trades, WR 26%).
+      // REMPLACE le gate global pour les classes configurées (voir classHasPerClassConfig ci-dessus).
+      // Recommandation : GAINERS_HOUR_BLACKLIST_ASIA_UTC=0,1,2,3,4,5 (asia H00-05 = -$1300+ / 91 trades, WR 26%).
       if (shouldSkipByPerClassHourGate(cand.assetClass, nowUtc.getUTCHours(), this.perClassHourGate)) {
         this.logger.log(
           `[top-gainers] ${cand.symbol} (${cand.assetClass}) hour ${nowUtc.getUTCHours()}h UTC blacklist par-classe → skip long`,
