@@ -2750,6 +2750,46 @@ export class MechanicalTradingService {
       return;
     }
 
+    // Miroir paper_trades — UPDATE en aval pour débloquer P9 ML refit.
+    // Sans ce miroir, le close mécanique ferme bien lisa_positions mais
+    // paper_trades reste à status='open' pour toujours → 92 zombies
+    // observés en prod (2026-05-25). Pattern identique à
+    // paper-broker.service.ts:728-741 (qui n'est appelé QUE pour les closes
+    // déclenchés depuis PaperBrokerService, pas depuis la mécanique).
+    //
+    // Best-effort isolé : si l'UPDATE miroir échoue, le close lisa_positions
+    // reste effectif. Zéro impact sur le trading réel.
+    try {
+      const entryTimestamp = (updated[0] as { entry_timestamp?: string }).entry_timestamp;
+      const entryTs = entryTimestamp ? new Date(entryTimestamp).getTime() : Date.now();
+      const closedTs = new Date(now).getTime();
+      const holdSec = Math.max(0, Math.floor((closedTs - entryTs) / 1000));
+      const outcomeLabel = pnlPct > 0 ? 1 : 0;
+      const { error: mirErr } = await this.supabase.getClient()
+        .from('paper_trades')
+        .update({
+          status: 'closed',
+          closed_at: now,
+          exit_price: exitPrice.toFixed(10),
+          pnl_usd: realizedPnl.toFixed(2),
+          pnl_pct: pnlPct,
+          hold_duration_seconds: holdSec,
+          outcome_label: outcomeLabel,
+          updated_at: now,
+        })
+        .eq('scanner_position_id', positionId)
+        .eq('status', 'open');
+      if (mirErr) {
+        this.logger.warn(
+          `[MÉCANIQUE] paper_trades mirror update failed for ${positionId}: ${mirErr.message}`,
+        );
+      }
+    } catch (e) {
+      this.logger.warn(
+        `[MÉCANIQUE] paper_trades mirror exception for ${positionId}: ${String(e).slice(0, 200)}`,
+      );
+    }
+
     // Phase 5 — fire-and-forget : capture l'outcome contextualisé pour
     // l'apprentissage continu Lisa. Ne bloque jamais le close.
     this.tradeOutcomeRecorder
