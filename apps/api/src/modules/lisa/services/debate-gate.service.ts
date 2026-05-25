@@ -24,7 +24,7 @@
  *   admin endpoint runtime (suit dans un PR dédié si besoin).
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   type ConsensusVerdict,
@@ -33,6 +33,7 @@ import {
   resolveDebate,
   type TradingDecision,
 } from '@smartvest/ai-analyst';
+import { DebateGateMetricsStore } from './debate-gate-metrics.store';
 
 export interface CandidateScores {
   symbol: string;
@@ -71,13 +72,20 @@ export interface DebateGateResult {
 export class DebateGateService {
   private readonly logger = new Logger(DebateGateService.name);
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    @Optional() private readonly metrics?: DebateGateMetricsStore,
+  ) {}
 
   /**
    * True si le gate est actif (bloquant). False = shadow mode (log only).
+   *
+   * Default ACTIVE — pour passer en shadow, set DEBATE_GATE_ENABLED=false.
+   * Decision user 25/05/2026 : on bascule en bloquant par défaut suite à la
+   * série T1+T2 complète. Override safety conservé via env.
    */
   isActive(): boolean {
-    return this.config.get<string>('DEBATE_GATE_ENABLED') === 'true';
+    return this.config.get<string>('DEBATE_GATE_ENABLED') !== 'false';
   }
 
   /**
@@ -104,6 +112,28 @@ export class DebateGateService {
         );
       }
 
+      // Fire-and-forget metric record (no throw possible — store is in-memory).
+      if (this.metrics) {
+        try {
+          const entry: import('./debate-gate-metrics.store').DebateGateEvaluation = {
+            timestamp: now,
+            symbol: scores.symbol,
+            allow,
+            shadowMode,
+            verdictDecision: verdict.decision,
+            consensusRatio: verdict.consensusRatio,
+            agentCount: inputs.length,
+            vetoTriggered: verdict.vetoTriggered,
+            rationale: verdict.rationale,
+            persistenceScore: scores.persistenceScore,
+            changePct: scores.changePct,
+          };
+          if (typeof scores.pathEfficiency === 'number') entry.pathEfficiency = scores.pathEfficiency;
+          this.metrics.record(entry);
+        } catch {
+          /* store should never throw, but defensive catch */
+        }
+      }
       return { allow, verdict, shadowMode, agentCount: inputs.length };
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);

@@ -68,6 +68,7 @@ import { CorrelationGuardService } from './services/correlation-guard.service';
 import { DailyRetrospectiveService } from './services/daily-retrospective.service';
 import { AdaptiveCooldownService } from './services/adaptive-cooldown.service';
 import { DebateGateService } from './services/debate-gate.service';
+import { DebateGateMetricsStore } from './services/debate-gate-metrics.store';
 import { EarlyExitGuardService } from './services/early-exit-guard.service';
 import { FeatureABTuningService } from './services/feature-ab-tuning.service';
 import { EventEngineService } from './services/event-engine.service';
@@ -203,7 +204,8 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     DailyRetrospectiveService,
     // Feature #4 — Adaptive cooldown per symbol (weekly refresh)
     AdaptiveCooldownService,
-    // AXEES T1+T2 wiring — debate gate (default OFF / shadow mode).
+    // AXEES T1+T2 wiring — debate gate (default ACTIVE / blocking ; override DEBATE_GATE_ENABLED=false).
+    DebateGateMetricsStore,
     DebateGateService,
     // Miracle #3 — Early exit guard via Gemini (T+5-15min on opens)
     EarlyExitGuardService,
@@ -283,6 +285,7 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
   exports: [
     LisaService,
     DecisionLogService,
+    DebateGateMetricsStore,
     RealtimePriceService,
     EodhdTechnicalService,
     EodhdIntradayService,

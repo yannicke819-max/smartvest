@@ -52,8 +52,14 @@ export const VETO_DECISIONS: ReadonlySet<TradingDecision> = new Set<TradingDecis
   'HORS_TRAJECTOIRE',
 ]);
 
-/** Seuil minimum de poids relatif pour valider un consensus actionable (offensif BUY/SELL). */
-export const MIN_CONSENSUS_RATIO = 0.6;
+/**
+ * Seuil minimum de poids relatif pour valider un consensus actionable (offensif BUY/SELL).
+ *
+ * Calibration 25/05/2026 : 0.5 (vs 0.6 initial) — premier run en prod, on choisit
+ * la prudence (relâcher pour éviter 0 trade le 1er jour). Ajuster après 24h
+ * de métriques live (cf. /admin/debate-gate/metrics?hours=24).
+ */
+export const MIN_CONSENSUS_RATIO = 0.5;
 
 /**
  * Seuil consensus réduit pour les décisions défensives (CLOSE).

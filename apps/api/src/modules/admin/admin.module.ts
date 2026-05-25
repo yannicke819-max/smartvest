@@ -39,6 +39,7 @@ import { AdminProvidersStatusController } from './admin-providers-status.control
 import { AdminQwPipelineToggleController } from './admin-qw-pipeline-toggle.controller';
 import { AdminEventEngineForceController } from './admin-event-engine-force.controller';
 import { AdminResearchController } from './admin-research.controller';
+import { AdminDebateGateMetricsController } from './admin-debate-gate-metrics.controller';
 
 @Module({
   imports: [SupabaseModule, forwardRef(() => LisaModule), GainersModule],
@@ -66,6 +67,8 @@ import { AdminResearchController } from './admin-research.controller';
     AdminEventEngineForceController,
     // R&D : exploitation dataset propriétaire top_gainers_log + cross-region.
     AdminResearchController,
+    // AXEES T1+T2 — observability du debate gate (default ACTIVE).
+    AdminDebateGateMetricsController,
   ],
 })
 export class AdminModule {}

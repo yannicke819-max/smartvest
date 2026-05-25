@@ -86,7 +86,7 @@ describe('debate-orchestrator', () => {
       expect(r.dissentingAgents).toHaveLength(0);
     });
 
-    it('falls back to WAIT on 50/50 tie', () => {
+    it('falls back to WAIT on 50/50 tie (blocked by quorum on solo BUY)', () => {
       const buy = buildSignal('BUY', 'm', 'a', 'INTRADAY_5M', { confidence: 0.8, emittedAt: t0 });
       const hold = buildSignal('HOLD', 'm', 'b', 'INTRADAY_5M', { confidence: 0.8, emittedAt: t0 });
       const r = resolveDebate([
@@ -94,7 +94,7 @@ describe('debate-orchestrator', () => {
         { agentId: 'b', signal: hold },
       ], t0);
       expect(r.decision).toBe('WAIT');
-      expect(r.consensusRatio).toBeLessThan(MIN_CONSENSUS_RATIO);
+      expect(r.consensusRatio).toBeLessThanOrEqual(MIN_CONSENSUS_RATIO);
     });
 
     it('respects agent weight (risk_monitor 2× outweighs scanner 1×)', () => {
