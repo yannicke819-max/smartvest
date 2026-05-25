@@ -31,8 +31,31 @@ import { type EodhdNewsItem } from '../eodhd-enrichment.service';
 import { NewsAggregatorService } from '../news-aggregator.service';
 import { parseLlmJson } from '../llm-json-parser.helper';
 import { MechanicalTradingService } from '../mechanical-trading.service';
+import { LisaService } from '../lisa.service';
 
 export type ThesisVerdict = 'valid' | 'broken' | 'unclear';
+
+interface OpenPos {
+  id: string;
+  symbol: string;
+  asset_class: string;
+  entry_timestamp: string;
+  entry_price: number;
+  direction: string;
+  stop_loss_price: number | null;
+  take_profit_price: number | null;
+  peak_pre_exit: number | null;
+}
+
+interface PriceContext {
+  current: number | null;
+  source: string;
+  pnlPct: number | null;
+  distSlPct: number | null;
+  distTpPct: number | null;
+  peakPnlPct: number | null;
+  retraceFromPeakPct: number | null;
+}
 
 export interface RiskAssessment {
   positionId: string;
@@ -46,7 +69,9 @@ export interface RiskAssessment {
 }
 
 const SYSTEM_PROMPT = `You are a risk manager for an automated momentum trading system.
-You evaluate if the original thesis behind an OPEN long position is still valid given recent news/events.
+You evaluate if the original thesis behind an OPEN long position is still valid given:
+1. Recent news/events (ticker-specific + macro)
+2. Current price context (PnL, distance to stops, peak excursion)
 
 Output STRICT JSON only:
 {
@@ -55,12 +80,21 @@ Output STRICT JSON only:
   "reason": "short sentence max 80 chars"
 }
 
-Rules:
+Verdict rules:
 - "broken" = clear negative catalyst (downgrade, profit warning, regulatory action, sector rout)
+  AND it is actionable to exit NOW (not redundant with mechanical SL)
 - "unclear" = mixed signals or no fresh news
 - "valid" = positive or neutral context, no break in original thesis
-- Be conservative on "broken" (false positives = early exits = losses)
-- confidence < 0.7 should default to "unclear"`;
+
+Anti-friction rules (CRITICAL — avoid double-action with other services):
+- If "position_age_min" < 15 → prefer "unclear" (EarlyExitGuard owns this window).
+- If "distance_to_sl_pct" between 0 and 0.5% → prefer "unclear" (mechanical SL will fire imminently, your close is redundant).
+- If "distance_to_tp_pct" between 0 and 0.5% → prefer "unclear" (mechanical TP will fire imminently).
+- If "pnl_pct" > 1% AND "peak_pnl_pct" - "pnl_pct" < 0.5% → prefer "unclear" (trailing TP active, let it capture).
+- "broken" with confidence>=0.8 should be reserved for cases where NEITHER mechanical SL NOR trailing will catch the move soon enough (e.g., big news shock at +2% gain — close NOW to lock).
+
+Be conservative on "broken" (false positives = early exits = losses).
+Confidence < 0.7 should default to "unclear".`;
 
 @Injectable()
 export class GeminiRiskManagerService {
@@ -79,6 +113,7 @@ export class GeminiRiskManagerService {
     private readonly eodhdNews: EodhdNewsService,
     private readonly newsAggregator: NewsAggregatorService,
     private readonly mechanical: MechanicalTradingService,
+    private readonly lisa: LisaService,
   ) {
     this.enabled = (this.config.get<string>('GEMINI_RISK_MANAGER_ENABLED') ?? 'false').toLowerCase() === 'true';
     const rawConf = parseFloat(this.config.get<string>('GEMINI_RISK_MANAGER_AUTO_CLOSE_MIN_CONFIDENCE') ?? '0.8');
@@ -146,20 +181,51 @@ export class GeminiRiskManagerService {
     }
   }
 
-  private async fetchOpenPositions(): Promise<Array<{ id: string; symbol: string; asset_class: string; entry_timestamp: string; entry_price: number }>> {
+  private async fetchOpenPositions(): Promise<Array<OpenPos>> {
     const { data, error } = await this.supabase
       .getClient()
       .from('lisa_positions')
-      .select('id, symbol, asset_class, entry_timestamp, entry_price')
+      .select('id, symbol, asset_class, entry_timestamp, entry_price, direction, stop_loss_price, take_profit_price, peak_pre_exit')
       .eq('status', 'open')
       .limit(20);
     if (error || !data) return [];
-    return data as Array<{ id: string; symbol: string; asset_class: string; entry_timestamp: string; entry_price: number }>;
+    return data as Array<OpenPos>;
   }
 
-  async assessThesis(pos: { id: string; symbol: string; asset_class: string; entry_timestamp: string }): Promise<RiskAssessment | null> {
-    const news = await this.eodhdNews.getRecentNewsForTicker(pos.symbol, 1).catch(() => []);
-    const macroNews = await this.getMacroNews();
+  /** Calcule pnl/distances/peak depuis le live price + position. Pure-ish. */
+  private async computePriceContext(pos: OpenPos): Promise<PriceContext> {
+    const quote = await this.lisa.getLivePrice(pos.symbol).catch(() => null);
+    if (!quote || !quote.source || quote.source.startsWith('stale_') || quote.source.startsWith('fallback')) {
+      return { current: null, source: quote?.source ?? 'unavailable', pnlPct: null, distSlPct: null, distTpPct: null, peakPnlPct: null, retraceFromPeakPct: null };
+    }
+    const current = parseFloat(quote.price);
+    if (!Number.isFinite(current) || current <= 0 || pos.entry_price <= 0) {
+      return { current: null, source: quote.source, pnlPct: null, distSlPct: null, distTpPct: null, peakPnlPct: null, retraceFromPeakPct: null };
+    }
+    const isLong = pos.direction.startsWith('long');
+    const sign = isLong ? 1 : -1;
+    const pnlPct = ((current - pos.entry_price) / pos.entry_price) * 100 * sign;
+    const distSlPct = pos.stop_loss_price && pos.stop_loss_price > 0
+      ? ((isLong ? current - pos.stop_loss_price : pos.stop_loss_price - current) / current) * 100
+      : null;
+    const distTpPct = pos.take_profit_price && pos.take_profit_price > 0
+      ? ((isLong ? pos.take_profit_price - current : current - pos.take_profit_price) / current) * 100
+      : null;
+    const peakPnlPct = pos.peak_pre_exit && pos.peak_pre_exit > 0
+      ? ((pos.peak_pre_exit - pos.entry_price) / pos.entry_price) * 100 * sign
+      : null;
+    const retraceFromPeakPct = peakPnlPct !== null && pnlPct !== null && peakPnlPct > 0
+      ? peakPnlPct - pnlPct
+      : null;
+    return { current, source: quote.source, pnlPct, distSlPct, distTpPct, peakPnlPct, retraceFromPeakPct };
+  }
+
+  async assessThesis(pos: OpenPos): Promise<RiskAssessment | null> {
+    const [news, macroNews, priceCtx] = await Promise.all([
+      this.eodhdNews.getRecentNewsForTicker(pos.symbol, 1).catch(() => []),
+      this.getMacroNews(),
+      this.computePriceContext(pos),
+    ]);
 
     const tickerBlock = news.length > 0
       ? news.slice(0, 5).map((n) => {
@@ -176,13 +242,41 @@ export class GeminiRiskManagerService {
       : '(no macro/geopolitical news)';
 
     const ageMin = Math.floor((Date.now() - new Date(pos.entry_timestamp).getTime()) / 60_000);
+
+    // Anti-friction : si le contexte prix dit clairement "laisser faire les autres
+    // services", on shortcut le call LLM (économie de coût + zéro risque action).
+    if (priceCtx.pnlPct !== null) {
+      const tooCloseToSl = priceCtx.distSlPct !== null && priceCtx.distSlPct >= 0 && priceCtx.distSlPct < 0.3;
+      const tooCloseToTp = priceCtx.distTpPct !== null && priceCtx.distTpPct >= 0 && priceCtx.distTpPct < 0.3;
+      if (ageMin < 15 || tooCloseToSl || tooCloseToTp) {
+        // EarlyExitGuard owns 0-15min, Mechanical owns near-SL/TP — skip LLM
+        return {
+          positionId: pos.id, symbol: pos.symbol,
+          verdict: 'unclear', confidence: 0,
+          reason: ageMin < 15 ? 'in EarlyExitGuard window' : (tooCloseToSl ? 'mechanical SL imminent' : 'mechanical TP imminent'),
+          newsCount: news.length, llmCostUsd: 0, autoClosed: false,
+        };
+      }
+    }
+
+    const priceBlock = priceCtx.current !== null
+      ? `Price context (live, source=${priceCtx.source}):\n` +
+        `- current_price: ${priceCtx.current.toFixed(4)}\n` +
+        `- entry_price: ${pos.entry_price.toFixed(4)}\n` +
+        `- pnl_pct: ${priceCtx.pnlPct?.toFixed(2) ?? 'n/a'}%\n` +
+        `- distance_to_sl_pct: ${priceCtx.distSlPct?.toFixed(2) ?? 'n/a'}%\n` +
+        `- distance_to_tp_pct: ${priceCtx.distTpPct?.toFixed(2) ?? 'n/a'}%\n` +
+        `- peak_pnl_pct: ${priceCtx.peakPnlPct?.toFixed(2) ?? 'n/a'}%\n` +
+        `- retrace_from_peak_pct: ${priceCtx.retraceFromPeakPct?.toFixed(2) ?? 'n/a'}%`
+      : `Price context: unavailable (source=${priceCtx.source})`;
+
     const userPrompt =
-      `Open long position: ${pos.symbol} (${pos.asset_class}), opened ${ageMin}min ago.\n\n` +
+      `Open ${pos.direction} position: ${pos.symbol} (${pos.asset_class}), age=${ageMin}min.\n\n` +
+      `${priceBlock}\n\n` +
       `Ticker news (last 60min):\n${tickerBlock}\n\n` +
       `Macro / geopolitical news (last 60min, global feed):\n${macroBlock}\n\n` +
-      `Is the original momentum thesis still valid? A macro shock (Fed, oil, Iran/Hormuz, tariffs) ` +
-      `that directly impacts the position's asset class should be treated as broken with confidence>=0.8. ` +
-      `Output strict JSON only.`;
+      `Apply the anti-friction rules from system prompt. Is the thesis broken AND ` +
+      `actionable NOW (not redundant with mechanical SL/TP nor EarlyExitGuard)? Output strict JSON only.`;
 
     let llmResult;
     try {
