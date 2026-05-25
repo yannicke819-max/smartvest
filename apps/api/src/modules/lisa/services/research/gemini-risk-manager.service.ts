@@ -27,6 +27,7 @@ import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../../supabase/supabase.service';
 import { ScannerLlmRouterService } from '../scanner-llm-router.service';
 import { EodhdNewsService } from '../eodhd-news.service';
+import { EodhdEnrichmentService, type EodhdNewsItem } from '../eodhd-enrichment.service';
 import { parseLlmJson } from '../llm-json-parser.helper';
 import { MechanicalTradingService } from '../mechanical-trading.service';
 
@@ -65,21 +66,53 @@ export class GeminiRiskManagerService {
   private readonly logger = new Logger(GeminiRiskManagerService.name);
   private readonly enabled: boolean;
   private readonly autoCloseMinConfidence: number;
+  private readonly useMacroNews: boolean;
+  /** Cache 5 min des news macro globales — partagé pour toutes les positions du cycle. */
+  private macroNewsCache: { data: EodhdNewsItem[]; asOf: number } | null = null;
+  private readonly MACRO_NEWS_CACHE_MS = 5 * 60 * 1000;
 
   constructor(
     private readonly config: ConfigService,
     private readonly supabase: SupabaseService,
     private readonly llm: ScannerLlmRouterService,
     private readonly eodhdNews: EodhdNewsService,
+    private readonly eodhdEnrichment: EodhdEnrichmentService,
     private readonly mechanical: MechanicalTradingService,
   ) {
     this.enabled = (this.config.get<string>('GEMINI_RISK_MANAGER_ENABLED') ?? 'false').toLowerCase() === 'true';
     const rawConf = parseFloat(this.config.get<string>('GEMINI_RISK_MANAGER_AUTO_CLOSE_MIN_CONFIDENCE') ?? '0.8');
     this.autoCloseMinConfidence = Number.isFinite(rawConf) && rawConf >= 0 && rawConf <= 1.1 ? rawConf : 0.8;
+    this.useMacroNews = (this.config.get<string>('GEMINI_RISK_MANAGER_USE_MACRO_NEWS') ?? 'false').toLowerCase() === 'true';
     if (this.enabled) {
       this.logger.log(
-        `[risk-manager] V2 ENABLED — auto-close seuil conf>=${this.autoCloseMinConfidence} — cron */5min`,
+        `[risk-manager] V2 ENABLED — auto-close seuil conf>=${this.autoCloseMinConfidence} — macro=${this.useMacroNews} — cron */5min`,
       );
+    }
+  }
+
+  /**
+   * Pull les news macro globales (sans symbol) avec cache 5 min.
+   * Filtre : sentiment négatif OU mots-clés geopolitical/macro (Fed, CPI, Iran,
+   * Hormuz, oil, etc.) car ce sont les seules pertinentes pour casser une thèse.
+   */
+  private async getMacroNews(): Promise<EodhdNewsItem[]> {
+    if (!this.useMacroNews) return [];
+    if (this.macroNewsCache && Date.now() - this.macroNewsCache.asOf < this.MACRO_NEWS_CACHE_MS) {
+      return this.macroNewsCache.data;
+    }
+    try {
+      const all = await this.eodhdEnrichment.fetchRecentNews(undefined, 30);
+      const MACRO_KEYWORDS = /\b(fed|fomc|cpi|nfp|gdp|ecb|boe|boj|inflation|recession|tariff|iran|hormuz|opec|oil|brent|wti|gold|war|sanctions|geopolitic|china|trade war|yields?|treasur)\b/i;
+      const filtered = all.filter((n) => {
+        const isNegative = typeof n.sentiment === 'number' && n.sentiment < -0.2;
+        const isMacro = MACRO_KEYWORDS.test(`${n.title} ${n.contentPreview ?? ''}`);
+        return isNegative || isMacro;
+      }).slice(0, 8);
+      this.macroNewsCache = { data: filtered, asOf: Date.now() };
+      return filtered;
+    } catch (e) {
+      this.logger.warn(`[risk-manager] macro news fetch failed: ${String(e).slice(0, 200)}`);
+      return [];
     }
   }
 
@@ -91,6 +124,8 @@ export class GeminiRiskManagerService {
     try {
       const positions = await this.fetchOpenPositions();
       if (positions.length === 0) return;
+      // Pré-fetch news macro 1× pour tout le cycle (cache 5 min, partagé)
+      if (this.useMacroNews) await this.getMacroNews();
       this.logger.log(`[risk-manager] eval ${positions.length} open positions`);
       for (const pos of positions) {
         await this.assessThesis(pos).catch((e) => {
@@ -115,18 +150,30 @@ export class GeminiRiskManagerService {
 
   async assessThesis(pos: { id: string; symbol: string; asset_class: string; entry_timestamp: string }): Promise<RiskAssessment | null> {
     const news = await this.eodhdNews.getRecentNewsForTicker(pos.symbol, 1).catch(() => []);
-    const newsBlock = news.length > 0
+    const macroNews = await this.getMacroNews();
+
+    const tickerBlock = news.length > 0
       ? news.slice(0, 5).map((n) => {
           const pol = typeof n.sentiment_polarity === 'number' ? `pol=${n.sentiment_polarity.toFixed(2)}` : '';
           return `- ${n.title.slice(0, 100)} ${pol}`;
         }).join('\n')
-      : '(no recent news)';
+      : '(no ticker-specific news)';
+
+    const macroBlock = macroNews.length > 0
+      ? macroNews.slice(0, 6).map((n) => {
+          const sent = typeof n.sentiment === 'number' ? `sent=${n.sentiment.toFixed(2)}` : '';
+          return `- ${n.title.slice(0, 110)} ${sent}`;
+        }).join('\n')
+      : '(no macro/geopolitical news)';
 
     const ageMin = Math.floor((Date.now() - new Date(pos.entry_timestamp).getTime()) / 60_000);
     const userPrompt =
       `Open long position: ${pos.symbol} (${pos.asset_class}), opened ${ageMin}min ago.\n\n` +
-      `Recent news (last 60min):\n${newsBlock}\n\n` +
-      `Is the original momentum thesis still valid? Output strict JSON only.`;
+      `Ticker news (last 60min):\n${tickerBlock}\n\n` +
+      `Macro / geopolitical news (last 60min, global feed):\n${macroBlock}\n\n` +
+      `Is the original momentum thesis still valid? A macro shock (Fed, oil, Iran/Hormuz, tariffs) ` +
+      `that directly impacts the position's asset class should be treated as broken with confidence>=0.8. ` +
+      `Output strict JSON only.`;
 
     let llmResult;
     try {

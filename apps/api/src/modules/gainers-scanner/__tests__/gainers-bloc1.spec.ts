@@ -85,10 +85,21 @@ describe('GainersBloc1 — prefilter gates', () => {
       const r = checkLiquidityFloor(baseEquity({ medianDailyVolUsd20d: 10_000_000 }), DEFAULT_BLOC1_CONFIG);
       expect(r.pass).toBe(true);
     });
-    it('rejects equity candidate with null medianDailyVol baseline', () => {
-      const r = checkLiquidityFloor(baseEquity({ medianDailyVolUsd20d: null }), DEFAULT_BLOC1_CONFIG);
+    it('P19-EU-FIX: null medianDailyVol + vol24hUsd >= threshold → PASS (EU fallback)', () => {
+      const r = checkLiquidityFloor(
+        baseEquity({ medianDailyVolUsd20d: null, vol24hUsd: 50_000_000 }),
+        DEFAULT_BLOC1_CONFIG,
+      );
+      expect(r.pass).toBe(true);
+      expect(r.observed).toBe(50_000_000);
+    });
+    it('P19-EU-FIX: null medianDailyVol + vol24hUsd < threshold → FAIL', () => {
+      const r = checkLiquidityFloor(
+        baseEquity({ medianDailyVolUsd20d: null, vol24hUsd: 5_000_000 }),
+        DEFAULT_BLOC1_CONFIG,
+      );
       expect(r.pass).toBe(false);
-      expect(r.observed).toBeNull();
+      expect(r.observed).toBe(5_000_000);
     });
 
     // PR6.6.4 — Bypass top 5 crypto majors

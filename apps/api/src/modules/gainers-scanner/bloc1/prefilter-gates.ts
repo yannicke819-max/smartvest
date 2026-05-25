@@ -106,7 +106,17 @@ export function checkLiquidityFloor(raw: GainersCandidateRaw, cfg: GainersBloc1C
   }
   const threshold = cfg.liquidityFloorEquityUsd;
   const vol = raw.medianDailyVolUsd20d;
-  if (vol === null) return FAIL(CandidateRejectReason.LIQUIDITY_FLOOR, null, threshold);
+  // P19-EU-FIX (25/05/2026) : EODHD ne remonte pas medianDailyVolUsd20d pour
+  // beaucoup de tickers EU (.PA/.XETRA/.MI/.AS). Fallback sur vol24hUsd quand
+  // disponible — un titre EU mid/large cap qui trade > $10M sur la journée
+  // est largement assez liquide. Sans ce fallback, ~80% des candidats EU
+  // fail LIQUIDITY_FLOOR sur null → 0 ouverture EU. Crypto path inchangé.
+  if (vol === null) {
+    if (raw.vol24hUsd >= threshold) {
+      return PASS(raw.vol24hUsd, threshold);
+    }
+    return FAIL(CandidateRejectReason.LIQUIDITY_FLOOR, raw.vol24hUsd, threshold);
+  }
   if (vol < threshold) return FAIL(CandidateRejectReason.LIQUIDITY_FLOOR, vol, threshold);
   return PASS(vol, threshold);
 }

@@ -9,8 +9,35 @@ primary_region = "cdg"
 [env]
   NODE_ENV = "production"
   API_PORT = "3001"
+
+  # Gemini Risk Manager V2 — auto-close sur thèse cassée
   GEMINI_RISK_MANAGER_ENABLED = "true"
   GEMINI_RISK_MANAGER_AUTO_CLOSE_MIN_CONFIDENCE = "0.8"
+  GEMINI_RISK_MANAGER_USE_MACRO_NEWS = "true"
+
+  # Tier 1 — Production-grade features (activés 25/05/2026)
+  GAINERS_TRAILING_STOP_BREAKEVEN_ENABLED = "true"
+  GAINERS_TRAILING_TP_ENABLED = "true"
+  MICRO_MOMENTUM_GATE_ENABLED = "true"
+  EARLY_EXIT_GUARD_ENABLED = "true"
+  CORRELATION_GUARD_ENABLED = "true"
+  CONVICTION_SIZING_ENABLED = "true"
+  RISK_MONITOR_ENABLED = "true"
+  RISK_MONITOR_ENABLED_CRYPTO = "true"
+  RISK_MONITOR_ENABLED_US = "true"
+  RISK_MONITOR_ENABLED_EU = "true"
+  RISK_MONITOR_ENABLED_ASIA = "true"
+  RISK_MONITOR_GEMINI_ENABLED = "true"
+  EODHD_NEWS_PERSIST_ENABLED = "true"
+  EODHD_ECONOMIC_EVENTS_ENABLED = "true"
+  GEMINI_DAILY_BRIEF_ENABLED = "true"
+  SYMBOL_ATR_CACHE_REFRESH_ENABLED = "true"
+  DAILY_RETROSPECTIVE_ENABLED = "true"
+
+  # Tier 2 — Higher-risk features (sizing réduit côté code)
+  REVERSE_MOMENTUM_MODE = "both"
+  REVERSE_MOMENTUM_SHORT_RATIO = "0.5"
+  FEATURE_AB_TUNING_ENABLED = "true"
 
 [http_service]
   internal_port = 3001
