@@ -78,13 +78,40 @@ export class AdaptiveCooldownService {
   }
 
   /**
-   * Exposé pour le scanner. Si désactivé ou symbole non analysé → fallbackMin.
+   * Exposé pour le scanner POST-SL cooldown. Si désactivé ou symbole non
+   * analysé → fallbackMin. Retourne directement le cooldown adaptatif issu
+   * du pattern death-trap (60/120/180min selon re-loss rate).
    */
   getCooldownForSymbol(symbol: string, fallbackMin: number): number {
     if (!this.enabled) return fallbackMin;
     const v = this.cache.get(symbol);
     if (!v) return fallbackMin;
     return v.cooldownMin;
+  }
+
+  /**
+   * P19-EXT (25/05) — Exposé pour le scanner STANDARD cooldown re-entry
+   * (après TP, manual close, invalidated, expired — pas que SL).
+   *
+   * Stratégie : scale le fallback standard par le risk profile du symbol
+   * (death-trap → ×3, mid-risk → ×2, safe → ×1) sans jamais descendre
+   * sous le fallback. Plus conservateur que getCooldownForSymbol qui
+   * remplace direct.
+   *
+   * Default OFF (env-gated comme le reste). Sans flag, returns fallback.
+   *
+   * Rationale : un symbole en "death-trap pattern" (re-loss rate > 70%)
+   * mérite un cooldown étendu même après TP — la volatilité observée 30j
+   * suggère que le pattern reste actif. Inversement, pour un symbole safe
+   * (re-loss < 50% ou pas assez de data), keep fallback intact.
+   */
+  getStandardCooldownForSymbol(symbol: string, fallbackMin: number): number {
+    if (!this.enabled) return fallbackMin;
+    const v = this.cache.get(symbol);
+    if (!v) return fallbackMin;
+    if (v.cooldownMin >= this.cfg.trapCooldownMin) return fallbackMin * 3;
+    if (v.cooldownMin >= this.cfg.highCooldownMin) return fallbackMin * 2;
+    return fallbackMin;
   }
 
   /**

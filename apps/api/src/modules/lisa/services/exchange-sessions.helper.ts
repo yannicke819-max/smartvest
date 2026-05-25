@@ -159,6 +159,32 @@ export function isInExchangeSession(symbol: string, at: Date | string | number):
 }
 
 /**
+ * P19-EXT (25/05/2026) — Détecte si TOUTES les bourses majeures (US + UK + EU
+ * + CH + DE) sont fermées pour férié à l'instant donné.
+ *
+ * Utilisé par AdaptiveSelectivity pour ne PAS dégrader trajectoryStatus en
+ * HORS_TRAJECTOIRE quand aucun trading n'était possible (PnL négatif récent
+ * s'explique alors par positions stagnantes sur holiday, pas par mauvaises
+ * décisions). Sans ça, lundi 25/05/2026 triple-holiday aurait basculé en
+ * HORS_TRAJECTOIRE injustement.
+ *
+ * Crypto exempt (always-on) — donc "all major equity markets closed" ne
+ * signifie pas "trading impossible total".
+ */
+export function isAllMajorMarketsClosed(at: Date | string | number): boolean {
+  // Symbols-types représentatifs des bourses principales pour stocks
+  const majorSymbols = [
+    'AAPL.US',    // NYSE / NASDAQ
+    'VOD.L',      // LSE
+    'NANO.PA',    // Euronext Paris
+    'AMS.SW',     // SIX Swiss
+    'SAP.XETRA',  // XETRA Frankfurt
+  ];
+  // Si AUCUN n'est ouvert, c'est un jour fermé universel.
+  return majorSymbols.every((s) => !isInExchangeSession(s, at));
+}
+
+/**
  * Minutes restantes avant la fermeture de la session de l'exchange du ticker,
  * en TZ locale (DST-safe). Sert au force-close-before-close PAR BOURSE (vs le
  * bloc agrégé Asie 00:00-08:00 qui fermait les coréennes à 07:45 au lieu de 06:30).

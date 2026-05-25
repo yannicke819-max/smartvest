@@ -268,7 +268,11 @@ export class GeminiRiskManagerService {
         `- distance_to_tp_pct: ${priceCtx.distTpPct?.toFixed(2) ?? 'n/a'}%\n` +
         `- peak_pnl_pct: ${priceCtx.peakPnlPct?.toFixed(2) ?? 'n/a'}%\n` +
         `- retrace_from_peak_pct: ${priceCtx.retraceFromPeakPct?.toFixed(2) ?? 'n/a'}%`
-      : `Price context: unavailable (source=${priceCtx.source})`;
+      : `⚠️ PRICE DATA UNAVAILABLE OR STALE (source=${priceCtx.source}).\n` +
+        `→ Tu ne peux PAS évaluer la thèse sur le prix. Si tu vois une news\n` +
+        `   négative claire sur le ticker/asset_class, verdict 'broken' conf 0.85+\n` +
+        `   (la position est exposée sans visibilité, l'EarlyExit/Mechanical ne\n` +
+        `   peuvent rien faire non plus sans prix live). Sinon, 'unclear'.`;
 
     const userPrompt =
       `Open ${pos.direction} position: ${pos.symbol} (${pos.asset_class}), age=${ageMin}min.\n\n` +
