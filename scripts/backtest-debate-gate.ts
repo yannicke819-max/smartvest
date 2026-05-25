@@ -33,7 +33,7 @@ function arg(name: string): string | undefined {
 }
 const hasFlag = (name: string) => args.includes(`--${name}`);
 
-const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   console.error('ERROR: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY required.');
