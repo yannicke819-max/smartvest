@@ -35,3 +35,4 @@ export * from './decisions/signal-half-life';
 export * from './decisions/debate-orchestrator';
 export * from './decisions/strategy-lifecycle';
 export * from './decisions/macro-regime';
+export * from './decisions/volatility-cartography';
