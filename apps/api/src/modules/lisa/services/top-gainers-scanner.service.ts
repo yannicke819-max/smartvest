@@ -63,6 +63,7 @@ import { GainersUserShadowService, type ShadowDecision } from './gainers-user-sh
 import { dollarVolumeUsd, passesLiquidityFloor } from './gainers-liquidity.helper';
 import { isInExchangeSession, minutesToExchangeClose, minutesSinceExchangeOpen } from './exchange-sessions.helper';
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
+import { parseLlmJson } from './llm-json-parser.helper';
 // PR6.3 — Shadow wiring (LisaModule import GainersModule pour résolution DI)
 import { GainersShadowRunService } from '../../gainers-scanner/shadow/shadow-run.service';
 import { GainersBloc1Service, SHADOW_BLOC1_FULL_CONFIG } from '../../gainers-scanner/bloc1/gainers-bloc1.service';
@@ -4115,7 +4116,13 @@ export class TopGainersScannerService implements OnModuleInit {
         temperature: 0.1,
         maxTokens: 128,
       });
-      const parsed = JSON.parse(res.content) as { pass: boolean; signal_quality: number; reason: string };
+      // P19-llm-parse — Gemini ignore "no markdown" et fence avec ```json…```.
+      // parseLlmJson strippe les backticks puis fallback balanced-extract.
+      const parsed = parseLlmJson<{ pass: boolean; signal_quality: number; reason: string }>(res.content);
+      if (!parsed) {
+        this.logger.warn(`[scanner-llm:signal] ${cand.symbol} parse fail content=${res.content.slice(0, 120)}`);
+        return fallback;
+      }
       this.logger.log(
         `[scanner-llm:signal] symbol=${cand.symbol} provider=${res.providerId} latencyMs=${res.latencyMs} costUsd=${res.costUsd.toFixed(6)} pass=${parsed.pass} signal_quality=${parsed.signal_quality}`,
       );
@@ -4145,7 +4152,13 @@ export class TopGainersScannerService implements OnModuleInit {
         temperature: 0.1,
         maxTokens: 128,
       });
-      const ranked: string[] = JSON.parse(res.content);
+      // P19-llm-parse — voir parseLlmJson. Sans ce fix, ranking tombait
+      // en fallback déterministe à chaque cycle (logs prod 25/05).
+      const ranked = parseLlmJson<string[]>(res.content);
+      if (!ranked || !Array.isArray(ranked)) {
+        this.logger.warn(`[scanner-llm:ranking] parse fail content=${res.content.slice(0, 120)}`);
+        return top;
+      }
       const reordered = [
         ...ranked
           .map((sym) => top.find((c) => c.symbol === sym))
@@ -4192,7 +4205,12 @@ export class TopGainersScannerService implements OnModuleInit {
         temperature: 0.2,
         maxTokens: 128,
       });
-      const parsed = JSON.parse(res.content) as { summary: string; category: string; conviction_score: number };
+      // P19-llm-parse — robust parse pour Gemini fence backticks.
+      const parsed = parseLlmJson<{ summary: string; category: string; conviction_score: number }>(res.content);
+      if (!parsed) {
+        this.logger.warn(`[scanner-llm:thesis] ${cand.symbol} parse fail content=${res.content.slice(0, 120)}`);
+        return fallback;
+      }
       this.logger.log(
         `[scanner-llm:thesis] symbol=${cand.symbol} provider=${res.providerId} latencyMs=${res.latencyMs} costUsd=${res.costUsd.toFixed(6)} category=${parsed.category} conviction=${parsed.conviction_score}`,
       );
