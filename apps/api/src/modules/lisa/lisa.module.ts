@@ -67,6 +67,7 @@ import { OpenPositionRiskMonitorService } from './services/open-position-risk-mo
 import { CorrelationGuardService } from './services/correlation-guard.service';
 import { DailyRetrospectiveService } from './services/daily-retrospective.service';
 import { AdaptiveCooldownService } from './services/adaptive-cooldown.service';
+import { DebateGateService } from './services/debate-gate.service';
 import { EarlyExitGuardService } from './services/early-exit-guard.service';
 import { FeatureABTuningService } from './services/feature-ab-tuning.service';
 import { EventEngineService } from './services/event-engine.service';
@@ -202,6 +203,8 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     DailyRetrospectiveService,
     // Feature #4 — Adaptive cooldown per symbol (weekly refresh)
     AdaptiveCooldownService,
+    // AXEES T1+T2 wiring — debate gate (default OFF / shadow mode).
+    DebateGateService,
     // Miracle #3 — Early exit guard via Gemini (T+5-15min on opens)
     EarlyExitGuardService,
     // Miracle #4 — Auto-tuning A/B (snapshot daily + analyze 14j window)

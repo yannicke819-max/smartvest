@@ -89,6 +89,7 @@ import {
 import { TickerBlacklistService } from './ticker-blacklist.service';
 import { CorrelationGuardService } from './correlation-guard.service';
 import { AdaptiveCooldownService } from './adaptive-cooldown.service';
+import { DebateGateService } from './debate-gate.service';
 import { MicroMomentumProbeService } from './micro-momentum-probe.service';
 import {
   parseReverseMomentumConfig,
@@ -745,6 +746,11 @@ export class TopGainersScannerService implements OnModuleInit {
      * @Optional pour back-compat tests existants.
      */
     @Optional() private readonly adaptiveCooldown?: AdaptiveCooldownService,
+    /**
+     * AXEES T1+T2 — debate gate (default OFF, shadow log only).
+     * @Optional pour back-compat tests existants. Activable via DEBATE_GATE_ENABLED=true.
+     */
+    @Optional() private readonly debateGate?: DebateGateService,
     /**
      * Miracle #2 — Micro-momentum gate (vélocité 6s à l'entrée).
      * @Optional pour back-compat tests existants.
@@ -3919,6 +3925,33 @@ export class TopGainersScannerService implements OnModuleInit {
             continue;
           }
         }
+
+        // AXEES T1+T2 — Debate Gate (default OFF / shadow mode via DEBATE_GATE_ENABLED).
+        // Soumet le candidat à un débat multi-agents (persistence + path quality +
+        // momentum) avant l'ouverture. En shadow mode, logue seulement ; en mode actif,
+        // bloque si le consensus n'est pas BUY. Fail-open en cas d'erreur (no regression).
+        if (this.debateGate && item.direction === 'long' && persistence) {
+          try {
+            const gateScores: import('./debate-gate.service').CandidateScores = {
+              symbol: cand.symbol,
+              persistenceScore: persistence.persistenceScore,
+              changePct: cand.changePct,
+            };
+            const pathEff = persistence.pathQuality?.overallEfficiency;
+            if (typeof pathEff === 'number') gateScores.pathEfficiency = pathEff;
+            const gateResult = this.debateGate.evaluateCandidate(gateScores);
+            if (!gateResult.allow) {
+              this.logger.warn(
+                `[debate-gate] ${cand.symbol} BLOCKED — verdict=${gateResult.verdict.decision} consensus=${(gateResult.verdict.consensusRatio * 100).toFixed(0)}% agents=${gateResult.agentCount} (${gateResult.verdict.rationale})`,
+              );
+              continue;
+            }
+          } catch (e) {
+            // Fail-open : on ne casse jamais le scanner même si le gate plante.
+            this.logger.error(`[debate-gate] ${cand.symbol} eval threw (fail-open): ${String(e).slice(0, 120)}`);
+          }
+        }
+
         const { stopLoss, takeProfit } = computeSlTpForDirection(livePriceNum, effectiveSl, effectiveTp, item.direction);
         const stopPriceStr = stopLoss.toFixed(8);
         const tpPriceStr = takeProfit.toFixed(8);
