@@ -4576,4 +4576,57 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       usdEurRate: rate,
     };
   }
+
+  /**
+   * V2 GeminiOpportunityScout — open public pour news positive macro.
+   * Wrappe paperBroker.openPositionDirect avec garde anti-stale price.
+   * Retourne la position ouverte, ou null si prix non fiable / open échoue.
+   *
+   * Pattern symétrique à MechanicalTradingService.closeForRiskManager
+   * (V2 RiskManager). Évite d'injecter PaperBrokerService directement dans
+   * le scout (PaperBroker n'est PAS @Injectable, instancié manuellement ici).
+   */
+  async openForOpportunityScout(cmd: {
+    portfolioId: string;
+    symbol: string;
+    assetClass: string;
+    venue: string;
+    notionalUsd: number;
+    livePrice: number;
+    stopLossPrice: string;
+    takeProfitPrice: string;
+    horizonDays?: number;
+    maxOpenPositions?: number;
+    rationale: string;
+  }): Promise<{ id: string } | null> {
+    // Re-vérif prix fraîcheur (au cas où le scout a un cache un peu vieux)
+    const fresh = await this.fetchLivePrice(cmd.symbol).catch(() => null);
+    if (!fresh || (fresh.source && (fresh.source.startsWith('stale_') || fresh.source.startsWith('fallback')))) {
+      this.logger.warn(`[opportunity-scout] ${cmd.symbol} open annulé — prix source=${fresh?.source ?? 'null'}`);
+      return null;
+    }
+    const verifiedPrice = parseFloat(fresh.price);
+    if (!Number.isFinite(verifiedPrice) || verifiedPrice <= 0) return null;
+
+    try {
+      const pos = await this.paperBroker.openPositionDirect({
+        portfolioId: cmd.portfolioId,
+        symbol: cmd.symbol,
+        assetClass: cmd.assetClass,
+        direction: 'long',
+        venue: cmd.venue,
+        capitalAllocationUsd: cmd.notionalUsd.toFixed(2),
+        livePrice: verifiedPrice.toFixed(6),
+        stopLossPrice: cmd.stopLossPrice,
+        takeProfitPrice: cmd.takeProfitPrice,
+        horizonDays: cmd.horizonDays ?? 1,
+        source: 'opportunity_scout',
+        maxOpenPositions: cmd.maxOpenPositions,
+      });
+      return { id: pos.id };
+    } catch (e) {
+      this.logger.warn(`[opportunity-scout] openPositionDirect ${cmd.symbol} failed: ${String(e).slice(0, 200)}`);
+      return null;
+    }
+  }
 }

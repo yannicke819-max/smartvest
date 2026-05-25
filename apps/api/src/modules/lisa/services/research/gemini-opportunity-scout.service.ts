@@ -13,7 +13,7 @@
  *     Output : { sector, confidence, magnitude_expected_pct }
  *   - Mapping sector → ETF proxies tradables (table fermée hardcoded)
  *   - Pour chaque proxy avec confidence >= seuil + checks garde-fous → open
- *     position via paperBroker.openPositionDirect (sizing réduit)
+ *     position via LisaService.openForOpportunityScout (sizing réduit)
  *
  * Garde-fous (anti-trigger-happy, en PROD pas shadow) :
  *   - Sizing réduit (×0.3 du notional standard)
@@ -37,7 +37,6 @@ import { SupabaseService } from '../../../supabase/supabase.service';
 import { ScannerLlmRouterService } from '../scanner-llm-router.service';
 import { EodhdEnrichmentService, type EodhdNewsItem } from '../eodhd-enrichment.service';
 import { LisaService } from '../lisa.service';
-import { PaperBrokerService } from '@smartvest/ai-analyst';
 import { parseLlmJson } from '../llm-json-parser.helper';
 
 /**
@@ -118,7 +117,6 @@ export class GeminiOpportunityScoutService {
     private readonly llm: ScannerLlmRouterService,
     private readonly eodhdEnrichment: EodhdEnrichmentService,
     private readonly lisa: LisaService,
-    private readonly paperBroker: PaperBrokerService,
   ) {
     this.enabled = (this.config.get<string>('GEMINI_OPPORTUNITY_SCOUT_ENABLED') ?? 'false').toLowerCase() === 'true';
     this.minConfidence = parseFloat(this.config.get<string>('GEMINI_OPPORTUNITY_SCOUT_MIN_CONFIDENCE') ?? '0.80');
@@ -276,57 +274,57 @@ export class GeminiOpportunityScoutService {
       const stopLossPrice = (livePrice * (1 - this.slPct)).toFixed(6);
       const takeProfitPrice = (livePrice * (1 + this.tpPct)).toFixed(6);
 
-      try {
-        const position = await this.paperBroker.openPositionDirect({
-          portfolioId,
-          symbol: proxy,
-          assetClass,
-          direction: 'long',
-          venue,
-          capitalAllocationUsd: notionalUsd.toFixed(2),
-          livePrice: livePrice.toFixed(6),
-          stopLossPrice,
-          takeProfitPrice,
-          horizonDays: 1,
-          source: 'opportunity_scout',
-          maxOpenPositions,
-        });
+      const position = await this.lisa.openForOpportunityScout({
+        portfolioId,
+        symbol: proxy,
+        assetClass,
+        venue,
+        notionalUsd,
+        livePrice,
+        stopLossPrice,
+        takeProfitPrice,
+        horizonDays: 1,
+        maxOpenPositions,
+        rationale: `${verdict.sector} conf=${verdict.confidence.toFixed(2)} — ${verdict.reason}`,
+      });
 
-        this.lastOpenByProxy.set(proxy, Date.now());
-        this.dailyOpensCount.set(today, todayCount + 1);
-        this.logger.log(
-          `[opportunity-scout] ✅ OPEN ${proxy} @ ${livePrice.toFixed(4)} notional=$${notionalUsd.toFixed(0)} ` +
-          `TP=${takeProfitPrice} SL=${stopLossPrice} sector=${verdict.sector} conf=${verdict.confidence.toFixed(2)}`,
-        );
-
-        // Audit
-        await this.supabase
-          .getClient()
-          .from('lisa_decision_log')
-          .insert({
-            portfolio_id: portfolioId,
-            kind: 'opportunity_scout_opened',
-            triggered_by: 'autopilot_cron',
-            summary: `[SCOUT] OPEN ${proxy} sur news positive ${verdict.sector} conf=${verdict.confidence.toFixed(2)}`,
-            rationale: `${news.title.slice(0, 150)} → ${verdict.reason} (magnitude exp ${verdict.magnitudeExpectedPct.toFixed(1)}%)`,
-            payload: {
-              proxy,
-              sector: verdict.sector,
-              confidence: verdict.confidence,
-              magnitude_expected_pct: verdict.magnitudeExpectedPct,
-              news_title: news.title,
-              news_sentiment: news.sentiment,
-              live_price: livePrice,
-              notional_usd: notionalUsd,
-              stop_loss: stopLossPrice,
-              take_profit: takeProfitPrice,
-              position_id: position.id,
-              mode: 'auto_prod',
-            },
-          });
-      } catch (e) {
-        this.logger.warn(`[opportunity-scout] openPositionDirect ${proxy} portfolio=${portfolioId} failed: ${String(e).slice(0, 200)}`);
+      if (!position) {
+        this.logger.warn(`[opportunity-scout] openForOpportunityScout ${proxy} portfolio=${portfolioId} → null`);
+        continue;
       }
+
+      this.lastOpenByProxy.set(proxy, Date.now());
+      this.dailyOpensCount.set(today, todayCount + 1);
+      this.logger.log(
+        `[opportunity-scout] ✅ OPEN ${proxy} @ ${livePrice.toFixed(4)} notional=$${notionalUsd.toFixed(0)} ` +
+        `TP=${takeProfitPrice} SL=${stopLossPrice} sector=${verdict.sector} conf=${verdict.confidence.toFixed(2)}`,
+      );
+
+      // Audit
+      await this.supabase
+        .getClient()
+        .from('lisa_decision_log')
+        .insert({
+          portfolio_id: portfolioId,
+          kind: 'opportunity_scout_opened',
+          triggered_by: 'autopilot_cron',
+          summary: `[SCOUT] OPEN ${proxy} sur news positive ${verdict.sector} conf=${verdict.confidence.toFixed(2)}`,
+          rationale: `${news.title.slice(0, 150)} → ${verdict.reason} (magnitude exp ${verdict.magnitudeExpectedPct.toFixed(1)}%)`,
+          payload: {
+            proxy,
+            sector: verdict.sector,
+            confidence: verdict.confidence,
+            magnitude_expected_pct: verdict.magnitudeExpectedPct,
+            news_title: news.title,
+            news_sentiment: news.sentiment,
+            live_price: livePrice,
+            notional_usd: notionalUsd,
+            stop_loss: stopLossPrice,
+            take_profit: takeProfitPrice,
+            position_id: position.id,
+            mode: 'auto_prod',
+          },
+        });
     }
   }
 }
