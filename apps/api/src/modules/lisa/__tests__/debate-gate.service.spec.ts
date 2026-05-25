@@ -23,30 +23,31 @@ function scores(over: Partial<CandidateScores> = {}): CandidateScores {
 
 describe('DebateGateService', () => {
   describe('isActive flag', () => {
-    it('defaults to false (shadow mode) when env unset', () => {
-      expect(makeService(undefined).isActive()).toBe(false);
+    it('defaults to true (ACTIVE) when env unset', () => {
+      expect(makeService(undefined).isActive()).toBe(true);
     });
 
-    it('false when env != "true"', () => {
-      expect(makeService('1').isActive()).toBe(false);
-      expect(makeService('TRUE').isActive()).toBe(false);
-    });
-
-    it('true only when env === "true" exactly', () => {
+    it('true when env != "false"', () => {
       expect(makeService('true').isActive()).toBe(true);
+      expect(makeService('1').isActive()).toBe(true);
+      expect(makeService('').isActive()).toBe(true);
+    });
+
+    it('false only when env === "false" exactly', () => {
+      expect(makeService('false').isActive()).toBe(false);
     });
   });
 
-  describe('shadow mode (default OFF)', () => {
+  describe('shadow mode (env override to false)', () => {
     it('allows everything in shadow mode, even if debate says no', () => {
-      const svc = makeService(undefined);
+      const svc = makeService('false');
       const r = svc.evaluateCandidate(scores({ persistenceScore: 0.1, pWin: 0.2, changePct: 50 }), t0);
       expect(r.allow).toBe(true);
       expect(r.shadowMode).toBe(true);
     });
 
     it('computes verdict even in shadow mode (for audit log)', () => {
-      const svc = makeService(undefined);
+      const svc = makeService('false');
       const r = svc.evaluateCandidate(scores({ persistenceScore: 0.1 }), t0);
       expect(r.verdict.decision).toBeDefined();
       expect(r.verdict.rationale).toBeDefined();
