@@ -146,3 +146,70 @@ describe('PaperBrokerService.closePosition — P19-staleness R5 reject', () => {
     }
   });
 });
+
+/**
+ * P19-staleness-OPEN (25/05) — fix(open) bd266478 :
+ * openPositionDirect doit rejeter les opens sur source stale ou fallback.
+ * Symétrique du check close R5 ci-dessus. Sans ce guard, le scanner ouvrait
+ * NANO.PA paire LONG/SHORT au prix figé vendredi (age=282381s = 3.27j).
+ */
+describe('PaperBrokerService.openPositionDirect — P19-staleness-OPEN reject', () => {
+  function makeBroker() {
+    return new PaperBrokerService({
+      supabase: makeSupabaseMock({ id: 'new-pos' }),
+      fetchLivePrice: async () => ({ price: '36.46', source: 'twelvedata' }) as unknown as { price: string; source: string },
+    } as unknown as ConstructorParameters<typeof PaperBrokerService>[0]);
+  }
+
+  const baseOpenCmd = {
+    portfolioId: '58439d86-3f20-4a60-82a4-307f3f252bc2',
+    symbol: 'NANO.PA',
+    assetClass: 'eu_equity',
+    direction: 'long' as const,
+    venue: 'PA',
+    capitalAllocationUsd: '394.00',
+    livePrice: '36.46',
+    stopLossPrice: '35.81',
+    takeProfitPrice: '37.65',
+    horizonDays: 1,
+    source: 'scanner_top_gainers',
+  };
+
+  it('reject open avec livePriceSource=stale_twelvedata (incident 25/05 NANO.PA)', async () => {
+    const broker = makeBroker();
+    await expect(
+      broker.openPositionDirect({ ...baseOpenCmd, livePriceSource: 'stale_twelvedata' }),
+    ).rejects.toThrow(/stale\/fallback/);
+  });
+
+  it('reject open avec livePriceSource=stale_eodhd', async () => {
+    const broker = makeBroker();
+    await expect(
+      broker.openPositionDirect({ ...baseOpenCmd, livePriceSource: 'stale_eodhd' }),
+    ).rejects.toThrow(/stale\/fallback/);
+  });
+
+  it('reject open avec livePriceSource=fallback_unknown', async () => {
+    const broker = makeBroker();
+    await expect(
+      broker.openPositionDirect({ ...baseOpenCmd, livePriceSource: 'fallback_unknown' }),
+    ).rejects.toThrow(/stale\/fallback/);
+  });
+
+  it('reject open avec livePriceSource=fallback_quota_cap', async () => {
+    const broker = makeBroker();
+    await expect(
+      broker.openPositionDirect({ ...baseOpenCmd, livePriceSource: 'fallback_quota_cap' }),
+    ).rejects.toThrow(/stale\/fallback/);
+  });
+
+  it('back-compat : open SANS livePriceSource ne déclenche pas le guard (legacy callers)', async () => {
+    const broker = makeBroker();
+    // Note : peut échouer ailleurs (mock supabase incomplet), mais PAS sur le guard.
+    try {
+      await broker.openPositionDirect(baseOpenCmd);
+    } catch (e) {
+      expect(String(e)).not.toMatch(/stale\/fallback/);
+    }
+  });
+});
