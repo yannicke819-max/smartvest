@@ -33,6 +33,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { GainersInsightsService } from '../insights/gainers-insights.service';
+import { isAllMajorMarketsClosed } from '../../lisa/services/exchange-sessions.helper';
 
 const FLOOR_PERSISTENCE = 0.50;
 const FLOOR_PATH_EFF = 0.30;
@@ -339,6 +340,18 @@ export class GainersAdaptiveSelectivityService {
         gainers_target_7d_pct: Number(targetExtrapolated.toFixed(4)),
       })
       .eq('portfolio_id', cfg.portfolio_id);
+
+    // P19-EXT (25/05) — Si TODAY est un jour férié global (US + UK + EU + CH + DE
+    // tous fermés), on ne PEUT PAS dégrader en HORS_TRAJECTOIRE même avec PnL
+    // 7j négatif : aucun trading equity n'était possible. Garder DANS_LE_PLAN
+    // (neutre) pour préserver la config user. Crypto reste géré séparément.
+    const todayIsAllClosed = isAllMajorMarketsClosed(new Date());
+    if (todayIsAllClosed && realisedPct < -0.5) {
+      this.logger.log(
+        `[adaptive] portfolio ${cfg.portfolio_id.slice(0,8)} skip HORS_TRAJECTOIRE — aujourd'hui = jour férié universel (US+UK+EU+CH+DE clos). realisedPct=${realisedPct.toFixed(2)}% maintenu en DANS_LE_PLAN.`,
+      );
+      return 'DANS_LE_PLAN';
+    }
 
     // Apply thresholds (aligned avec LisaService)
     if (realisedPct < -0.5) return 'HORS_TRAJECTOIRE';

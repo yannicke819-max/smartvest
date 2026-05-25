@@ -2613,10 +2613,20 @@ export class TopGainersScannerService implements OnModuleInit {
       // Si tu ajoutes des shorts plus tard, garde la même logique par direction.
       const cooldownKey = `${cand.symbol.toUpperCase()}::long`;
       const lastExitMs = recentCloseByKey.get(cooldownKey);
-      if (lastExitMs && Date.now() - lastExitMs < cooldownMs) {
+      // P19-EXT (25/05) — Adaptive Cooldown étendu : si activé, le cooldown
+      // standard est scalé par le risk profile du symbol (death-trap × 3,
+      // mid-risk × 2, safe × 1). Sans flag, returns fallback cooldownMinutes
+      // → comportement inchangé.
+      const adaptiveCooldownMin = this.adaptiveCooldown?.getStandardCooldownForSymbol(
+        cand.symbol.toUpperCase(),
+        cooldownMinutes,
+      ) ?? cooldownMinutes;
+      const effectiveCooldownMs = adaptiveCooldownMin * 60_000;
+      if (lastExitMs && Date.now() - lastExitMs < effectiveCooldownMs) {
         const elapsedMin = Math.floor((Date.now() - lastExitMs) / 60_000);
+        const adaptiveTag = adaptiveCooldownMin !== cooldownMinutes ? ` (adaptive ×${(adaptiveCooldownMin / cooldownMinutes).toFixed(0)})` : '';
         this.logger.log(
-          `[top-gainers] ${cand.symbol} cooldown actif (fermé il y a ${elapsedMin} min < ${cooldownMinutes} min) → skip re-entry`,
+          `[top-gainers] ${cand.symbol} cooldown actif (fermé il y a ${elapsedMin} min < ${adaptiveCooldownMin} min${adaptiveTag}) → skip re-entry`,
         );
         recordShadowDecision(cand, 'reject_cooldown', undefined);
         continue;

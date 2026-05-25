@@ -53,6 +53,7 @@ import { GainersUserShadowService } from './services/gainers-user-shadow.service
 import { GainersAutoRelaxService } from './services/gainers-auto-relax.service';
 import { PostSlBackfillService } from './services/post-sl-backfill.service';
 import { ShadowExitSimulatorService } from './services/shadow-exit-simulator.service';
+import { ShadowSignalsCleanupService } from './services/shadow-signals-cleanup.service';
 import { MicroMomentumProbeService } from './services/micro-momentum-probe.service';
 import { OperatingModeService } from './services/operating-mode.service';
 import { MultiTimeframePersistenceService } from './services/multi-tf-persistence.service';
@@ -187,6 +188,7 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     PostSlBackfillService,
     // PR6.5 — Worker exit-simulator : replay BLOC 4 state machine sur shadow signals ACCEPT
     ShadowExitSimulatorService,
+    ShadowSignalsCleanupService,
     MicroMomentumProbeService,
     // P7-MODE-GAINERS-BADGE — toggle 3-modes opératoires (UI badge → DB strategy_mode)
     OperatingModeService,
