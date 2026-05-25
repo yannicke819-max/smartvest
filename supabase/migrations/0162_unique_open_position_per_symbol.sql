@@ -15,7 +15,11 @@
 --   instead of an exception, consistent with the cap-reached behaviour):
 --   Before INSERT, check whether the symbol is already open; if so return NULL.
 
-CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_lisa_positions_unique_open_symbol
+-- CONCURRENTLY omitted: migration runner wraps SQL in a transaction block,
+-- and CREATE INDEX CONCURRENTLY cannot run inside a transaction (error 25001).
+-- Non-concurrent creation briefly locks writes on lisa_positions, acceptable
+-- here given the small row count (dozens, not millions).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_lisa_positions_unique_open_symbol
   ON lisa_positions (portfolio_id, symbol)
   WHERE status = 'open';
 
