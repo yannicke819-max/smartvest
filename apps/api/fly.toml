@@ -10,6 +10,24 @@ primary_region = "cdg"
   NODE_ENV = "production"
   API_PORT = "3001"
 
+  # P19-V2 (25/05/2026) — Gemini Risk Manager V2 macro news.
+  # Note : la plupart des feature flags vivent dans les Fly secrets (source de
+  # vérité). Ces 3 sont nouveaux et default-OFF dans le code, on les active ici
+  # pour démarrage immédiat. Fly secrets prennent la priorité si dupliqué.
+  GEMINI_RISK_MANAGER_USE_MACRO_NEWS = "true"
+  GEMINI_RISK_MANAGER_AUTO_CLOSE_MIN_CONFIDENCE = "0.8"
+
+  # Opportunity Scout — symétrique RiskManager : news positive → auto-open
+  # En PROD direct (pas shadow). Garde-fous : sizing×0.3, TP 3%, SL 1.5%,
+  # cap 5 opens/jour, cooldown 30min/proxy, anti-stale price, conf min 0.80.
+  GEMINI_OPPORTUNITY_SCOUT_ENABLED = "true"
+  GEMINI_OPPORTUNITY_SCOUT_MIN_CONFIDENCE = "0.80"
+  GEMINI_OPPORTUNITY_SCOUT_SIZING_RATIO = "0.3"
+  GEMINI_OPPORTUNITY_SCOUT_MAX_OPENS_PER_DAY = "5"
+  GEMINI_OPPORTUNITY_SCOUT_COOLDOWN_MIN = "30"
+  GEMINI_OPPORTUNITY_SCOUT_TP_PCT = "0.03"
+  GEMINI_OPPORTUNITY_SCOUT_SL_PCT = "0.015"
+
 [http_service]
   internal_port = 3001
   force_https = true

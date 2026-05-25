@@ -3269,4 +3269,24 @@ export class MechanicalTradingService {
 
     return relaxed;
   }
+
+  /**
+   * V2 GeminiRiskManager — close public pour l'auto-exit sur thèse cassée.
+   * Récupère le prix live, ferme la position en 'closed_invalidated'.
+   * Retourne true si close effectué, false si pas de prix / position déjà fermée.
+   */
+  async closeForRiskManager(positionId: string, symbol: string, rationale: string): Promise<boolean> {
+    try {
+      const quote = await this.lisa.getLivePrice(symbol).catch(() => null);
+      if (!quote || quote.source.startsWith('stale_') || quote.source.startsWith('fallback')) {
+        this.logger.warn(`[risk-manager-v2] ${symbol} — pas de prix live fiable (source=${quote?.source ?? 'null'}), close annulé`);
+        return false;
+      }
+      await this.closePosition(positionId, quote.price, 'closed_invalidated', `[RISK_MGR_V2] ${rationale}`);
+      return true;
+    } catch (e) {
+      this.logger.warn(`[risk-manager-v2] closeForRiskManager ${symbol} failed: ${String(e).slice(0, 200)}`);
+      return false;
+    }
+  }
 }
