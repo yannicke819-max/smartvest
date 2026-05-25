@@ -499,6 +499,80 @@ Pour TOUTE PR que tu ouvres sur ce repo :
 
 ---
 
+## RÈGLE OPÉRATIONNELLE — CALIBRATION GATES SCANNER (25/05/2026)
+
+Décisions prises soir 25/05 après backtest funnel sur shadow signals Thu+Fri
+(`scripts/backtest-thu-fri-funnel.ts`, `persistence-distrib.ts`,
+`unset-persistence-and-analyze-patheff.ts`). Sample 2j = 786 candidats.
+
+### Persistence multi-TF — DÉSACTIVÉ pour mode `gainers`
+
+`lisa_session_configs.gainers_min_persistence_score = 0` (UPDATE prod appliqué
+sur portfolio `58439d86`).
+
+**Rationale** : le concept de persistence multi-TF (1m/5m/10m/15m/30m/1h) est
+solide pour swing trades 3-7j mais **inadapté au scalp 60min top-gainers**. Par
+construction, un pump explosif sur la 1m (la signature exacte des pépites)
+donne `persistenceScore ≈ 0` car les TF longs sont encore flats au moment de
+la détection.
+
+**Donnée** : sur 310 candidats `reject_persistence` Thu+Fri, 82% ont score=0.00
+(0/6 TF) — bucket qui contient ~47 TP_HIT cachés (winRate global rejected = 75%,
++67% sum pnl). Les pépites MKA.LSE (+16.85% en 1m) et IES.LSE (+38.67% en 1m)
+auraient été bloquées sans ce unset.
+
+**Garde-fou** : le gate reste opérationnel en infra (code path intact). Réactivable
+en passant le seuil > 0 si l'aval (DebateGate + Gemini Risk Manager + ConvictionSizing)
+ne filtre pas suffisamment le surplus de bruit. Ne PAS retirer la mécanique persistence
+du code — elle reste utile pour les modes `investment`/`harvest` futurs (Lisa LLM
+swing 3-7j) si on les active à seuil 0.67.
+
+### Path efficiency US — seuil 0.40 → 0.30
+
+`GAINERS_MIN_PATH_EFFICIENCY_US=0.30` (Fly secret).
+
+**Rationale** : path_eff filtre correctement le chop / pump-and-dump (gate sain
+sous 0.30 : winRate ≤ 33%, sumPnl -17 à -24%) MAIS le seuil 0.40 coupait la
+veine des gagnants propres.
+
+**Donnée** : bucket 0.40-0.50 = 87 candidats Thu+Fri rejetés à tort — 14 TP_HIT
++ 9 SL_HIT, winRate **53%**, sumPnl **+11.88%**. À 0.30 : +92 candidats/j
+récupérés, +23 TP_HIT en 2j équivalents, sumPnl sauvés +10.75%. À 0.20 ça bascule
+négatif (-6.73%), à 0.10 toxique (-30%) — DONC 0.30 est le sweet spot.
+
+**Note** : seul `us_equity_large` + `us_equity_small_mid` impactés par cette
+valeur. EU/Asia/crypto restent au default code (probablement 0.5) — à monitorer
+sur quelques jours avant d'étendre. Le bucket 0.40-0.50 contient toutes classes
+confondues donc des pépites EU/Asia/crypto sont probablement aussi ratées au
+default 0.5 — à valider via per-class breakdown si besoin.
+
+### Caveat méthodologique
+
+Sample 2j (Thu+Fri 22-23/05) → trends indicatifs uniquement, pas significatif
+statistiquement. La table `gainers_user_shadow_signals` ne capture **qu'une partie
+des gates** (persistence / path_eff / cooldown / RSI / opening_buffer) — les
+gates en aval (DebateGate, ConvictionSizing, MicroMomentumGate, StaleGuard,
+ConvictionSizing veto, MacroVeto Gemini) ne sont pas dans le funnel shadow et
+restent à mesurer via cross-check `lisa_decision_log`.
+
+### À monitorer 24-72h post-changement
+
+1. Volume `accept` daily : attendu ~20/j → ~40/j (doublé)
+2. Win rate `paper_trades` closed : surveiller si effondrement < 30%
+3. `[risk-manager-v2] THESIS_BROKEN` auto-closes : doivent monter mécaniquement
+4. `/admin/debate-gate/metrics?hours=24` block ratio : si > 60% sur Asia/EU c'est
+   le filet qui prend le relais correctement
+5. Si winRate paper s'effondre OU drawdown jour > 5% → rollback persistence
+   (`gainers_min_persistence_score = 0.33`) en priorité, path_eff en second.
+
+### Fichiers de référence
+
+- `scripts/backtest-thu-fri-funnel.ts` — funnel complet par gate + outcomes simulés
+- `scripts/persistence-distrib.ts` — distribution par score bucket
+- `scripts/unset-persistence-and-analyze-patheff.ts` — UPDATE persistence + scénarios path_eff
+
+---
+
 ## RÈGLE OPÉRATIONNELLE — INVENTAIRE FLY SECRETS (état prod 25/05/2026)
 
 Source de vérité = `fly secrets list -a smartvest`. Cette section documente la
