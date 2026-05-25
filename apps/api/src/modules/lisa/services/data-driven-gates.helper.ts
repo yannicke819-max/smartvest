@@ -96,6 +96,24 @@ export function shouldSkipByPerClassHourGate(
 }
 
 /**
+ * Returns true si une override per-class est définie pour cette classe (i.e.
+ * sa blacklist contient ≥ 1 heure). Utilisé par le scanner pour décider de
+ * "remplacer" le gate global par le per-class quand mode override est actif.
+ *
+ * Ex : si Asia override = [0,1,2,3,4,5], le scanner ignorera le global
+ * GAINERS_LONG_HOUR_BLACKLIST_UTC pour les candidats Asia (et utilisera
+ * uniquement le per-class). Permet d'autoriser asia@8h même si global blacklist 8h.
+ */
+export function hasPerClassOverride(
+  assetClass: string,
+  config: PerClassHourBlacklistConfig,
+): boolean {
+  const cls = assetClass as keyof PerClassHourBlacklistConfig;
+  const blacklist = config[cls];
+  return Boolean(blacklist && blacklist.size > 0);
+}
+
+/**
  * Parse "TICKER:MULT,TICKER:MULT" → Map<symbol_uppercase, multiplier>.
  * Pure, testable.
  *

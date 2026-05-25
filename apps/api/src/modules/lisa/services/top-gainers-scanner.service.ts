@@ -47,6 +47,7 @@ import {
 import {
   parsePerClassHourBlacklist,
   shouldSkipByPerClassHourGate,
+  hasPerClassOverride,
   parseTickerSizeMultCsv,
   getTickerSizeMultiplier,
   type PerClassHourBlacklistConfig,
@@ -2546,7 +2547,15 @@ export class TopGainersScannerService implements OnModuleInit {
       const blacklistRaw = (this.config.get<string>('GAINERS_LONG_HOUR_BLACKLIST_UTC') ?? '').trim();
       const cryptoGated = (this.config.get<string>('GAINERS_LONG_HOUR_GATE_CRYPTO') ?? 'false').toLowerCase() === 'true';
       const isCryptoCandHourGate = cand.assetClass === 'crypto_major' || cand.assetClass === 'crypto_alt';
-      const gateApplies = (whitelistRaw.length > 0 || blacklistRaw.length > 0) && (cryptoGated || !isCryptoCandHourGate);
+      // Per-class override mode (analyse 25/05) : si activé ET la classe a une
+      // blacklist per-class non-vide, on SKIP le gate global pour cette classe.
+      // Permet par ex. d'autoriser asia@8h même si global blacklist 8h.
+      const perClassOverridesGlobal =
+        (this.config.get<string>('GAINERS_HOUR_GATE_PER_CLASS_OVERRIDES_GLOBAL') ?? 'false').toLowerCase() === 'true';
+      const classHasOverride = perClassOverridesGlobal && hasPerClassOverride(String(cand.assetClass), this.perClassHourGate);
+      const gateApplies = !classHasOverride
+        && (whitelistRaw.length > 0 || blacklistRaw.length > 0)
+        && (cryptoGated || !isCryptoCandHourGate);
       if (gateApplies) {
         const hourUtc = nowUtc.getUTCHours();
         // ⚠️ Number('') === 0 en JS → filtrer les tokens vides AVANT le map.

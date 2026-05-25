@@ -2,6 +2,7 @@ import {
   parseHoursCsv,
   parsePerClassHourBlacklist,
   shouldSkipByPerClassHourGate,
+  hasPerClassOverride,
   parseTickerSizeMultCsv,
   getTickerSizeMultiplier,
 } from '../data-driven-gates.helper';
@@ -155,5 +156,33 @@ describe('getTickerSizeMultiplier', () => {
   it('non-match → 1.0 (no-op default)', () => {
     expect(getTickerSizeMultiplier('AAPL.US', cfg)).toBe(1.0);
     expect(getTickerSizeMultiplier('UNKNOWN', cfg)).toBe(1.0);
+  });
+});
+
+describe('hasPerClassOverride', () => {
+  it('blacklist vide → false (pas d\'override)', () => {
+    const cfg = parsePerClassHourBlacklist({});
+    expect(hasPerClassOverride('asia_equity', cfg)).toBe(false);
+    expect(hasPerClassOverride('eu_equity', cfg)).toBe(false);
+  });
+
+  it('asia blacklist non-vide → true pour asia_equity', () => {
+    const cfg = parsePerClassHourBlacklist({ GAINERS_HOUR_BLACKLIST_ASIA_UTC: '0,1,2' });
+    expect(hasPerClassOverride('asia_equity', cfg)).toBe(true);
+    expect(hasPerClassOverride('eu_equity', cfg)).toBe(false);
+  });
+
+  it('asset_class inconnu → false', () => {
+    const cfg = parsePerClassHourBlacklist({ GAINERS_HOUR_BLACKLIST_ASIA_UTC: '0,1' });
+    expect(hasPerClassOverride('xyz_unknown', cfg)).toBe(false);
+  });
+
+  it('cas réel : Asia override [0..5] permet de lever global 8h pour asia', () => {
+    const cfg = parsePerClassHourBlacklist({ GAINERS_HOUR_BLACKLIST_ASIA_UTC: '0,1,2,3,4,5' });
+    expect(hasPerClassOverride('asia_equity', cfg)).toBe(true);
+    // L'heure 8 n'est PAS dans la blacklist asia → ne skip pas
+    expect(shouldSkipByPerClassHourGate('asia_equity', 8, cfg)).toBe(false);
+    // L'heure 3 EST dans la blacklist asia → skip
+    expect(shouldSkipByPerClassHourGate('asia_equity', 3, cfg)).toBe(true);
   });
 });
