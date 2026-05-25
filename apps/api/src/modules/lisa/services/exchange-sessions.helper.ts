@@ -16,7 +16,7 @@
 import {
   EXCHANGE_SESSIONS,
   ALWAYS_ON_SUFFIXES,
-  NYSE_FULL_HOLIDAYS_2026,
+  HOLIDAYS_BY_SUFFIX,
   type ExchangeSession,
 } from './exchange-sessions.config';
 
@@ -139,17 +139,14 @@ export function isInExchangeSession(symbol: string, at: Date | string | number):
   const weekday = getLocalWeekday(date, session.tz);
   if (weekday === 0 || weekday === 6) return false;  // Sun / Sat
 
-  // Holiday check (NYSE-only v1).
-  //
-  // RETIRÉ : ancien héritage NYSE pour .TO. Ratio correct=3/15 vs wrong=12/15
-  // (TSX a ses propres fériés : Victoria Day, Canada Day, Civic Holiday,
-  // Remembrance Day, Boxing Day. Et TSX OUVRE des fériés US : MLK,
-  // Presidents, Memorial, Juneteenth, Independence, Labor, Thanksgiving).
-  // Mieux vaut pas de holiday handling .TO que mauvais. Cf. follow-up PR
-  // #297 pour calendar TSX dédié + autres marketplaces.
-  if (suffix === '.US') {
+  // Holiday check par exchange (extended 25/05/2026 — triple holiday detected).
+  // Avant : NYSE-only. Maintenant : .US, .L/.LSE, .PA, .AS/.AMS, .MI, .MC/.BME,
+  // .SW, .DE/.XETRA. Asia/.TO/.NSE pas couverts (calendriers complexes,
+  // follow-up si besoin observé).
+  const holidaySet = HOLIDAYS_BY_SUFFIX.get(suffix);
+  if (holidaySet) {
     const localDateStr = getLocalDateString(date, session.tz);
-    if (NYSE_FULL_HOLIDAYS_2026.has(localDateStr)) return false;
+    if (holidaySet.has(localDateStr)) return false;
   }
 
   // Hour/minute window check

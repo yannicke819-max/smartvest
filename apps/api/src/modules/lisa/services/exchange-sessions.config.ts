@@ -110,3 +110,90 @@ export const NYSE_FULL_HOLIDAYS_2026: ReadonlySet<string> = new Set([
   '2026-11-26',  // Thanksgiving (4th Thu Nov)
   '2026-12-25',  // Christmas Day
 ]);
+
+/**
+ * LSE (London Stock Exchange) holidays 2026 — Bank Holidays UK.
+ * Source : https://www.londonstockexchange.com/securities-trading/trading-hours-trading-calendars
+ */
+export const LSE_FULL_HOLIDAYS_2026: ReadonlySet<string> = new Set([
+  '2026-01-01',  // New Year's Day
+  '2026-04-03',  // Good Friday
+  '2026-04-06',  // Easter Monday
+  '2026-05-04',  // Early May Bank Holiday
+  '2026-05-25',  // Spring Bank Holiday (last Mon May)
+  '2026-08-31',  // Summer Bank Holiday (last Mon Aug)
+  '2026-12-25',  // Christmas Day
+  '2026-12-28',  // Boxing Day observed (Dec 26 Saturday → observed Monday)
+]);
+
+/**
+ * Euronext holidays 2026 — Paris, Amsterdam, Brussels, Lisbon, Milan.
+ * Source : https://www.euronext.com/en/markets/cash-product-markets/trading-calendars
+ * Note : Whit Monday (Lundi de Pentecôte) est fermé sur Euronext Paris/Bruxelles
+ * mais OUVERT à Amsterdam et Lisbonne. On utilise le sous-ensemble commun
+ * fermé partout, l'écart est marginal (Whit Monday Amsterdam).
+ */
+export const EURONEXT_FULL_HOLIDAYS_2026: ReadonlySet<string> = new Set([
+  '2026-01-01',  // New Year's Day
+  '2026-04-03',  // Good Friday
+  '2026-04-06',  // Easter Monday
+  '2026-05-01',  // Labour Day
+  '2026-05-25',  // Whit Monday (Lundi de Pentecôte, 49j après Pâques)
+  '2026-12-25',  // Christmas Day
+  '2026-12-28',  // Boxing Day observed
+]);
+
+/**
+ * SIX Swiss Exchange holidays 2026.
+ * Source : https://www.six-group.com/en/products-services/the-swiss-stock-exchange/trading/trading-calendar.html
+ */
+export const SIX_FULL_HOLIDAYS_2026: ReadonlySet<string> = new Set([
+  '2026-01-01',  // New Year's Day
+  '2026-01-02',  // Berchtoldstag
+  '2026-04-03',  // Good Friday
+  '2026-04-06',  // Easter Monday
+  '2026-05-01',  // Labour Day
+  '2026-05-14',  // Ascension Day (40j après Pâques, jeudi)
+  '2026-05-25',  // Whit Monday
+  '2026-08-03',  // Swiss National Day observed (Aug 1 = Saturday → observed Monday)
+  '2026-12-24',  // Christmas Eve (early-close mais Whit Monday est full-close ; ici simplifié)
+  '2026-12-25',  // Christmas Day
+  '2026-12-31',  // New Year's Eve (early-close)
+]);
+
+/**
+ * Deutsche Börse (XETRA / Frankfurt) holidays 2026.
+ * Source : https://www.deutsche-boerse.com/dbg-en/our-company/about-the-group/trading-calendar
+ */
+export const XETRA_FULL_HOLIDAYS_2026: ReadonlySet<string> = new Set([
+  '2026-01-01',  // New Year's Day
+  '2026-04-03',  // Good Friday
+  '2026-04-06',  // Easter Monday
+  '2026-05-01',  // Labour Day
+  '2026-05-25',  // Whit Monday (Pfingstmontag)
+  '2026-12-24',  // Christmas Eve (early-close)
+  '2026-12-25',  // Christmas Day
+  '2026-12-31',  // New Year's Eve (early-close)
+]);
+
+/**
+ * Maps suffix → holiday set. Permet à `isInExchangeSession` de checker en
+ * O(1) si le ticker est en jour férié dans son exchange.
+ */
+export const HOLIDAYS_BY_SUFFIX: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ['.US',    NYSE_FULL_HOLIDAYS_2026],
+  ['.L',     LSE_FULL_HOLIDAYS_2026],
+  ['.LSE',   LSE_FULL_HOLIDAYS_2026],
+  ['.PA',    EURONEXT_FULL_HOLIDAYS_2026],
+  ['.AS',    EURONEXT_FULL_HOLIDAYS_2026],
+  ['.AMS',   EURONEXT_FULL_HOLIDAYS_2026],
+  ['.MI',    EURONEXT_FULL_HOLIDAYS_2026],
+  ['.MC',    EURONEXT_FULL_HOLIDAYS_2026],
+  ['.BME',   EURONEXT_FULL_HOLIDAYS_2026],
+  ['.SW',    SIX_FULL_HOLIDAYS_2026],
+  ['.DE',    XETRA_FULL_HOLIDAYS_2026],
+  ['.XETRA', XETRA_FULL_HOLIDAYS_2026],
+  // Note : Asia (.T, .HK, .KO, .KQ, .SHG, .SHE), .AU, .TO, .NSE, .BSE non
+  // couverts pour l'instant — calendriers complexes (lunar new year, golden
+  // weeks, holidays per Asia country). Follow-up PR si besoin observé.
+]);

@@ -300,10 +300,64 @@ describe('isInExchangeSession — NYSE Holidays 2026', () => {
     expect(isInExchangeSession('SHOP.TO', '2026-12-25T17:00:00Z')).toBe(true);
   });
 
-  it('Holiday list does NOT apply to non-US exchanges', () => {
+  it('Holiday list does NOT apply to Asia exchanges (still v1 limitation)', () => {
     // 7203.T (Tokyo) on Dec 25 = normal trading day in Japan
     // Dec 25 2026 = Friday, JST 9:00 = 00:00 UTC Friday Dec 25
     expect(isInExchangeSession('7203.T', '2026-12-25T01:00:00Z')).toBe(true);
+  });
+});
+
+/**
+ * Extended holiday support 25/05/2026 (post-triple-holiday incident).
+ * Couvre LSE / Euronext / SIX / XETRA — calendriers ajoutés après détection
+ * que le scanner a ouvert des positions EU sur prix EOD vendredi le 25/05/2026
+ * (Memorial Day US + Spring Bank Holiday UK + Whit Monday EU/CH).
+ */
+describe('isInExchangeSession — Extended EU Holidays 2026', () => {
+  it('25/05/2026 Whit Monday : Euronext Paris CLOSED', () => {
+    // Lundi 25 mai 2026, 10:00 UTC = 12:00 Paris CEST → wall clock dans session mais férié
+    expect(isInExchangeSession('NANO.PA', '2026-05-25T10:00:00Z')).toBe(false);
+  });
+
+  it('25/05/2026 Whit Monday : Euronext Amsterdam CLOSED', () => {
+    expect(isInExchangeSession('ASML.AS', '2026-05-25T10:00:00Z')).toBe(false);
+  });
+
+  it('25/05/2026 Spring Bank Holiday UK : LSE CLOSED', () => {
+    // .LSE et .L
+    expect(isInExchangeSession('RMV.LSE', '2026-05-25T10:00:00Z')).toBe(false);
+    expect(isInExchangeSession('VOD.L', '2026-05-25T10:00:00Z')).toBe(false);
+  });
+
+  it('25/05/2026 Whit Monday : SIX Swiss CLOSED', () => {
+    expect(isInExchangeSession('AMS.SW', '2026-05-25T10:00:00Z')).toBe(false);
+  });
+
+  it('25/05/2026 Whit Monday : XETRA CLOSED', () => {
+    expect(isInExchangeSession('SAP.XETRA', '2026-05-25T10:00:00Z')).toBe(false);
+    expect(isInExchangeSession('SAP.DE', '2026-05-25T10:00:00Z')).toBe(false);
+  });
+
+  it('25/05/2026 Memorial Day : NYSE CLOSED (already covered avant)', () => {
+    expect(isInExchangeSession('AAPL.US', '2026-05-25T15:00:00Z')).toBe(false);
+  });
+
+  it('26/05/2026 (lendemain Whit Monday) : Euronext OUVERT', () => {
+    // Mardi 26 mai 2026 = jour ouvré normal
+    expect(isInExchangeSession('NANO.PA', '2026-05-26T10:00:00Z')).toBe(true);
+  });
+
+  it('22/05/2026 (vendredi avant Whit Monday) : marchés OUVERTS', () => {
+    expect(isInExchangeSession('NANO.PA', '2026-05-22T10:00:00Z')).toBe(true);
+    expect(isInExchangeSession('RMV.LSE', '2026-05-22T10:00:00Z')).toBe(true);
+    expect(isInExchangeSession('AMS.SW', '2026-05-22T10:00:00Z')).toBe(true);
+  });
+
+  it('Good Friday 03/04/2026 : LSE + Euronext + SIX + XETRA tous CLOSED', () => {
+    expect(isInExchangeSession('RMV.LSE', '2026-04-03T10:00:00Z')).toBe(false);
+    expect(isInExchangeSession('NANO.PA', '2026-04-03T10:00:00Z')).toBe(false);
+    expect(isInExchangeSession('AMS.SW', '2026-04-03T10:00:00Z')).toBe(false);
+    expect(isInExchangeSession('SAP.XETRA', '2026-04-03T10:00:00Z')).toBe(false);
   });
 });
 
