@@ -964,10 +964,10 @@ export class TopGainersScannerService implements OnModuleInit {
     }
 
     const raw = this.config.get<string>('SCAN_INTERVAL_MINUTES');
-    const parsed = parseInt(String(raw ?? '1'), 10);
+    const parsed = parseInt(String(raw ?? '5'), 10);
     const validated = Number.isFinite(parsed)
       ? Math.max(1, Math.min(1440, parsed))
-      : 1;
+      : 5;
     if (parsed !== validated) {
       this.logger.warn(
         `[top-gainers] SCAN_INTERVAL_MINUTES=${raw} hors range [1,1440] → clamp à ${validated}`,
