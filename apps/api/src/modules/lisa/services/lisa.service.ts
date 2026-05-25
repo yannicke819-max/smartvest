@@ -4622,6 +4622,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         horizonDays: cmd.horizonDays ?? 1,
         source: 'opportunity_scout',
         maxOpenPositions: cmd.maxOpenPositions,
+        livePriceSource: fresh.source,
       });
       return { id: pos.id };
     } catch (e) {

@@ -3834,9 +3834,12 @@ export class TopGainersScannerService implements OnModuleInit {
         this.logger.warn(`[top-gainers] ${cand.symbol}: invalid live price ${quote.price} → skip`);
         return null;
       }
-      // Reject sur source fallback explicite (price corrupted)
-      if (typeof quote.source === 'string' && quote.source.startsWith('fallback')) {
-        this.logger.warn(`[top-gainers] ${cand.symbol}: fallback source ${quote.source} → skip`);
+      // Reject sur source fallback OU stale (price unreliable)
+      // P19-staleness-OPEN (25/05) : étend le check au stale_* (TwelveData
+      // LSE/Euronext/SIX figé vendredi → prix de 3j → on ne doit JAMAIS
+      // ouvrir sur ce prix, même si le ticker semble être un top gainer).
+      if (typeof quote.source === 'string' && (quote.source.startsWith('fallback') || quote.source.startsWith('stale_'))) {
+        this.logger.warn(`[top-gainers] ${cand.symbol}: unreliable source ${quote.source} → skip open (cycle suivant)`);
         return null;
       }
       const candCloseNum = Number(cand.close);
@@ -3923,6 +3926,9 @@ export class TopGainersScannerService implements OnModuleInit {
           horizonDays: 1,
           source: 'scanner_top_gainers',
           maxOpenPositions: overrides?.maxOpenPositions,
+          // P19-staleness-OPEN — double-check côté paper-broker au cas où
+          // le check scanner amont serait bypassé sur certains paths futurs.
+          livePriceSource: quote.source,
         });
 
         // Audit log + features capture pour CETTE direction (best-effort)
