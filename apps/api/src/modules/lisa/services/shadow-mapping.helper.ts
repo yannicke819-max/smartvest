@@ -96,7 +96,12 @@ export function mapTopGainerToCandidateRaw(
     medianDailyVolUsd20d: isCrypto ? candidate.avgVol50d : candidate.avgVol50d * candidate.close,
     marketCapUsd: candidate.marketCap,
     atrDailyRelative: null,
-    changePct1m: candidate.changePct,
+    // BUG FIX 25/05 — composite-scorer attend FRACTIONNAIRE (0.15 = 15%, cf.
+    // tests + momentumNormalizationCeiling=0.25). Le TopGainerCandidate stocke
+    // changePct en ABSOLU (15 = 15%, cf. logs `.toFixed(1)%` ligne 1188 scanner).
+    // Sans /100 : momentum saturé pour tout candidat ≥ 0.25% → composite_score
+    // figé à 0.800 pour tout EU/asia/us → ranking inutile, boost ×1.25 systématique.
+    changePct1m: candidate.changePct / 100,
     persistenceScore: null,
     persistenceCount: null,
     ema50Daily: null,
