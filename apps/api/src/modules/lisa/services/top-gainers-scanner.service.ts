@@ -286,8 +286,12 @@ type MarketSessionClass = 'us' | 'eu' | 'asia';
 const MARKET_SESSION_HOURS: Record<MarketSessionClass, { openUtcMin: number; closeUtcMin: number }> = {
   // NYSE/NASDAQ : 14:30 - 21:00 UTC (été — hiver +1h, on accepte la dérive)
   us:   { openUtcMin: 14 * 60 + 30, closeUtcMin: 21 * 60 },
-  // EU agrégé (LSE/Euronext/XETRA) : 08:00 - 16:30 UTC
-  eu:   { openUtcMin:  8 * 60,      closeUtcMin: 16 * 60 + 30 },
+  // EU agrégé (LSE/Euronext/XETRA) : 07:00 - 16:30 UTC en ÉTÉ (CEST = UTC+2).
+  // Paris/XETRA ouvrent 09:00 CEST = 07:00 UTC ; LSE 08:00 BST = 07:00 UTC.
+  // En hiver Paris ouvre 09:00 CET = 08:00 UTC : on accepte la dérive 1h (idem US).
+  // Bug 25/05/2026 : la valeur winter-only 08:00 UTC bloquait toute ouverture EU
+  // entre 07:00 et 08:00 UTC en été — symptôme : scanner muet sur CAC40/DAX40 le lundi matin.
+  eu:   { openUtcMin:  7 * 60,      closeUtcMin: 16 * 60 + 30 },
   // Asia agrégé (TSE/HKEX/KRX/SSE/SZSE) : 00:00 - 08:00 UTC
   asia: { openUtcMin:  0,           closeUtcMin:  8 * 60 },
 };
