@@ -199,6 +199,8 @@ export class OpenPositionRiskMonitorService {
         })
       : null;
 
+    // PR #465 — passe direction pour inverser sub-A et sub-B sur les SHORTs.
+    const direction: 'long' | 'short' = pos.direction === 'short' ? 'short' : 'long';
     return evaluateThesisHealth({
       marketCh1mAtEntry: marketAtEntry,
       marketCh1mNow: marketNow,
@@ -207,6 +209,7 @@ export class OpenPositionRiskMonitorService {
       persistenceAtEntry: pos.persistence_score_at_entry,
       persistenceNow,
       llmScore,
+      direction,
     });
   }
 
@@ -226,13 +229,25 @@ export class OpenPositionRiskMonitorService {
         return null;
       }
       const entry = Number(pos.entry_price);
-      const unrealPct = entry > 0 ? ((livePx - entry) / entry) * 100 : 0;
+      // PR #465 — PnL et distances SL/TP signés par direction. Pour un SHORT,
+      // le profit vient quand le prix baisse (live < entry), TP est en-dessous
+      // d'entry (delta négatif rendu positif), SL au-dessus.
+      const direction: 'long' | 'short' = pos.direction === 'short' ? 'short' : 'long';
+      const sign = direction === 'short' ? -1 : 1;
+      const rawUnrealPct = entry > 0 ? ((livePx - entry) / entry) * 100 : 0;
+      const unrealPct = rawUnrealPct * sign;
       const ageMin = Math.round((Date.now() - new Date(pos.entry_timestamp).getTime()) / 60_000);
+      // Distance to TP: pour un long c'est (TP - live)/live (combien il reste pour atteindre).
+      // Pour un short, TP est sous le live, donc on inverse pour avoir une distance positive
+      // quand la position n'a pas encore touché son TP.
       const tpDistPct = pos.take_profit_price != null
-        ? ((Number(pos.take_profit_price) - livePx) / livePx) * 100
+        ? ((Number(pos.take_profit_price) - livePx) / livePx) * 100 * sign
         : null;
+      // Distance to SL: pour un long, SL est sous live → (live - SL)/live > 0 = buffer restant.
+      // Pour un short, SL est au-dessus de live → (SL - live)/live > 0 = buffer restant.
+      // On exprime toujours en distance positive = "marge restante avant SL".
       const slDistPct = pos.stop_loss_price != null
-        ? ((Number(pos.stop_loss_price) - livePx) / livePx) * 100
+        ? Math.abs((Number(pos.stop_loss_price) - livePx) / livePx) * 100
         : null;
       const userPrompt = buildGeminiVerdictUserPrompt({
         symbol: pos.symbol,
@@ -250,6 +265,7 @@ export class OpenPositionRiskMonitorService {
         marketCh1mNow: ctx.marketNow,
         tpDistancePct: tpDistPct,
         slDistancePct: slDistPct,
+        direction,
       });
       const resp = await this.llmRouter.call({
         system: GEMINI_VERDICT_SYSTEM_PROMPT,

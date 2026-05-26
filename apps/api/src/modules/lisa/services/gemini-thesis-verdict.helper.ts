@@ -29,6 +29,12 @@ export interface GeminiVerdictInput {
   marketCh1mNow: number | null;
   tpDistancePct: number | null;
   slDistancePct: number | null;
+  /**
+   * PR #465 — direction de la position. Default 'long' si non fourni
+   * (back-compat). Le prompt expose la direction explicitement à Gemini
+   * pour qu'il raisonne avec la bonne convention (short: prix qui monte = bad).
+   */
+  direction?: 'long' | 'short';
 }
 
 export interface GeminiVerdictParsed {
@@ -38,26 +44,32 @@ export interface GeminiVerdictParsed {
 }
 
 export const GEMINI_VERDICT_SYSTEM_PROMPT = `Tu es un risk manager quantitatif pour un scanner momentum crypto/equity.
-On te donne le contexte d'une position OUVERTE et tu dois évaluer si la thèse de momentum à l'entrée tient toujours.
+On te donne le contexte d'une position OUVERTE (LONG ou SHORT, précisé en input) et tu dois évaluer si la thèse à l'entrée tient toujours.
+
+Convention DIRECTION (cruciale) :
+ - LONG  : thèse = "le prix va monter". Momentum/path/persistence qui SE RENFORCENT = thèse confirmée. unrealPnlPct > 0 = en profit.
+ - SHORT : thèse = "le prix va baisser" (fade momentum, mean reversion). Momentum qui S'EFFRITE = thèse CONFIRMÉE (fade fonctionne). Si momentum REPREND vers le haut = thèse cassée. unrealPnlPct est DÉJÀ signé pour la direction (> 0 = en profit).
 
 Réponds STRICTEMENT en JSON sur une seule ligne, sans markdown :
 {"score": <float dans [-1, +1]>, "rationale": "<1 ligne, max 180 chars>"}
 
-Échelle :
- -1.0 = thèse cassée, fermer maintenant (catalyseur disparu, momentum inversé)
- -0.5 = dégradation modérée (momentum perdu, mais SL pas atteint — tighten suggéré)
+Échelle (même sens des deux côtés grâce au signage upstream) :
+ -1.0 = thèse cassée, fermer maintenant (catalyseur disparu, momentum inversé contre la position)
+ -0.5 = dégradation modérée (perte de momentum favorable, mais SL pas atteint — tighten suggéré)
   0.0 = neutre, indéterminé (tenir)
  +0.5 = thèse confirmée + légère force supplémentaire
- +1.0 = très forte conviction de continuation, momentum accéléré
+ +1.0 = très forte conviction de continuation favorable à la position
 
 Ne propose JAMAIS d'action explicite (le système décide en aval). Juste un score numérique.`;
 
 export function buildGeminiVerdictUserPrompt(input: GeminiVerdictInput): string {
   const lines: string[] = [];
+  const direction = input.direction === 'short' ? 'SHORT' : 'LONG';
+  lines.push(`Direction: ${direction}${direction === 'SHORT' ? ' (fade — thèse confirmée si momentum BAISSE)' : ' (trend — thèse confirmée si momentum MONTE)'}`);
   lines.push(`Symbol: ${input.symbol}`);
   lines.push(`Asset class: ${input.assetClass}`);
   lines.push(`Opened: ${input.openedAt} (age ${input.ageMinutes} min)`);
-  lines.push(`Entry: $${input.entryPrice.toFixed(4)} / Live: $${input.livePrice.toFixed(4)} (unrealized ${input.unrealPnlPct.toFixed(2)}%)`);
+  lines.push(`Entry: $${input.entryPrice.toFixed(4)} / Live: $${input.livePrice.toFixed(4)} (unrealized ${input.unrealPnlPct.toFixed(2)}% — déjà signé pour la direction)`);
   if (input.pathEffAtEntry != null && input.pathEffNow != null) {
     lines.push(`PathEff: ${input.pathEffAtEntry.toFixed(3)} → ${input.pathEffNow.toFixed(3)}`);
   }

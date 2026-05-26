@@ -41,6 +41,14 @@ export interface ThesisHealthInput {
   persistenceNow: number | null;        // ex 0.33 (2/6)
   // Sub-C : LLM verdict (optionnel)
   llmScore: number | null;              // ∈ [-1, +1] ou null si LLM off/timeout
+  /**
+   * PR #465 — Direction de la position. Pour les SHORTs, les sub-A et sub-B
+   * sont inversés : un momentum/persistence qui se DÉGRADE pour un long est
+   * une VALIDATION de la thèse pour un short (fade-the-top). Default 'long'
+   * pour back-compat. Le sub-C (LLM) n'est PAS inversé ici car le prompt
+   * downstream reçoit déjà la direction explicitement.
+   */
+  direction?: 'long' | 'short';
 }
 
 export interface ThesisHealthWeights {
@@ -279,11 +287,19 @@ export function evaluateThesisHealth(
   weights: ThesisHealthWeights = DEFAULT_WEIGHTS,
   thresholds: ThesisHealthThresholds = DEFAULT_THRESHOLDS,
 ): ThesisHealthResult {
-  const subA = computeSubA(input.marketCh1mAtEntry, input.marketCh1mNow);
-  const subB = computeSubB(
+  const rawSubA = computeSubA(input.marketCh1mAtEntry, input.marketCh1mNow);
+  const rawSubB = computeSubB(
     input.pathEffAtEntry, input.pathEffNow,
     input.persistenceAtEntry, input.persistenceNow,
   );
+  // PR #465 — invert sub-A / sub-B for SHORT positions. For a short, a momentum
+  // qui s'effrite (rawSub < 0 sur un long = trend cassé) est en réalité une
+  // CONFIRMATION de la thèse de fade (rawSub doit devenir > 0 pour le short).
+  // Sub-C n'est pas inversé ici : le prompt LLM downstream reçoit la direction
+  // et raisonne avec dans le bon sens.
+  const sign = input.direction === 'short' ? -1 : 1;
+  const subA = rawSubA != null ? rawSubA * sign : null;
+  const subB = rawSubB != null ? rawSubB * sign : null;
   const subC = input.llmScore;
   const { composite, weightsUsed } = computeComposite(subA, subB, subC, weights);
   const verdict = decideVerdict(composite, thresholds);
