@@ -69,9 +69,14 @@ export interface RiskAssessment {
 }
 
 const SYSTEM_PROMPT = `You are a risk manager for an automated momentum trading system.
-You evaluate if the original thesis behind an OPEN long position is still valid given:
+You evaluate if the original thesis behind an OPEN position (LONG or SHORT — direction stated below) is still valid given:
 1. Recent news/events (ticker-specific + macro)
 2. Current price context (PnL, distance to stops, peak excursion)
+
+DIRECTION CONVENTION (critical):
+ - LONG  : thesis = "price goes UP". Positive news / sustained momentum = valid. Negative catalyst = broken.
+ - SHORT : thesis = "price goes DOWN" (fade momentum / mean reversion). Negative news or fading momentum = valid (short works). Positive catalyst that pushes price UP = broken.
+PnL is already signed for the direction: pnl > 0 always means "in profit", regardless of long/short.
 
 Output STRICT JSON only:
 {

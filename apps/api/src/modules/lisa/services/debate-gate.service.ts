@@ -37,6 +37,15 @@ import { DebateGateMetricsStore } from './debate-gate-metrics.store';
 
 export interface CandidateScores {
   symbol: string;
+  /**
+   * PR #465 — direction de l'ouverture envisagée. Default 'long' pour
+   * back-compat. Pour les SHORTs, `momentumVerdict` est inversé :
+   * un changePct positif (= prix qui monte) devient un signal "FADE = BUY"
+   * pour le short (et inversement). Le caller actuel ne push que des longs
+   * (`item.direction === 'long'` dans scanner), mais le gate est ready pour
+   * l'enable shorts via flag.
+   */
+  direction?: 'long' | 'short';
   /** Persistence score 0..1 (≥ 0.67 = strong). */
   persistenceScore: number;
   /** Path efficiency 0..1 (≥ 0.7 = smooth). Optional. */
@@ -198,13 +207,13 @@ export class DebateGateService {
       });
     }
 
-    // Agent 4 : momentum (anti-chase-the-top)
-    const momentumDecision = this.momentumVerdict(scores.changePct);
+    // Agent 4 : momentum (anti-chase-the-top pour long, fade-the-top pour short)
+    const momentumDecision = this.momentumVerdict(scores.changePct, scores.direction);
     inputs.push({
       agentId: 'momentum',
       signal: buildSignal(
         momentumDecision,
-        `changePct=${scores.changePct.toFixed(2)}%`,
+        `changePct=${scores.changePct.toFixed(2)}% dir=${scores.direction ?? 'long'}`,
         'momentum',
         'INTRADAY_5M',
         { confidence: this.momentumConfidence(scores.changePct), emittedAt: now },
@@ -276,7 +285,18 @@ export class DebateGateService {
     return 'WAIT';
   }
 
-  private momentumVerdict(changePct: number): TradingDecision {
+  private momentumVerdict(changePct: number, direction: 'long' | 'short' = 'long'): TradingDecision {
+    if (direction === 'short') {
+      // PR #465 — inversion sémantique pour les shorts (fade momentum).
+      // changePct > 15 = stock déjà très haut → setup IDÉAL pour fade = BUY (short opportunity).
+      // changePct >= 2 = momentum haussier confirmé mais pas extrême → HOLD (wait for top).
+      // changePct < 0 = momentum déjà baissier → trop tard pour entrer short (mean reversion fini) = WAIT.
+      if (changePct < 0) return 'WAIT';
+      if (changePct > 15) return 'BUY';
+      if (changePct >= 2) return 'HOLD';
+      return 'WAIT';
+    }
+    // LONG (comportement historique)
     if (changePct < 0) return 'WAIT';
     if (changePct > 15) return 'CHASE_THE_TOP';
     if (changePct >= 2) return 'BUY';
