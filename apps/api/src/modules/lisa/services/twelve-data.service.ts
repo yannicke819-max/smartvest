@@ -259,6 +259,7 @@ export class TwelveDataService {
   async getQuote(
     symbol: string,
     calledBy = 'intraday',
+    micCode?: string,
   ): Promise<{ price: number; changePct: number; timestamp: number } | null> {
     if (!this.apiKey) return null;
     if (!this.creditTracker.canConsume(1)) {
@@ -281,7 +282,10 @@ export class TwelveDataService {
     const tStart = Date.now();
     try {
       // timezone=UTC → datetime field aligné UTC, identique time_series fix.
+      // mic_code optionnel pour router via un exchange spécifique (ex: BCXE = Cboe
+      // Europe real-time pour les actions EU au lieu de XLON/Euronext delayed).
       const params = new URLSearchParams({ symbol, timezone: 'UTC', apikey: this.apiKey });
+      if (micCode) params.set('mic_code', micCode);
       const url = `${BASE_URL}/quote?${params.toString()}`;
       const res = await this.fetchWithTimeout(url);
       const latencyMs = Date.now() - tStart;

@@ -72,3 +72,80 @@ export function eodhdToTdSymbol(eodhdTicker: string): string | null {
   return tdSuffix ? `${base}${tdSuffix}` : base;
 }
 
+/**
+ * Mapping suffix EODHD → BCXE suffix character (Cboe Europe Equities).
+ *
+ * Cboe Europe est un MTF pan-européen qui agrège les cotations de toutes les
+ * places EU en true real-time (<1 sec). TwelveData expose ce flux via l'exchange
+ * code `BCXE` avec un encoding par suffix indiquant la place de cotation primaire.
+ *
+ * Mapping découvert empiriquement via `GET /stocks?exchange=BCXE` (3065 stocks,
+ * 19 pays). Le ticker est le symbole de base + 1 lettre de suffix :
+ *   - VOD.LSE       → VODl (LSE / UK / GBX)
+ *   - EZJ.LSE       → EZJl
+ *   - AF.PA         → AFp  (Euronext Paris / FR / EUR)
+ *   - AMS.SW        → AMSz (SIX Swiss / CH / CHF)
+ *   - SAP.XETRA     → SAPd (XETRA / DE / EUR)
+ *   - ENI.MI        → ENIm (Borsa Italiana / IT / EUR)
+ *
+ * Activation : nécessite l'add-on "Cboe Europe Equities" sur le compte TD.
+ * Gratuit en self-cert "non-professional" (retail individual investor).
+ * Tant que non activé : appel 404 "Not authorized to access BCXE data" → null
+ * remonté → caller fallback gracieux sur EODHD real-time (15-20 min delayed).
+ */
+const BCXE_SUFFIX_MAP: Record<string, string> = {
+  // UK
+  L: 'l', LSE: 'l',
+  // France (Euronext Paris)
+  PA: 'p',
+  // Netherlands (Euronext Amsterdam)
+  AS: 'a', AMS: 'a',
+  // Belgium (Euronext Brussels)
+  BR: 'b',
+  // Ireland (Euronext Dublin)
+  IR: 'i',
+  // Germany (XETRA / Frankfurt)
+  XETRA: 'd', DE: 'd', F: 'd',
+  // Italy (Borsa Italiana — MTF Cboe Europe couvre)
+  MI: 'm',
+  // Spain (BME)
+  MC: 'e',
+  // Switzerland (SIX)
+  SW: 'z',
+  // Sweden
+  ST: 's',
+  // Norway
+  OL: 'o',
+  // Denmark
+  CO: 'c',
+  // Finland
+  HE: 'h',
+  // Austria
+  VI: 'v',
+  // Portugal
+  LS: 'u',
+  // Poland
+  WA: 'w',
+  // Hungary
+  BUD: 't',
+  // Czech Republic
+  PR: 'k',
+};
+
+export interface CboeEuropeMapping {
+  symbol: string;
+  mic_code: 'BCXE';
+}
+
+/**
+ * Convertit un ticker EODHD vers le format Cboe Europe BCXE.
+ * @returns `null` si suffix non couvert par BCXE (ex: .US, .KO, .HK, .T)
+ */
+export function eodhdToCboeEuropeSymbol(eodhdTicker: string): CboeEuropeMapping | null {
+  if (!eodhdTicker || !eodhdTicker.includes('.')) return null;
+  const [base, suffix] = eodhdTicker.split('.');
+  if (!base || !(suffix in BCXE_SUFFIX_MAP)) return null;
+  const suffixChar = BCXE_SUFFIX_MAP[suffix];
+  return { symbol: `${base}${suffixChar}`, mic_code: 'BCXE' };
+}
+
