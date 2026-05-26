@@ -280,7 +280,8 @@ export class TwelveDataService {
     }
     const tStart = Date.now();
     try {
-      const params = new URLSearchParams({ symbol, apikey: this.apiKey });
+      // timezone=UTC → datetime field aligné UTC, identique time_series fix.
+      const params = new URLSearchParams({ symbol, timezone: 'UTC', apikey: this.apiKey });
       const url = `${BASE_URL}/quote?${params.toString()}`;
       const res = await this.fetchWithTimeout(url);
       const latencyMs = Date.now() - tStart;
@@ -429,10 +430,17 @@ export class TwelveDataService {
     }
     const tStart = Date.now();
     try {
+      // BUG PARSING — TD retourne datetime en timezone de l'exchange par défaut
+      // (Europe/London BST, America/New_York EDT, Asia/Seoul KST, etc.). Mon
+      // parsing `new Date(v.datetime)` sur serveur UTC interprétait comme UTC
+      // → décalage systématique +1h pour LSE, +4h pour US, +9h pour Korea.
+      // Fix : forcer `timezone=UTC` pour que TD retourne datetime en vrai UTC,
+      // alignement direct avec `new Date(...)` côté server UTC.
       const params = new URLSearchParams({
         symbol,
         interval,
         outputsize: String(outputsize),
+        timezone: 'UTC',
         apikey: this.apiKey,
       });
       const url = `${BASE_URL}/time_series?${params.toString()}`;
@@ -471,14 +479,18 @@ export class TwelveDataService {
       }
       const candles = (values as Array<Record<string, string>>)
         .map((v) => ({
-          timestamp: Math.floor(new Date(v.datetime).getTime() / 1000),
+          // Parse explicite UTC : on transforme "YYYY-MM-DD HH:MM:SS" → "YYYY-MM-DDTHH:MM:SSZ"
+          // pour que `new Date()` interprète sans ambiguïté, indépendamment du
+          // timezone du serveur. Couplé avec `timezone=UTC` côté request (que TD
+          // honore), garantit alignement strict.
+          timestamp: Math.floor(new Date((v.datetime || '').replace(' ', 'T') + 'Z').getTime() / 1000),
           open: Number(v.open),
           high: Number(v.high),
           low: Number(v.low),
           close: Number(v.close),
           volume: Number(v.volume ?? 0),
         }))
-        .filter((c) => Number.isFinite(c.close) && c.close > 0)
+        .filter((c) => Number.isFinite(c.close) && c.close > 0 && Number.isFinite(c.timestamp) && c.timestamp > 0)
         .reverse(); // TD renvoie desc, on veut asc
       this.logStructured('time_series', symbol, interval, 'ok', credits, latencyMs);
       void this.logCall({
@@ -542,6 +554,7 @@ export class TwelveDataService {
     const params = new URLSearchParams({
       symbol,
       interval,
+      timezone: 'UTC', // indicateurs (Supertrend/RSI/ATR) — alignement UTC.
       apikey: this.apiKey,
       ...extraParams,
     });
