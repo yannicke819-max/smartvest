@@ -352,15 +352,7 @@ export class PaperBrokerService {
     // Sinon le scanner ouvre des paires LONG/SHORT sur un prix figé vendredi
     // (incident TwelveData LSE/Euronext/SIX 25/05). Le check sur close existait
     // déjà via R5 sanity, mais pas sur l'open — oversight critique.
-    //
-    // Asia bypass 26/05 : TD /quote retourne timestamp = dernier tick. Small caps
-    // SHE/SHG/KO/KQ tickent toutes les 30-60min, donc systématiquement stale_*
-    // pendant lunch breaks. La sanity bound ±30% côté scanner suffit comme
-    // protection. Fallback reste bloquant (=pas de prix du tout, dangereux).
-    const isAsiaEquity = cmd.assetClass === 'asia_equity';
-    const isFallback = cmd.livePriceSource && cmd.livePriceSource.startsWith('fallback');
-    const isStaleNonAsia = !isAsiaEquity && cmd.livePriceSource && cmd.livePriceSource.startsWith('stale_');
-    if (isFallback || isStaleNonAsia) {
+    if (cmd.livePriceSource && (cmd.livePriceSource.startsWith('stale_') || cmd.livePriceSource.startsWith('fallback'))) {
       throw new Error(
         `openPositionDirect rejected: live price source=${cmd.livePriceSource} (stale/fallback). symbol=${cmd.symbol} price=${cmd.livePrice}. No open on non-live quote.`,
       );
