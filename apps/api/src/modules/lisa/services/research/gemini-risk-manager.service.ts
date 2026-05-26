@@ -96,12 +96,32 @@ Anti-friction rules (CRITICAL — avoid double-action with other services):
 Be conservative on "broken" (false positives = early exits = losses).
 Confidence < 0.7 should default to "unclear".`;
 
+const SYSTEM_PROMPT_GROUNDED = `${SYSTEM_PROMPT}
+
+GOOGLE SEARCH GROUNDING ENABLED:
+You have access to Google Search to fetch real-time news on the symbol and macro context.
+USE IT especially for Asia/EU tickers (.KO, .KQ, .SHE, .SHG, .T, .HK, .PA, .DE, .LSE) where
+our internal news provider (EODHD) has limited coverage.
+
+When you have an open position to evaluate:
+1. Search for "[SYMBOL] news today" OR "[COMPANY NAME] news last 4 hours" (find the company name from ticker)
+2. Search for sector/macro impact ("Korean semiconductor news", "China stimulus news")
+3. Cite the source URL in your reason field if a specific catalyst drives "broken" verdict
+
+Rules:
+- Limit to 2-3 search queries per assessment (latency budget)
+- Prefer Reuters/Bloomberg/WSJ/Financial Times for credibility
+- Recent news (< 4 hours) only — older news already priced in
+- If grounded search returns nothing actionable → verdict "unclear" or "valid"`;
+
 @Injectable()
 export class GeminiRiskManagerService {
   private readonly logger = new Logger(GeminiRiskManagerService.name);
   private readonly enabled: boolean;
   private readonly autoCloseMinConfidence: number;
   private readonly useMacroNews: boolean;
+  /** Google Search grounding — fetch news live en délégant à Gemini (couvre Asia/EU non-EODHD). */
+  private readonly useGrounding: boolean;
   /** Cache 5 min des news macro globales — partagé pour toutes les positions du cycle. */
   private macroNewsCache: { data: EodhdNewsItem[]; asOf: number } | null = null;
   private readonly MACRO_NEWS_CACHE_MS = 5 * 60 * 1000;
@@ -119,9 +139,10 @@ export class GeminiRiskManagerService {
     const rawConf = parseFloat(this.config.get<string>('GEMINI_RISK_MANAGER_AUTO_CLOSE_MIN_CONFIDENCE') ?? '0.8');
     this.autoCloseMinConfidence = Number.isFinite(rawConf) && rawConf >= 0 && rawConf <= 1.1 ? rawConf : 0.8;
     this.useMacroNews = (this.config.get<string>('GEMINI_RISK_MANAGER_USE_MACRO_NEWS') ?? 'false').toLowerCase() === 'true';
+    this.useGrounding = (this.config.get<string>('GEMINI_RISK_MANAGER_USE_GROUNDING') ?? 'false').toLowerCase() === 'true';
     if (this.enabled) {
       this.logger.log(
-        `[risk-manager] V2 ENABLED — auto-close seuil conf>=${this.autoCloseMinConfidence} — macro=${this.useMacroNews} — cron */5min`,
+        `[risk-manager] V2 ENABLED — auto-close conf>=${this.autoCloseMinConfidence} — macro=${this.useMacroNews} — grounding=${this.useGrounding} — cron */5min`,
       );
     }
   }
@@ -293,22 +314,31 @@ export class GeminiRiskManagerService {
         `   (la position est exposée sans visibilité, l'EarlyExit/Mechanical ne\n` +
         `   peuvent rien faire non plus sans prix live). Sinon, 'unclear'.`;
 
+    // En mode grounded, Gemini fetch les news lui-même via Google Search.
+    // L'EODHD tickerBlock reste injecté (gratuit, déjà fetched) mais l'utilisateur
+    // est invité à chercher en plus pour les marchés mal couverts (Asia/EU).
+    const groundingHint = this.useGrounding
+      ? `\n\nGROUNDING: Use Google Search to fetch latest news for ${pos.symbol} (or company name) in the last 4h. Especially needed for asset_class=${pos.asset_class} where EODHD coverage is limited.\n`
+      : '';
+
     const userPrompt =
       `Open ${pos.direction} position: ${pos.symbol} (${pos.asset_class}), age=${ageMin}min.\n\n` +
       `${priceBlock}\n\n` +
-      `Ticker news (last 60min):\n${tickerBlock}\n\n` +
+      `Ticker news EODHD (last 60min):\n${tickerBlock}\n\n` +
       `Macro / geopolitical news (last 60min, global feed):\n${macroBlock}\n\n` +
+      groundingHint +
       `Apply the anti-friction rules from system prompt. Is the thesis broken AND ` +
       `actionable NOW (not redundant with mechanical SL/TP nor EarlyExitGuard)? Output strict JSON only.`;
 
     let llmResult;
     try {
       llmResult = await this.llm.call({
-        system: SYSTEM_PROMPT,
+        system: this.useGrounding ? SYSTEM_PROMPT_GROUNDED : SYSTEM_PROMPT,
         user: userPrompt,
         temperature: 0.1,
-        maxTokens: 200,
-        timeoutMs: 8000,
+        maxTokens: this.useGrounding ? 400 : 200, // grounded = + de tokens (cite sources)
+        timeoutMs: this.useGrounding ? 15000 : 8000, // grounded = + de latence (search rounds)
+        enableSearchGrounding: this.useGrounding,
       });
     } catch {
       return null;
