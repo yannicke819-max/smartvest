@@ -2840,8 +2840,8 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     switch (cls) {
       case 'crypto': return 60;
       case 'us':     return 180;
-      case 'eu':     return 900;   // bumped 300→900s (EU mid-caps tick espacés)
-      case 'asia':   return 1800;  // bumped 600→1800s (Asia small caps lunch breaks Tokyo/Seoul/HK)
+      case 'eu':     return 900;    // 300→900s (EU mid-caps tick espacés)
+      case 'asia':   return 3600;   // 1800→3600s — TD /quote retourne timestamps 30-60min sur small caps SHE/SHG/KO/KQ (confirmé STALE_GUARD 03:59)
       default:       return 180;
     }
   }
