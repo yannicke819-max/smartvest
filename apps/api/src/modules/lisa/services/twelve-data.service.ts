@@ -321,13 +321,35 @@ export class TwelveDataService {
       }
       const price = Number(data.close);
       const changePct = Number(data.percent_change ?? 0);
-      // Valeur RÉELLE uniquement — pas de fake-fresh (Date.now), pas de fake-stale (0).
-      // Cascade :
-      //   1. data.timestamp (Unix secs) — source principale TD
-      //   2. data.datetime (ISO/SQL) — fallback réel TD, parsé en UTC
-      //   3. null → on rejette la quote entièrement (caller retombe sur candle/EODHD)
+      // PR #470 — VRAIE source du timestamp temps réel TD : `last_quote_at`.
+      //
+      // Observation live 26/05/2026 16:51 UTC sur 5 US (AAPL/EL/LOGI/VUZI/NTAP) :
+      //   data.timestamp = 1779802200 (= NYSE open 13:30 UTC, FIGÉ session-wide)
+      //   data.last_quote_at = 1779814260 (= real-time tick, age 36s)
+      //
+      // Le `timestamp` field de TD /quote NE REPRESENTE PAS le dernier tick — c'est
+      // l'horodatage de la session/snapshot d'ouverture. Tous les calls /quote d'un
+      // même symbole renvoient le même `timestamp` toute la journée. Conséquence :
+      // notre cascade actuelle tagait stale TOUS les opens US/EU (age = "depuis open
+      // session" = plusieurs heures). C'est ce qui a bloqué les opens US 26/05.
+      //
+      // last_quote_at est dispo sur US (NYSE/NASDAQ), LSE, Euronext. Absent sur
+      // SIX (AMS.SW) et complètement absent sur Asia /quote (TD ne couvre pas).
+      // Pour ces marchés, la cascade dual-source EODHD + TD /time_series du caller
+      // (IntradayProviderRouter.getLiveQuote) prend le relais et utilise le
+      // timestamp du dernier candle 5m comme source de fraîcheur.
+      //
+      // Cascade nouvelle :
+      //   1. data.last_quote_at (Unix secs) — VRAIE source real-time tick TD
+      //   2. data.timestamp (Unix secs) — fallback (peut être figé à l'opening)
+      //   3. data.datetime (ISO) — dernier fallback
+      //   4. null → on rejette, caller cascade vers candle/EODHD
       let timestamp: number | null = null;
-      if (data.timestamp != null) {
+      if (data.last_quote_at != null) {
+        const lqaNum = Number(data.last_quote_at);
+        if (Number.isFinite(lqaNum) && lqaNum > 0) timestamp = lqaNum * 1000;
+      }
+      if (timestamp === null && data.timestamp != null) {
         const tsNum = Number(data.timestamp);
         if (Number.isFinite(tsNum) && tsNum > 0) timestamp = tsNum * 1000;
       }
