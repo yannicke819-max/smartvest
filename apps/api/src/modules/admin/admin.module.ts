@@ -40,6 +40,7 @@ import { AdminQwPipelineToggleController } from './admin-qw-pipeline-toggle.cont
 import { AdminEventEngineForceController } from './admin-event-engine-force.controller';
 import { AdminResearchController } from './admin-research.controller';
 import { AdminDebateGateMetricsController } from './admin-debate-gate-metrics.controller';
+import { AdminShadowSizingController } from './admin-shadow-sizing.controller';
 
 @Module({
   imports: [SupabaseModule, forwardRef(() => LisaModule), GainersModule],
@@ -69,6 +70,8 @@ import { AdminDebateGateMetricsController } from './admin-debate-gate-metrics.co
     AdminResearchController,
     // AXEES T1+T2 — observability du debate gate (default ACTIVE).
     AdminDebateGateMetricsController,
+    // Shadow sizing × AI auto-tuner — observability + status des 3 profiles (high/middle/small)
+    AdminShadowSizingController,
   ],
 })
 export class AdminModule {}
