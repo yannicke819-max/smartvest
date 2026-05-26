@@ -1837,9 +1837,9 @@ export class MechanicalTradingService {
     // position légitime à $513 (LMT) est instantanément liquidée à $100 = -80%.
     // On skip ce cycle pour cette position ; au prochain tick (60s), si EODHD
     // est revenu, on reprend normalement.
-    if (this.isFallbackSource(quote.source, pos.assetClass)) {
+    if (this.isFallbackSource(quote.source)) {
       this.logger.warn(
-        `[FALLBACK_GUARD] ${pos.symbol} (${pos.assetClass}): source=${quote.source} price=${quote.price} — skip stop/target check (prix non fiable, cycle suivant)`,
+        `[FALLBACK_GUARD] ${pos.symbol}: source=${quote.source} price=${quote.price} — skip stop/target check (prix non fiable, cycle suivant)`,
       );
       return;
     }
@@ -2140,26 +2140,14 @@ export class MechanicalTradingService {
    * doit être traitée comme NON FIABLE — on skip les actions destructives.
    * Cf. checkStopTarget pour le rationale (incident 26/04).
    */
-  private isFallbackSource(source: string | undefined, assetClass?: string): boolean {
+  private isFallbackSource(source: string | undefined): boolean {
     if (!source) return true; // pas de source = suspect
-    // `fallback*` toujours bloquant — pas de prix du tout, vraiment dangereux.
-    if (source.startsWith('fallback')) return true;
-    // P19-staleness — `stale_*` est aussi non-actionable pour US/EU/crypto :
-    // TD `/quote` et EODHD `/real-time` retournent `data.close` = EOD close si
-    // marché fermé. LisaService.tagStaleness rebaptise `twelvedata` →
-    // `stale_twelvedata` si asOf > seuil per-class. Sans ce check,
-    // mechanical-trading exécutait stop/TP sur prix figés post-cloche.
-    //
-    // Asia bypass 26/05 : TD /quote retourne timestamp = dernier tick TD-side
-    // qui peut être très vieux (jours) sur les small caps Asia, même quand le
-    // marché Asia est ouvert. Mais ce SONT les seuls prix qu'on a. Pour rester
-    // cohérent avec scanner + paper-broker (qui acceptent stale_ pour open
-    // Asia), on accepte aussi stale_ pour eval stop/TP. Si vraiment aberrant,
-    // sanity bound 30% côté checkStopTarget catchera. Sans ce bypass, les
-    // positions Asia ne ferment JAMAIS sur SL/TP — risque de drawdown
-    // illimité jusqu'à expiration horizon.
-    if (source.startsWith('stale_') && assetClass === 'asia_equity') return false;
-    return source.startsWith('stale_');
+    // P19-staleness — `stale_*` est aussi non-actionable. TD `/quote` et
+    // EODHD `/real-time` retournent `data.close` = EOD close si marché fermé.
+    // LisaService.tagStaleness rebaptise `twelvedata` → `stale_twelvedata` si
+    // asOf > 180s. Sans cette extension, mechanical-trading exécutait stop/TP
+    // sur prix figés post-cloche (= close à entry = break-even artificiel).
+    return source.startsWith('fallback') || source.startsWith('stale_');
   }
 
   /**
