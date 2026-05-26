@@ -58,3 +58,5 @@ primary_region = "cdg"
   cpu_kind = "shared"
   cpus = 1
   memory_mb = 512
+
+# Force redeploy 26/05 05:35 — fly secrets set GEMINI_RISK_MANAGER_USE_GROUNDING n'avait pas trigger auto-deploy
