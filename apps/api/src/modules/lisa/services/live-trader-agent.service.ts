@@ -232,8 +232,8 @@ export class LiveTraderAgentService {
         confidence: decision.confidence,
         thesis: decision.thesis,
         applied: applyResult.applied,
-        appliedPositionId: applyResult.positionId,
-        applyError: applyResult.error,
+        ...(applyResult.positionId !== undefined ? { appliedPositionId: applyResult.positionId } : {}),
+        ...(applyResult.error !== undefined ? { applyError: applyResult.error } : {}),
       });
 
       const tag = applyResult.applied ? '✅' : (decision.action_kind === 'hold' ? '⏸️' : '⚠️');
