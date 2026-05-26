@@ -2840,7 +2840,12 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     switch (cls) {
       case 'crypto': return 60;
       case 'us':     return 180;
-      case 'eu':     return 900;   // bumped 300→900s (EU mid-caps tick espacés)
+      // EU bumped 900→1800s (26/05 12:25 UTC) : EODHD /api/real-time renvoie
+      // données délayées 15-20 min par licensing LSE/Euronext non-pro. Seuil
+      // 900s rejetait quasi tous les ticks EU. À revert à 900s dès activation
+      // BCXE Cboe Europe (TD add-on en attente account manager — request
+      // soumise 26/05 11:30 UTC). BCXE = true real-time <1 sec.
+      case 'eu':     return 1800;
       case 'asia':   return 1800;  // bumped 600→1800s (Asia small caps lunch breaks Tokyo/Seoul/HK)
       default:       return 180;
     }
