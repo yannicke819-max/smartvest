@@ -316,7 +316,9 @@ export class TwelveDataService {
       }
       const price = Number(data.close);
       const changePct = Number(data.percent_change ?? 0);
-      const timestamp = data.timestamp ? Number(data.timestamp) * 1000 : Date.now();
+      // Bug récurrent : Date.now() fake-fresh quand data.timestamp absent → bypass tagStaleness().
+      // Fix : 0 = epoch 1970 → détecté immédiatement comme stale par tous les consumers.
+      const timestamp = data.timestamp ? Number(data.timestamp) * 1000 : 0;
       if (!Number.isFinite(price) || price <= 0) {
         void this.logCall({
           endpoint: 'quote',
