@@ -3815,6 +3815,27 @@ export class TopGainersScannerService implements OnModuleInit {
         this.logger.log(
           `[conviction-sizing] ${cand.symbol} SKIP open — score ${convictionScore.toFixed(3)} < 0 (thèse déjà cassée à l'entry)`,
         );
+        // Fix 26/05 : trace en decision_log pour observabilité.
+        // Sans ce log, le skip est invisible (incident nuit 25→26/05 : 67 ACCEPT
+        // shadow Asia / 0 open — conviction sizing skip silencieux quand
+        // persistence=0 ou path=null fréquent sur Asia post-persistence unset).
+        await this.decisionLog.append({
+          portfolioId,
+          kind: 'position_open_failed',
+          summary: `[CONVICTION_SIZING_SKIP] ${cand.symbol} score=${convictionScore.toFixed(3)} < 0 → skip`,
+          rationale: 'CONVICTION_SIZING_SKIP_IF_NEGATIVE=true. Score composite (pathEff+persistence+ch1m) négatif = thèse cassée à l\'entry. Set CONVICTION_SIZING_SKIP_IF_NEGATIVE=false pour garder la position avec sizing réduit.',
+          payload: {
+            symbol: cand.symbol,
+            asset_class: cand.assetClass,
+            conviction_score: convictionScore,
+            path_eff: persistence?.pathQuality?.overallEfficiency ?? null,
+            persistence_score: persistence?.persistenceScore ?? null,
+            change_pct_1m: cand.changePct,
+            stage: 'scanner_pre_open',
+            error_class: 'ConvictionSizingNegative',
+          },
+          triggeredBy: 'autopilot_cron',
+        }).catch(() => { /* non-bloquant */ });
         return null;
       }
       if (convictionMult !== 1.0) {
