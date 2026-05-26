@@ -2866,7 +2866,13 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     const cls = marketForSymbol(symbol);
     switch (cls) {
       case 'crypto': return 60;
-      case 'us':     return 180;
+      // US bumped 180→1800s (26/05 15:30 UTC) : EODHD /api/real-time US
+      // renvoie également données délayées ~15min sur le plan All-In-One
+      // (licensing NYSE/Nasdaq non-pro). Constat live 26/05 15:19 UTC :
+      // LOGI/VUZI/LTRX/SWKS/EL/EL.US tous tagués `stale_eodhd age=940s+`
+      // → scanner skip systématique → 0 opens US malgré 102 ACCEPT shadow.
+      // À revert à 180s dès passage au plan US-PRO ou TD real-time US activé.
+      case 'us':     return 1800;
       // EU bumped 900→1800s (26/05 12:25 UTC) : EODHD /api/real-time renvoie
       // données délayées 15-20 min par licensing LSE/Euronext non-pro. Seuil
       // 900s rejetait quasi tous les ticks EU. À revert à 900s dès activation
