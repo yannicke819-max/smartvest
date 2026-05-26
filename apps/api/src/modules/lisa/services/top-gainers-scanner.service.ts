@@ -186,6 +186,22 @@ interface EodhdScreenerRow {
  * pour la Bolsa de Madrid ; `AS` et `AMS` idem pour Euronext Amsterdam.
  */
 const EU_EXCHANGES = ['LSE', 'XETRA', 'PA', 'SW', 'MI', 'MC', 'BME', 'AS', 'AMS'];
+
+// Shadow sizing × AI auto-tuner — 3 portfolios benchmark sizing (high/middle/small)
+// créés via migration 0166. Tous bypassent persistence (=0) et path_eff (=0) mais
+// passent dans le reste du pipeline standard. Cible user $200/jour.
+//
+// Comportement spécifique scanner pour ces 3 portfolios :
+//   1. openSymbols UNION cross-shadows + main → évite que les 4 portfolios ouvrent
+//      le même ticker (effet "convoy"). Cf. règle métier utilisateur 26/05.
+//   2. Force long_only (override REVERSE_MOMENTUM_MODE) — pas de hedge sur les
+//      shadows (capter conviction directionnelle, pas couvrir).
+const SHADOW_PORTFOLIO_IDS = new Set<string>([
+  'a0000001-0000-0000-0000-000000000001',  // shadow_high   : 3  pos × $3500
+  'a0000002-0000-0000-0000-000000000002',  // shadow_middle : 15 pos × $700
+  'a0000003-0000-0000-0000-000000000003',  // shadow_small  : 20 pos × $525 (cap DB)
+]);
+const MAIN_PORTFOLIO_ID_FOR_DEDUPE = '58439d86-3f20-4a60-82a4-307f3f252bc2';
 // P19d (29/04/2026 14:30 CEST) — Ajout SSE (Shanghai) + SZSE (Shenzhen) pour
 // couverture mondiale complète.
 // P19r (29/04/2026 19:30 UTC) — Ajout KQ (KOSDAQ) — couverture Asie complète
@@ -2275,6 +2291,32 @@ export class TopGainersScannerService implements OnModuleInit {
       .eq('portfolio_id', portfolioId)
       .eq('status', 'open');
     const openSymbols = new Set((openPositions ?? []).map((p) => String(p.symbol).toUpperCase()));
+
+    // Shadow sizing × cross-portfolio dedupe — règle métier 26/05 :
+    // Quand on scanne un des 3 portfolios shadow, on étend openSymbols aux
+    // positions ouvertes dans les AUTRES shadows + main pour éviter que les
+    // 4 portfolios ouvrent le MÊME ticker (effet "convoy" sur EL/VUZI/etc.).
+    // slotsAvailable reste calculé sur les positions de CE portfolio uniquement
+    // (chaque shadow garde son capacity propre).
+    const isShadowPortfolio = SHADOW_PORTFOLIO_IDS.has(portfolioId);
+    if (isShadowPortfolio) {
+      const dedupeIds = [...SHADOW_PORTFOLIO_IDS, MAIN_PORTFOLIO_ID_FOR_DEDUPE]
+        .filter((id) => id !== portfolioId);
+      const { data: crossOpens } = await this.supabase
+        .getClient()
+        .from('lisa_positions')
+        .select('symbol')
+        .in('portfolio_id', dedupeIds)
+        .eq('status', 'open');
+      for (const r of (crossOpens ?? [])) {
+        openSymbols.add(String(r.symbol).toUpperCase());
+      }
+      if ((crossOpens?.length ?? 0) > 0) {
+        this.logger.log(
+          `[top-gainers] ${portfolioId.slice(0, 8)} (shadow): cross-dedupe with ${dedupeIds.length} portfolios — ${crossOpens?.length} symbols excluded`,
+        );
+      }
+    }
     let slotsAvailable = Math.max(0, maxOpen - (openPositions?.length ?? 0));
 
     // PR #261 — Si slots saturés ET capital rotation enabled, on ne sort pas
@@ -4077,7 +4119,15 @@ export class TopGainersScannerService implements OnModuleInit {
 
       // Miracle #1 — Reverse momentum : plan détermine si on ouvre LONG, SHORT ou les deux.
       // Default 'long_only' = comportement actuel. Si 'both', notional réparti selon shortSizeRatio.
-      const plan = planOpens(this.reverseMomentum);
+      //
+      // Shadow sizing × long-only override (règle métier 26/05) : sur les 3 portfolios
+      // shadow (high/middle/small), force long_only même si REVERSE_MOMENTUM_MODE=both.
+      // Rationale : capter conviction directionnelle pure, pas couvrir. Main portfolio
+      // conserve le mode env (hedge ou long-only selon REVERSE_MOMENTUM_MODE).
+      const effectiveMomentumConfig = SHADOW_PORTFOLIO_IDS.has(portfolioId)
+        ? { ...this.reverseMomentum, mode: 'long_only' as const }
+        : this.reverseMomentum;
+      const plan = planOpens(effectiveMomentumConfig);
       let primaryOpenedPosId: string | null = null;
       for (const item of plan) {
         const directionalNotional = Math.round(effectiveNotional * item.notionalMultiplier * 100) / 100;
