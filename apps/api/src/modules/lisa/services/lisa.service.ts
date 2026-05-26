@@ -59,6 +59,7 @@ import {
   computeRegimeAdjustedDeployment,
   shouldRunNewsAggregator,
   getProposalSources,
+  marketForSymbol,
 } from '@smartvest/ai-analyst';
 import {
   buildYahooChartUrl,
@@ -2824,13 +2825,27 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
    * consumers voient `source='twelvedata'` (non-fallback) et exécutent des
    * actions destructives (close à l'EOD close = break-even artificiel).
    *
-   * Seuil 180s = 3× durée d'une candle 1m. Tolère illiquidité intra-session
-   * tout en bloquant tout quote > 3 min (post-cloche garanti).
+   * Seuils per-class (fix 26/05 — 0 ouvertures Asia nuit du 25→26/05) :
+   * - crypto 24/7 high-frequency : 60s
+   * - US/Canada liquides : 180s baseline
+   * - EU liquidité moyenne : 300s
+   * - Asia small caps + lunch breaks Tokyo/Seoul : 600s
    *
    * `fallback*` n'est pas re-taggé (déjà non-actionnable). `stale_*` non plus
    * (idempotent). Consumers existants (`isFallbackSource` qui catche
    * `startsWith('fallback')`) doivent être étendus pour aussi catcher `stale_`.
    */
+  private getStalenessThresholdSec(symbol: string): number {
+    const cls = marketForSymbol(symbol);
+    switch (cls) {
+      case 'crypto': return 60;
+      case 'us':     return 180;
+      case 'eu':     return 300;
+      case 'asia':   return 600;
+      default:       return 180;
+    }
+  }
+
   private tagStaleness(q: { symbol: string; price: string; asOf: string; source: string }):
     { symbol: string; price: string; asOf: string; source: string }
   {
@@ -2838,9 +2853,10 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     const asOfMs = Date.parse(q.asOf);
     if (!Number.isFinite(asOfMs)) return q;
     const ageSec = (Date.now() - asOfMs) / 1000;
-    if (ageSec > 180) {
+    const thresholdSec = this.getStalenessThresholdSec(q.symbol);
+    if (ageSec > thresholdSec) {
       this.logger.debug(
-        `[live-price] ${q.symbol} STALE quote tagged (source=${q.source} → stale_${q.source}, age=${Math.round(ageSec)}s)`,
+        `[live-price] ${q.symbol} STALE quote tagged (source=${q.source} → stale_${q.source}, age=${Math.round(ageSec)}s, threshold=${thresholdSec}s)`,
       );
       return { ...q, source: `stale_${q.source}` };
     }
