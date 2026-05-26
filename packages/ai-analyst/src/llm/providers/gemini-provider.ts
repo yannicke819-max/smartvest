@@ -38,15 +38,23 @@ export class GeminiProvider implements LlmProvider {
     // Google Search grounding — Gemini fetch les news/web temps réel pour
     // factual grounding. Utile pour les tickers Asia/EU où EODHD news a
     // coverage faible. Coût ajouté ~$35/1000 grounded queries.
-    // Note : `temperature` doit rester bas (0.1-0.3) pour limiter
-    // l'hallucination même grounded.
-    const tools = params.enableSearchGrounding
-      ? [{ googleSearch: {} as Record<string, never> }]
-      : undefined;
+    //
+    // ⚠️ gemini-2.5-flash-lite NE SUPPORTE PAS googleSearch tool.
+    // Détecté 26/05 : latency 500-900ms (vs grounded = 1.5-3s attendus) →
+    // le tool est silencieusement ignoré par flash-lite. Override modèle vers
+    // gemini-2.5-flash quand grounding demandé. Coût marginal :
+    //   - flash-lite : $0.10 / $0.40 par 1M tokens (input/output)
+    //   - flash      : $0.30 / $2.50 par 1M tokens (3× input, 6× output)
+    // Pour RM V2 (~14 positions × cron 5min × ~500 tokens) ≈ +$2-5/jour.
+    const grounded = !!params.enableSearchGrounding;
+    const tools = grounded ? [{ googleSearch: {} as Record<string, never> }] : undefined;
+    const effectiveModel = grounded && this.model.includes('flash-lite')
+      ? this.model.replace('flash-lite', 'flash')
+      : this.model;
 
     const t0 = Date.now();
     const res = await ai.models.generateContent({
-      model: this.model,
+      model: effectiveModel,
       contents: params.user,
       config: {
         systemInstruction: params.system,
@@ -59,7 +67,10 @@ export class GeminiProvider implements LlmProvider {
 
     const inputTokens = res.usageMetadata?.promptTokenCount ?? 0;
     const outputTokens = res.usageMetadata?.candidatesTokenCount ?? 0;
-    const costUsd = (inputTokens * PRICE_INPUT_PER_M + outputTokens * PRICE_OUTPUT_PER_M) / 1_000_000;
+    // Pricing différencié si on a switch vers flash (×3 input, ×6 output)
+    const inputPrice = grounded ? 0.30 : PRICE_INPUT_PER_M;
+    const outputPrice = grounded ? 2.50 : PRICE_OUTPUT_PER_M;
+    const costUsd = (inputTokens * inputPrice + outputTokens * outputPrice) / 1_000_000;
 
     return {
       content: res.text ?? '',
@@ -68,7 +79,7 @@ export class GeminiProvider implements LlmProvider {
       costUsd,
       latencyMs,
       providerId: this.id,
-      model: this.model,
+      model: effectiveModel,
     };
   }
 }
