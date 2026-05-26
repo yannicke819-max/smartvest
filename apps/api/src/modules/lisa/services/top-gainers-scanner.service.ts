@@ -3856,6 +3856,23 @@ export class TopGainersScannerService implements OnModuleInit {
       // ouvrir sur ce prix, même si le ticker semble être un top gainer).
       if (typeof quote.source === 'string' && (quote.source.startsWith('fallback') || quote.source.startsWith('stale_'))) {
         this.logger.warn(`[top-gainers] ${cand.symbol}: unreliable source ${quote.source} → skip open (cycle suivant)`);
+        // Fix 26/05 : trace en decision_log pour observabilité (incident nuit 25→26/05,
+        // 67 ACCEPT shadow Asia / 0 open / 0 event decision_log — skip invisible).
+        await this.decisionLog.append({
+          portfolioId,
+          kind: 'position_open_failed',
+          summary: `[STALE_GUARD] ${cand.symbol} skip — source=${quote.source} (price=${quote.price})`,
+          rationale: `Scanner ligne 3858 — fetchLivePrice retourne source non-actionable (stale/fallback). asOf trop ancien selon seuil per-class.`,
+          payload: {
+            symbol: cand.symbol,
+            asset_class: cand.assetClass,
+            source: quote.source,
+            price: quote.price,
+            stage: 'scanner_pre_open',
+            error_class: 'StaleOrFallbackSource',
+          },
+          triggeredBy: 'autopilot_cron',
+        }).catch(() => { /* non-bloquant */ });
         return null;
       }
       const candCloseNum = Number(cand.close);

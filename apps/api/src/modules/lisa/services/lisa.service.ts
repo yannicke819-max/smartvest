@@ -2840,8 +2840,8 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     switch (cls) {
       case 'crypto': return 60;
       case 'us':     return 180;
-      case 'eu':     return 300;
-      case 'asia':   return 600;
+      case 'eu':     return 900;   // bumped 300→900s (EU mid-caps tick espacés)
+      case 'asia':   return 1800;  // bumped 600→1800s (Asia small caps lunch breaks Tokyo/Seoul/HK)
       default:       return 180;
     }
   }
