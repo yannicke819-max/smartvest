@@ -491,43 +491,45 @@ export class IntradayProviderRouter implements OnModuleInit {
       .filter((s) => s.length > 0);
     if (!allowed.includes(suffix)) return null;
 
-    // P19-staleness-v3 — candle-first ET freshness-aware dual-source.
+    // P19-staleness-v4 — dual-source EODHD real-time + TD candle, freshness-wins.
     //
-    // Constat live 26/05/2026 : TD feed LSE peut être gelé sur la session
-    // précédente (last_quote_at identique sur VOD/HSBA/BP = Friday 15:29 UTC
-    // alors que LSE est ouvert depuis 3h aujourd'hui — confirmé via /market_state
-    // TD lui-même). Le candle-first ne suffit pas si TD lui-même est stale.
+    // Découverte live 26/05/2026 :
+    //   - TD `/quote` et `/time_series` LSE/EU sont GELÉS sur Friday 15:29 UTC
+    //     malgré plan Pro $229/mo qui inclut "Real-time EU market data".
+    //     Toutes les variations symbol (VOD:LSE, VOD avec mic_code=XLON) → idem.
+    //   - EODHD `/api/intraday/` aussi stale Friday pour LSE.
+    //   - EODHD `/api/real-time/VOD.LSE` retourne timestamp temps réel (12 min
+    //     ago, fresh) + change_p du jour. C'EST la vraie source live EU.
     //
-    // Fix : on récupère candles TD ET EODHD en parallèle, on garde celui dont
-    // le LAST candle est le plus frais. Si les deux sont stale → on retourne
-    // le moins stale et `tagStaleness()` consumer fera son boulot.
+    // Fix : on appelle EODHD real-time + TD candle en parallèle. EODHD live
+    // gagne presque toujours pour EU/Asia. Le caller (tagStaleness) fait son
+    // boulot si les deux sont stale.
     const tdSymbol = this.convertToTdSymbol(eodhdTicker);
     const tdEligible = this.td !== null && tdSymbol !== null;
 
-    const [tdRes, eodhdRes] = await Promise.allSettled([
+    const [eodhdRes, tdRes] = await Promise.allSettled([
+      this.eodhd.getQuote(eodhdTicker), // /api/real-time — fresh pour EU
       tdEligible ? this.getCandlesTdDirect(eodhdTicker, '5m', 2, 'live_price_dual') : Promise.resolve(null),
-      this.eodhd.getCandles(eodhdTicker, '5m', 2).catch(() => null),
     ]);
+    const eodhdQuote = eodhdRes.status === 'fulfilled' ? eodhdRes.value : null;
     const tdCandles = tdRes.status === 'fulfilled' ? tdRes.value : null;
-    const eodhdCandles = eodhdRes.status === 'fulfilled' ? eodhdRes.value : null;
 
+    const eodhdTsMs = eodhdQuote ? eodhdQuote.timestamp * 1000 : 0;
     const tdLast = tdCandles?.candles?.length ? tdCandles.candles[tdCandles.candles.length - 1] : null;
-    const eodhdLast = eodhdCandles?.candles?.length ? eodhdCandles.candles[eodhdCandles.candles.length - 1] : null;
-
     const tdTsMs = tdLast ? tdLast.timestamp * 1000 : 0;
-    const eodhdTsMs = eodhdLast ? eodhdLast.timestamp * 1000 : 0;
 
-    // On préfère la source au timestamp le plus récent (= le moins stale).
-    if (tdLast || eodhdLast) {
-      if (eodhdTsMs > tdTsMs && eodhdLast) {
-        return { price: eodhdLast.close, source: 'eodhd', quoteTsMs: eodhdTsMs };
-      }
-      if (tdLast) {
-        return { price: tdLast.close, source: 'twelvedata', quoteTsMs: tdTsMs };
-      }
+    // Préférer la source au timestamp le plus récent (= la moins stale).
+    if (eodhdQuote && eodhdTsMs >= tdTsMs) {
+      return { price: eodhdQuote.price, source: 'eodhd', quoteTsMs: eodhdTsMs };
+    }
+    if (tdLast) {
+      return { price: tdLast.close, source: 'twelvedata', quoteTsMs: tdTsMs };
+    }
+    if (eodhdQuote) {
+      return { price: eodhdQuote.price, source: 'eodhd', quoteTsMs: eodhdTsMs };
     }
 
-    // Dernier fallback : TD /quote (peut aussi être stale, mais on tente).
+    // Dernier fallback : TD /quote (souvent stale aussi mais on tente).
     if (this.td && tdSymbol) {
       const q = await this.td.getQuote(tdSymbol, 'live_price').catch(() => null);
       if (q && Number.isFinite(q.price) && q.price > 0) {
