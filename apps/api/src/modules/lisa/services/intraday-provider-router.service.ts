@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { TwelveDataService } from './twelve-data.service';
 import { EodhdIntradayService, type CandleSeries } from './eodhd-intraday.service';
 import { TickerBlacklistService } from './ticker-blacklist.service';
-import { eodhdToTdSymbol } from './td-symbol-mapper';
+import { eodhdToTdSymbol, eodhdToCboeEuropeSymbol } from './td-symbol-mapper';
 import { SupabaseService } from '../../supabase/supabase.service';
 
 /**
@@ -490,6 +490,33 @@ export class IntradayProviderRouter implements OnModuleInit {
       .map((s) => s.trim().toUpperCase())
       .filter((s) => s.length > 0);
     if (!allowed.includes(suffix)) return null;
+
+    // P19-staleness-v5 — TD Cboe Europe (BCXE) en PRIORITÉ pour EU.
+    //
+    // BCXE = MTF pan-européen agrégeant LSE/Euronext/XETRA/SIX/BME en TRUE
+    // real-time (<1 sec). Activable via add-on TD "Cboe Europe Equities",
+    // gratuit en self-cert non-professional. Couvre 3065 stocks EU.
+    //
+    // Comportement gracieux : tant que l'add-on n'est pas activé, TD répond
+    // 404 "You are not authorized to access BCXE data" → td.getQuote()
+    // retourne null → on tombe sur le path EODHD existant ci-dessous. Dès que
+    // l'add-on est activé côté account TD, ce path commence à renvoyer du
+    // real-time sans deploy code.
+    //
+    // Kill-switch : `TWELVEDATA_BCXE_ENABLED=false` (default true) — utile
+    // si TD facture un jour ou si on découvre une regression silencieuse.
+    const enableBcxe = (this.config.get<string>('TWELVEDATA_BCXE_ENABLED') ?? 'true').toLowerCase() !== 'false';
+    if (enableBcxe && this.td) {
+      const bcxe = eodhdToCboeEuropeSymbol(eodhdTicker);
+      if (bcxe) {
+        const tdBcxe = await this.td
+          .getQuote(bcxe.symbol, 'live_price_bcxe', bcxe.mic_code)
+          .catch(() => null);
+        if (tdBcxe && Number.isFinite(tdBcxe.price) && tdBcxe.price > 0 && tdBcxe.timestamp > 0) {
+          return { price: tdBcxe.price, source: 'twelvedata', quoteTsMs: tdBcxe.timestamp };
+        }
+      }
+    }
 
     // P19-staleness-v4 — dual-source EODHD real-time + TD candle, freshness-wins.
     //
