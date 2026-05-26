@@ -50,6 +50,7 @@ import { ReboundScannerService } from './services/rebound-scanner.service';
 import { OhlcvCacheService } from './services/ohlcv-cache.service';
 import { TopGainersScannerService } from './services/top-gainers-scanner.service';
 import { GainersUserShadowService } from './services/gainers-user-shadow.service';
+import { ShadowSizingOrchestratorService } from './services/shadow-sizing-orchestrator.service';
 import { GainersAutoRelaxService } from './services/gainers-auto-relax.service';
 import { PostSlBackfillService } from './services/post-sl-backfill.service';
 import { ShadowExitSimulatorService } from './services/shadow-exit-simulator.service';
@@ -184,6 +185,9 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     TopGainersScannerService,
     // PR #280 — Shadow user-pipeline (regret cost via /lisa/gainers-shadow-regret)
     GainersUserShadowService,
+    // Shadow sizing × AI auto-tuner — 3 profiles (high/middle/small) avec cron 30min,
+    // kill-switch drawdown auto, fees alerts, target progress vs $200/jour.
+    ShadowSizingOrchestratorService,
     // PR #282 — Auto-relax adaptive : lit cumulative_regret 7j et propose/auto-applique relax
     GainersAutoRelaxService,
     // PR #292 — Backfill post_sl_path JSONB (analysis rebound/ATR post closed_stop)
@@ -334,6 +338,8 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     // ATR cache 21:30 UTC lun-ven).
     EodhdEconomicEventsService,
     SymbolAtrCacheService,
+    // Export pour AdminShadowSizingController (cf. /admin/shadow-sizing/status).
+    ShadowSizingOrchestratorService,
   ],
 })
 export class LisaModule {}
