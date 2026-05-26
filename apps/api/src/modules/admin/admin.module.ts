@@ -41,6 +41,7 @@ import { AdminEventEngineForceController } from './admin-event-engine-force.cont
 import { AdminResearchController } from './admin-research.controller';
 import { AdminDebateGateMetricsController } from './admin-debate-gate-metrics.controller';
 import { AdminShadowSizingController } from './admin-shadow-sizing.controller';
+import { AdminTraderAgentController } from './admin-trader-agent.controller';
 
 @Module({
   imports: [SupabaseModule, forwardRef(() => LisaModule), GainersModule],
@@ -72,6 +73,8 @@ import { AdminShadowSizingController } from './admin-shadow-sizing.controller';
     AdminDebateGateMetricsController,
     // Shadow sizing × AI auto-tuner — observability + status des 3 profiles (high/middle/small)
     AdminShadowSizingController,
+    // Live Trader Agent (Gemini Pro) — observability + status portfolio dédié $10k
+    AdminTraderAgentController,
   ],
 })
 export class AdminModule {}
