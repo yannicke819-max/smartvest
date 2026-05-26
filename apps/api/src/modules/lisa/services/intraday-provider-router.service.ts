@@ -499,6 +499,27 @@ export class IntradayProviderRouter implements OnModuleInit {
       // peut être l'EOD close de la session précédente si le marché est fermé.
       // Sans timestamp, lisa.service.ts:fetchLivePrice écrasait asOf=now → guards
       // consumer (early-exit-guard, R5 sanity) ne détectaient jamais la staleness.
+      //
+      // P19-EU — TD /quote retourne parfois le timestamp de la dernière cloche
+      // (jusqu'à 98h stale pour .LSE/.PA) même marché ouvert. Quand le quote
+      // timestamp est stale (> 5 min), on essaie un last-candle 5m TD pour
+      // obtenir un timestamp frais. Si la candle est fraîche (< 10 min), on
+      // l'utilise comme source de prix + timestamp.
+      const QUOTE_STALE_TRIGGER_MS = 5 * 60 * 1000;  // identique getStalenessThresholdSec(eu)=300s
+      const CANDLE_MAX_AGE_MS = 10 * 60 * 1000;      // candle fraîche si < 10 min
+      if (Date.now() - q.timestamp > QUOTE_STALE_TRIGGER_MS) {
+        const candles = await this.getCandlesTdDirect(eodhdTicker, '5m', 2, 'live_quote_stale_eu').catch(() => null);
+        if (candles && candles.candles.length > 0) {
+          const last = candles.candles[candles.candles.length - 1];
+          const candleTsMs = last.timestamp * 1000; // TD candle ts in seconds
+          if (Date.now() - candleTsMs <= CANDLE_MAX_AGE_MS) {
+            this.logger.debug(
+              `[LiveQuote] ${eodhdTicker} quote stale ${Math.round((Date.now() - q.timestamp) / 60000)}min → candle close=${last.close} age=${Math.round((Date.now() - candleTsMs) / 1000)}s`,
+            );
+            return { price: last.close, source: 'twelvedata', quoteTsMs: candleTsMs };
+          }
+        }
+      }
       return { price: q.price, source: 'twelvedata', quoteTsMs: q.timestamp };
     }
     return null;
