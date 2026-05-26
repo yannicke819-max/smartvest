@@ -477,19 +477,47 @@ export class IntradayProviderRouter implements OnModuleInit {
    * inventé : null = « pas de source TD », pas « prix 0 ».
    *
    * Périmètre configurable via `LIVE_PRICE_TD_SUFFIXES` (CSV). Default couvre
-   * Asie (KO,KQ,SHG,SHE) + EU (LSE,L,PA,AS,AMS,DE,XETRA,SW,MI,TO) : l'intraday
-   * EODHD est différé ~15h sur ces zones (mesure 22/05 : divergence prix réelle
-   * EU 1.76%, jusqu'à 5.6% sur small-caps), TD fournit un quote frais. US natif
-   * reste sur EODHD real-time (frais). Suffixe non mappable → null → fallback.
+   * Asie (KO,KQ,SHG,SHE) + EU (LSE,L,PA,AS,AMS,DE,XETRA,SW,MI,TO) + US :
+   * l'intraday EODHD est différé ~15min sur tous ces marchés sur le plan
+   * All-In-One (mesure 22/05 : divergence prix réelle EU 1.76%, jusqu'à 5.6%
+   * sur small-caps ; 26/05 : US tous taggués stale_eodhd age=940s+).
+   * TD fournit le vrai real-time (NYSE/Nasdaq inclus plan PRO $229/mo).
+   * Suffixe non mappable → null → fallback.
    */
   async getLiveQuote(eodhdTicker: string): Promise<{ price: number; source: 'twelvedata' | 'eodhd'; quoteTsMs: number } | null> {
     if (!eodhdTicker) return null;
     const suffix = eodhdTicker.includes('.') ? eodhdTicker.split('.').pop()!.toUpperCase() : '';
-    const allowed = (this.config.get<string>('LIVE_PRICE_TD_SUFFIXES') ?? 'KO,KQ,SHG,SHE,LSE,L,PA,AS,AMS,DE,XETRA,SW,MI,TO')
+    // PR #468 — US ajouté au default (TD plan PRO inclut NYSE/Nasdaq real-time).
+    // L'override env permet de retirer US si on bascule un jour sur EODHD US-PRO.
+    const allowed = (this.config.get<string>('LIVE_PRICE_TD_SUFFIXES') ?? 'KO,KQ,SHG,SHE,LSE,L,PA,AS,AMS,DE,XETRA,SW,MI,TO,US')
       .split(',')
       .map((s) => s.trim().toUpperCase())
       .filter((s) => s.length > 0);
     if (!allowed.includes(suffix)) return null;
+
+    // PR #468 — TD US `/quote` en PRIORITÉ pour suffixe .US (true real-time).
+    //
+    // Plan TD PRO $229/mo inclut NYSE/Nasdaq real-time (free non-pro
+    // self-cert). EODHD All-In-One ne couvre US qu'en délayé 15min côté
+    // `/api/real-time` → 940s+ age → stale_eodhd → tous opens US skip.
+    //
+    // Comportement gracieux : si TD US fail (timeout, quota, symbol non
+    // listed), retourne null et on tombe sur la cascade BCXE-puis-dual-source
+    // existante ci-dessous (qui pour US tentera `getCandlesTdDirect 5m` = ~5min
+    // lag au pire, beaucoup mieux qu'EODHD 15min).
+    //
+    // Kill-switch : `TWELVEDATA_US_LIVE_ENABLED=false` (default true) — utile
+    // si on bascule sur EODHD US-PRO ou si on découvre une regression.
+    const enableUsLive = (this.config.get<string>('TWELVEDATA_US_LIVE_ENABLED') ?? 'true').toLowerCase() !== 'false';
+    if (enableUsLive && suffix === 'US' && this.td) {
+      const tdSymUs = this.convertToTdSymbol(eodhdTicker);
+      if (tdSymUs) {
+        const tdUs = await this.td.getQuote(tdSymUs, 'live_price_us').catch(() => null);
+        if (tdUs && Number.isFinite(tdUs.price) && tdUs.price > 0 && tdUs.timestamp > 0) {
+          return { price: tdUs.price, source: 'twelvedata', quoteTsMs: tdUs.timestamp };
+        }
+      }
+    }
 
     // P19-staleness-v5 — TD Cboe Europe (BCXE) en PRIORITÉ pour EU.
     //
