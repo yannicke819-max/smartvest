@@ -21,6 +21,14 @@ export interface LlmCallParams {
   maxTokens?: number;
   /** Hard timeout côté router (ms). Défaut : 5000. */
   timeoutMs?: number;
+  /**
+   * Active Google Search grounding (Gemini uniquement). Permet au LLM de
+   * fetch des news/web temps réel pour grounding factuel sur n'importe quel
+   * ticker (Asia/EU/US — couvre les marchés non-supportés par EODHD).
+   * Coût ajouté (~$35/1000 grounded queries Gemini side). Ignoré par les
+   * autres providers (Claude, etc.).
+   */
+  enableSearchGrounding?: boolean;
 }
 
 export interface LlmCallResult {

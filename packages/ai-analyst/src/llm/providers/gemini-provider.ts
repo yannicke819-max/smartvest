@@ -35,6 +35,15 @@ export class GeminiProvider implements LlmProvider {
     const { GoogleGenAI } = await import('@google/genai');
     const ai = new GoogleGenAI({ apiKey: this.apiKey });
 
+    // Google Search grounding — Gemini fetch les news/web temps réel pour
+    // factual grounding. Utile pour les tickers Asia/EU où EODHD news a
+    // coverage faible. Coût ajouté ~$35/1000 grounded queries.
+    // Note : `temperature` doit rester bas (0.1-0.3) pour limiter
+    // l'hallucination même grounded.
+    const tools = params.enableSearchGrounding
+      ? [{ googleSearch: {} as Record<string, never> }]
+      : undefined;
+
     const t0 = Date.now();
     const res = await ai.models.generateContent({
       model: this.model,
@@ -43,6 +52,7 @@ export class GeminiProvider implements LlmProvider {
         systemInstruction: params.system,
         temperature: params.temperature ?? 0.2,
         maxOutputTokens: params.maxTokens ?? 2048,
+        ...(tools ? { tools } : {}),
       },
     });
     const latencyMs = Date.now() - t0;
