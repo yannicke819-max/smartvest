@@ -335,6 +335,10 @@ export class LisaService {
       gainers_session_filter_enabled: pick('gainers_session_filter_enabled', 'gainersSessionFilterEnabled', existing?.gainers_session_filter_enabled ?? true),
       gainers_force_close_before_close_enabled: pick('gainers_force_close_before_close_enabled', 'gainersForceCloseBeforeCloseEnabled', existing?.gainers_force_close_before_close_enabled ?? false),
       gainers_force_close_offset_min: pick('gainers_force_close_offset_min', 'gainersForceCloseOffsetMin', existing?.gainers_force_close_offset_min ?? 30),
+      // PR #464 — Smart close before close (lock-profit variant, migration 0165).
+      gainers_smart_close_enabled: pick('gainers_smart_close_enabled', 'gainersSmartCloseEnabled', existing?.gainers_smart_close_enabled ?? false),
+      gainers_smart_close_window_min: pick('gainers_smart_close_window_min', 'gainersSmartCloseWindowMin', existing?.gainers_smart_close_window_min ?? 30),
+      gainers_smart_close_min_profit_pct: pick('gainers_smart_close_min_profit_pct', 'gainersSmartCloseMinProfitPct', existing?.gainers_smart_close_min_profit_pct ?? 1.0),
     };
 
     // Validation des valeurs numériques pour renvoyer une 400 lisible plutôt
@@ -404,6 +408,10 @@ export class LisaService {
     validateNum('gainers_min_p_win', merged.gainers_min_p_win, 0, 1);
     // PR #266 — force-close offset 5..120 min
     validateInt('gainers_force_close_offset_min', merged.gainers_force_close_offset_min, 5, 120);
+    // PR #464 — smart close window 15..120 min (must be > force_close_offset_min for the window to exist)
+    validateInt('gainers_smart_close_window_min', merged.gainers_smart_close_window_min, 15, 120);
+    // PR #464 — smart close min profit threshold 0.10..10.00 %
+    validateNum('gainers_smart_close_min_profit_pct', merged.gainers_smart_close_min_profit_pct, 0.10, 10);
     // PR #268 — rotation stagnant min age 3..480 min (relâché de 15..480)
     validateInt('gainers_rotation_stagnant_min_age_min', merged.gainers_rotation_stagnant_min_age_min, 3, 480);
     // PR #269 — rotation min path efficiency 0..1 (null désactive le gate)
@@ -608,6 +616,25 @@ export class LisaService {
         ...mergedFallback
       } = merged;
       void _sfe; void _fcbce; void _fcom;
+      const retry = await this.supabase.getClient()
+        .from('lisa_session_configs')
+        .upsert(mergedFallback, { onConflict: 'portfolio_id' })
+        .select()
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
+
+    // PR #464 — fallback si migration 0165 pas encore appliquée (smart_close_*)
+    if (error && /gainers_smart_close_enabled|gainers_smart_close_window_min|gainers_smart_close_min_profit_pct/i.test(error.message)) {
+      this.logger.warn('Colonnes gainers_smart_close_* (migration 0165) absentes — retry sans ces champs');
+      const {
+        gainers_smart_close_enabled: _sce,
+        gainers_smart_close_window_min: _scw,
+        gainers_smart_close_min_profit_pct: _scp,
+        ...mergedFallback
+      } = merged;
+      void _sce; void _scw; void _scp;
       const retry = await this.supabase.getClient()
         .from('lisa_session_configs')
         .upsert(mergedFallback, { onConflict: 'portfolio_id' })

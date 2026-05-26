@@ -2055,7 +2055,7 @@ export class TopGainersScannerService implements OnModuleInit {
     const { data: cfgRow } = await this.supabase
       .getClient()
       .from('lisa_session_configs')
-      .select('capital_usd, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes, gainers_universe_us, gainers_universe_eu, gainers_universe_asia, gainers_universe_crypto, gainers_p_win_gate_enabled, gainers_min_p_win, gainers_rotation_stagnant_min_age_min, gainers_rotation_min_path_efficiency, gainers_session_filter_enabled, gainers_force_close_before_close_enabled, gainers_force_close_offset_min, gainers_post_sl_cooldown_min, gainers_asia_strictness_boost, gainers_capital_rotation_enabled, gainers_high_grading_enabled, gainers_rotation_min_score, gainers_top_pool_size')
+      .select('capital_usd, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes, gainers_universe_us, gainers_universe_eu, gainers_universe_asia, gainers_universe_crypto, gainers_p_win_gate_enabled, gainers_min_p_win, gainers_rotation_stagnant_min_age_min, gainers_rotation_min_path_efficiency, gainers_session_filter_enabled, gainers_force_close_before_close_enabled, gainers_force_close_offset_min, gainers_smart_close_enabled, gainers_smart_close_window_min, gainers_smart_close_min_profit_pct, gainers_post_sl_cooldown_min, gainers_asia_strictness_boost, gainers_capital_rotation_enabled, gainers_high_grading_enabled, gainers_rotation_min_score, gainers_top_pool_size')
       .eq('portfolio_id', portfolioId)
       .maybeSingle();
     const minScore = this.resolveMinPersistenceScore(
@@ -2165,6 +2165,25 @@ export class TopGainersScannerService implements OnModuleInit {
       ? Math.max(5, Math.min(120, Number(cfgRow.gainers_force_close_offset_min)))
       : 30;
     if (forceCloseEnabled) {
+      // PR #464 — Smart close first (lock profits in pre-close window),
+      // then hard force-close at T-offset. Order matters: smart releases capacity
+      // before the hard cutoff sweeps everything remaining.
+      const smartCloseEnabled = cfgRow?.gainers_smart_close_enabled === true;
+      const smartCloseWindowMin = cfgRow?.gainers_smart_close_window_min != null
+        ? Math.max(15, Math.min(120, Number(cfgRow.gainers_smart_close_window_min)))
+        : 30;
+      const smartCloseMinProfitPct = cfgRow?.gainers_smart_close_min_profit_pct != null
+        ? Math.max(0.10, Math.min(10, Number(cfgRow.gainers_smart_close_min_profit_pct)))
+        : 1.0;
+      if (smartCloseEnabled && smartCloseWindowMin > forceCloseOffsetMin) {
+        await this.runSmartCloseBeforeCloseTick(
+          portfolioId,
+          smartCloseWindowMin,
+          forceCloseOffsetMin,
+          smartCloseMinProfitPct,
+          nowUtc,
+        );
+      }
       await this.runForceCloseBeforeCloseTick(portfolioId, forceCloseOffsetMin, nowUtc);
     }
 
@@ -3495,6 +3514,119 @@ export class TopGainersScannerService implements OnModuleInit {
     } catch (e) {
       this.logger.warn(`[capital-rotation] close failed: ${String(e).slice(0, 120)}`);
       return { rotated: false };
+    }
+  }
+
+  /**
+   * PR #464 — Smart close before close (lock-profit variant).
+   *
+   * Pre-close window = [T-windowMin, T-hardOffsetMin] before exchange close.
+   * For each open position inside that window, close early IFF unrealized
+   * pnl_pct >= minProfitPct. Positions below threshold continue to hold and
+   * will be swept by runForceCloseBeforeCloseTick at T-hardOffsetMin.
+   *
+   * Goal: capture profits that risk reversing in the last minutes of the
+   * session, without prematurely cutting positions that may still recover
+   * (those get one final chance via the hard cutoff). Strictly safer than
+   * the systematic force-close: it only closes a subset, never adds losses.
+   *
+   * Asia uses per-exchange close times (KR/JP/CN/HK); US/EU use aggregate.
+   * Crypto excluded (24/7). Audit decision_log kind='position_closed'
+   * payload tag '[SMART_CLOSE_LOCK_PROFIT]'.
+   */
+  private async runSmartCloseBeforeCloseTick(
+    portfolioId: string,
+    windowMin: number,
+    hardOffsetMin: number,
+    minProfitPct: number,
+    now: Date,
+  ): Promise<void> {
+    const { data: openPositions, error } = await this.supabase
+      .getClient()
+      .from('lisa_positions')
+      .select('id, symbol, asset_class, venue, entry_price, entry_timestamp, quantity, direction')
+      .eq('portfolio_id', portfolioId)
+      .eq('status', 'open');
+    if (error || !openPositions || openPositions.length === 0) return;
+
+    for (const pos of openPositions) {
+      const assetClass = String(pos.asset_class ?? '');
+      const cls = sessionClassFor(assetClass);
+      if (cls === null) continue; // crypto / fx / commodity → skip
+
+      // Compute minutes to close (per-exchange for asia, aggregate for us/eu).
+      const mExClose = cls === 'asia' ? minutesToExchangeClose(String(pos.symbol), now) : null;
+      const minutesToClose = mExClose ?? (MARKET_SESSION_HOURS[cls].closeUtcMin
+        - (now.getUTCHours() * 60 + now.getUTCMinutes()));
+
+      // Inside the smart window only: [T-windowMin, T-hardOffsetMin].
+      // Outside this band → hard force-close handles it (or position is far from close).
+      if (minutesToClose > windowMin) continue; // not yet in smart window
+      if (minutesToClose <= hardOffsetMin) continue; // hard cutoff zone, leave to force-close
+
+      const quote = await this.lisa.getLivePrice(String(pos.symbol)).catch(() => null);
+      if (!quote || !quote.price) continue;
+      // Skip fallback/stale source — same guard as force-close (cf. SEE.LSE incident).
+      if (quote.source && (quote.source.startsWith('fallback') || quote.source.startsWith('stale_'))) {
+        continue;
+      }
+      const livePrice = parseFloat(quote.price);
+      if (!Number.isFinite(livePrice) || livePrice <= 0) continue;
+
+      const entry = parseFloat(String(pos.entry_price));
+      if (!Number.isFinite(entry) || entry <= 0) continue;
+
+      // Direction-aware PnL: short profits when price drops.
+      const direction = String(pos.direction ?? 'long');
+      const rawPct = ((livePrice - entry) / entry) * 100;
+      const pnlPct = direction === 'short' ? -rawPct : rawPct;
+
+      if (pnlPct < minProfitPct) continue; // not enough profit to lock yet
+
+      try {
+        await this.lisa.getPaperBroker().closePosition({
+          positionId: String(pos.id),
+          reason: 'closed_target', // semantic: locked profit at smart threshold
+          livePrice: String(livePrice),
+          livePriceSource: quote.source,
+          rationale:
+            `[SMART_CLOSE_LOCK_PROFIT] ${cls.toUpperCase()} pre-close window — pnl=${pnlPct.toFixed(2)}% ` +
+            `>= threshold ${minProfitPct.toFixed(2)}% (T-${minutesToClose}min, window=${windowMin}min, hard=${hardOffsetMin}min)`,
+        });
+        this.logger.log(
+          `[smart-close] ${portfolioId.slice(0, 8)} LOCKED ${pos.symbol} ${direction} ` +
+          `(${cls}, T-${minutesToClose}min, pnl=${pnlPct.toFixed(2)}% >= ${minProfitPct.toFixed(2)}%)`,
+        );
+        await this.decisionLog.append({
+          portfolioId,
+          kind: 'position_closed',
+          summary: `[SMART_CLOSE_LOCK_PROFIT] ${pos.symbol} closed early to lock +${pnlPct.toFixed(2)}% profit`,
+          rationale:
+            `Position ${pos.symbol} (${cls}) closed early via smart pre-close window — ` +
+            `pnl ${pnlPct.toFixed(2)}% >= threshold ${minProfitPct.toFixed(2)}%. ` +
+            `T-${minutesToClose}min from session close (window=${windowMin}min, hard cutoff=${hardOffsetMin}min). ` +
+            `Locks profit before potential end-of-session reversal.`,
+          payload: {
+            symbol: pos.symbol,
+            asset_class: assetClass,
+            session_class: cls,
+            direction,
+            window_min: windowMin,
+            hard_offset_min: hardOffsetMin,
+            min_profit_pct: minProfitPct,
+            minutes_to_close: minutesToClose,
+            pnl_pct: pnlPct,
+            live_price: livePrice,
+            entry_price: entry,
+            tag: 'SMART_CLOSE_LOCK_PROFIT',
+          },
+          triggeredBy: 'autopilot_cron',
+        }).catch(() => { /* non-bloquant */ });
+      } catch (e) {
+        this.logger.warn(
+          `[smart-close] ${portfolioId.slice(0, 8)} ${pos.symbol}: close failed — ${String(e).slice(0, 120)}`,
+        );
+      }
     }
   }
 
