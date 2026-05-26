@@ -144,10 +144,11 @@ export class ShadowSizingOrchestratorService {
   }
 
   /**
-   * Cron toutes les 30 minutes. Boucle complète :
-   *   tracking → analyse IA → auto-correction → log.
+   * Cron toutes les 5 minutes (cadence alignée avec Trader Agent).
+   * Boucle complète : tracking → analyse IA → auto-correction → log.
+   * Coût LLM : ~$0.03/jour (288 calls × Gemini Flash Lite).
    */
-  @Cron('*/30 * * * *', { name: 'shadow-sizing-orchestrator', timeZone: 'UTC' })
+  @Cron('*/5 * * * *', { name: 'shadow-sizing-orchestrator', timeZone: 'UTC' })
   async runCycle(): Promise<void> {
     if (!this.enabled) return;
     if (!this.supabase.isReady()) return;
