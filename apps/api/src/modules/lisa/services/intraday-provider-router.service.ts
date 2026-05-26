@@ -482,41 +482,59 @@ export class IntradayProviderRouter implements OnModuleInit {
    * EU 1.76%, jusqu'à 5.6% sur small-caps), TD fournit un quote frais. US natif
    * reste sur EODHD real-time (frais). Suffixe non mappable → null → fallback.
    */
-  async getLiveQuote(eodhdTicker: string): Promise<{ price: number; source: 'twelvedata'; quoteTsMs: number } | null> {
-    if (!this.td || !eodhdTicker) return null;
+  async getLiveQuote(eodhdTicker: string): Promise<{ price: number; source: 'twelvedata' | 'eodhd'; quoteTsMs: number } | null> {
+    if (!eodhdTicker) return null;
     const suffix = eodhdTicker.includes('.') ? eodhdTicker.split('.').pop()!.toUpperCase() : '';
     const allowed = (this.config.get<string>('LIVE_PRICE_TD_SUFFIXES') ?? 'KO,KQ,SHG,SHE,LSE,L,PA,AS,AMS,DE,XETRA,SW,MI,TO')
       .split(',')
       .map((s) => s.trim().toUpperCase())
       .filter((s) => s.length > 0);
     if (!allowed.includes(suffix)) return null;
-    const tdSymbol = this.convertToTdSymbol(eodhdTicker);
-    if (!tdSymbol) return null;
 
-    // P19-staleness-v2 — architecture candle-first pour tous les marchés non-US.
+    // P19-staleness-v4 — dual-source EODHD real-time + TD candle, freshness-wins.
     //
-    // Problème racine : TD /quote retourne deux sources de timestamps non fiables :
-    //   1. Timestamp last trade (stale après clôture — jusqu'à 98h pour .LSE/.PA)
-    //   2. Date.now() fallback quand data.timestamp est null (Shanghai/Shenzhen)
-    //      → fausse la détection staleness (quote semble toujours frais = bypass)
+    // Découverte live 26/05/2026 :
+    //   - TD `/quote` et `/time_series` LSE/EU sont GELÉS sur Friday 15:29 UTC
+    //     malgré plan Pro $229/mo qui inclut "Real-time EU market data".
+    //     Toutes les variations symbol (VOD:LSE, VOD avec mic_code=XLON) → idem.
+    //   - EODHD `/api/intraday/` aussi stale Friday pour LSE.
+    //   - EODHD `/api/real-time/VOD.LSE` retourne timestamp temps réel (12 min
+    //     ago, fresh) + change_p du jour. C'EST la vraie source live EU.
     //
-    // Fix : toujours utiliser les candles TD comme source autoritaire du timestamp.
-    // La candle 5m a un timestamp = close de la période (max 5 min en marché ouvert,
-    // = dernier close EOD quand marché fermé → tagStaleness() détecte correctement).
-    // Le prix vient aussi de la candle (plus cohérent que quote price isolé).
-    //
-    // Fallback sur /quote uniquement si getCandlesTdDirect() échoue (TD down).
-    const candles = await this.getCandlesTdDirect(eodhdTicker, '5m', 2, 'live_price_candle_first').catch(() => null);
-    if (candles && candles.candles.length > 0) {
-      const last = candles.candles[candles.candles.length - 1];
-      const candleTsMs = last.timestamp * 1000; // TD candle ts in seconds → ms
-      return { price: last.close, source: 'twelvedata', quoteTsMs: candleTsMs };
+    // Fix : on appelle EODHD real-time + TD candle en parallèle. EODHD live
+    // gagne presque toujours pour EU/Asia. Le caller (tagStaleness) fait son
+    // boulot si les deux sont stale.
+    const tdSymbol = this.convertToTdSymbol(eodhdTicker);
+    const tdEligible = this.td !== null && tdSymbol !== null;
+
+    const [eodhdRes, tdRes] = await Promise.allSettled([
+      this.eodhd.getQuote(eodhdTicker), // /api/real-time — fresh pour EU
+      tdEligible ? this.getCandlesTdDirect(eodhdTicker, '5m', 2, 'live_price_dual') : Promise.resolve(null),
+    ]);
+    const eodhdQuote = eodhdRes.status === 'fulfilled' ? eodhdRes.value : null;
+    const tdCandles = tdRes.status === 'fulfilled' ? tdRes.value : null;
+
+    const eodhdTsMs = eodhdQuote ? eodhdQuote.timestamp * 1000 : 0;
+    const tdLast = tdCandles?.candles?.length ? tdCandles.candles[tdCandles.candles.length - 1] : null;
+    const tdTsMs = tdLast ? tdLast.timestamp * 1000 : 0;
+
+    // Préférer la source au timestamp le plus récent (= la moins stale).
+    if (eodhdQuote && eodhdTsMs >= tdTsMs) {
+      return { price: eodhdQuote.price, source: 'eodhd', quoteTsMs: eodhdTsMs };
+    }
+    if (tdLast) {
+      return { price: tdLast.close, source: 'twelvedata', quoteTsMs: tdTsMs };
+    }
+    if (eodhdQuote) {
+      return { price: eodhdQuote.price, source: 'eodhd', quoteTsMs: eodhdTsMs };
     }
 
-    // Fallback /quote — uniquement si candles indisponibles (TD issue réseau, etc.)
-    const q = await this.td.getQuote(tdSymbol, 'live_price').catch(() => null);
-    if (q && Number.isFinite(q.price) && q.price > 0) {
-      return { price: q.price, source: 'twelvedata', quoteTsMs: q.timestamp };
+    // Dernier fallback : TD /quote (souvent stale aussi mais on tente).
+    if (this.td && tdSymbol) {
+      const q = await this.td.getQuote(tdSymbol, 'live_price').catch(() => null);
+      if (q && Number.isFinite(q.price) && q.price > 0) {
+        return { price: q.price, source: 'twelvedata', quoteTsMs: q.timestamp };
+      }
     }
     return null;
   }
