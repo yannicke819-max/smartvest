@@ -1,5 +1,6 @@
 # fly.toml — SmartVest API (NestJS)
 # Deploy: fly deploy --config apps/api/fly.toml --dockerfile apps/api/Dockerfile
+# Last deploy retrigger: 2026-05-26 — PR #462 BCXE merge didn't fire workflow.
 app = "smartvest-api"
 primary_region = "cdg"
 
