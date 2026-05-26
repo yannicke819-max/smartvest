@@ -51,6 +51,8 @@ import { OhlcvCacheService } from './services/ohlcv-cache.service';
 import { TopGainersScannerService } from './services/top-gainers-scanner.service';
 import { GainersUserShadowService } from './services/gainers-user-shadow.service';
 import { ShadowSizingOrchestratorService } from './services/shadow-sizing-orchestrator.service';
+import { LiveTraderAgentService } from './services/live-trader-agent.service';
+import { MarketCloseReportService } from './services/market-close-report.service';
 import { GainersAutoRelaxService } from './services/gainers-auto-relax.service';
 import { PostSlBackfillService } from './services/post-sl-backfill.service';
 import { ShadowExitSimulatorService } from './services/shadow-exit-simulator.service';
@@ -188,6 +190,11 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     // Shadow sizing × AI auto-tuner — 3 profiles (high/middle/small) avec cron 30min,
     // kill-switch drawdown auto, fees alerts, target progress vs $200/jour.
     ShadowSizingOrchestratorService,
+    // Live Trader Agent — portfolio dédié $10k piloté à 100% par Gemini Pro.
+    // Cron 5min decision + cron 02:00 UTC post-mortem nightly + memory store.
+    LiveTraderAgentService,
+    // Market Close Reports — comparatif 5 portfolios à chaque cloche (Asia/EU/US) + daily wrap.
+    MarketCloseReportService,
     // PR #282 — Auto-relax adaptive : lit cumulative_regret 7j et propose/auto-applique relax
     GainersAutoRelaxService,
     // PR #292 — Backfill post_sl_path JSONB (analysis rebound/ATR post closed_stop)
@@ -340,6 +347,10 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     SymbolAtrCacheService,
     // Export pour AdminShadowSizingController (cf. /admin/shadow-sizing/status).
     ShadowSizingOrchestratorService,
+    // Export pour AdminTraderAgentController (cf. /admin/trader-agent/status).
+    LiveTraderAgentService,
+    // Export pour AdminMarketCloseReportsController.
+    MarketCloseReportService,
   ],
 })
 export class LisaModule {}

@@ -53,6 +53,56 @@ const FEES_ROUND_TRIP_PCT: Record<string, number> = {
   'asia_equity':        0.20,
 };
 
+interface GeminiDecision {
+  action_kind: 'kill' | 'restart' | 'raise_sizing' | 'lower_sizing' | 'tune_tp_sl' | 'no_action';
+  target_profile: 'high' | 'middle' | 'small' | null;
+  params?: {
+    new_position_pct?: number;
+    new_max_open?: number;
+    new_tp_pct?: number;
+    new_sl_pct?: number;
+  };
+  confidence: number;  // 0.0-1.0
+  rationale: string;
+}
+
+const SHADOW_SIZING_GEMINI_SYSTEM_PROMPT = `Tu es un agent IA de risk management pour 3 portfolios paper-trading "shadow sizing" qui benchmarkent l'effet du sizing sur la même watchlist :
+- "high" : 3 positions × ~$3500 (concentré)
+- "middle" : 15 positions × ~$700 (équilibré)
+- "small" : 20 positions × ~$525 (diversifié)
+
+Ton job : analyser les snapshots toutes les 30 min et décider d'UNE action concrète pour maximiser P&L net après fees, avec cible $200/jour.
+
+Actions possibles (action_kind):
+- "kill" : mettre en pause un profile (kill_switch_active=true) si drawdown_today > 5% ou expectancy clairement -EV
+- "restart" : reprendre un profile en pause si drawdown < 2%
+- "raise_sizing" : augmenter position_pct ou max_open si le profile out-performe et a de la capacity libre (max +20%/cycle)
+- "lower_sizing" : diminuer si under-performance OR fees > 20% du gross PnL (sizing trop petit)
+- "tune_tp_sl" : ajuster gainers_default_tp_pct (0.1-10) / gainers_default_sl_pct (0.1-10) selon win_rate observé
+- "no_action" : laisser tourner, contexte trop early ou état OK
+
+CONTRAINTES :
+- N'agis QUE si confidence ≥ 0.7 (sinon retourne no_action)
+- Changements sizing capés à ±20% par cycle automatiquement
+- Privilégie kill > restart > tune > sizing en cas de doute (gestion du risque d'abord)
+- N'utilise PAS de connaissances externes — base tes décisions UNIQUEMENT sur les data fournies
+
+RÉPONSE OBLIGATOIRE :
+Renvoie UN SEUL objet JSON minimal (pas de markdown, pas de \\\`\\\`\\\`json) avec cette shape exacte :
+{
+  "action_kind": "kill"|"restart"|"raise_sizing"|"lower_sizing"|"tune_tp_sl"|"no_action",
+  "target_profile": "high"|"middle"|"small"|null,
+  "params": { "new_position_pct"?: number, "new_max_open"?: number, "new_tp_pct"?: number, "new_sl_pct"?: number },
+  "confidence": 0.0-1.0,
+  "rationale": "1-3 phrases factuelles citant les chiffres pertinents"
+}
+
+EXEMPLES de bons rationale :
+- "small a fees_ratio 35% (≥20% threshold), avg_pnl_per_trade $0.50, sizing trop petit. Lower max_open de 20→12 pour augmenter notional per trade."
+- "high drawdown 5.2% > 5% kill threshold après 3 cycles consecutive -PnL. Kill maintenant pour protéger capital."
+- "middle target_progress 87% sur 4h, win_rate 70%, capacity 60% used. Garder, no_action."
+`;
+
 interface ProfileSnapshot {
   portfolioId: string;
   profileName: 'high' | 'middle' | 'small';
@@ -141,6 +191,14 @@ export class ShadowSizingOrchestratorService {
       await this.aiComparativeAnalysis(snapshots);
     } catch (e) {
       this.logger.warn(`[shadow-sizing] AI analysis failed: ${String(e).slice(0, 150)}`);
+    }
+
+    // Gemini-driven decision : appel LLM avec snapshot + historique → action concrète
+    // Gated par SHADOW_SIZING_GEMINI_ENABLED=true (default OFF, sécurité MVP)
+    try {
+      await this.geminiDrivenAutoCorrection(snapshots);
+    } catch (e) {
+      this.logger.warn(`[shadow-sizing] Gemini auto-correction failed: ${String(e).slice(0, 150)}`);
     }
 
     const elapsedMs = Date.now() - startedAt.getTime();
@@ -458,6 +516,259 @@ export class ShadowSizingOrchestratorService {
     if (error) {
       this.logger.warn(`[shadow-sizing] log auto-tune failed: ${error.message}`);
     }
+  }
+
+  // ====================================================================
+  // STEP 4 — Gemini-driven auto-correction (LLM dans la boucle)
+  // ====================================================================
+  //
+  // Chaque cycle 30min, on envoie à Gemini Flash Lite :
+  //   - les 3 snapshots actuels (PnL, fees, drawdown, target_progress)
+  //   - les 5 dernières décisions auto-tuner par profile
+  //   - l'historique 6h des snapshots (12 cycles)
+  //
+  // Gemini retourne une action JSON structurée avec confidence. On applique
+  // SEULEMENT si confidence ≥ MIN_CONFIDENCE_TO_APPLY (default 0.7) ET
+  // dans les bornes de sécurité (sizing change ≤20% par cycle, TP/SL clamp).
+  //
+  // Actions possibles :
+  //   - kill: pause un profile (kill_switch_active=true)
+  //   - restart: reprend un profile (kill_switch_active=false)
+  //   - raise_sizing: augmente position_pct ou max_open
+  //   - lower_sizing: diminue position_pct ou max_open
+  //   - tune_tp_sl: ajuste gainers_default_tp_pct / gainers_default_sl_pct
+  //   - no_action: rien (log "Gemini said hold")
+  //
+  // Tous les changements sont :
+  //   1. Bornés par les limites DB (max_open ≤ 50, position_pct 1-100, TP 0.1-50, SL 0.1-20)
+  //   2. Capés par cycle (delta sizing ≤ 20%)
+  //   3. Logués dans shadow_sizing_autotune_log (decision_kind='gemini_auto_apply')
+  //
+  // Gated par SHADOW_SIZING_GEMINI_ENABLED=true (default OFF — safe MVP).
+  // Si false, la méthode no-op silencieusement.
+  private async geminiDrivenAutoCorrection(snapshots: ProfileSnapshot[]): Promise<void> {
+    const enabled = (this.config.get<string>('SHADOW_SIZING_GEMINI_ENABLED') ?? 'false')
+      .toLowerCase() === 'true';
+    if (!enabled) return;
+    if (!this.llmRouter.isEnabled()) {
+      this.logger.warn('[shadow-sizing-gemini] LLM router disabled — skip Gemini step');
+      return;
+    }
+
+    // Historique 6h (12 derniers cycles)
+    const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60_000).toISOString();
+    const { data: history } = await this.supabase.getClient()
+      .from('shadow_sizing_snapshot')
+      .select('captured_at, profile_name, total_pnl_usd, net_pnl_after_fees_usd, drawdown_today_pct, open_positions')
+      .gte('captured_at', sixHoursAgo)
+      .order('captured_at', { ascending: true });
+
+    // 5 dernières décisions par profile
+    const recentDecisions: Record<string, object[]> = {};
+    for (const snap of snapshots) {
+      const { data: decisions } = await this.supabase.getClient()
+        .from('shadow_sizing_autotune_log')
+        .select('decided_at, decision_kind, rationale, action_applied')
+        .eq('portfolio_id', snap.portfolioId)
+        .order('decided_at', { ascending: false })
+        .limit(5);
+      recentDecisions[snap.profileName] = (decisions ?? []) as object[];
+    }
+
+    const systemPrompt = SHADOW_SIZING_GEMINI_SYSTEM_PROMPT;
+    const userPrompt = JSON.stringify({
+      current_time_utc: new Date().toISOString(),
+      target_usd_per_day: DAILY_TARGET_USD,
+      drawdown_kill_threshold_pct: DRAWDOWN_KILL_PCT,
+      profiles: snapshots.map((s) => ({
+        name: s.profileName,
+        portfolio_id: s.portfolioId.slice(0, 8),
+        open_positions: s.openPositions,
+        closed_today: s.closedToday,
+        realized_pnl_usd: s.realizedPnlUsd,
+        unrealized_pnl_usd: s.unrealizedPnlUsd,
+        fees_paid_usd: s.feesPaidUsd,
+        net_pnl_after_fees_usd: s.netPnlAfterFeesUsd,
+        target_progress_pct: s.targetProgressPct,
+        drawdown_today_pct: s.drawdownTodayPct,
+        win_rate_pct: s.winRatePct,
+        capacity_used_pct: s.capacityUsedPct,
+        kill_switch_active: s.killSwitchActive,
+      })),
+      history_last_6h: history,
+      recent_decisions_per_profile: recentDecisions,
+    }, null, 2);
+
+    let response: { content: string; providerId: string; costUsd: number; latencyMs: number };
+    try {
+      response = await this.llmRouter.call({
+        system: systemPrompt,
+        user: userPrompt,
+        temperature: 0.2,
+        maxTokens: 800,
+        timeoutMs: 10_000,
+      });
+    } catch (e) {
+      this.logger.warn(`[shadow-sizing-gemini] LLM call failed: ${String(e).slice(0, 150)}`);
+      return;
+    }
+
+    this.logger.log(
+      `[shadow-sizing-gemini] provider=${response.providerId} latency=${response.latencyMs}ms cost=$${response.costUsd.toFixed(6)}`,
+    );
+
+    let decision: GeminiDecision;
+    try {
+      const cleaned = response.content.trim().replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
+      decision = JSON.parse(cleaned);
+    } catch (e) {
+      this.logger.warn(`[shadow-sizing-gemini] parse JSON failed: ${String(e).slice(0, 150)} — raw: ${response.content.slice(0, 200)}`);
+      return;
+    }
+
+    // Validation + safety bounds
+    const MIN_CONFIDENCE = 0.7;
+    const MAX_SIZING_DELTA_PCT = 20;  // changement sizing max 20%/cycle
+
+    if (decision.action_kind === 'no_action') {
+      await this.logAutoTune({
+        portfolioId: snapshots[0].portfolioId,  // proxy
+        profileName: 'gemini',
+        decisionKind: 'sizing_suggestion',
+        triggerMetric: 'gemini_no_action',
+        triggerValue: decision.confidence ?? 0,
+        thresholdValue: MIN_CONFIDENCE,
+        actionApplied: false,
+        rationale: `🤖 Gemini: NO_ACTION — ${decision.rationale ?? '(no rationale)'}`,
+        payload: { decision, llm_meta: { providerId: response.providerId, latencyMs: response.latencyMs, costUsd: response.costUsd } },
+      });
+      return;
+    }
+
+    if (!decision.confidence || decision.confidence < MIN_CONFIDENCE) {
+      await this.logAutoTune({
+        portfolioId: snapshots[0].portfolioId,
+        profileName: decision.target_profile ?? 'unknown',
+        decisionKind: 'sizing_suggestion',
+        triggerMetric: 'gemini_low_confidence',
+        triggerValue: decision.confidence ?? 0,
+        thresholdValue: MIN_CONFIDENCE,
+        actionApplied: false,
+        rationale: `🤖 Gemini suggéré ${decision.action_kind} sur ${decision.target_profile} mais confidence ${(decision.confidence ?? 0).toFixed(2)} < ${MIN_CONFIDENCE} — NON appliqué. Rationale: ${decision.rationale ?? '?'}`,
+        payload: { decision },
+      });
+      return;
+    }
+
+    const target = snapshots.find((s) => s.profileName === decision.target_profile);
+    if (!target) {
+      this.logger.warn(`[shadow-sizing-gemini] target_profile '${decision.target_profile}' not found in snapshots`);
+      return;
+    }
+
+    // Apply the decision
+    let applied = false;
+    let applyError: string | undefined;
+    try {
+      switch (decision.action_kind) {
+        case 'kill':
+          if (!target.killSwitchActive) {
+            const { error } = await this.supabase.getClient()
+              .from('lisa_session_configs')
+              .update({ kill_switch_active: true, autopilot_paused_reason: 'SHADOW_GEMINI_KILL' })
+              .eq('portfolio_id', target.portfolioId);
+            applied = !error;
+            applyError = error?.message;
+          }
+          break;
+        case 'restart':
+          if (target.killSwitchActive) {
+            const { error } = await this.supabase.getClient()
+              .from('lisa_session_configs')
+              .update({ kill_switch_active: false, autopilot_paused_reason: null })
+              .eq('portfolio_id', target.portfolioId);
+            applied = !error;
+            applyError = error?.message;
+          }
+          break;
+        case 'raise_sizing':
+        case 'lower_sizing': {
+          const { data: cfg } = await this.supabase.getClient()
+            .from('lisa_session_configs')
+            .select('gainers_position_pct, gainers_max_open_positions')
+            .eq('portfolio_id', target.portfolioId)
+            .maybeSingle();
+          const direction = decision.action_kind === 'raise_sizing' ? 1 : -1;
+          let newPct = Number(cfg?.gainers_position_pct ?? 5);
+          let newMax = Number(cfg?.gainers_max_open_positions ?? 10);
+          if (decision.params?.new_position_pct != null) {
+            const delta = decision.params.new_position_pct - newPct;
+            const cappedDelta = Math.sign(delta) * Math.min(Math.abs(delta), newPct * MAX_SIZING_DELTA_PCT / 100);
+            newPct = Math.max(1, Math.min(100, newPct + cappedDelta));
+          } else {
+            newPct = Math.max(1, Math.min(100, newPct * (1 + direction * 0.1)));
+          }
+          if (decision.params?.new_max_open != null) {
+            newMax = Math.max(1, Math.min(50, decision.params.new_max_open));
+          }
+          const { error } = await this.supabase.getClient()
+            .from('lisa_session_configs')
+            .update({
+              gainers_position_pct: Number(newPct.toFixed(2)),
+              gainers_max_open_positions: newMax,
+            })
+            .eq('portfolio_id', target.portfolioId);
+          applied = !error;
+          applyError = error?.message;
+          break;
+        }
+        case 'tune_tp_sl': {
+          const tp = decision.params?.new_tp_pct;
+          const sl = decision.params?.new_sl_pct;
+          const update: { gainers_default_tp_pct?: number; gainers_default_sl_pct?: number } = {};
+          if (tp != null) update.gainers_default_tp_pct = Math.max(0.1, Math.min(10, tp));
+          if (sl != null) update.gainers_default_sl_pct = Math.max(0.1, Math.min(10, sl));
+          if (Object.keys(update).length === 0) {
+            applyError = 'tune_tp_sl mais aucun params new_tp_pct/new_sl_pct';
+            break;
+          }
+          const { error } = await this.supabase.getClient()
+            .from('lisa_session_configs')
+            .update(update)
+            .eq('portfolio_id', target.portfolioId);
+          applied = !error;
+          applyError = error?.message;
+          break;
+        }
+        default:
+          applyError = `unknown action_kind: ${decision.action_kind}`;
+      }
+    } catch (e) {
+      applyError = String(e).slice(0, 200);
+    }
+
+    await this.logAutoTune({
+      portfolioId: target.portfolioId,
+      profileName: target.profileName,
+      decisionKind: 'sizing_suggestion',
+      triggerMetric: `gemini_${decision.action_kind}`,
+      triggerValue: decision.confidence ?? 0,
+      thresholdValue: MIN_CONFIDENCE,
+      actionApplied: applied,
+      rationale: applied
+        ? `🤖 Gemini ${decision.action_kind.toUpperCase()} ${target.profileName} APPLIED (conf=${decision.confidence?.toFixed(2)}). ${decision.rationale ?? ''}`
+        : `🤖 Gemini ${decision.action_kind} ${target.profileName} FAILED: ${applyError ?? 'unknown'}. ${decision.rationale ?? ''}`,
+      payload: {
+        decision,
+        applied,
+        applyError,
+        llm_meta: { providerId: response.providerId, latencyMs: response.latencyMs, costUsd: response.costUsd },
+      },
+    });
+
+    this.logger.log(
+      `[shadow-sizing-gemini] ${applied ? '✅' : '❌'} ${decision.action_kind} ${decision.target_profile} (conf=${decision.confidence?.toFixed(2)}) — ${decision.rationale?.slice(0, 100) ?? ''}`,
+    );
   }
 
   // ====================================================================
