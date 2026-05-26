@@ -278,22 +278,74 @@ export class LiveTraderAgentService {
         return;
       }
 
-      const postMortemPrompt = `Analyse les décisions et trades des dernières 24h du Trader Agent (portfolio $10k). Identifie 3-5 patterns gagnants et 3-5 patterns perdants, puis génère 5 lessons concises (1-2 phrases chacune) à injecter dans la system prompt du jour suivant pour améliorer le edge.
+      // Boucle d'apprentissage CROSS-PORTFOLIO — feed le post-mortem avec :
+      // 1. Les 4 derniers market_close_reports (Asia/EU/US/wrap) → comparatif 5 portfolios
+      // 2. Le PnL de chaque shadow et du main pour la même journée → context "ce que les autres ont fait"
+      // Le trader agent apprend non seulement de SES trades mais aussi de la perf relative.
+      const { data: closeReports } = await this.supabase.getClient()
+        .from('market_close_reports')
+        .select('session_kind, captured_at, portfolio_breakdown, total_net_pnl_usd, winner_portfolio_id, loser_portfolio_id, ai_narrative')
+        .gte('captured_at', yesterdayStart.toISOString())
+        .order('captured_at', { ascending: true });
+
+      // Compute daily comparative summary direct from positions (cross-portfolio)
+      const PORTFOLIO_NAMES: Record<string, string> = {
+        '58439d86-3f20-4a60-82a4-307f3f252bc2': 'main',
+        'a0000001-0000-0000-0000-000000000001': 'shadow_high',
+        'a0000002-0000-0000-0000-000000000002': 'shadow_middle',
+        'a0000003-0000-0000-0000-000000000003': 'shadow_small',
+        [TRADER_AGENT_PORTFOLIO_ID]: 'trader_agent (SELF)',
+      };
+      const { data: allClosed } = await this.supabase.getClient()
+        .from('lisa_positions')
+        .select('portfolio_id, symbol, direction, realized_pnl_usd, exit_reason')
+        .in('portfolio_id', Object.keys(PORTFOLIO_NAMES))
+        .gte('closed_at', yesterdayStart.toISOString())
+        .neq('status', 'open');
+
+      const dailyByPortfolio: Record<string, { name: string; closed: number; wins: number; gross_pnl: number; symbols: string[] }> = {};
+      for (const pid of Object.keys(PORTFOLIO_NAMES)) {
+        dailyByPortfolio[pid] = { name: PORTFOLIO_NAMES[pid], closed: 0, wins: 0, gross_pnl: 0, symbols: [] };
+      }
+      for (const p of (allClosed ?? [])) {
+        const pid = String(p.portfolio_id);
+        if (!dailyByPortfolio[pid]) continue;
+        const pnl = Number(p.realized_pnl_usd ?? 0);
+        dailyByPortfolio[pid].closed++;
+        if (pnl > 0) dailyByPortfolio[pid].wins++;
+        dailyByPortfolio[pid].gross_pnl += pnl;
+        if (!dailyByPortfolio[pid].symbols.includes(p.symbol as string)) {
+          dailyByPortfolio[pid].symbols.push(p.symbol as string);
+        }
+      }
+
+      const postMortemPrompt = `Tu es un coach trader senior. Analyse la journée du Trader Agent (portfolio $10k Gemini Pro autonome) ET le comparatif des 5 portfolios paper (main + 3 shadows + trader_agent).
+
+OBJECTIF : générer 5 lessons concrètes pour DOPER l'apprentissage du Trader Agent. Les lessons doivent :
+1. Identifier ce que LE TRADER AGENT a fait de BIEN (à reproduire)
+2. Identifier ce que LE TRADER AGENT a fait de MAL (à éviter)
+3. **Apprendre des AUTRES portfolios** : "shadow_X a fait +$Y avec stratégie Z, le trader agent aurait dû..."
+4. Référencer les market_close_reports (Asia/EU/US sessions) pour contextualiser
+5. Être actionable : "Quand le contexte est X, fais Y" (pas "il faut être prudent")
 
 RÉPONSE JSON OBLIGATOIRE :
 {
-  "summary": "1 phrase résumé de la journée",
-  "winning_patterns": ["pattern 1", "pattern 2", ...],
-  "losing_patterns": ["pattern 1", "pattern 2", ...],
+  "summary": "1-2 phrases résumé journée trader_agent vs autres portfolios",
+  "trader_agent_daily_pnl_usd": <nombre net total>,
+  "winning_patterns": ["pattern 1 avec chiffres", "pattern 2", ...],
+  "losing_patterns": ["pattern 1 avec chiffres", "pattern 2", ...],
+  "cross_portfolio_insights": ["X a battu Y de $Z grâce à...", ...],
   "new_lessons": [
-    {"lesson_kind": "winning_pattern|losing_pattern|risk_observation|market_regime_rule|sizing_rule", "lesson_text": "...", "confidence": 0.7}
+    {"lesson_kind": "winning_pattern|losing_pattern|risk_observation|market_regime_rule|sizing_rule|cross_portfolio_insight", "lesson_text": "Quand X, fais Y (référence: Z trades observés)", "confidence": 0.0-1.0}
   ]
 }`;
 
       const userPayload = JSON.stringify({
         date: new Date().toISOString().slice(0, 10),
-        decisions: decisions ?? [],
-        positions: positions ?? [],
+        trader_agent_decisions: decisions ?? [],
+        trader_agent_positions: positions ?? [],
+        cross_portfolio_daily_summary: dailyByPortfolio,
+        market_close_reports_today: closeReports ?? [],
       }, null, 2);
 
       const response = await this.llmRouter.call({
