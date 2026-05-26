@@ -792,8 +792,15 @@ export class TopGainersScannerService implements OnModuleInit {
       this.config.get<string>('GAINERS_PREFERRED_TICKERS_SIZE_MULT'),
     );
     if (this.tickerSizeMult.multipliers.size > 0) {
+      // PR #466 — log explicite des tickers + multipliers pour audit/debug.
+      // Permet de relire la value du secret GAINERS_PREFERRED_TICKERS_SIZE_MULT
+      // sans avoir besoin de la dumper côté Fly (secrets sont write-only).
+      const breakdown = [...this.tickerSizeMult.multipliers.entries()]
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([sym, mult]) => `${sym}:${mult.toFixed(2)}`)
+        .join(', ');
       this.logger.log(
-        `[ticker-size-mult] ENABLED — ${this.tickerSizeMult.multipliers.size} tickers boostés/réduits`,
+        `[ticker-size-mult] ENABLED — ${this.tickerSizeMult.multipliers.size} tickers : ${breakdown}`,
       );
     }
 
