@@ -1,4 +1,4 @@
-name: Deploy SmartVest API to Fly.io
+name: Deploy SmartVest API to Fly.io  # retrigger 12:52 UTC
 
 on:
   push:
