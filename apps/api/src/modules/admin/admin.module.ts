@@ -42,6 +42,7 @@ import { AdminResearchController } from './admin-research.controller';
 import { AdminDebateGateMetricsController } from './admin-debate-gate-metrics.controller';
 import { AdminShadowSizingController } from './admin-shadow-sizing.controller';
 import { AdminTraderAgentController } from './admin-trader-agent.controller';
+import { AdminMarketCloseReportsController } from './admin-market-close-reports.controller';
 
 @Module({
   imports: [SupabaseModule, forwardRef(() => LisaModule), GainersModule],
@@ -75,6 +76,8 @@ import { AdminTraderAgentController } from './admin-trader-agent.controller';
     AdminShadowSizingController,
     // Live Trader Agent (Gemini Pro) — observability + status portfolio dédié $10k
     AdminTraderAgentController,
+    // Market Close Reports — comparatif 5 portfolios par session (Asia/EU/US + daily wrap)
+    AdminMarketCloseReportsController,
   ],
 })
 export class AdminModule {}
