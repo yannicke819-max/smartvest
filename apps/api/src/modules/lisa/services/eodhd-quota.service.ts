@@ -210,16 +210,25 @@ export class EodhdQuotaService {
         this.logger.debug(`[eodhd-quota] /api/user HTTP ${res.status}`);
         return;
       }
-      const data = await res.json() as {
-        apiRequests?: number;
-        dailyRateLimit?: number;
-        extraLimit?: number;
-      };
+      const data = await res.json() as Record<string, unknown>;
+      // PR #469 — log brut au premier refresh pour valider que /api/user
+      // renvoie bien `extraLimit` (et pas un autre nom — EODHD peut changer
+      // le format silencieusement). Permet de fix le parser si besoin.
+      if (this.auth.asOf === 0) {
+        this.logger.log(`[eodhd-quota] /api/user raw keys: ${Object.keys(data).join(',')} — sample: ${JSON.stringify(data).slice(0, 400)}`);
+      }
       if (typeof data.apiRequests === 'number') this.auth.apiRequests = data.apiRequests;
       if (typeof data.dailyRateLimit === 'number' && data.dailyRateLimit > 0) {
         this.auth.dailyRateLimit = data.dailyRateLimit;
       }
       if (typeof data.extraLimit === 'number') this.auth.extraLimit = data.extraLimit;
+      // PR #469 — fallback sur d'autres noms possibles (EODHD docs vs reality drift)
+      if (this.auth.extraLimit === 0) {
+        const fallbackExtra = data.extra_limit ?? data.extraApiRequests ?? data.extra_api_requests ?? data.additionalRemaining ?? data.additional_remaining;
+        if (typeof fallbackExtra === 'number' && fallbackExtra > 0) {
+          this.auth.extraLimit = fallbackExtra;
+        }
+      }
       this.auth.asOf = now;
     } catch (e) {
       this.logger.debug(`[eodhd-quota] refreshAuth failed: ${String(e).slice(0, 80)}`);
@@ -240,6 +249,12 @@ export class EodhdQuotaService {
     }
 
     // Auto-throttle based on authoritative usage %
+    // PR #469 — kill-switch env `EODHD_AUTO_THROTTLE_DISABLED=true` pour
+    // bypass complet (utile si /api/user ne renvoie pas extraLimit correctement
+    // ou si on veut consommer la réserve extra credits sans hésiter).
+    const autoThrottleDisabled = (this.config.get<string>('EODHD_AUTO_THROTTLE_DISABLED') ?? 'false').toLowerCase() === 'true';
+    if (autoThrottleDisabled) return { paused: false, reason: null };
+
     const totalCap = this.auth.dailyRateLimit + this.auth.extraLimit;
     if (totalCap === 0) return { paused: false, reason: null };
     const usagePct = this.auth.apiRequests / totalCap;
