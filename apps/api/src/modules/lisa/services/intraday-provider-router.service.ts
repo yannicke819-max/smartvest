@@ -492,13 +492,30 @@ export class IntradayProviderRouter implements OnModuleInit {
     if (!allowed.includes(suffix)) return null;
     const tdSymbol = this.convertToTdSymbol(eodhdTicker);
     if (!tdSymbol) return null;
+
+    // P19-staleness-v2 — architecture candle-first pour tous les marchés non-US.
+    //
+    // Problème racine : TD /quote retourne deux sources de timestamps non fiables :
+    //   1. Timestamp last trade (stale après clôture — jusqu'à 98h pour .LSE/.PA)
+    //   2. Date.now() fallback quand data.timestamp est null (Shanghai/Shenzhen)
+    //      → fausse la détection staleness (quote semble toujours frais = bypass)
+    //
+    // Fix : toujours utiliser les candles TD comme source autoritaire du timestamp.
+    // La candle 5m a un timestamp = close de la période (max 5 min en marché ouvert,
+    // = dernier close EOD quand marché fermé → tagStaleness() détecte correctement).
+    // Le prix vient aussi de la candle (plus cohérent que quote price isolé).
+    //
+    // Fallback sur /quote uniquement si getCandlesTdDirect() échoue (TD down).
+    const candles = await this.getCandlesTdDirect(eodhdTicker, '5m', 2, 'live_price_candle_first').catch(() => null);
+    if (candles && candles.candles.length > 0) {
+      const last = candles.candles[candles.candles.length - 1];
+      const candleTsMs = last.timestamp * 1000; // TD candle ts in seconds → ms
+      return { price: last.close, source: 'twelvedata', quoteTsMs: candleTsMs };
+    }
+
+    // Fallback /quote — uniquement si candles indisponibles (TD issue réseau, etc.)
     const q = await this.td.getQuote(tdSymbol, 'live_price').catch(() => null);
     if (q && Number.isFinite(q.price) && q.price > 0) {
-      // P19-staleness — propage le timestamp TD pour que le caller détecte un
-      // quote stale (post-cloche, candle figée). data.close de l'endpoint /quote
-      // peut être l'EOD close de la session précédente si le marché est fermé.
-      // Sans timestamp, lisa.service.ts:fetchLivePrice écrasait asOf=now → guards
-      // consumer (early-exit-guard, R5 sanity) ne détectaient jamais la staleness.
       return { price: q.price, source: 'twelvedata', quoteTsMs: q.timestamp };
     }
     return null;

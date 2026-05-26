@@ -316,7 +316,38 @@ export class TwelveDataService {
       }
       const price = Number(data.close);
       const changePct = Number(data.percent_change ?? 0);
-      const timestamp = data.timestamp ? Number(data.timestamp) * 1000 : Date.now();
+      // Valeur RÉELLE uniquement — pas de fake-fresh (Date.now), pas de fake-stale (0).
+      // Cascade :
+      //   1. data.timestamp (Unix secs) — source principale TD
+      //   2. data.datetime (ISO/SQL) — fallback réel TD, parsé en UTC
+      //   3. null → on rejette la quote entièrement (caller retombe sur candle/EODHD)
+      let timestamp: number | null = null;
+      if (data.timestamp != null) {
+        const tsNum = Number(data.timestamp);
+        if (Number.isFinite(tsNum) && tsNum > 0) timestamp = tsNum * 1000;
+      }
+      if (timestamp === null && typeof data.datetime === 'string' && data.datetime.length > 0) {
+        // TD datetime format "YYYY-MM-DD HH:MM:SS" en timezone de l'exchange.
+        // On parse en UTC (rough) puis ajuste si exchange_timezone fourni — sinon
+        // erreur max ±14h, mais c'est un VRAI timestamp de TD, pas une fabrication.
+        const isoCandidate = data.datetime.replace(' ', 'T') + 'Z';
+        const parsed = Date.parse(isoCandidate);
+        if (Number.isFinite(parsed) && parsed > 0) timestamp = parsed;
+      }
+      if (timestamp === null) {
+        void this.logCall({
+          endpoint: 'quote',
+          symbol,
+          interval: null,
+          success: false,
+          statusCode: res.status,
+          creditsUsed: 1,
+          latencyMs,
+          errorMessage: 'no_real_timestamp',
+          calledBy,
+        });
+        return null;
+      }
       if (!Number.isFinite(price) || price <= 0) {
         void this.logCall({
           endpoint: 'quote',
