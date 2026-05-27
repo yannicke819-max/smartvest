@@ -712,12 +712,13 @@ export class ShadowSizingOrchestratorService {
     // comparative multi-profiles + macro. Auto-fallback Flash Lite si Pro down.
     let response: { content: string; providerId: string; costUsd: number; latencyMs: number };
     try {
+      // maxTokens=3500 : Gemini Pro thinking budget (cf. fix 06:55 — 800 trop bas, content vide).
       response = await this.llmRouter.callWithPro({
         system: systemPrompt,
         user: userPrompt,
         temperature: 0.2,
-        maxTokens: 800,
-        timeoutMs: 20_000,
+        maxTokens: 3500,
+        timeoutMs: 30_000,
       });
     } catch (e) {
       const errMsg = `LLM call failed: ${String(e).slice(0, 200)}`;

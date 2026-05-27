@@ -323,14 +323,17 @@ export class LiveTraderAgentService {
 
       // 5. Call Gemini Pro (raisonnement multi-facteurs sur 20 candidats + macro + news + memory).
       // Auto-fallback Flash Lite → Claude Opus si Pro indisponible (cf. ScannerLlmRouter.callWithPro).
+      // maxTokens=4000 : Gemini 2.5 Pro utilise des "thinking tokens" internes
+      // qui se déduisent du budget. 1000 était trop bas → content vide. 4000 laisse
+      // ~3000 tokens de thinking + 1000 pour la réponse JSON.
       let response: { content: string; providerId: string; costUsd: number; latencyMs: number };
       try {
         response = await this.llmRouter.callWithPro({
           system: systemPrompt,
           user: userPrompt,
           temperature: 0.3,
-          maxTokens: 1000,
-          timeoutMs: 20_000,
+          maxTokens: 4000,
+          timeoutMs: 30_000,
         });
       } catch (e) {
         const errMsg = `LLM call failed: ${String(e).slice(0, 200)}`;
@@ -347,6 +350,34 @@ export class LiveTraderAgentService {
           applyError: errMsg,
         }).catch(() => null);
         return;
+      }
+
+      // 5b. Si content vide (Gemini Pro a brûlé tout son budget en thinking),
+      // fallback explicite sur la chain rapide (Flash Lite — pas de thinking tokens).
+      if (!response.content || response.content.trim().length === 0) {
+        this.logger.warn(`[trader-agent] Gemini Pro returned empty content — fallback to fast chain. provider=${response.providerId}`);
+        try {
+          response = await this.llmRouter.call({
+            system: systemPrompt,
+            user: userPrompt,
+            temperature: 0.3,
+            maxTokens: 1500,
+            timeoutMs: 30_000,
+          });
+        } catch (e) {
+          const errMsg = `LLM fallback also failed: ${String(e).slice(0, 200)}`;
+          this.logger.warn(`[trader-agent] ${errMsg}`);
+          await this.logDecision({
+            cycleStartedAt, state, candidates, macro, news, memory,
+            action: 'hold' as const,
+            actionKindOverride: 'skip_safety_bound',
+            notionalUsd: 0, confidence: 0,
+            thesis: `Pro empty + fallback failed: ${errMsg}`,
+            applied: false,
+            applyError: errMsg,
+          }).catch(() => null);
+          return;
+        }
       }
 
       // 6. Parse decision
@@ -579,12 +610,13 @@ RÉPONSE JSON OBLIGATOIRE :
       }, null, 2);
 
       // Post-mortem = raisonnement sur 24h × 5 portfolios → Pro requis (qualité d'analyse).
+      // maxTokens=6000 : Gemini Pro thinking budget (cf. fix 06:55 — 1500 trop bas, content vide).
       const response = await this.llmRouter.callWithPro({
         system: postMortemPrompt,
         user: userPayload,
         temperature: 0.4,
-        maxTokens: 1500,
-        timeoutMs: 30_000,
+        maxTokens: 6000,
+        timeoutMs: 60_000,
       });
 
       const cleaned = response.content.trim().replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
