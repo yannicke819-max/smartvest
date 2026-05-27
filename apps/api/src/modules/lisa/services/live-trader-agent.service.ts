@@ -77,18 +77,42 @@ ACTIONS DISPONIBLES (action_kind) :
 
 CONTRAINTES DURES (les viole pas) :
 1. Notional par trade : $50 ≤ N ≤ $3000 (30% capital max sur 1 symbole)
-2. Stop loss obligatoire pour tout open : 0.5% ≤ SL ≤ 3% (default 1%) — backtest 3 sem. valide R/R 6:1
-3. Take profit obligatoire : 2% ≤ TP ≤ 10% (default 6%, R/R 6:1 — backtest 3 sem. valide)
-4. AUTONOMIE CADRÉE : tu peux dévier du default 1%/6% si tu vois un signal LIVE non-capturé
+2. Stop loss obligatoire pour tout open : 1.5% ≤ SL ≤ 3% (default 2%) — backtest 27/05 montre MAE/R médian 1.78 sur Trader Agent, donc SL <1.5% = stop-out quasi garanti avant retracement
+3. Take profit obligatoire : 2.5% ≤ TP ≤ 8% (default 4%, R/R 2:1 sur SL 2%) — capture rate Trader -45.8% montre que TP trop large laisse l'argent partir
+4. AUTONOMIE CADRÉE : tu peux dévier du default 2%/4% si tu vois un signal LIVE non-capturé
    par le backtest (résistance proche, volatilité anormale, news imminente, microcap, etc.)
-5. SI tu dévies du default de plus de 30% (ex: TP=2.5 ou TP=8.5, SL=0.6 ou SL=1.4), tu DOIS
+5. SI tu dévies du default de plus de 30% (ex: TP=5.5 ou TP=2.7, SL=1.5 ou SL=2.7), tu DOIS
    préfixer ton thesis avec "[TP_CUSTOM: X% / SL_CUSTOM: Y%] reason: <raison concrète>"
-   Exemple: "[TP_CUSTOM: 3% / SL_CUSTOM: 1.5%] reason: résistance H4 à +3.2%, ATR daily 0.4%"
-6. Privilégie le default 6%/1% sauf raison forte — c'est le sweet spot statistique 3 sem.
-4. Confidence ≥ 0.65 pour qu'on agisse (sinon hold)
-5. Pas plus de 5 positions ouvertes simultanément
-6. Si daily PnL < -$300 ce jour, mode défensif : open uniquement si confidence ≥ 0.85
-7. Pour les shorts : confirmer setup retournement clair (RSI > 70, distribution candle, level résistance majeur)
+   Exemple: "[TP_CUSTOM: 3% / SL_CUSTOM: 2.5%] reason: résistance H4 à +3.2%, ATR daily 0.4%"
+6. Privilégie le default 4%/2% sauf raison forte — c'est le sweet spot calibré post-MFE/MAE 27/05.
+7. Confidence ≥ 0.65 pour qu'on agisse (sinon hold)
+8. Pas plus de 5 positions ouvertes simultanément
+9. Si daily PnL < -$300 ce jour, mode défensif : open uniquement si confidence ≥ 0.85
+10. Pour les shorts : confirmer setup retournement clair (RSI > 70, distribution candle, level résistance majeur)
+
+DISCIPLINE D'ENTRY TIMING — LEÇONS MFE/MAE 27/05 (sample 7 trades) :
+A) MAE/R médian Trader Agent = 1.78 (vs MAIN 1.03, healthy 0.6-0.85) → tu entres
+   QUASI-SYSTÉMATIQUEMENT au peak local du 1min. Le marché va 78% AU-DELÀ de
+   ton SL avant de retracer. Cause : tu ouvres sur "persistenceScore=1" sans
+   attendre un pullback.
+B) **persistenceScore=1 n'est PAS un signal d'entrée immédiate**. C'est un signal
+   que le titre PUMP — ce qui veut dire qu'il va probablement retracer 1-2% avant
+   de continuer. Entrer au peak = MAE/R > 1.5 garanti.
+C) RÈGLE PULLBACK : si \`changePct\` du candidat > 3% ET \`persistenceScore\` ≥ 0.8,
+   tu DOIS attendre un retracement (ouvrir hold ce cycle, ré-évaluer 5min plus
+   tard). Cite "[PULLBACK_WAIT] changePct=X.X% persistance=Y attente retrace"
+   dans ton thesis.
+D) ANTI-REVENGE : si tu as déjà ouvert le même ticker DANS LES 2 DERNIÈRES
+   HEURES (regarde state.recent_closed_trades), tu N'OUVRES PAS À NOUVEAU même
+   si persistenceScore=1. Le système te bloquera de toute façon, mais ça pollue
+   les logs et brûle du quota Gemini.
+E) ROTATION DE CANDIDATS : ne te focalise pas sur le top-1 du snapshot. Si le
+   top-1 a déjà été tenté ou est trop "pumped" (changePct > 5%), regarde les
+   candidats #3-#10 qui ont un setup plus frais.
+F) CAPTURE RATE -45.8% : tu fermes systématiquement les trades qui sont en
+   profit avant le TP. Si la position dépasse +1.5%, n'utilise PAS "close" sur
+   un argument "persistence=0 maintenant" — utilise "trail_stop" (lock le
+   breakeven ou un peu de profit) et laisse le trade respirer jusqu'au TP.
 
 RÉPONSE JSON OBLIGATOIRE (1 seul objet, pas de markdown) :
 {
@@ -300,7 +324,7 @@ export class LiveTraderAgentService {
         this.fetchMacroContext(),
         this.fetchRecentNews(10),
         this.fetchActiveMemory(50),
-        this.lessonsContext?.getLessonsBlock('all_scanner') ?? Promise.resolve(''),
+        this.lessonsContext?.getLessonsBlock('trader_agent_only') ?? Promise.resolve(''),
       ]);
       const candidates = settled[0].status === 'fulfilled' ? settled[0].value : [];
       const macro = settled[1].status === 'fulfilled' ? settled[1].value : { note: 'macro_fetch_failed' };
@@ -420,7 +444,7 @@ export class LiveTraderAgentService {
       // silencieusement drop la décision si applyDecision throw.
       let applyResult: { applied: boolean; positionId?: string; error?: string };
       try {
-        applyResult = await this.applyDecision(decision, state);
+        applyResult = await this.applyDecision(decision, state, candidates as Array<Record<string, unknown>>);
       } catch (e) {
         const errMsg = `applyDecision throw: ${String(e).slice(0, 200)}`;
         this.logger.error(`[trader-agent] ${errMsg}`);
@@ -945,6 +969,7 @@ Recommendation rules :
   private async applyDecision(
     decision: TraderDecision,
     state: Awaited<ReturnType<typeof this.readState>>,
+    candidates: Array<Record<string, unknown>> = [],
   ): Promise<{ applied: boolean; positionId?: string; error?: string }> {
     // Confidence gate
     if (decision.confidence < MIN_CONFIDENCE) {
@@ -958,9 +983,12 @@ Recommendation rules :
       if (!decision.symbol || !decision.direction || !decision.notional_usd) {
         return { applied: false, error: 'missing symbol/direction/notional' };
       }
-      // Anti-revenge ticker cooldown (incident 27/05 — AMKR.US ouvert 4× en 5h,
-      // 3 closes losers + 1 open). Refuse open si même ticker déjà ouvert ≥ 2×
-      // dans les 4 dernières heures (toutes statuses confondus, open/closed).
+      // Anti-revenge ticker cooldown (renforcé post-MFE/MAE 27/05).
+      // Règle 1 : pas plus de 2 ouvertures dans les 4h sur le même ticker.
+      // Règle 2 : si la DERNIÈRE position fermée sur ce ticker (≤ 2h) est un
+      // loser (realized_pnl_usd < 0), bloque pour éviter de re-rentrer aussitôt
+      // sur le même setup cassé. Cas AMKR.US/AEHR.US 27/05 : 4 entries en 50min,
+      // 3 FADE Gemini consécutifs avant qu'on touche un winner par chance.
       {
         const sym = decision.symbol.toUpperCase();
         const since4h = new Date(Date.now() - 4 * 60 * 60_000).toISOString();
@@ -973,13 +1001,45 @@ Recommendation rules :
         if ((count ?? 0) >= 2) {
           return { applied: false, error: `anti-revenge: ${sym} déjà ouvert ${count}× en 4h` };
         }
+        // Cooldown loser : 2h depuis le dernier close en perte sur le même ticker.
+        const since2h = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+        const { data: lastLoser } = await this.supabase.getClient()
+          .from('lisa_positions')
+          .select('exit_timestamp, realized_pnl_usd')
+          .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+          .eq('symbol', sym)
+          .neq('status', 'open')
+          .gte('exit_timestamp', since2h)
+          .order('exit_timestamp', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (lastLoser && Number(lastLoser.realized_pnl_usd ?? 0) < 0) {
+          return { applied: false, error: `anti-revenge: ${sym} dernier close ${lastLoser.exit_timestamp} en perte (${Number(lastLoser.realized_pnl_usd).toFixed(2)}$) — cooldown 2h actif` };
+        }
       }
       const notional = Math.max(MIN_NOTIONAL_USD, Math.min(MAX_CONCENTRATION_USD, decision.notional_usd));
-      // Autonomie cadrée : bornes larges (Gemini peut dévier si raison LIVE),
-      // default backtest-validé 1%/6%. Justification obligatoire si écart > 30%
-      // capturée dans thesis (cf. system prompt règles 4-5).
-      const slPct = Math.max(0.5, Math.min(3, decision.stop_loss_pct ?? 1.0));
-      const tpPct = Math.max(2.0, Math.min(10.0, decision.take_profit_pct ?? 6.0));
+      // Autonomie cadrée : bornes resserrées post-MFE/MAE 27/05 (MAE/R 1.78,
+      // capture rate -45.8% sur 7 trades). SL min 1.5% obligatoire (sinon
+      // stop-out garanti avant retracement). TP max 8% (au-delà = capture rate
+      // s'effondre). Default 2%/4% au lieu de 1%/6%.
+      const slPct = Math.max(1.5, Math.min(3, decision.stop_loss_pct ?? 2.0));
+      const tpPct = Math.max(2.5, Math.min(8.0, decision.take_profit_pct ?? 4.0));
+
+      // Overpump gate : refuse l'open si le candidat correspondant a déjà pumpé
+      // > 5% sur la 1m (changePct dans le snapshot scanner). Cause root MAE/R 1.78 :
+      // Gemini entre au peak local d'un move déjà mature. Cf. CLAUDE.md règle
+      // calibration scanner 25/05 — un pump > 5% sans retracement est presque
+      // toujours suivi d'un drawdown ≥ 2%.
+      {
+        const sym = decision.symbol.toUpperCase();
+        const candidate = candidates.find((c) => String(c.symbol ?? '').toUpperCase() === sym);
+        if (candidate) {
+          const changePct = Number(candidate.changePct ?? 0);
+          if (Number.isFinite(changePct) && changePct > 5.0) {
+            return { applied: false, error: `overpump_gate: ${sym} changePct=${changePct.toFixed(2)}% > 5% (entry au peak refusée, attendre pullback)` };
+          }
+        }
+      }
 
       // Live price + sanity check
       const livePriceData = await this.lisa.getLivePrice(decision.symbol).catch(() => null);
@@ -1066,11 +1126,12 @@ Recommendation rules :
       }
       if (state.openCount >= 5) return { applied: false, error: 'scale_in: max 5 open positions' };
       const notional = Math.max(MIN_NOTIONAL_USD, Math.min(MAX_CONCENTRATION_USD * 1.5, decision.notional_usd));
-      // Autonomie cadrée : bornes larges (Gemini peut dévier si raison LIVE),
-      // default backtest-validé 1%/6%. Justification obligatoire si écart > 30%
-      // capturée dans thesis (cf. system prompt règles 4-5).
-      const slPct = Math.max(0.5, Math.min(3, decision.stop_loss_pct ?? 1.0));
-      const tpPct = Math.max(2.0, Math.min(10.0, decision.take_profit_pct ?? 6.0));
+      // Autonomie cadrée : bornes resserrées post-MFE/MAE 27/05 (MAE/R 1.78,
+      // capture rate -45.8% sur 7 trades). SL min 1.5% obligatoire (sinon
+      // stop-out garanti avant retracement). TP max 8% (au-delà = capture rate
+      // s'effondre). Default 2%/4% au lieu de 1%/6%.
+      const slPct = Math.max(1.5, Math.min(3, decision.stop_loss_pct ?? 2.0));
+      const tpPct = Math.max(2.5, Math.min(8.0, decision.take_profit_pct ?? 4.0));
 
       const livePriceData = await this.lisa.getLivePrice(decision.symbol).catch(() => null);
       if (!livePriceData?.price) return { applied: false, error: 'scale_in: no live price' };
