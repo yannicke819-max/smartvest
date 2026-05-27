@@ -25,7 +25,8 @@
  */
 
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron } from '@nestjs/schedule';
+import { SchedulerRegistry } from '@nestjs/schedule';
+import { CronJob } from 'cron';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
@@ -132,6 +133,7 @@ export class LiveTraderAgentService {
     private readonly supabase: SupabaseService,
     private readonly llmRouter: ScannerLlmRouterService,
     private readonly lisa: LisaService,
+    private readonly schedulerRegistry: SchedulerRegistry,
   ) {}
 
   onModuleInit(): void {
@@ -140,14 +142,64 @@ export class LiveTraderAgentService {
     this.logger.log(
       `[trader-agent] onModuleInit fired — LIVE_TRADER_AGENT_ENABLED raw="${raw}" parsed_enabled=${this.enabled}`,
     );
-    // PREUVE DB sentinel : écrit une row trader_agent_decisions au boot pour
-    // prouver que onModuleInit est appelé (sans dépendre des Fly logs).
-    // Tag distinctif via action_kind='hold' + thesis='[BOOT_SENTINEL]'.
     this.writeBootSentinel(raw).catch(() => null);
     if (this.enabled) {
       this.logger.log(
         `[trader-agent] ENABLED — portfolio=${TRADER_AGENT_PORTFOLIO_ID.slice(0, 8)} capital=$${TRADER_AGENT_CAPITAL_USD} cron */5min`,
       );
+    }
+  }
+
+  /**
+   * Enregistre les crons MANUELLEMENT via SchedulerRegistry au lieu du décorateur
+   * @Cron. Les décorateurs @Cron sur cette classe ne tirent jamais en prod
+   * (cause inconnue mais reproductible — Shadow Sizing avec même @Cron tire bien).
+   * Pattern emprunté à TopGainersScannerService.scheduleScanner.
+   */
+  onApplicationBootstrap(): void {
+    // Cron 1 — decision cycle */5min UTC
+    this.registerCron(
+      'live-trader-agent-decision-manual',
+      '*/5 * * * *',
+      () => this.runDecisionCycle().catch((e) =>
+        this.logger.error(`[trader-agent] runDecisionCycle error: ${String(e).slice(0, 200)}`),
+      ),
+    );
+    // Cron 2 — nightly post-mortem 02:00 UTC
+    this.registerCron(
+      'live-trader-agent-post-mortem-manual',
+      '0 2 * * *',
+      () => this.runNightlyPostMortem().catch((e) =>
+        this.logger.error(`[trader-agent] runNightlyPostMortem error: ${String(e).slice(0, 200)}`),
+      ),
+    );
+    // Diagnostic : list all crons registered
+    try {
+      const names = [...this.schedulerRegistry.getCronJobs().keys()];
+      this.logger.log(
+        `[trader-agent] onApplicationBootstrap — total crons registered=${names.length}, contains my crons=${names.includes('live-trader-agent-decision-manual') && names.includes('live-trader-agent-post-mortem-manual')}`,
+      );
+    } catch (e) {
+      this.logger.warn(`[trader-agent] could not list crons: ${String(e).slice(0, 100)}`);
+    }
+  }
+
+  private registerCron(name: string, expr: string, callback: () => void): void {
+    try {
+      // Idempotent : si déjà enregistré (hot reload), skip
+      this.schedulerRegistry.getCronJob(name);
+      this.logger.log(`[trader-agent] cron '${name}' already registered, skip`);
+      return;
+    } catch {
+      // Pas encore — on continue
+    }
+    try {
+      const job = new CronJob(expr, callback, null, true, 'UTC');
+      this.schedulerRegistry.addCronJob(name, job);
+      job.start();
+      this.logger.log(`[trader-agent] cron '${name}' registered manually expr='${expr}'`);
+    } catch (e) {
+      this.logger.error(`[trader-agent] cron '${name}' registration FAILED: ${String(e).slice(0, 200)}`);
     }
   }
 
@@ -168,8 +220,9 @@ export class LiveTraderAgentService {
 
   /**
    * Cron 5 min — boucle principale de décision Gemini Pro.
+   * Enregistré manuellement via SchedulerRegistry dans onApplicationBootstrap
+   * (cf. registerCron 'live-trader-agent-decision-manual').
    */
-  @Cron('*/5 * * * *', { name: 'live-trader-agent-decision', timeZone: 'UTC' })
   async runDecisionCycle(): Promise<void> {
     // Log inconditionnel chaque tick pour vérifier que le cron tire vraiment.
     this.logger.log(`[trader-agent] cron tick @ ${new Date().toISOString()} enabled=${this.enabled} supabase=${this.supabase.isReady()} llmRouter=${this.llmRouter.isEnabled()}`);
@@ -305,8 +358,8 @@ export class LiveTraderAgentService {
 
   /**
    * Cron 02:00 UTC — post-mortem nightly + génération nouvelles lessons.
+   * Enregistré manuellement via SchedulerRegistry.
    */
-  @Cron('0 2 * * *', { name: 'live-trader-agent-post-mortem', timeZone: 'UTC' })
   async runNightlyPostMortem(): Promise<void> {
     if (!this.enabled) return;
     if (!this.supabase.isReady()) return;
