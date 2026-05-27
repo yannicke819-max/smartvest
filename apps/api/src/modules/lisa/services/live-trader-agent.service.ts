@@ -284,13 +284,25 @@ export class LiveTraderAgentService {
         return;
       }
 
-      // 3. Fetch candidates + macro + news + memory
-      const [candidates, macro, news, memory] = await Promise.all([
+      // 3. Fetch candidates + macro + news + memory — chaque fetch en allSettled
+      // pour qu'un échec individuel (DB query fail, API down) ne stoppe pas le
+      // cycle entier. Fallback aux valeurs vides en cas de fail.
+      const settled = await Promise.allSettled([
         this.fetchTopCandidates(20),
         this.fetchMacroContext(),
         this.fetchRecentNews(10),
         this.fetchActiveMemory(50),
       ]);
+      const candidates = settled[0].status === 'fulfilled' ? settled[0].value : [];
+      const macro = settled[1].status === 'fulfilled' ? settled[1].value : { note: 'macro_fetch_failed' };
+      const news = settled[2].status === 'fulfilled' ? settled[2].value : [];
+      const memory = settled[3].status === 'fulfilled' ? settled[3].value : [];
+      const fetchFailures = settled
+        .map((s, i) => s.status === 'rejected' ? `${['candidates','macro','news','memory'][i]}=${String(s.reason).slice(0,80)}` : null)
+        .filter((x) => x !== null);
+      if (fetchFailures.length > 0) {
+        this.logger.warn(`[trader-agent] fetch partial failures: ${fetchFailures.join(' | ')}`);
+      }
 
       // 4. Build system + user prompts
       const systemPrompt = this.buildSystemPrompt(memory);
