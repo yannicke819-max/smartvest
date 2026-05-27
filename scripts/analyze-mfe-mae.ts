@@ -498,8 +498,9 @@ async function main() {
 
   const lessons: any[] = [];
 
-  // Lesson 1 — global capture rate
+  // Lesson 1 — global capture rate (capMed is a ratio; *100 → percent)
   const capMed = median(cap);
+  const capMedPct = capMed * 100;
   lessons.push({
     derived_from_date: new Date().toISOString().slice(0, 10),
     lesson_kind: 'trade_metrics',
@@ -507,7 +508,7 @@ async function main() {
     macro_condition: null,
     confidence: 0.85,
     sample_size: cap.length,
-    lesson_text: `Capture Rate global médian = ${pct(capMed * 100)}% (n=${cap.length} winners, ${ok.length} trades classifiés). Benchmark Sweeney/retail moyen 35-55%, healthy 55-70%. SmartVest est ${capMed * 100 < 35 ? 'EN DESSOUS du seuil retail — exit trop tôt ou trop tard' : capMed * 100 < 55 ? 'dans la zone retail moyenne' : capMed * 100 < 70 ? 'dans la zone healthy' : 'au-dessus du benchmark healthy'}. ${capMed * 100 < 35 ? 'Action: relâcher gates de sortie (FADE Gemini, early-exit), envisager trailing TP plus généreux.' : 'Action: maintenir la discipline actuelle.'}`,
+    lesson_text: `Capture Rate global médian = ${pct(capMedPct)}% (n=${cap.length} winners, ${ok.length} trades classifiés). Benchmark Sweeney/retail moyen 35-55%, healthy 55-70%. SmartVest est ${capMedPct < 35 ? 'EN DESSOUS du seuil retail — exit trop tôt ou trop tard' : capMedPct < 55 ? 'dans la zone retail moyenne' : capMedPct < 70 ? 'dans la zone healthy' : 'au-dessus du benchmark healthy'}. ${capMedPct < 35 ? 'Action: relâcher gates de sortie (FADE Gemini, early-exit), envisager trailing TP plus généreux.' : 'Action: maintenir la discipline actuelle.'}`,
     proposed_config_change: null,
     is_active: true,
     payload: {
