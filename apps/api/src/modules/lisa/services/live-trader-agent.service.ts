@@ -76,8 +76,8 @@ ACTIONS DISPONIBLES (action_kind) :
 
 CONTRAINTES DURES (les viole pas) :
 1. Notional par trade : $50 ≤ N ≤ $3000 (30% capital max sur 1 symbole)
-2. Stop loss obligatoire pour tout open : 0.5% ≤ SL ≤ 3% selon volatility
-3. Take profit obligatoire : 0.8% ≤ TP ≤ 5% (R/R ≥ 1.2 minimum, idéalement ≥ 2)
+2. Stop loss obligatoire pour tout open : 0.5% ≤ SL ≤ 1.5% (default 1%) — backtest 3 sem. valide
+3. Take profit obligatoire : 4% ≤ TP ≤ 8% (default 6%, R/R 6:1 — backtest 3 sem. valide)
 4. Confidence ≥ 0.65 pour qu'on agisse (sinon hold)
 5. Pas plus de 5 positions ouvertes simultanément
 6. Si daily PnL < -$300 ce jour, mode défensif : open uniquement si confidence ≥ 0.85
@@ -802,8 +802,9 @@ Garde ces lessons en tête en priorité pour ta décision actuelle.`;
         return { applied: false, error: 'missing symbol/direction/notional' };
       }
       const notional = Math.max(MIN_NOTIONAL_USD, Math.min(MAX_CONCENTRATION_USD, decision.notional_usd));
-      const slPct = Math.max(0.5, Math.min(3, decision.stop_loss_pct ?? 1.2));
-      const tpPct = Math.max(0.8, Math.min(5, decision.take_profit_pct ?? 2.5));
+      // Aligned with backtest 3 sem. : R/R 6:1 (TP 6% / SL 1%) — éviter le bruit smallcap.
+      const slPct = Math.max(0.5, Math.min(1.5, decision.stop_loss_pct ?? 1.0));
+      const tpPct = Math.max(4.0, Math.min(8.0, decision.take_profit_pct ?? 6.0));
 
       // Live price + sanity check
       const livePriceData = await this.lisa.getLivePrice(decision.symbol).catch(() => null);
@@ -890,8 +891,9 @@ Garde ces lessons en tête en priorité pour ta décision actuelle.`;
       }
       if (state.openCount >= 5) return { applied: false, error: 'scale_in: max 5 open positions' };
       const notional = Math.max(MIN_NOTIONAL_USD, Math.min(MAX_CONCENTRATION_USD * 1.5, decision.notional_usd));
-      const slPct = Math.max(0.5, Math.min(3, decision.stop_loss_pct ?? 1.2));
-      const tpPct = Math.max(0.8, Math.min(5, decision.take_profit_pct ?? 2.5));
+      // Aligned with backtest 3 sem. : R/R 6:1 (TP 6% / SL 1%) — éviter le bruit smallcap.
+      const slPct = Math.max(0.5, Math.min(1.5, decision.stop_loss_pct ?? 1.0));
+      const tpPct = Math.max(4.0, Math.min(8.0, decision.take_profit_pct ?? 6.0));
 
       const livePriceData = await this.lisa.getLivePrice(decision.symbol).catch(() => null);
       if (!livePriceData?.price) return { applied: false, error: 'scale_in: no live price' };
@@ -952,7 +954,8 @@ Garde ces lessons en tête en priorité pour ta décision actuelle.`;
       const livePrice = Number(livePriceData.price);
       if (!Number.isFinite(livePrice) || livePrice <= 0) return { applied: false, error: 'trail_stop: invalid live price' };
 
-      const slPct = Math.max(0.1, Math.min(5, decision.stop_loss_pct ?? 1.2));
+      // trail_stop = resserrer un SL existant — bornes large OK (0.1-5%), default aligné 1%
+      const slPct = Math.max(0.1, Math.min(5, decision.stop_loss_pct ?? 1.0));
       const isLong = String(row.direction) !== 'short';
       const sign = isLong ? -1 : 1;
       // Nouveau stop calculé depuis livePrice (trail = suit le marché)
