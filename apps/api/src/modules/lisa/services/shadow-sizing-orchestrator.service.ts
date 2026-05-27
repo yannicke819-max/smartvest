@@ -148,15 +148,32 @@ export class ShadowSizingOrchestratorService {
     const raw = this.config.get<string>('SHADOW_SIZING_ORCHESTRATOR_ENABLED');
     const rawGem = this.config.get<string>('SHADOW_SIZING_GEMINI_ENABLED');
     this.enabled = (raw ?? 'false').toLowerCase() === 'true';
-    // Log TOUJOURS pour visibilité boot.
     this.logger.log(
       `[shadow-sizing] onModuleInit fired — SHADOW_SIZING_ORCHESTRATOR_ENABLED raw="${raw}" parsed_enabled=${this.enabled} | SHADOW_SIZING_GEMINI_ENABLED raw="${rawGem}"`,
     );
+    // PREUVE DB sentinel : écrit une row shadow_sizing_autotune_log au boot.
+    this.writeBootSentinel(raw, rawGem).catch(() => null);
     if (this.enabled) {
       this.logger.log(
         `[shadow-sizing] ENABLED — cron */5min, target=$${DAILY_TARGET_USD}/d, drawdown_kill=${DRAWDOWN_KILL_PCT}%`,
       );
     }
+  }
+
+  private async writeBootSentinel(raw: string | undefined, rawGem: string | undefined): Promise<void> {
+    if (!this.supabase.isReady()) return;
+    const now = new Date();
+    await this.supabase.getClient().from('shadow_sizing_autotune_log').insert({
+      portfolio_id: SHADOW_PORTFOLIOS[0].id,
+      profile_name: 'boot_sentinel',
+      decision_kind: 'no_action',
+      trigger_metric: 'boot_sentinel',
+      trigger_value: 0,
+      threshold_value: 0,
+      action_applied: false,
+      rationale: `[BOOT_SENTINEL] onModuleInit fired @ ${now.toISOString()} — ORCH raw="${raw}" parsed=${this.enabled} | GEM raw="${rawGem}"`,
+      payload: { boot_sentinel: true, raw_flag: raw, raw_gem: rawGem, parsed_enabled: this.enabled },
+    });
   }
 
   /**
