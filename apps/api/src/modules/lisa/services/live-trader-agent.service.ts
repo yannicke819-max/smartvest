@@ -189,18 +189,53 @@ export class LiveTraderAgentService {
       // Idempotent : si déjà enregistré (hot reload), skip
       this.schedulerRegistry.getCronJob(name);
       this.logger.log(`[trader-agent] cron '${name}' already registered, skip`);
+      this.writeRegistrationSentinel(name, 'already_registered').catch(() => null);
       return;
     } catch {
       // Pas encore — on continue
     }
     try {
-      const job = new CronJob(expr, callback, null, true, 'UTC');
+      // Pattern exact de TopGainersScannerService.scheduleScanner (en prod P5)
+      const job = new CronJob(expr, callback);
       this.schedulerRegistry.addCronJob(name, job);
       job.start();
       this.logger.log(`[trader-agent] cron '${name}' registered manually expr='${expr}'`);
+      this.writeRegistrationSentinel(name, `OK expr=${expr}`).catch(() => null);
     } catch (e) {
-      this.logger.error(`[trader-agent] cron '${name}' registration FAILED: ${String(e).slice(0, 200)}`);
+      const errMsg = String(e).slice(0, 200);
+      this.logger.error(`[trader-agent] cron '${name}' registration FAILED: ${errMsg}`);
+      this.writeRegistrationSentinel(name, `FAILED: ${errMsg}`).catch(() => null);
     }
+  }
+
+  /** Sentinel DB inconditionnel à chaque tick du cron — prouve qu'il tire. */
+  private async writeCycleTickSentinel(): Promise<void> {
+    if (!this.supabase.isReady()) return;
+    await this.supabase.getClient().from('trader_agent_decisions').insert({
+      portfolio_id: TRADER_AGENT_PORTFOLIO_ID,
+      cycle_started_at: new Date().toISOString(),
+      input_state: { cycle_tick_sentinel: true, ts: Date.now() },
+      action_kind: 'hold',
+      thesis: `[CYCLE_TICK] cron fired @ ${new Date().toISOString()}`,
+      confidence: 0,
+      action_applied: false,
+      apply_error: '[CYCLE_TICK] proof cron fired',
+    });
+  }
+
+  /** Sentinel DB pour prouver que registerCron a été appelé (success ou fail). */
+  private async writeRegistrationSentinel(name: string, status: string): Promise<void> {
+    if (!this.supabase.isReady()) return;
+    await this.supabase.getClient().from('trader_agent_decisions').insert({
+      portfolio_id: TRADER_AGENT_PORTFOLIO_ID,
+      cycle_started_at: new Date().toISOString(),
+      input_state: { registration_sentinel: true, cron_name: name, status },
+      action_kind: 'hold',
+      thesis: `[REGISTRATION_SENTINEL] cron='${name}' status='${status}'`,
+      confidence: 0,
+      action_applied: false,
+      apply_error: `[REGISTRATION_SENTINEL] ${status}`,
+    });
   }
 
   private async writeBootSentinel(rawFlag: string | undefined): Promise<void> {
@@ -224,6 +259,8 @@ export class LiveTraderAgentService {
    * (cf. registerCron 'live-trader-agent-decision-manual').
    */
   async runDecisionCycle(): Promise<void> {
+    // Sentinel DB inconditionnel — prouve que le cron tire vraiment.
+    this.writeCycleTickSentinel().catch(() => null);
     // Log inconditionnel chaque tick pour vérifier que le cron tire vraiment.
     this.logger.log(`[trader-agent] cron tick @ ${new Date().toISOString()} enabled=${this.enabled} supabase=${this.supabase.isReady()} llmRouter=${this.llmRouter.isEnabled()}`);
     if (!this.enabled) return;
