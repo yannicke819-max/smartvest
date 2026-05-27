@@ -341,6 +341,16 @@ export class LiveTraderAgentService {
         }
       }
 
+      // Macro snapshot frais — sert à corréler les outcomes (gagnant/perdant)
+      // au régime du jour. Cache 2 min côté LisaService (probablement déjà chaud).
+      let macroSnapshot: object;
+      try {
+        macroSnapshot = await this.lisa.getRecentMarketSnapshot(120);
+      } catch (e) {
+        this.logger.warn(`[trader-agent:post-mortem] macro fetch failed: ${String(e).slice(0, 100)}`);
+        macroSnapshot = { note: 'macro_snapshot_unavailable' };
+      }
+
       const postMortemPrompt = `Tu es un coach trader senior. Analyse la journée du Trader Agent (portfolio $10k Gemini Pro autonome) ET le comparatif des 5 portfolios paper (main + 3 shadows + trader_agent).
 
 OBJECTIF : générer 5 lessons concrètes pour DOPER l'apprentissage du Trader Agent. Les lessons doivent :
@@ -350,20 +360,55 @@ OBJECTIF : générer 5 lessons concrètes pour DOPER l'apprentissage du Trader A
 4. Référencer les market_close_reports (Asia/EU/US sessions) pour contextualiser
 5. Être actionable : "Quand le contexte est X, fais Y" (pas "il faut être prudent")
 
+LECTURE MACRO OBLIGATOIRE (input \`macro_snapshot_eod\`) :
+Tu DOIS conditionner chaque lesson au régime macro du jour. Une lesson "ouvrir
+short sur tech au open US" n'a aucune valeur si elle ne précise pas le contexte
+(VIX 28 vs VIX 14, US10Y > 4.5% vs < 4.0%, etc.). Sans condition macro, la
+lesson est rejetée comme "macro-blind".
+
+Grille de lecture :
+- VIX > 25 = stressé / VIX > 30 = panique
+- US10Y up > +10bps = pression rates
+- DXY spike + 10Y > 4.5% = flight from risk assets
+- HY OAS > 500bps = credit stress
+- Gold + DXY contraires = flight to safety
+- Brent +5% intraday = geopolitique
+- USDJPY < 145 = yen carry unwind risk
+
+Chaque \`lesson_text\` DOIT contenir une clause "Quand <CONDITION MACRO>, alors
+<ACTION>". Sinon Gemini rejette la lesson.
+
+PATTERNS CROSS-PORTFOLIO À CHERCHER :
+- "Trader Agent a passé X trades pendant Asia session alors que shadow_high
+  qui était cash a évité une perte de $Y (cf. macro VIX 22 + DXY spike)"
+- "Shadow_small a ouvert 8 positions avec sizing micro pendant US morning :
+  $Z gain net malgré fees 30%. Le Trader Agent aurait dû en faire 4 sur
+  les mêmes patterns avec sizing 2× pour battre les frais"
+- "Trader Agent a ouvert 1 position à 17:00 UTC pendant la blacklist hour US,
+  -$X. Shadow_middle (qui bypass blacklist) a ouvert mais avec sentiment news
+  +0.8 → +$Y. Conclusion : bypass OK SI confirmation news fraîche"
+
 RÉPONSE JSON OBLIGATOIRE :
 {
-  "summary": "1-2 phrases résumé journée trader_agent vs autres portfolios",
+  "summary": "1-2 phrases résumé journée trader_agent vs autres portfolios + régime macro dominant",
+  "macro_regime_today": "ex: VIX 22 (élevé), US10Y 4.45% (rates stress), DXY 103 (USD fort), HY OAS 380bps (calme corporate)",
   "trader_agent_daily_pnl_usd": <nombre net total>,
-  "winning_patterns": ["pattern 1 avec chiffres", "pattern 2", ...],
-  "losing_patterns": ["pattern 1 avec chiffres", "pattern 2", ...],
-  "cross_portfolio_insights": ["X a battu Y de $Z grâce à...", ...],
+  "winning_patterns": ["pattern + chiffres + condition macro"],
+  "losing_patterns": ["pattern + chiffres + condition macro"],
+  "cross_portfolio_insights": ["X a battu Y de $Z grâce à... (régime macro: ...)", ...],
   "new_lessons": [
-    {"lesson_kind": "winning_pattern|losing_pattern|risk_observation|market_regime_rule|sizing_rule|cross_portfolio_insight", "lesson_text": "Quand X, fais Y (référence: Z trades observés)", "confidence": 0.0-1.0}
+    {
+      "lesson_kind": "winning_pattern|losing_pattern|risk_observation|market_regime_rule|sizing_rule|cross_portfolio_insight",
+      "lesson_text": "Quand <condition macro>, alors <action> (référence: Z trades observés)",
+      "confidence": 0.0-1.0,
+      "macro_condition": "VIX>25|US10Y>4.5|DXY>103|GOLD+DXY-|BRENT+5%|HY_OAS>500|USDJPY<145|REGIME_CALME|REGIME_MIXED"
+    }
   ]
 }`;
 
       const userPayload = JSON.stringify({
         date: new Date().toISOString().slice(0, 10),
+        macro_snapshot_eod: macroSnapshot,
         trader_agent_decisions: decisions ?? [],
         trader_agent_positions: positions ?? [],
         cross_portfolio_daily_summary: dailyByPortfolio,
@@ -381,7 +426,7 @@ RÉPONSE JSON OBLIGATOIRE :
 
       const cleaned = response.content.trim().replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
       const parsed = JSON.parse(cleaned);
-      const newLessons = parsed.new_lessons as Array<{ lesson_kind: string; lesson_text: string; confidence: number }>;
+      const newLessons = parsed.new_lessons as Array<{ lesson_kind: string; lesson_text: string; confidence: number; macro_condition?: string }>;
 
       if (!Array.isArray(newLessons) || newLessons.length === 0) {
         this.logger.warn('[trader-agent:post-mortem] no lessons returned');
@@ -389,17 +434,38 @@ RÉPONSE JSON OBLIGATOIRE :
       }
 
       const today = new Date().toISOString().slice(0, 10);
+      const macroRegime = parsed.macro_regime_today ?? null;
+      let persisted = 0;
+      let rejectedMacroBlind = 0;
       for (const l of newLessons) {
+        // Gate macro-condition : refuse les lessons qui n'ont pas de condition macro
+        // explicite (la grille interdit les lessons "macro-blind"). On accepte aussi
+        // les lessons qui contiennent "Quand" + un mot macro (VIX|DXY|10Y|HY|OAS|GOLD|BRENT|USDJPY|REGIME)
+        // dans le texte si macro_condition n'est pas fourni.
+        const hasExplicitMacroCondition = !!l.macro_condition && l.macro_condition.length > 0;
+        const hasInlineMacroClause = /quand\b.*\b(vix|dxy|10y|hy|oas|gold|brent|usdjpy|regime|us10y)\b/i.test(l.lesson_text);
+        if (!hasExplicitMacroCondition && !hasInlineMacroClause) {
+          this.logger.warn(`[trader-agent:post-mortem] reject macro-blind lesson: ${l.lesson_text.slice(0, 80)}`);
+          rejectedMacroBlind++;
+          continue;
+        }
         await this.supabase.getClient().from('trader_agent_memory').insert({
           portfolio_id: TRADER_AGENT_PORTFOLIO_ID,
           lesson_kind: l.lesson_kind,
           lesson_text: l.lesson_text,
           confidence: l.confidence,
           derived_from_date: today,
-          payload: { summary: parsed.summary, winning: parsed.winning_patterns, losing: parsed.losing_patterns },
+          payload: {
+            summary: parsed.summary,
+            macro_regime_today: macroRegime,
+            macro_condition: l.macro_condition ?? null,
+            winning: parsed.winning_patterns,
+            losing: parsed.losing_patterns,
+          },
         });
+        persisted++;
       }
-      this.logger.log(`[trader-agent:post-mortem] persisted ${newLessons.length} new lessons`);
+      this.logger.log(`[trader-agent:post-mortem] persisted ${persisted} lessons (${rejectedMacroBlind} rejected macro-blind)`);
     } catch (e) {
       this.logger.warn(`[trader-agent:post-mortem] failed: ${String(e).slice(0, 200)}`);
     }
