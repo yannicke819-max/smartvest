@@ -1,7 +1,8 @@
 # fly.toml — SmartVest API (NestJS)
 #
-# Last forced redeploy : 2026-05-02 — unstuck v334 image after migration 0097
-# hotfix (#197). Machine d8d4070a719018 had exhausted 10 restart attempts on
+# Last forced redeploy : 2026-05-27 — re-trigger Fly workflow after b4f6667
+# (dead-zone gate) hung on initial push 15:37 UTC. fly.toml is in trigger paths
+# so a no-op edit re-enqueues the deploy job. Previous note 2026-05-02 #197.
 # pre-hotfix build; #197 only touched supabase/migrations/* which doesn't
 # match fly.yml `paths` filter, so no auto-deploy was triggered. This bump
 # forces fly.yml to re-deploy from main HEAD (post-#196 BLOC 4 + #197 fix).
