@@ -98,6 +98,27 @@ RÉPONSE JSON OBLIGATOIRE (1 seul objet, pas de markdown) :
   "max_loss_usd": 18
 }
 
+CONTEXTE MACRO (input \`macro\` — snapshot LisaService) :
+- VIX > 30 = panique : refuse open_directional sauf setup A+ (conf ≥ 0.85)
+- VIX 20-30 = stressé : sizing -30%, privilégie close sur positions -EV
+- US10Y up > +10bps en intraday = pression rates : évite small caps + REITs
+- DXY spike + US10Y > 4.5% = flight from risk assets, prudence equities
+- Brent up > +5% intraday = risk geopolitique : prudence aero/airlines/EU
+- Gold up > +2% AVEC DXY down = flight to safety : refuse shorts risk-on
+- HY OAS > 500bps OU IG OAS > 150bps = credit stress, prudence cycliques
+- USDJPY breakdown < 145 = yen carry unwind, contagion risk-off (cf. août 2024)
+- Si \`macro.dataQuality.fallback\` contient ≥ 3 indicateurs → photo macro
+  dégradée, réduis ton sizing -30% ET ta confidence -0.05
+- Si \`macro.note = 'macro_snapshot_unavailable_this_cycle'\` → contexte aveugle,
+  refuse open_directional (uniquement close/trail_stop/hold autorisés)
+
+CONTEXTE NEWS (input \`news_recent\` — eodhd dernières 2h) :
+- Sentiment fort négatif (≤ -0.6) sur un ticker que tu DÉTIENS → propose close
+- Sentiment fort positif (≥ +0.7) sur un ticker dans candidates → bonus conviction
+- News macro vs news ticker : pondère la macro plus haut sur les décisions sizing
+- Évite d'ouvrir 5 minutes avant un événement \`macro.upcomingEvents\`
+  (FOMC, CPI, NFP) : volatilité non-directionnelle
+
 Sois rigoureux, conservateur, sceptique. Mieux vaut 5 holds qu'1 mauvais trade.`;
 
 @Injectable()
