@@ -191,15 +191,16 @@ export class LiveTraderAgentService {
         },
       }, null, 2);
 
-      // 5. Call Gemini Pro
+      // 5. Call Gemini Pro (raisonnement multi-facteurs sur 20 candidats + macro + news + memory).
+      // Auto-fallback Flash Lite → Claude Opus si Pro indisponible (cf. ScannerLlmRouter.callWithPro).
       let response: { content: string; providerId: string; costUsd: number; latencyMs: number };
       try {
-        response = await this.llmRouter.call({
+        response = await this.llmRouter.callWithPro({
           system: systemPrompt,
           user: userPrompt,
           temperature: 0.3,
           maxTokens: 1000,
-          timeoutMs: 15_000,
+          timeoutMs: 20_000,
         });
       } catch (e) {
         this.logger.warn(`[trader-agent] LLM call failed: ${String(e).slice(0, 150)}`);
@@ -348,7 +349,8 @@ RÉPONSE JSON OBLIGATOIRE :
         market_close_reports_today: closeReports ?? [],
       }, null, 2);
 
-      const response = await this.llmRouter.call({
+      // Post-mortem = raisonnement sur 24h × 5 portfolios → Pro requis (qualité d'analyse).
+      const response = await this.llmRouter.callWithPro({
         system: postMortemPrompt,
         user: userPayload,
         temperature: 0.4,
@@ -455,12 +457,15 @@ RÉPONSE JSON OBLIGATOIRE :
   }
 
   private async fetchMacroContext(): Promise<object> {
-    // Best-effort : si LisaService expose un cache macro, l'utiliser
+    // Cache 2 min côté LisaService — partagé avec ShadowSizingOrchestrator pour
+    // éviter de re-fetch les 15-20 calls API EODHD/Yahoo à chaque cycle de 5 min.
     try {
-      const cached = (this.lisa as unknown as { lastMarketSnapshot?: object }).lastMarketSnapshot;
-      if (cached) return cached;
-    } catch { /* ignore */ }
-    return { note: 'macro_snapshot_unavailable_this_cycle' };
+      const snap = await this.lisa.getRecentMarketSnapshot(120);
+      return snap;
+    } catch (e) {
+      this.logger.warn(`[trader-agent] macro fetch failed: ${String(e).slice(0, 100)}`);
+      return { note: 'macro_snapshot_unavailable_this_cycle', error: String(e).slice(0, 100) };
+    }
   }
 
   private async fetchRecentNews(n: number): Promise<object[]> {
@@ -554,12 +559,145 @@ Garde ces lessons en tête en priorité pour ta décision actuelle.`;
     }
 
     if (decision.action_kind === 'close') {
-      // TODO future PR : close via paperBroker
-      return { applied: false, error: 'close action not yet wired (follow-up PR)' };
+      // Gemini fournit un symbol → on résout vers le positionId via state.openPositions.
+      if (!decision.symbol) return { applied: false, error: 'close requires symbol' };
+      const sym = decision.symbol.toUpperCase();
+      const match = state.openPositions.find((p) => p.symbol.toUpperCase() === sym);
+      if (!match) {
+        return { applied: false, error: `close: no open position for ${sym} on trader agent portfolio` };
+      }
+      // Need the position id (not exposed in state) — re-query.
+      const { data: row } = await this.supabase.getClient()
+        .from('lisa_positions')
+        .select('id')
+        .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+        .eq('symbol', match.symbol)
+        .eq('status', 'open')
+        .order('entry_timestamp', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!row?.id) return { applied: false, error: `close: position row not found for ${sym}` };
+
+      const livePriceData = await this.lisa.getLivePrice(decision.symbol).catch(() => null);
+      if (!livePriceData?.price) return { applied: false, error: 'close: no live price' };
+      const livePrice = Number(livePriceData.price);
+      if (!Number.isFinite(livePrice) || livePrice <= 0) return { applied: false, error: 'close: invalid live price' };
+
+      const res = await this.lisa.closeForOpportunityScout({
+        positionId: row.id,
+        livePrice,
+        ...(livePriceData.source ? { livePriceSource: String(livePriceData.source) } : {}),
+        reason: 'closed_user',
+        rationale: `[trader-agent] ${decision.thesis ?? 'gemini close decision'}`,
+      });
+      if (res.closed) return { applied: true, positionId: row.id };
+      return { applied: false, ...(res.error !== undefined ? { error: res.error } : {}) };
     }
 
-    if (decision.action_kind === 'open_pairs' || decision.action_kind === 'scale_in' || decision.action_kind === 'trail_stop') {
-      return { applied: false, error: `${decision.action_kind} not yet wired (follow-up PR)` };
+    if (decision.action_kind === 'scale_in') {
+      // Scale-in = nouvelle ligne open_directional sur un symbol DÉJÀ détenu,
+      // notional capé à +50% du sizing standard (cf. system prompt). Le paper-broker
+      // tracke 2 lignes distinctes — comportement attendu.
+      if (!decision.symbol || !decision.direction || !decision.notional_usd) {
+        return { applied: false, error: 'scale_in: missing symbol/direction/notional' };
+      }
+      const sym = decision.symbol.toUpperCase();
+      const hasOpen = state.openPositions.some((p) => p.symbol.toUpperCase() === sym);
+      if (!hasOpen) {
+        return { applied: false, error: `scale_in: no existing position on ${sym} (use open_directional)` };
+      }
+      if (state.openCount >= 5) return { applied: false, error: 'scale_in: max 5 open positions' };
+      const notional = Math.max(MIN_NOTIONAL_USD, Math.min(MAX_CONCENTRATION_USD * 1.5, decision.notional_usd));
+      const slPct = Math.max(0.5, Math.min(3, decision.stop_loss_pct ?? 1.2));
+      const tpPct = Math.max(0.8, Math.min(5, decision.take_profit_pct ?? 2.5));
+
+      const livePriceData = await this.lisa.getLivePrice(decision.symbol).catch(() => null);
+      if (!livePriceData?.price) return { applied: false, error: 'scale_in: no live price' };
+      const livePrice = Number(livePriceData.price);
+      if (!Number.isFinite(livePrice) || livePrice <= 0) return { applied: false, error: 'scale_in: invalid live price' };
+      if (livePriceData.source && (String(livePriceData.source).startsWith('stale_') || String(livePriceData.source).startsWith('fallback'))) {
+        return { applied: false, error: `scale_in: price source unreliable: ${livePriceData.source}` };
+      }
+
+      const sign = decision.direction === 'short' ? -1 : 1;
+      const stopLossPrice = (livePrice * (1 - sign * slPct / 100)).toFixed(6);
+      const takeProfitPrice = (livePrice * (1 + sign * tpPct / 100)).toFixed(6);
+
+      try {
+        const opened = await this.lisa.openForOpportunityScout({
+          portfolioId: TRADER_AGENT_PORTFOLIO_ID,
+          symbol: decision.symbol,
+          assetClass: 'unknown',
+          venue: 'paper',
+          notionalUsd: notional,
+          livePrice,
+          stopLossPrice,
+          takeProfitPrice,
+          horizonDays: Math.ceil((decision.horizon_minutes ?? 60) / (60 * 24)),
+          maxOpenPositions: 5,
+          rationale: `[trader-agent SCALE_IN] ${decision.thesis}`,
+        });
+        if (!opened) return { applied: false, error: 'scale_in: open returned null' };
+        return { applied: true, positionId: opened.id };
+      } catch (e) {
+        return { applied: false, error: String(e).slice(0, 200) };
+      }
+    }
+
+    if (decision.action_kind === 'trail_stop') {
+      // Trail stop = UPDATE stop_loss_price d'une position ouverte.
+      // Gemini fournit symbol + nouveau stop_loss_pct (% sous entry pour long).
+      // Garde-fou : le nouveau stop ne peut JAMAIS être plus permissif que l'ancien
+      // (sinon ce n'est pas un trail mais un loosening — refusé).
+      if (!decision.symbol) return { applied: false, error: 'trail_stop: requires symbol' };
+      const sym = decision.symbol.toUpperCase();
+      const match = state.openPositions.find((p) => p.symbol.toUpperCase() === sym);
+      if (!match) return { applied: false, error: `trail_stop: no open position for ${sym}` };
+
+      const { data: row } = await this.supabase.getClient()
+        .from('lisa_positions')
+        .select('id, stop_loss_price, entry_price, direction')
+        .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+        .eq('symbol', match.symbol)
+        .eq('status', 'open')
+        .order('entry_timestamp', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!row?.id) return { applied: false, error: `trail_stop: position row not found for ${sym}` };
+
+      const livePriceData = await this.lisa.getLivePrice(decision.symbol).catch(() => null);
+      if (!livePriceData?.price) return { applied: false, error: 'trail_stop: no live price' };
+      const livePrice = Number(livePriceData.price);
+      if (!Number.isFinite(livePrice) || livePrice <= 0) return { applied: false, error: 'trail_stop: invalid live price' };
+
+      const slPct = Math.max(0.1, Math.min(5, decision.stop_loss_pct ?? 1.2));
+      const isLong = String(row.direction) !== 'short';
+      const sign = isLong ? -1 : 1;
+      // Nouveau stop calculé depuis livePrice (trail = suit le marché)
+      const newStop = livePrice * (1 + sign * slPct / 100);
+      const oldStop = Number(row.stop_loss_price);
+
+      // Garde-fou : le nouveau stop doit être PLUS strict
+      // - long : newStop > oldStop (on remonte le stop)
+      // - short : newStop < oldStop (on descend le stop)
+      const stricter = isLong ? newStop > oldStop : newStop < oldStop;
+      if (!stricter) {
+        return { applied: false, error: `trail_stop: new stop ${newStop.toFixed(4)} not stricter than current ${oldStop.toFixed(4)} (${isLong ? 'long' : 'short'})` };
+      }
+
+      const { error } = await this.supabase.getClient()
+        .from('lisa_positions')
+        .update({ stop_loss_price: newStop.toFixed(6) })
+        .eq('id', row.id);
+      if (error) return { applied: false, error: `trail_stop: db update failed: ${error.message}` };
+      return { applied: true, positionId: row.id };
+    }
+
+    if (decision.action_kind === 'open_pairs') {
+      // Pair trade = 2 positions simultanées (long A + short B), market neutral.
+      // Hors-scope MVP : nécessite logique d'apariement + sizing partagé. À câbler
+      // dans un PR dédié quand le besoin se manifeste sur les décisions Gemini.
+      return { applied: false, error: 'open_pairs: not yet wired (rare action, follow-up PR)' };
     }
 
     return { applied: false, error: `unknown action: ${decision.action_kind}` };

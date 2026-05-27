@@ -576,11 +576,23 @@ export class ShadowSizingOrchestratorService {
       recentDecisions[snap.profileName] = (decisions ?? []) as object[];
     }
 
+    // Macro context (cache 2 min côté LisaService — partagé avec LiveTraderAgent).
+    // Critique pour contextualiser les décisions kill/raise/lower (un drawdown en VIX 35
+    // ne se traite pas comme un drawdown en VIX 14).
+    let macro: object;
+    try {
+      macro = await this.lisa.getRecentMarketSnapshot(120);
+    } catch (e) {
+      this.logger.warn(`[shadow-sizing-gemini] macro fetch failed: ${String(e).slice(0, 100)}`);
+      macro = { note: 'macro_snapshot_unavailable_this_cycle' };
+    }
+
     const systemPrompt = SHADOW_SIZING_GEMINI_SYSTEM_PROMPT;
     const userPrompt = JSON.stringify({
       current_time_utc: new Date().toISOString(),
       target_usd_per_day: DAILY_TARGET_USD,
       drawdown_kill_threshold_pct: DRAWDOWN_KILL_PCT,
+      macro,
       profiles: snapshots.map((s) => ({
         name: s.profileName,
         portfolio_id: s.portfolioId.slice(0, 8),
@@ -600,14 +612,16 @@ export class ShadowSizingOrchestratorService {
       recent_decisions_per_profile: recentDecisions,
     }, null, 2);
 
+    // Gemini Pro pour le raisonnement sizing — qualité supérieure sur l'analyse
+    // comparative multi-profiles + macro. Auto-fallback Flash Lite si Pro down.
     let response: { content: string; providerId: string; costUsd: number; latencyMs: number };
     try {
-      response = await this.llmRouter.call({
+      response = await this.llmRouter.callWithPro({
         system: systemPrompt,
         user: userPrompt,
         temperature: 0.2,
         maxTokens: 800,
-        timeoutMs: 10_000,
+        timeoutMs: 20_000,
       });
     } catch (e) {
       this.logger.warn(`[shadow-sizing-gemini] LLM call failed: ${String(e).slice(0, 150)}`);

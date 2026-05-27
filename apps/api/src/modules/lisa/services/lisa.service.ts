@@ -91,6 +91,10 @@ export class LisaService {
   private readonly riskEnforcer: RiskEnforcer;
   private readonly paperBroker: PaperBrokerService;
   private readonly riskMonitor: RiskMonitorService;
+  // Cache léger du dernier MarketSnapshot. Consommé par les services tiers
+  // (LiveTraderAgent, ShadowSizingOrchestrator) qui ont besoin d'un contexte
+  // macro frais sans payer le coût d'un re-fetch complet à chaque cycle.
+  private lastMarketSnapshotCache: { snap: MarketSnapshot; fetchedAt: number } | null = null;
 
   /**
    * P0-B — Cache last-known macro per indicator. Quand toutes les sources
@@ -4676,6 +4680,61 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     } catch (e) {
       this.logger.warn(`[opportunity-scout] openPositionDirect ${cmd.symbol} failed: ${String(e).slice(0, 200)}`);
       return null;
+    }
+  }
+
+  /**
+   * Snapshot macro cached. Re-fetch si plus vieux que maxAgeSec.
+   * Évite à des services tiers (LiveTraderAgent, ShadowSizingOrchestrator) de
+   * payer 15-20 calls API + 3s latency à chaque cycle 5min.
+   *
+   * Le cache n'est PAS partagé avec le pipeline Lisa principal (qui appelle
+   * fetchMarketSnapshot() directement pour garantir la fraîcheur d'un proposal).
+   */
+  async getRecentMarketSnapshot(maxAgeSec: number = 120): Promise<MarketSnapshot> {
+    const now = Date.now();
+    if (this.lastMarketSnapshotCache && (now - this.lastMarketSnapshotCache.fetchedAt) < maxAgeSec * 1000) {
+      return this.lastMarketSnapshotCache.snap;
+    }
+    const fresh = await this.fetchMarketSnapshot();
+    this.lastMarketSnapshotCache = { snap: fresh, fetchedAt: now };
+    return fresh;
+  }
+
+  /**
+   * Close une position par id via le paperBroker. Pattern symétrique à
+   * openForOpportunityScout. Utilisé par LiveTraderAgent quand Gemini propose
+   * un action_kind='close' sur un symbol qu'il détient.
+   *
+   * Le caller résout symbol → positionId via son state (positions ouvertes
+   * du portfolio). Sanity bound : refuse si livePrice diverge > 30% d'entry
+   * (anti-corruption cache, cf. règle "checkStopTarget [SANITY_BOUND]").
+   */
+  async closeForOpportunityScout(cmd: {
+    positionId: string;
+    livePrice: number;
+    livePriceSource?: string;
+    reason: 'closed_target' | 'closed_stop' | 'closed_invalidated' | 'closed_user' | 'closed_kill' | 'closed_expired';
+    rationale: string;
+  }): Promise<{ closed: boolean; error?: string }> {
+    // Refuse si source unreliable (fallback / stale)
+    if (cmd.livePriceSource && (cmd.livePriceSource.startsWith('stale_') || cmd.livePriceSource.startsWith('fallback'))) {
+      return { closed: false, error: `price source unreliable: ${cmd.livePriceSource}` };
+    }
+    if (!Number.isFinite(cmd.livePrice) || cmd.livePrice <= 0) {
+      return { closed: false, error: `invalid livePrice ${cmd.livePrice}` };
+    }
+    try {
+      await this.paperBroker.closePosition({
+        positionId: cmd.positionId,
+        reason: cmd.reason,
+        livePrice: cmd.livePrice.toFixed(6),
+        rationale: cmd.rationale.slice(0, 500),
+        ...(cmd.livePriceSource ? { livePriceSource: cmd.livePriceSource } : {}),
+      });
+      return { closed: true };
+    } catch (e) {
+      return { closed: false, error: String(e).slice(0, 200) };
     }
   }
 }
