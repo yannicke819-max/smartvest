@@ -18,11 +18,9 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import Anthropic from '@anthropic-ai/sdk';
 import {
   MultiVendorLlmRouter,
   GeminiProvider,
-  ClaudeProvider,
   type LlmCallParams,
   type MultiVendorCallMetrics,
 } from '@smartvest/ai-analyst';
@@ -47,25 +45,21 @@ export class ScannerLlmRouterService {
       return;
     }
 
-    // ADR-001 — Chain simplifiée : Gemini primary + Claude Opus fallback ultime.
+    // Architecture Gemini-only (décision utilisateur 27/05 — éviter coûts Anthropic
+    // qui ne sont qu'un filet ultime jamais nécessaire si Gemini répond).
+    // Plus de ClaudeProvider dans la chain : si Gemini Pro + Flash Lite tous deux
+    // fail, le service skip son cycle. Coût zéro Anthropic en contrepartie.
     const geminiKey = this.config.get<string>('GEMINI_API_KEY');
-    const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
-    const claudeFallback = anthropicKey
-      ? [new ClaudeProvider({ anthropic: new Anthropic({ apiKey: anthropicKey }) })]
-      : [];
 
-    // Chain default (fast path scanner) : Flash Lite → Claude Opus
+    // Chain default (fast path scanner) : Flash Lite seul
     const chain = [
       new GeminiProvider({ apiKey: geminiKey }),
-      ...claudeFallback,
     ];
 
-    // Chain Pro (raisonnement) : Pro → Flash Lite → Claude Opus
-    // Si Pro fail (quota, timeout), on dégrade automatiquement.
+    // Chain Pro (raisonnement) : Pro → Flash Lite (auto-dégradation interne Gemini)
     const chainPro = [
       new GeminiProvider({ apiKey: geminiKey, model: 'gemini-2.5-pro' }),
       new GeminiProvider({ apiKey: geminiKey }),
-      ...claudeFallback,
     ];
 
     try {
