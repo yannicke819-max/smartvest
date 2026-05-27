@@ -70,22 +70,22 @@ describe('ScannerLlmRouterService — ADR-001 Phase 1 chain simplification', () 
     ).rejects.toThrow(/router disabled/);
   });
 
-  it('ADR-001 invariant : OPENAI_API_KEY and MISTRAL_API_KEY are NOT consulted (chain simplifiée)', () => {
-    // Si openAI/mistral étaient encore dans la chain, le config.get serait
-    // appelé avec ces clés. Ce test vérifie qu'ils ne le sont pas.
+  it('Gemini-only invariant (27/05/2026) : aucune clé Anthropic/OpenAI/Mistral consultée', () => {
+    // Chain Gemini-only depuis 27/05 (cf. claude/llm-timeout-30s). Plus de
+    // ClaudeProvider en fallback ultime. Le router ne doit consulter QUE
+    // GEMINI_API_KEY (+ le flag SCANNER_LLM_ROUTER_ENABLED).
     const calls: string[] = [];
     const config = {
       get: jest.fn((key: string) => {
         calls.push(key);
         if (key === 'SCANNER_LLM_ROUTER_ENABLED') return 'true';
         if (key === 'GEMINI_API_KEY') return 'gemini-test-key';
-        if (key === 'ANTHROPIC_API_KEY') return 'sk-ant-test';
         return undefined;
       }),
     } as any;
     new ScannerLlmRouterService(config);
     expect(calls).toContain('GEMINI_API_KEY');
-    expect(calls).toContain('ANTHROPIC_API_KEY');
+    expect(calls).not.toContain('ANTHROPIC_API_KEY');
     expect(calls).not.toContain('OPENAI_API_KEY');
     expect(calls).not.toContain('MISTRAL_API_KEY');
   });
