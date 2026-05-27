@@ -54,6 +54,7 @@ import {
   type TickerSizeMultConfig,
 } from './data-driven-gates.helper';
 import { SizingABTestService } from './research/sizing-ab-test.service';
+import { ScannerLessonsContextService } from './scanner-lessons-context.service';
 import { EodhdQuotaService } from './eodhd-quota.service';
 import { EodhdCalendarService } from './eodhd-calendar.service';
 import { EodhdNewsService } from './eodhd-news.service';
@@ -783,6 +784,9 @@ export class TopGainersScannerService implements OnModuleInit {
     @Optional() private readonly microProbe?: MicroMomentumProbeService,
     // Sizing A/B test (research) — Optional pour back-compat tests.
     @Optional() private readonly sizingAbTest?: SizingABTestService,
+    // Phase 3 — scanner_lessons injecté dans les system prompts Gemini.
+    // Optional pour back-compat tests (le getter retourne '' si pas fourni).
+    @Optional() private readonly lessonsContext?: ScannerLessonsContextService,
   ) {
     // Parse stagflation hedge guard config 1× au boot. ConfigService.get retourne
     // toujours string|undefined ; on convertit via le helper pur.
@@ -4406,9 +4410,14 @@ export class TopGainersScannerService implements OnModuleInit {
         tf30m: persistence.tf30m,
         tf1h: persistence.tf1h,
       });
+      const lessonsBlock = this.lessonsContext
+        ? await this.lessonsContext.getLessonsBlock('all_scanner', { assetClass: String(cand.assetClass) }).catch(() => '')
+        : '';
+      const systemPrompt = lessonsBlock
+        ? `You are a momentum scanner validating top market gainers. Assess if this is a genuine momentum signal or noise (pump-and-dump, thin volume, etc.). Return ONLY a JSON object: {"pass":true,"signal_quality":0.85,"reason":"brief reason max 60 chars"}. signal_quality in [0,1]. Set pass=false when signal_quality<0.4.\n\n${lessonsBlock}`
+        : 'You are a momentum scanner validating top market gainers. Assess if this is a genuine momentum signal or noise (pump-and-dump, thin volume, etc.). Return ONLY a JSON object: {"pass":true,"signal_quality":0.85,"reason":"brief reason max 60 chars"}. signal_quality in [0,1]. Set pass=false when signal_quality<0.4.';
       const res = await this.llmRouter.call({
-        system:
-          'You are a momentum scanner validating top market gainers. Assess if this is a genuine momentum signal or noise (pump-and-dump, thin volume, etc.). Return ONLY a JSON object: {"pass":true,"signal_quality":0.85,"reason":"brief reason max 60 chars"}. signal_quality in [0,1]. Set pass=false when signal_quality<0.4.',
+        system: systemPrompt,
         user,
         temperature: 0.1,
         maxTokens: 128,
@@ -4442,9 +4451,14 @@ export class TopGainersScannerService implements OnModuleInit {
       const user = JSON.stringify(
         top.map((c) => ({ symbol: c.symbol, assetClass: c.assetClass, changePct: c.changePct, score: c.score, exchange: c.exchange })),
       );
+      const lessonsBlock = this.lessonsContext
+        ? await this.lessonsContext.getLessonsBlock('all_scanner').catch(() => '')
+        : '';
+      const systemPrompt = lessonsBlock
+        ? `You are a momentum scanner. Re-rank these candidates by expected momentum continuation probability. Return ONLY a JSON array of symbols in rank order, most promising first. Example: ["BTCUSDT","AAPL"]. Preserve all symbols.\n\n${lessonsBlock}`
+        : 'You are a momentum scanner. Re-rank these candidates by expected momentum continuation probability. Return ONLY a JSON array of symbols in rank order, most promising first. Example: ["BTCUSDT","AAPL"]. Preserve all symbols.';
       const res = await this.llmRouter.call({
-        system:
-          'You are a momentum scanner. Re-rank these candidates by expected momentum continuation probability. Return ONLY a JSON array of symbols in rank order, most promising first. Example: ["BTCUSDT","AAPL"]. Preserve all symbols.',
+        system: systemPrompt,
         user,
         temperature: 0.1,
         maxTokens: 128,

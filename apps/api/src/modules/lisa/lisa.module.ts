@@ -53,6 +53,7 @@ import { GainersUserShadowService } from './services/gainers-user-shadow.service
 import { ShadowSizingOrchestratorService } from './services/shadow-sizing-orchestrator.service';
 import { LiveTraderAgentService } from './services/live-trader-agent.service';
 import { MainScannerPostMortemService } from './services/main-scanner-postmortem.service';
+import { ScannerLessonsContextService } from './services/scanner-lessons-context.service';
 import { MarketCloseReportService } from './services/market-close-report.service';
 import { GainersAutoRelaxService } from './services/gainers-auto-relax.service';
 import { PostSlBackfillService } from './services/post-sl-backfill.service';
@@ -197,6 +198,10 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     // MainScannerPostMortemService — apprentissage Gemini Pro sur le scanner gainers
     // (cron 02:30 UTC : analyse 24h × 4 portfolios → lessons macro-conditionnelles).
     MainScannerPostMortemService,
+    // ScannerLessonsContextService — fournit le bloc Markdown des lessons actives
+    // à injecter dans les system prompts (signal validation, ranking, risk manager, macro veto).
+    // Cache TTL 5 min pour éviter requêtes DB répétées (scanner ~500 calls/cycle).
+    ScannerLessonsContextService,
     // Market Close Reports — comparatif 5 portfolios à chaque cloche (Asia/EU/US) + daily wrap.
     MarketCloseReportService,
     // PR #282 — Auto-relax adaptive : lit cumulative_regret 7j et propose/auto-applique relax
