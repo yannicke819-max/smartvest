@@ -76,8 +76,14 @@ ACTIONS DISPONIBLES (action_kind) :
 
 CONTRAINTES DURES (les viole pas) :
 1. Notional par trade : $50 ≤ N ≤ $3000 (30% capital max sur 1 symbole)
-2. Stop loss obligatoire pour tout open : 0.5% ≤ SL ≤ 1.5% (default 1%) — backtest 3 sem. valide
-3. Take profit obligatoire : 4% ≤ TP ≤ 8% (default 6%, R/R 6:1 — backtest 3 sem. valide)
+2. Stop loss obligatoire pour tout open : 0.5% ≤ SL ≤ 3% (default 1%) — backtest 3 sem. valide R/R 6:1
+3. Take profit obligatoire : 2% ≤ TP ≤ 10% (default 6%, R/R 6:1 — backtest 3 sem. valide)
+4. AUTONOMIE CADRÉE : tu peux dévier du default 1%/6% si tu vois un signal LIVE non-capturé
+   par le backtest (résistance proche, volatilité anormale, news imminente, microcap, etc.)
+5. SI tu dévies du default de plus de 30% (ex: TP=2.5 ou TP=8.5, SL=0.6 ou SL=1.4), tu DOIS
+   préfixer ton thesis avec "[TP_CUSTOM: X% / SL_CUSTOM: Y%] reason: <raison concrète>"
+   Exemple: "[TP_CUSTOM: 3% / SL_CUSTOM: 1.5%] reason: résistance H4 à +3.2%, ATR daily 0.4%"
+6. Privilégie le default 6%/1% sauf raison forte — c'est le sweet spot statistique 3 sem.
 4. Confidence ≥ 0.65 pour qu'on agisse (sinon hold)
 5. Pas plus de 5 positions ouvertes simultanément
 6. Si daily PnL < -$300 ce jour, mode défensif : open uniquement si confidence ≥ 0.85
@@ -590,15 +596,41 @@ RÉPONSE JSON OBLIGATOIRE :
   "winning_patterns": ["pattern + chiffres + condition macro"],
   "losing_patterns": ["pattern + chiffres + condition macro"],
   "cross_portfolio_insights": ["X a battu Y de $Z grâce à... (régime macro: ...)", ...],
+  "autonomy_analysis": {
+    "aligned_count": <N>,
+    "aligned_wr": <0-1>,
+    "aligned_avg_pnl_usd": <num>,
+    "deviation_tight_count": <N>,
+    "deviation_tight_wr": <0-1>,
+    "deviation_tight_avg_pnl_usd": <num>,
+    "deviation_wide_count": <N>,
+    "deviation_wide_wr": <0-1>,
+    "deviation_wide_avg_pnl_usd": <num>,
+    "recommendation": "keep_default | widen_tighter | widen_wider | tighten_bounds"
+  },
   "new_lessons": [
     {
-      "lesson_kind": "winning_pattern|losing_pattern|risk_observation|market_regime_rule|sizing_rule|cross_portfolio_insight",
+      "lesson_kind": "winning_pattern|losing_pattern|risk_observation|market_regime_rule|sizing_rule|cross_portfolio_insight|autonomy_calibration",
       "lesson_text": "Quand <condition macro>, alors <action> (référence: Z trades observés)",
       "confidence": 0.0-1.0,
       "macro_condition": "VIX>25|US10Y>4.5|DXY>103|GOLD+DXY-|BRENT+5%|HY_OAS>500|USDJPY<145|REGIME_CALME|REGIME_MIXED"
     }
   ]
-}`;
+}
+
+ANALYSE D'AUTONOMIE (autonomy_analysis section) :
+Tu DOIS analyser SÉPARÉMENT 3 profils de décisions Gemini Pro :
+- ALIGNED : trades avec TP ∈ [4-8] ET SL ∈ [0.5-1.5] (proche default 6/1)
+- DEVIATION_TIGHT : trades avec TP < 4 OU SL > 1.5 (Gemini serre)
+- DEVIATION_WIDE : trades avec TP > 8 OU SL < 0.5 (Gemini élargit)
+
+Pour chaque profil, calcule n, win_rate (% closed_target), avg_pnl_usd.
+
+Recommendation rules :
+- Si deviation_tight WR > aligned WR * 1.3 ET sample ≥ 10 → "widen_tighter" (Gemini a raison de serrer)
+- Si deviation_wide WR > aligned WR * 1.3 ET sample ≥ 10 → "widen_wider" (Gemini a raison d'élargir)
+- Si toutes les deviations sous-performent → "tighten_bounds" (forcer le default)
+- Sinon → "keep_default" (calibrage OK)`;
 
       const userPayload = JSON.stringify({
         date: new Date().toISOString().slice(0, 10),
@@ -664,6 +696,112 @@ RÉPONSE JSON OBLIGATOIRE :
     } catch (e) {
       this.logger.warn(`[trader-agent:post-mortem] failed: ${String(e).slice(0, 200)}`);
     }
+  }
+
+  // ====================================================================
+  // PUBLIC API — endpoint admin /admin/trader-agent/autonomy
+  // ====================================================================
+
+  /**
+   * Analyse l'autonomie de Gemini Pro : compare les outcomes des trades
+   * 'aligned' (TP 4-8%, SL 0.5-1.5% — proche default 6/1) vs 'deviation_tight'
+   * (TP<4 ou SL>1.5%) vs 'deviation_wide' (TP>8 ou SL<0.5%).
+   *
+   * Si Gemini surperforme en serrant ou élargissant ses TP/SL, on saura qu'il
+   * a "raison" et on peut élargir les bornes ou inversement les resserrer.
+   */
+  async getAutonomyAnalysis(lookbackDays: number = 7): Promise<object> {
+    const since = new Date(Date.now() - lookbackDays * 24 * 60 * 60_000).toISOString();
+    const { data: decisions } = await this.supabase.getClient()
+      .from('trader_agent_decisions')
+      .select('decided_at, gemini_parsed, action_kind, applied_position_id, action_applied')
+      .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+      .eq('action_applied', true)
+      .eq('action_kind', 'open_directional')
+      .not('applied_position_id', 'is', null)
+      .gte('decided_at', since);
+    if (!decisions || decisions.length === 0) {
+      return { lookback_days: lookbackDays, total_applied: 0, message: 'Pas encore assez de décisions appliquées' };
+    }
+    const positionIds = decisions.map((d) => d.applied_position_id).filter(Boolean);
+    const { data: positions } = await this.supabase.getClient()
+      .from('lisa_positions')
+      .select('id, realized_pnl_usd, exit_reason, status')
+      .in('id', positionIds as string[]);
+    const posById = new Map((positions ?? []).map((p) => [p.id as string, p]));
+
+    type Profile = 'aligned' | 'deviation_tight' | 'deviation_wide';
+    function classify(tp: number, sl: number): Profile {
+      const alignedTp = tp >= 4 && tp <= 8;
+      const alignedSl = sl >= 0.5 && sl <= 1.5;
+      if (alignedTp && alignedSl) return 'aligned';
+      if (tp < 4 || sl > 1.5) return 'deviation_tight';
+      return 'deviation_wide';
+    }
+    const buckets: Record<Profile, { n: number; wins: number; pnl: number; closed: number }> = {
+      aligned: { n: 0, wins: 0, pnl: 0, closed: 0 },
+      deviation_tight: { n: 0, wins: 0, pnl: 0, closed: 0 },
+      deviation_wide: { n: 0, wins: 0, pnl: 0, closed: 0 },
+    };
+    for (const d of decisions) {
+      const parsed = d.gemini_parsed as { take_profit_pct?: number; stop_loss_pct?: number } | null;
+      if (!parsed) continue;
+      const tp = Number(parsed.take_profit_pct ?? 6);
+      const sl = Number(parsed.stop_loss_pct ?? 1);
+      const profile = classify(tp, sl);
+      buckets[profile].n++;
+      const pos = posById.get(d.applied_position_id as string);
+      if (pos && pos.status !== 'open') {
+        buckets[profile].closed++;
+        const pnl = Number(pos.realized_pnl_usd ?? 0);
+        buckets[profile].pnl += pnl;
+        if (pos.exit_reason === 'closed_target' || pnl > 0) buckets[profile].wins++;
+      }
+    }
+    function summarize(b: { n: number; wins: number; pnl: number; closed: number }) {
+      return {
+        count: b.n,
+        closed: b.closed,
+        wr: b.closed > 0 ? Number((b.wins / b.closed).toFixed(3)) : null,
+        avg_pnl_usd: b.closed > 0 ? Number((b.pnl / b.closed).toFixed(2)) : null,
+        total_pnl_usd: Number(b.pnl.toFixed(2)),
+      };
+    }
+    const aligned = summarize(buckets.aligned);
+    const devTight = summarize(buckets.deviation_tight);
+    const devWide = summarize(buckets.deviation_wide);
+
+    // Recommendation
+    let recommendation = 'keep_default';
+    const minSample = 10;
+    if (aligned.wr !== null) {
+      if (devTight.wr !== null && devTight.closed >= minSample && devTight.wr > aligned.wr * 1.3) {
+        recommendation = 'widen_tighter';
+      } else if (devWide.wr !== null && devWide.closed >= minSample && devWide.wr > aligned.wr * 1.3) {
+        recommendation = 'widen_wider';
+      } else if (
+        (devTight.wr ?? 1) < aligned.wr * 0.7 &&
+        (devWide.wr ?? 1) < aligned.wr * 0.7 &&
+        (devTight.closed + devWide.closed) >= minSample
+      ) {
+        recommendation = 'tighten_bounds';
+      }
+    }
+
+    return {
+      lookback_days: lookbackDays,
+      total_applied: decisions.length,
+      aligned,
+      deviation_tight: devTight,
+      deviation_wide: devWide,
+      recommendation,
+      explanation: {
+        keep_default: 'Calibrage 1%/6% OK, conserver les bornes actuelles',
+        widen_tighter: 'Gemini surperforme quand il serre les TP/SL — autoriser SL>1.5% et TP<4% plus librement',
+        widen_wider: 'Gemini surperforme quand il élargit — autoriser TP>8% et SL<0.5% plus librement',
+        tighten_bounds: 'Toutes les deviations sous-performent — forcer le default 6%/1% en clampant les bornes',
+      }[recommendation],
+    };
   }
 
   // ====================================================================
@@ -802,9 +940,11 @@ Garde ces lessons en tête en priorité pour ta décision actuelle.`;
         return { applied: false, error: 'missing symbol/direction/notional' };
       }
       const notional = Math.max(MIN_NOTIONAL_USD, Math.min(MAX_CONCENTRATION_USD, decision.notional_usd));
-      // Aligned with backtest 3 sem. : R/R 6:1 (TP 6% / SL 1%) — éviter le bruit smallcap.
-      const slPct = Math.max(0.5, Math.min(1.5, decision.stop_loss_pct ?? 1.0));
-      const tpPct = Math.max(4.0, Math.min(8.0, decision.take_profit_pct ?? 6.0));
+      // Autonomie cadrée : bornes larges (Gemini peut dévier si raison LIVE),
+      // default backtest-validé 1%/6%. Justification obligatoire si écart > 30%
+      // capturée dans thesis (cf. system prompt règles 4-5).
+      const slPct = Math.max(0.5, Math.min(3, decision.stop_loss_pct ?? 1.0));
+      const tpPct = Math.max(2.0, Math.min(10.0, decision.take_profit_pct ?? 6.0));
 
       // Live price + sanity check
       const livePriceData = await this.lisa.getLivePrice(decision.symbol).catch(() => null);
@@ -891,9 +1031,11 @@ Garde ces lessons en tête en priorité pour ta décision actuelle.`;
       }
       if (state.openCount >= 5) return { applied: false, error: 'scale_in: max 5 open positions' };
       const notional = Math.max(MIN_NOTIONAL_USD, Math.min(MAX_CONCENTRATION_USD * 1.5, decision.notional_usd));
-      // Aligned with backtest 3 sem. : R/R 6:1 (TP 6% / SL 1%) — éviter le bruit smallcap.
-      const slPct = Math.max(0.5, Math.min(1.5, decision.stop_loss_pct ?? 1.0));
-      const tpPct = Math.max(4.0, Math.min(8.0, decision.take_profit_pct ?? 6.0));
+      // Autonomie cadrée : bornes larges (Gemini peut dévier si raison LIVE),
+      // default backtest-validé 1%/6%. Justification obligatoire si écart > 30%
+      // capturée dans thesis (cf. system prompt règles 4-5).
+      const slPct = Math.max(0.5, Math.min(3, decision.stop_loss_pct ?? 1.0));
+      const tpPct = Math.max(2.0, Math.min(10.0, decision.take_profit_pct ?? 6.0));
 
       const livePriceData = await this.lisa.getLivePrice(decision.symbol).catch(() => null);
       if (!livePriceData?.price) return { applied: false, error: 'scale_in: no live price' };

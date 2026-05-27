@@ -9,7 +9,7 @@
  * Auth : header x-admin-token aligné sur AdminEodhdStatus.
  */
 
-import { Controller, Get, Headers, HttpException, HttpStatus, Logger } from '@nestjs/common';
+import { Controller, Get, Headers, HttpException, HttpStatus, Logger, Query } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { LiveTraderAgentService } from '../lisa/services/live-trader-agent.service';
 
@@ -26,6 +26,17 @@ export class AdminTraderAgentController {
   async getStatus(@Headers('x-admin-token') providedToken: string | undefined) {
     this.assertAdmin(providedToken);
     return this.agent.getLatestStatus();
+  }
+
+  /** Analyse de l'autonomie Gemini : compare profile aligned vs deviation_tight vs deviation_wide. */
+  @Get('autonomy')
+  async getAutonomy(
+    @Headers('x-admin-token') providedToken: string | undefined,
+    @Query('days') daysStr?: string,
+  ) {
+    this.assertAdmin(providedToken);
+    const days = daysStr ? Math.max(1, Math.min(90, parseInt(daysStr, 10) || 7)) : 7;
+    return this.agent.getAutonomyAnalysis(days);
   }
 
   private assertAdmin(providedToken: string | undefined): void {
