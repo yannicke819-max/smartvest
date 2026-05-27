@@ -191,17 +191,17 @@ export class MarketCloseReportService {
   ): Promise<PortfolioBreakdown> {
     const { data } = await this.supabase.getClient()
       .from('lisa_positions')
-      .select('symbol, asset_class, realized_pnl_usd, entry_notional_usd, entry_timestamp, closed_at, exit_reason')
+      .select('symbol, asset_class, realized_pnl_usd, entry_notional_usd, entry_timestamp, exit_timestamp, exit_reason')
       .eq('portfolio_id', portfolioId)
-      .gte('closed_at', windowStart.toISOString())
-      .lt('closed_at', windowEnd.toISOString())
+      .gte('exit_timestamp', windowStart.toISOString())
+      .lt('exit_timestamp', windowEnd.toISOString())
       .neq('status', 'open');
 
     const closed = (data ?? []) as Array<{
       symbol: string; asset_class: string;
       realized_pnl_usd: string | number;
       entry_notional_usd: string | number;
-      entry_timestamp: string; closed_at: string;
+      entry_timestamp: string; exit_timestamp: string;
       exit_reason: string;
     }>;
 
@@ -224,7 +224,7 @@ export class MarketCloseReportService {
       const feesPct = FEES_ROUND_TRIP_PCT[c.asset_class] ?? 0.15;
       fees += (notional * feesPct) / 100;
 
-      const holdMs = new Date(c.closed_at).getTime() - new Date(c.entry_timestamp).getTime();
+      const holdMs = new Date(c.exit_timestamp).getTime() - new Date(c.entry_timestamp).getTime();
       totalHoldMin += Math.max(0, holdMs / 60_000);
     }
 
