@@ -2844,6 +2844,29 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
 
   private async fetchLivePrice(symbol: string): Promise<{ symbol: string; price: string; asOf: string; source: string }> {
     const raw = await this.fetchLivePriceInner(symbol);
+    // 🛡️ ZERO_PRICE_GUARD centralisé (incident SEE.LSE 14/05/2026, -$1574) :
+    // tout prix <= 0, NaN ou non parsable retourné par fetchLivePriceInner
+    // est re-taggé `fallback_unknown` AVANT d'atteindre les consumers. Couvre
+    // les chemins qui ne validaient pas (price > 0) leur retour : realtime
+    // cache stale à 0, supabase_quotes corrompu, twelvedata candle vide
+    // (intraday-router lignes 580-585 : tdLast.close non validé), EODHD
+    // /real-time avec close=0 derrière proxy router, etc.
+    //
+    // Plutôt que de patcher chaque source individuellement, on impose UN
+    // invariant sortant : un prix avec source non-fallback DOIT être > 0.
+    // Sinon → on re-tag fallback_unknown (sentinel '0', source qui matche
+    // déjà tous les garde-fous existants `isFallbackSource` /
+    // `startsWith('fallback')` dans mechanical-trading, risk-monitor,
+    // rebound-monitor, paper-broker R5 inline).
+    const priceNum = Number(raw.price);
+    if (!Number.isFinite(priceNum) || priceNum <= 0) {
+      if (!raw.source.startsWith('fallback')) {
+        this.logger.error(
+          `[ZERO_PRICE_REJECT] ${symbol}: price=${raw.price} (source=${raw.source}) retourné non-positif — re-tag fallback_unknown (anti-incident SEE.LSE)`,
+        );
+        return { symbol: raw.symbol, price: '0', asOf: raw.asOf, source: 'fallback_unknown' };
+      }
+    }
     return this.tagStaleness(raw);
   }
 
