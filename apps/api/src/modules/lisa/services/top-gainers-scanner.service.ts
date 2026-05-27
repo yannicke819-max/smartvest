@@ -199,7 +199,7 @@ const EU_EXCHANGES = ['LSE', 'XETRA', 'PA', 'SW', 'MI', 'MC', 'BME', 'AS', 'AMS'
 const SHADOW_PORTFOLIO_IDS = new Set<string>([
   'a0000001-0000-0000-0000-000000000001',  // shadow_high   : 3  pos × $3500
   'a0000002-0000-0000-0000-000000000002',  // shadow_middle : 15 pos × $700
-  'a0000003-0000-0000-0000-000000000003',  // shadow_small  : 20 pos × $525 (cap DB)
+  'a0000003-0000-0000-0000-000000000003',  // shadow_small  : 40 pos × $262
 ]);
 // Portfolios qui bypassent les hour-blacklists (LONG global + per-class).
 // Objectif : maximiser le nombre de signaux collectés sur la durée complète

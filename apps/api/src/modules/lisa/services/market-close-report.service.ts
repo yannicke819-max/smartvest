@@ -281,7 +281,7 @@ Les 5 portfolios bench :
 - "main" : portfolio principal (capital $10.5k, sizing 7.5%/pos, mode mixed)
 - "shadow_high" : 3 positions × $3500 (concentré)
 - "shadow_middle" : 15 positions × $700 (équilibré)
-- "shadow_small" : 20 positions × $525 (diversifié)
+- "shadow_small" : 40 positions × $262 (diversifié)
 - "trader_agent" : portfolio dédié $10k piloté par Gemini Pro autonome (cron 5min)
 
 Cible $200/jour total.

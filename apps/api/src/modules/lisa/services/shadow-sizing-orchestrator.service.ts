@@ -69,7 +69,7 @@ interface GeminiDecision {
 const SHADOW_SIZING_GEMINI_SYSTEM_PROMPT = `Tu es un agent IA de risk management pour 3 portfolios paper-trading "shadow sizing" qui benchmarkent l'effet du sizing sur la même watchlist :
 - "high" : 3 positions × ~$3500 (concentré)
 - "middle" : 15 positions × ~$700 (équilibré)
-- "small" : 20 positions × ~$525 (diversifié)
+- "small" : 40 positions × ~$262 (diversifié)
 
 Ton job : analyser les snapshots toutes les 30 min et décider d'UNE action concrète pour maximiser P&L net après fees, avec cible $200/jour.
 
