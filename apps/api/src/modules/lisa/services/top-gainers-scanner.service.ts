@@ -53,7 +53,16 @@ import {
   type PerClassHourBlacklistConfig,
   type TickerSizeMultConfig,
 } from './data-driven-gates.helper';
-import { mergeHourBlacklist, parseHoursCsvSet } from './lesson-driven-config.helper';
+import {
+  mergeHourBlacklist,
+  parseHoursCsvSet,
+  extractSizingMultiplierAsiaEquity,
+  extractEuEquityFilterMode,
+  extractMinChangePctEuEquityFractional,
+  extractMinPathEfficiencyEu,
+  type EuEquityFilterMode,
+  type LessonTargetsRow,
+} from './lesson-driven-config.helper';
 import { SizingABTestService } from './research/sizing-ab-test.service';
 import { ScannerLessonsContextService } from './scanner-lessons-context.service';
 import { EodhdQuotaService } from './eodhd-quota.service';
@@ -2124,7 +2133,7 @@ export class TopGainersScannerService implements OnModuleInit {
     const { data: cfgRow } = await this.supabase
       .getClient()
       .from('lisa_session_configs')
-      .select('capital_usd, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes, gainers_universe_us, gainers_universe_eu, gainers_universe_asia, gainers_universe_crypto, gainers_p_win_gate_enabled, gainers_min_p_win, gainers_rotation_stagnant_min_age_min, gainers_rotation_min_path_efficiency, gainers_session_filter_enabled, gainers_force_close_before_close_enabled, gainers_force_close_offset_min, gainers_smart_close_enabled, gainers_smart_close_window_min, gainers_smart_close_min_profit_pct, gainers_post_sl_cooldown_min, gainers_asia_strictness_boost, gainers_capital_rotation_enabled, gainers_high_grading_enabled, gainers_rotation_min_score, gainers_top_pool_size, "gainers_hour_blacklist_ASIA_UTC", "gainers_hour_blacklist_EU_UTC", "gainers_hour_blacklist_US_UTC"')
+      .select('capital_usd, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes, gainers_universe_us, gainers_universe_eu, gainers_universe_asia, gainers_universe_crypto, gainers_p_win_gate_enabled, gainers_min_p_win, gainers_rotation_stagnant_min_age_min, gainers_rotation_min_path_efficiency, gainers_session_filter_enabled, gainers_force_close_before_close_enabled, gainers_force_close_offset_min, gainers_smart_close_enabled, gainers_smart_close_window_min, gainers_smart_close_min_profit_pct, gainers_post_sl_cooldown_min, gainers_asia_strictness_boost, gainers_capital_rotation_enabled, gainers_high_grading_enabled, gainers_rotation_min_score, gainers_top_pool_size, "gainers_hour_blacklist_ASIA_UTC", "gainers_hour_blacklist_EU_UTC", "gainers_hour_blacklist_US_UTC", gainers_sizing_multiplier_asia_equity, gainers_asset_class_filter_eu_equity, gainers_min_change_pct_eu_equity, "gainers_min_path_efficiency_EU"')
       .eq('portfolio_id', portfolioId)
       .maybeSingle();
     // Lesson-driven hour blacklist (migration 0172) — per-portfolio override.
@@ -2173,6 +2182,31 @@ export class TopGainersScannerService implements OnModuleInit {
     const minPathEff = cfgRow?.gainers_min_path_efficiency != null
       ? Math.max(0, Math.min(1, Number(cfgRow.gainers_min_path_efficiency)))
       : null;
+
+    // Phase 5b — Lesson-driven per-class overrides (migration 0172).
+    // - asiaSizingMultiplier : multiplie le notional pour asia_equity (default 1.0)
+    // - euFilterMode : 'enabled' (default) / 'disabled' / 'disabled_during_NEWS_SHOCK'
+    // - minChangePctEuPctPoints : seuil entry pour eu_equity (POINTS DE %, ex 1.5)
+    //   override le default 5% du top-gainers-filter pour cette classe uniquement.
+    // - minPathEffEu : override per-class du minPathEff global pour eu_equity
+    // Null DB → fallback comportement actuel (= pas d'override).
+    const lessonRow = (cfgRow as LessonTargetsRow | null | undefined) ?? null;
+    const asiaSizingMultiplier = lessonRow
+      ? extractSizingMultiplierAsiaEquity(lessonRow)
+      : null;
+    const euFilterModeRaw: EuEquityFilterMode | null = lessonRow
+      ? extractEuEquityFilterMode(lessonRow)
+      : null;
+    const euFilterMode: EuEquityFilterMode = euFilterModeRaw ?? 'enabled';
+    // DB stocke fractional (0.015 = 1.5%) — filter top-gainers-filter veut POINTS
+    // (1.5 = 1.5%). Multiplier × 100 pour aligner.
+    const minChangePctEuFractional = lessonRow
+      ? extractMinChangePctEuEquityFractional(lessonRow)
+      : null;
+    const minChangePctEuPctPoints = minChangePctEuFractional !== null
+      ? minChangePctEuFractional * 100
+      : null;
+    const minPathEffEu = lessonRow ? extractMinPathEfficiencyEu(lessonRow) : null;
     // P19x.2 — TP/SL configurables par portfolio. Defaults DB = 1.5% / 1.0%
     // (migration 0093). Si row absent (portfolio sans config), fallback hardcoded
     // aux mêmes defaults.
@@ -2333,6 +2367,18 @@ export class TopGainersScannerService implements OnModuleInit {
       ? Math.max(0, Math.min(1, Number(cfgRow.gainers_min_p_win)))
       : 0.50;
 
+    // Phase 5b — Lesson-driven EU filter mode :
+    //   - 'disabled' → skip toutes les eu_equity
+    //   - 'disabled_during_NEWS_SHOCK' → faute de wiring MacroRegimeService dans
+    //     ce service, on applique la version conservative (safety wins) = skip
+    //     toujours, en logant. Future : wirer le régime live pour un skip
+    //     conditionnel précis.
+    const euEffectivelyDisabled = euFilterMode !== 'enabled';
+    if (euEffectivelyDisabled) {
+      this.logger.log(
+        `[top-gainers] ${portfolioId.slice(0, 8)} lesson-driven EU filter mode='${euFilterMode}' → skip all eu_equity candidates`,
+      );
+    }
     const filteredCandidates = candidates.filter((c) => {
       // detectAssetClass est appliqué dans selectTopGainers ; on doit le faire
       // ici aussi pour pouvoir filtrer la liste pré-selection.
@@ -2340,7 +2386,15 @@ export class TopGainersScannerService implements OnModuleInit {
       // PR #266 — combine universe toggle (volonté user) ET session ouverte.
       // PR #272 — exclut aussi si session en T-N min de close (force-close ON).
       if (assetClass === 'us_equity_large' || assetClass === 'us_equity_small_mid') return universeUs && usOpen && !usApproachingClose;
-      if (assetClass === 'eu_equity') return universeEu && euOpen && !euApproachingClose;
+      if (assetClass === 'eu_equity') {
+        if (euEffectivelyDisabled) return false;
+        // Phase 5b — per-class min_change_pct override (DB en fractional → ×100 pour
+        // matcher l'unité c.changePct qui est en POINTS DE %). Skip si en-deçà.
+        if (minChangePctEuPctPoints !== null && (c.changePct ?? 0) < minChangePctEuPctPoints) {
+          return false;
+        }
+        return universeEu && euOpen && !euApproachingClose;
+      }
       if (assetClass === 'asia_equity') return universeAsia && asiaOpen && !asiaApproachingClose;
       if (assetClass === 'crypto_major' || assetClass === 'crypto_alt') return universeCrypto;
       return true; // fx/commodity etc — pas de toggle, accept par default
@@ -3162,12 +3216,21 @@ export class TopGainersScannerService implements OnModuleInit {
         //   - asia → baseFloor + asiaStrictnessBoost (préservé)
         //   - us_/eu_/crypto_ → override per-class env si défini (data-driven mai 2026)
         //   - sinon → baseFloor
-        const effectiveMinPathEff = resolveEffectivePathEffFloor(
+        let effectiveMinPathEff = resolveEffectivePathEffFloor(
           minPathEff,
           cand.assetClass,
           this.pathEffOverrides,
           asiaStrictnessBoost,
         );
+        // Phase 5b — Lesson-driven override per-class EU. Priorité MAX (gate plus
+        // strict que les autres sources si défini en DB) : on conserve le max entre
+        // la valeur résolue ci-dessus et l'override lesson. Permet à une lesson de
+        // resserrer le filet (jamais de l'assouplir vs le global env).
+        if (cand.assetClass === 'eu_equity' && minPathEffEu !== null) {
+          effectiveMinPathEff = effectiveMinPathEff !== null
+            ? Math.max(effectiveMinPathEff, minPathEffEu)
+            : minPathEffEu;
+        }
 
         // Integer gate: Math.round avoids float off-by-one (4/6=0.6666 < 0.67 was
         // silently excluding 4/6-TF candidates). 0.67×6=4.02 → rounds to 4.
@@ -3477,6 +3540,30 @@ export class TopGainersScannerService implements OnModuleInit {
         effectiveSlPct = atrSlMaxPct;
       }
 
+      // Phase 5b — Lesson-driven sizing multiplier per-class. Pour l'instant,
+      // uniquement asia_equity (col `gainers_sizing_multiplier_asia_equity`). Si
+      // null DB → multiplier = 1.0 (no-op). Range [0, 5] (CHECK DB) ; on plancher
+      // à $50 pour ne jamais ouvrir une miette qui s'auto-skip côté broker. Si la
+      // taille résultante est sous le plancher, on annule l'ouverture (log).
+      let effectivePositionNotionalUsd = positionNotionalUsd;
+      if (
+        cand.assetClass === 'asia_equity' &&
+        asiaSizingMultiplier !== null &&
+        asiaSizingMultiplier !== 1
+      ) {
+        const scaled = positionNotionalUsd * asiaSizingMultiplier;
+        if (scaled < 50) {
+          this.logger.log(
+            `[top-gainers] ${cand.symbol} (asia) lesson-sizing skip — notional $${scaled.toFixed(2)} < $50 min (multiplier=${asiaSizingMultiplier})`,
+          );
+          continue;
+        }
+        this.logger.log(
+          `[top-gainers] ${cand.symbol} (asia) lesson-sizing applied: $${positionNotionalUsd.toFixed(2)} → $${scaled.toFixed(2)} (× ${asiaSizingMultiplier})`,
+        );
+        effectivePositionNotionalUsd = Math.round(scaled * 100) / 100;
+      }
+
       const insertedPosId = await this.openTopGainerPosition(
         userId,
         portfolioId,
@@ -3487,7 +3574,7 @@ export class TopGainersScannerService implements OnModuleInit {
           slPct: effectiveSlPct,
           capitalUsd,
           positionPct,
-          positionNotionalUsd,
+          positionNotionalUsd: effectivePositionNotionalUsd,
           cashReservePct,
           // Bug #314 #M3 — propage le cap pour l'ouverture atomique anti-race.
           maxOpenPositions: maxOpen,

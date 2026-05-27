@@ -26,6 +26,20 @@ export interface LessonTargetsRow {
   gainers_hour_blacklist_ASIA_UTC?: string | null;
   gainers_hour_blacklist_EU_UTC?: string | null;
   gainers_hour_blacklist_US_UTC?: string | null;
+  // Phase 5b — Let-run sur monotones (TP × multiplier si position non-choppy)
+  gainers_let_run_if_monotonic_threshold?: number | string | null;
+  gainers_let_run_max_drawdown_pct?: number | string | null;
+  gainers_trailing_tp_multiplier_monotonic?: number | string | null;
+  // Phase 5b — Trailing per-class (Asia: ne pas trailer trop tôt)
+  gainers_trailing_min_age_minutes_asia?: number | null;
+  // Phase 5b — Sizing & filtres per-class (EU/Asia)
+  gainers_sizing_multiplier_asia_equity?: number | string | null;
+  gainers_asset_class_filter_eu_equity?: string | null; // 'enabled' | 'disabled' | 'disabled_during_NEWS_SHOCK'
+  gainers_min_change_pct_eu_equity?: number | string | null; // fractional (0.015 = 1.5%)
+  gainers_min_path_efficiency_EU?: number | string | null;
+  // Phase 5b — News shock close (per-venue LSE override)
+  news_shock_close_max_age_minutes_lse?: number | null;
+  news_shock_close_sentiment_threshold_lse?: number | string | null;
 }
 
 /**
@@ -185,4 +199,124 @@ export function computeMonotonicityProxy(args: {
 
   if (peakPnlPct < minPeakPct) return null;
   return currentPnlPct / peakPnlPct;
+}
+
+// ============================================================================
+// Phase 5b — extractors pour les 8 colonnes restantes de la migration 0172.
+// Convention identique : null DB ou hors range → null → caller fallback.
+// ============================================================================
+
+/**
+ * Let-run sur position monotonique : si la position retient ≥ threshold du pic
+ * (monotonicity proxy) ET le drawdown observé reste ≤ maxDrawdownPct, on multiplie
+ * le TP par `multiplier` (let-winners-run). Toutes les valeurs doivent être présentes
+ * en DB pour activer la logique ; sinon le caller ferme au TP comme avant.
+ *
+ * - monotonicityThreshold ∈ [0, 1] (default 0.85 en DB)
+ * - maxDrawdownPct (en %, ex 0.3 = 0.3%) ∈ [0, 10]
+ * - multiplier ∈ [1, 5] (1.0 = pas de let-run, par construction CHECK ≥ 1)
+ */
+export interface LetRunOnMonotonicConfig {
+  monotonicityThreshold: number | null;
+  maxDrawdownPct: number | null;
+  tpMultiplier: number | null;
+}
+
+export function extractLetRunOnMonotonicConfig(row: LessonTargetsRow): LetRunOnMonotonicConfig {
+  return {
+    monotonicityThreshold: parseClampedNumber(
+      row.gainers_let_run_if_monotonic_threshold,
+      0,
+      1,
+    ),
+    maxDrawdownPct: parseClampedNumber(row.gainers_let_run_max_drawdown_pct, 0, 10),
+    tpMultiplier: parseClampedNumber(row.gainers_trailing_tp_multiplier_monotonic, 1, 5),
+  };
+}
+
+/**
+ * Vrai si les 3 cols let-run sont définies → caller peut appliquer la logique.
+ * Permet d'éviter du code défensif au callsite.
+ */
+export function isLetRunOnMonotonicActive(cfg: LetRunOnMonotonicConfig): boolean {
+  return (
+    cfg.monotonicityThreshold !== null &&
+    cfg.maxDrawdownPct !== null &&
+    cfg.tpMultiplier !== null
+  );
+}
+
+/**
+ * Min age (minutes) avant d'activer le trailing-stop sur Asia.
+ * Évite couper les U-shapes recovery au creux (Asia small-caps choppy).
+ * Default DB = 5 min. Range [0, 120].
+ */
+export function extractTrailingMinAgeAsiaMin(row: LessonTargetsRow): number | null {
+  return parseClampedInt(row.gainers_trailing_min_age_minutes_asia ?? null, 0, 120);
+}
+
+/**
+ * Multiplier de notional pour les candidats `asia_equity` (sizing-down si
+ * lessons indiquent sous-perf). Default DB = 1.00 (= pas de modification).
+ * Range [0, 5]. Caller : `notional × multiplier`.
+ */
+export function extractSizingMultiplierAsiaEquity(row: LessonTargetsRow): number | null {
+  return parseClampedNumber(row.gainers_sizing_multiplier_asia_equity, 0, 5);
+}
+
+/**
+ * Filter mode pour les candidats `eu_equity`.
+ * - 'enabled' (default) → pas de filtre supplémentaire (back-compat)
+ * - 'disabled' → skip tous les candidats eu_equity
+ * - 'disabled_during_NEWS_SHOCK' → skip eu_equity si le régime macro courant
+ *   est en NEWS_SHOCK (à évaluer par le caller via MacroRegimeService).
+ * Returns null si valeur DB inconnue → caller fallback à 'enabled'.
+ */
+export type EuEquityFilterMode = 'enabled' | 'disabled' | 'disabled_during_NEWS_SHOCK';
+
+export function extractEuEquityFilterMode(row: LessonTargetsRow): EuEquityFilterMode | null {
+  const raw = row.gainers_asset_class_filter_eu_equity;
+  if (raw === null || raw === undefined) return null;
+  if (raw === 'enabled' || raw === 'disabled' || raw === 'disabled_during_NEWS_SHOCK') {
+    return raw;
+  }
+  return null;
+}
+
+/**
+ * Min change pct (FRACTIONAL, ex 0.015 = 1.5%) pour les candidats eu_equity.
+ * Override le default `minChangePct` du filtre top-gainers-filter (qui est
+ * exprimé en POINTS DE %, ex 5 = 5%). Caller doit convertir × 100.
+ * Range [0, 1] (0..100%).
+ */
+export function extractMinChangePctEuEquityFractional(row: LessonTargetsRow): number | null {
+  return parseClampedNumber(row.gainers_min_change_pct_eu_equity, 0, 1);
+}
+
+/**
+ * Min path efficiency pour les candidats eu_equity (override per-class du floor
+ * global `gainers_min_path_efficiency`). Range [0, 1].
+ */
+export function extractMinPathEfficiencyEu(row: LessonTargetsRow): number | null {
+  return parseClampedNumber(row.gainers_min_path_efficiency_EU, 0, 1);
+}
+
+/**
+ * News-shock close per-venue (LSE) override. Si renseigné, les positions sur
+ * tickers `.LSE` utilisent ces seuils au lieu des defaults hardcoded
+ * (sentimentThreshold=-0.6 / maxAgeMin=30).
+ *
+ * - maxAgeMinutes ∈ [0, 360], default DB = 30
+ * - sentimentThreshold ∈ [-1, 1], default DB = -0.6 (négatif strict)
+ */
+export interface NewsShockLseOverride {
+  maxAgeMinutes: number | null;
+  sentimentThreshold: number | null;
+}
+
+export function extractNewsShockLseOverride(row: LessonTargetsRow): NewsShockLseOverride {
+  return {
+    maxAgeMinutes: parseClampedInt(row.news_shock_close_max_age_minutes_lse ?? null, 0, 360),
+    sentimentThreshold: parseClampedNumber(row.news_shock_close_sentiment_threshold_lse, -1, 1),
+  };
 }
