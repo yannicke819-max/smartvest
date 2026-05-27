@@ -43,6 +43,7 @@ import { AdminDebateGateMetricsController } from './admin-debate-gate-metrics.co
 import { AdminShadowSizingController } from './admin-shadow-sizing.controller';
 import { AdminTraderAgentController } from './admin-trader-agent.controller';
 import { AdminScannerPostMortemController } from './admin-scanner-postmortem.controller';
+import { AdminScannerDebugController } from './admin-scanner-debug.controller';
 import { AdminMarketCloseReportsController } from './admin-market-close-reports.controller';
 
 @Module({
@@ -79,6 +80,8 @@ import { AdminMarketCloseReportsController } from './admin-market-close-reports.
     AdminTraderAgentController,
     // Scanner Post-Mortem (Gemini Pro) — lessons macro-conditionnelles + run manuel
     AdminScannerPostMortemController,
+    // Scanner Debug — test EODHD screener par exchange (diagnostic porte d'entrée)
+    AdminScannerDebugController,
     // Market Close Reports — comparatif 5 portfolios par session (Asia/EU/US + daily wrap)
     AdminMarketCloseReportsController,
   ],

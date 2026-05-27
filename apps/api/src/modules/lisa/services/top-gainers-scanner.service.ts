@@ -186,7 +186,10 @@ interface EodhdScreenerRow {
  * NB : `MC` et `BME` sont les 2 codes EODHD acceptés selon la version API
  * pour la Bolsa de Madrid ; `AS` et `AMS` idem pour Euronext Amsterdam.
  */
-const EU_EXCHANGES = ['LSE', 'XETRA', 'PA', 'SW', 'MI', 'MC', 'BME', 'AS', 'AMS'];
+// Codes validés via EODHD exchanges-list 27/05/2026 + screener test direct.
+// Retirés (EODHD "Exchange Not Found") : MI (Italie), BME (= doublon MC), AMS (= doublon AS)
+// Ajoutés (testés ✅ rows>0) : F (Frankfurt 2), BR (Brussels), TA (Tel Aviv), WAR (Warsaw)
+const EU_EXCHANGES = ['LSE', 'XETRA', 'PA', 'SW', 'MC', 'AS', 'F', 'BR', 'TA', 'WAR'];
 
 // Shadow sizing × AI auto-tuner — 3 portfolios benchmark sizing (high/middle/small)
 // créés via migration 0166. Tous bypassent persistence (=0) et path_eff (=0) mais
@@ -229,7 +232,12 @@ const MAIN_PORTFOLIO_ID_FOR_DEDUPE = '58439d86-3f20-4a60-82a4-307f3f252bc2';
 // Constat 07/05/2026 : ~25 tickers NSE 404 par cycle scanner (~75-100 calls
 // EODHD perdus/cycle + 6-8 secondes de latence supplémentaires). Si le plan
 // est upgradé un jour pour inclure NSE/BSE, réajouter 'NSE', 'BSE' à cette liste.
-const NON_EU_EXCHANGES = ['US', 'T', 'HK', 'AU', 'KO', 'KQ', 'TO', 'SHG', 'SHE'];
+// Codes validés via EODHD screener test 27/05/2026.
+// Retirés (EODHD "Exchange Not Found") : T (Tokyo non supporté par EODHD)
+// HK gardé : screener retourne 0 rows actuellement mais eod-bulk fonctionne (3713 tickers)
+// — à investiguer (filter market_cap?) ou switch endpoint en follow-up
+// Ajouté : NSE (India) — testé 10 rows ✅
+const NON_EU_EXCHANGES = ['US', 'HK', 'AU', 'KO', 'KQ', 'TO', 'SHG', 'SHE', 'NSE'];
 /** Watchlists EU dont la session_open_utc / session_close_utc gate l'EODHD scan. */
 const EU_WATCHLIST_NAMES = ['cac40', 'dax40', 'ftse100'];
 // Bug #G2 (13/05/2026) — MATICUSDT remplacé par POLUSDT suite au rebrand
@@ -1649,6 +1657,27 @@ export class TopGainersScannerService implements OnModuleInit {
    *
    * Doc : https://eodhd.com/financial-apis/stock-market-screener-api
    */
+  /**
+   * Public wrapper pour endpoint admin debug — appelle le screener EODHD pour
+   * un exchange donné et retourne les candidats bruts. Utilise la même clé que
+   * la prod. Permet de diagnostiquer pourquoi certains exchanges (T, HK, MI...)
+   * ne remontent jamais aucun ticker.
+   */
+  async debugScreener(exchange: string): Promise<{ exchange: string; candidates_count: number; sample: TopGainerCandidate[]; error?: string }> {
+    const apiKey = this.config.get<string>('EODHD_API_KEY');
+    if (!apiKey || apiKey === 'demo') return { exchange, candidates_count: 0, sample: [], error: 'EODHD_API_KEY not configured' };
+    try {
+      const candidates = await this.fetchEodhdScreener(exchange, apiKey);
+      return {
+        exchange,
+        candidates_count: candidates.length,
+        sample: candidates.slice(0, 10),
+      };
+    } catch (e) {
+      return { exchange, candidates_count: 0, sample: [], error: String(e).slice(0, 300) };
+    }
+  }
+
   private async fetchEodhdScreener(exchange: string, apiKey: string): Promise<TopGainerCandidate[]> {
     const exUpper = exchange.toUpperCase();
     const isUs = exUpper === 'US';
