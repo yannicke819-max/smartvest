@@ -70,14 +70,14 @@ export class ScannerLlmRouterService {
 
     try {
       this.router = new MultiVendorLlmRouter(chain, {
-        timeoutMs: 5000,
+        timeoutMs: 30000,
         retriesPerProvider: 1,
         retryDelayMs: 1000,
         onCall: (m) => this.handleMetrics(m),
       });
       // Timeout plus large pour Pro (raisonnement plus long, jusqu'à 15s observés).
       this.routerPro = new MultiVendorLlmRouter(chainPro, {
-        timeoutMs: 20000,
+        timeoutMs: 30000,
         retriesPerProvider: 1,
         retryDelayMs: 1000,
         onCall: (m) => this.handleMetrics(m),
