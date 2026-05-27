@@ -1711,13 +1711,16 @@ export class TopGainersScannerService implements OnModuleInit {
     //   SCANNER_UNIVERSE_MAX_TICKERS (default 1500, max 3000) : cap global
     // Cap par exchange = ceil(MAX / nbExchanges). Stop précoce si page < pageSize.
     // Hard limit : 10 pages max par exchange (anti-runaway).
+    // Defaults bumpés 27/05/2026 — porte d'entrée investigation révèle 98 674
+    // tickers EODHD dispo sur 19 exchanges. Anciens defaults (100/1500) coupaient
+    // trop tôt. Nouveaux : 500/3000 (max code-side) pour maximiser le funnel.
     const pageSize = Math.max(
       1,
-      Math.min(500, Number(this.config.get<string>('SCANNER_SCREENER_PAGE_SIZE') ?? '100')),
+      Math.min(500, Number(this.config.get<string>('SCANNER_SCREENER_PAGE_SIZE') ?? '500')),
     );
     const universeMax = Math.max(
       pageSize,
-      Math.min(3000, Number(this.config.get<string>('SCANNER_UNIVERSE_MAX_TICKERS') ?? '1500')),
+      Math.min(3000, Number(this.config.get<string>('SCANNER_UNIVERSE_MAX_TICKERS') ?? '3000')),
     );
     const nbExchanges = Math.max(1, EU_EXCHANGES.length + NON_EU_EXCHANGES.length);
     const perExchangeCap = Math.ceil(universeMax / nbExchanges);
