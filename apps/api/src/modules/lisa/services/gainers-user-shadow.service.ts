@@ -51,6 +51,7 @@ export type ShadowDecision =
   | 'reject_signal_stale'       // Phase E-A — signal détecté il y a > N sec, le pop est déjà digéré (anti-late-entry)
   | 'reject_volatile_regime'    // Phase C — symbole structurellement volatile (ATR/close > seuil), SL cassé par bruit
   | 'reject_stagflation_hedge_guard'  // Audit 23/05 — ticker dans watchlist stagflation_hedge, -$3,463 historiques (env-gated)
+  | 'reject_dead_zone'          // Analyse 27/05 — buckets changePct 4-8% (Σpnl -28%) + 15-20% (Σpnl -111%) structurellement perdants
   | 'reject_other';
 
 export interface RecordDecisionInput {

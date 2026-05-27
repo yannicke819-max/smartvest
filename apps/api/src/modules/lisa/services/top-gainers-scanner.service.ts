@@ -2658,6 +2658,36 @@ export class TopGainersScannerService implements OnModuleInit {
         continue;
       }
 
+      // Dead-zone gate — analyse stats 06-27/05/2026 (n=363 positions matchées).
+      // Buckets changePct structurellement perdants :
+      //   - 4-8%   : WR 13%, Σpnl% -28% (n=91)
+      //   - 15-20% : WR 15%, Σpnl% -111% (n=33, outlier-sensitive mais signal clair)
+      // Buckets gagnants : 8-15% (Σpnl +11%, WR 21-27%) ET ≥20% (WR 25.6%).
+      // Configurable via env `GAINERS_DEAD_ZONES_PCT` = "4-8,15-20" (default).
+      // Set à "" (vide) pour désactiver le gate entièrement.
+      const deadZonesRaw = (this.config.get<string>('GAINERS_DEAD_ZONES_PCT') ?? '4-8,15-20').trim();
+      if (deadZonesRaw.length > 0) {
+        const changePct = cand.changePct ?? 0;
+        const matchedZone = deadZonesRaw.split(',')
+          .map((z) => z.trim())
+          .filter((z) => z.length > 0)
+          .map((zone) => {
+            const parts = zone.split('-').map((x) => Number(x.trim()));
+            if (parts.length !== 2) return null;
+            const [lo, hi] = parts as [number, number];
+            if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
+            return changePct >= lo && changePct <= hi ? ([lo, hi] as [number, number]) : null;
+          })
+          .find((m) => m !== null);
+        if (matchedZone) {
+          this.logger.log(
+            `[top-gainers] ${cand.symbol} dead-zone (changePct=${changePct.toFixed(1)}% ∈ [${matchedZone[0]}-${matchedZone[1]}%]) → skip long`,
+          );
+          recordShadowDecision(cand, 'reject_dead_zone', undefined);
+          continue;
+        }
+      }
+
       // PR A — Gate horaire LONG. Data mining 15j (23/05/2026, n=7000 signaux) :
       //   - LONG mean H8 (EU open) = -0.60%, H19 (US close) = -1.01%, H22 = -0.93%, H0-H5 = -0.5%
       //   - LONG mean H13-H17 (US active) = neutre à légèrement positif (+0.03 à +0.27%)
