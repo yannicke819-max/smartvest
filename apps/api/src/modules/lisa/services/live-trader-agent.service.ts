@@ -148,16 +148,9 @@ export class LiveTraderAgentService {
         `[trader-agent] ENABLED — portfolio=${TRADER_AGENT_PORTFOLIO_ID.slice(0, 8)} capital=$${TRADER_AGENT_CAPITAL_USD} cron */5min`,
       );
     }
-  }
-
-  /**
-   * Enregistre les crons MANUELLEMENT via SchedulerRegistry au lieu du décorateur
-   * @Cron. Les décorateurs @Cron sur cette classe ne tirent jamais en prod
-   * (cause inconnue mais reproductible — Shadow Sizing avec même @Cron tire bien).
-   * Pattern emprunté à TopGainersScannerService.scheduleScanner.
-   */
-  onApplicationBootstrap(): void {
-    // Cron 1 — decision cycle */5min UTC
+    // Enregistrement MANUEL des crons via SchedulerRegistry (pattern exact
+    // TopGainersScannerService.onModuleInit qui marche en prod depuis P5).
+    // Les décorateurs @Cron sur cette classe ne tiraient pas (cause inconnue).
     this.registerCron(
       'live-trader-agent-decision-manual',
       '*/5 * * * *',
@@ -165,7 +158,6 @@ export class LiveTraderAgentService {
         this.logger.error(`[trader-agent] runDecisionCycle error: ${String(e).slice(0, 200)}`),
       ),
     );
-    // Cron 2 — nightly post-mortem 02:00 UTC
     this.registerCron(
       'live-trader-agent-post-mortem-manual',
       '0 2 * * *',
@@ -173,15 +165,6 @@ export class LiveTraderAgentService {
         this.logger.error(`[trader-agent] runNightlyPostMortem error: ${String(e).slice(0, 200)}`),
       ),
     );
-    // Diagnostic : list all crons registered
-    try {
-      const names = [...this.schedulerRegistry.getCronJobs().keys()];
-      this.logger.log(
-        `[trader-agent] onApplicationBootstrap — total crons registered=${names.length}, contains my crons=${names.includes('live-trader-agent-decision-manual') && names.includes('live-trader-agent-post-mortem-manual')}`,
-      );
-    } catch (e) {
-      this.logger.warn(`[trader-agent] could not list crons: ${String(e).slice(0, 100)}`);
-    }
   }
 
   private registerCron(name: string, expr: string, callback: () => void): void {
