@@ -87,6 +87,17 @@ CONTRAINTES :
 - Privilégie kill > restart > tune > sizing en cas de doute (gestion du risque d'abord)
 - N'utilise PAS de connaissances externes — base tes décisions UNIQUEMENT sur les data fournies
 
+CONTEXTE MACRO (input \`macro\`) :
+- Pondère tes décisions selon le régime : VIX > 25 = risk-off, agressivité kill ↑ / raise_sizing ↓
+- DXY spike + US10Y > 4.5% = pressure sur risk assets, prudence
+- Si \`macro.dataQuality.fallback\` non vide → indicateurs dégradés, baisse ta confidence de 0.1
+
+CONTEXTE NEWS (input \`macro_news_digest\`, top 10 tier-1 dernières 2h) :
+- Sert UNIQUEMENT à contextualiser le régime narratif (pas à trader des tickers individuels)
+- Exemple : "5 news Fed pivot positifs + 2 news bank stress négatifs" → régime mixte, pas de raise_sizing
+- Si digest vide ou tous sentiment ~0 → marché calme, conditions normales
+- Ne cite pas les titres dans ta rationale (trop verbeux), mais réfère au régime narratif synthétisé
+
 RÉPONSE OBLIGATOIRE :
 Renvoie UN SEUL objet JSON minimal (pas de markdown, pas de \\\`\\\`\\\`json) avec cette shape exacte :
 {
@@ -545,6 +556,61 @@ export class ShadowSizingOrchestratorService {
   //   2. Capés par cycle (delta sizing ≤ 20%)
   //   3. Logués dans shadow_sizing_autotune_log (decision_kind='gemini_auto_apply')
   //
+  /**
+   * Macro news digest pour le contexte de raisonnement Gemini auto-tune.
+   *
+   * Filtre :
+   *  - dernières 2h (window de fraîcheur narratif)
+   *  - sources tier-1 uniquement (reuters, bloomberg, cnbc, marketwatch, wsj, ft)
+   *  - sentiment fort (|polarity| ≥ 0.5)
+   *  - dédupliqué par title (même article = plusieurs tickers dans la table)
+   *  - top 10 par |sentiment| × recency
+   *
+   * Best-effort : retourne `[]` si fail.
+   */
+  private async fetchMacroNewsDigest(): Promise<Array<{ title: string; sentiment: number; source: string; published_at: string; tags: string[] }>> {
+    const TIER_1_HOSTS = [
+      'reuters.com', 'bloomberg.com', 'cnbc.com', 'marketwatch.com',
+      'wsj.com', 'ft.com', 'nasdaq.com', 'finance.yahoo.com',
+    ];
+    const sinceIso = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+    try {
+      const { data } = await this.supabase.getClient()
+        .from('eodhd_news_articles')
+        .select('title, sentiment_polarity, source_url, published_at, tags')
+        .gte('published_at', sinceIso)
+        .order('published_at', { ascending: false })
+        .limit(150);  // fetch large pour dédup, filter ensuite
+      if (!data || data.length === 0) return [];
+
+      // Filter + extract host + dédup
+      const seenTitles = new Set<string>();
+      const out: Array<{ title: string; sentiment: number; source: string; published_at: string; tags: string[] }> = [];
+      for (const r of data) {
+        const title = String(r.title ?? '').trim();
+        if (!title || seenTitles.has(title)) continue;
+        const sent = Number(r.sentiment_polarity);
+        if (!Number.isFinite(sent) || Math.abs(sent) < 0.5) continue;
+        const host = (String(r.source_url ?? '').match(/\/\/([^/]+)/)?.[1] ?? '').toLowerCase();
+        if (!TIER_1_HOSTS.some((h) => host.includes(h))) continue;
+        seenTitles.add(title);
+        const tags = Array.isArray(r.tags) ? (r.tags as string[]).slice(0, 5) : [];
+        out.push({
+          title: title.slice(0, 140),
+          sentiment: Number(sent.toFixed(2)),
+          source: host,
+          published_at: String(r.published_at).slice(0, 16),
+          tags,
+        });
+        if (out.length >= 10) break;
+      }
+      return out;
+    } catch (e) {
+      this.logger.warn(`[shadow-sizing-gemini] news digest fetch failed: ${String(e).slice(0, 100)}`);
+      return [];
+    }
+  }
+
   // Gated par SHADOW_SIZING_GEMINI_ENABLED=true (default OFF — safe MVP).
   // Si false, la méthode no-op silencieusement.
   private async geminiDrivenAutoCorrection(snapshots: ProfileSnapshot[]): Promise<void> {
@@ -576,11 +642,29 @@ export class ShadowSizingOrchestratorService {
       recentDecisions[snap.profileName] = (decisions ?? []) as object[];
     }
 
+    // Macro context (cache 2 min côté LisaService — partagé avec LiveTraderAgent).
+    // Critique pour contextualiser les décisions kill/raise/lower (un drawdown en VIX 35
+    // ne se traite pas comme un drawdown en VIX 14).
+    let macro: object;
+    try {
+      macro = await this.lisa.getRecentMarketSnapshot(120);
+    } catch (e) {
+      this.logger.warn(`[shadow-sizing-gemini] macro fetch failed: ${String(e).slice(0, 100)}`);
+      macro = { note: 'macro_snapshot_unavailable_this_cycle' };
+    }
+
+    // Macro news digest : 10 titres tier-1 sentiment fort, < 2h, dédupliqués.
+    // But : enrichir le contexte de raisonnement sizing avec le régime narratif
+    // sans noise (per-ticker news non pertinent à ce niveau méta).
+    const newsDigest = await this.fetchMacroNewsDigest();
+
     const systemPrompt = SHADOW_SIZING_GEMINI_SYSTEM_PROMPT;
     const userPrompt = JSON.stringify({
       current_time_utc: new Date().toISOString(),
       target_usd_per_day: DAILY_TARGET_USD,
       drawdown_kill_threshold_pct: DRAWDOWN_KILL_PCT,
+      macro,
+      macro_news_digest: newsDigest,
       profiles: snapshots.map((s) => ({
         name: s.profileName,
         portfolio_id: s.portfolioId.slice(0, 8),
@@ -600,14 +684,16 @@ export class ShadowSizingOrchestratorService {
       recent_decisions_per_profile: recentDecisions,
     }, null, 2);
 
+    // Gemini Pro pour le raisonnement sizing — qualité supérieure sur l'analyse
+    // comparative multi-profiles + macro. Auto-fallback Flash Lite si Pro down.
     let response: { content: string; providerId: string; costUsd: number; latencyMs: number };
     try {
-      response = await this.llmRouter.call({
+      response = await this.llmRouter.callWithPro({
         system: systemPrompt,
         user: userPrompt,
         temperature: 0.2,
         maxTokens: 800,
-        timeoutMs: 10_000,
+        timeoutMs: 20_000,
       });
     } catch (e) {
       this.logger.warn(`[shadow-sizing-gemini] LLM call failed: ${String(e).slice(0, 150)}`);

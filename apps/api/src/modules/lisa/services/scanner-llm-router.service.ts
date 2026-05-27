@@ -32,26 +32,39 @@ export class ScannerLlmRouterService {
   private readonly logger = new Logger(ScannerLlmRouterService.name);
   private readonly enabled: boolean;
   private readonly router: MultiVendorLlmRouter | null;
+  // Router dédié aux raisonnements complexes (decisions trader agent, post-mortem,
+  // shadow sizing auto-correction). Chain : Gemini 2.5 Pro → Flash Lite → Claude Opus.
+  // Coût ~×125 vs flash-lite mais qualité de raisonnement multi-facteurs supérieure.
+  private readonly routerPro: MultiVendorLlmRouter | null;
 
   constructor(private readonly config: ConfigService) {
     this.enabled = (this.config.get<string>('SCANNER_LLM_ROUTER_ENABLED') ?? 'false').toLowerCase() === 'true';
 
     if (!this.enabled) {
       this.router = null;
-      this.logger.log('SCANNER_LLM_ROUTER_ENABLED=false — router inactive (legacy Claude path)');
+      this.routerPro = null;
+      this.logger.log('SCANNER_LLM_ROUTER_ENABLED=true — router inactive (legacy Claude path)');
       return;
     }
 
     // ADR-001 — Chain simplifiée : Gemini primary + Claude Opus fallback ultime.
-    // Suppression OpenAI + Mistral (était P17 fallback chain) : ne sont plus
-    // dans le contrat d'archi LLM. Réduit la surface providers à 2 (Google + Anthropic).
+    const geminiKey = this.config.get<string>('GEMINI_API_KEY');
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
     const claudeFallback = anthropicKey
       ? [new ClaudeProvider({ anthropic: new Anthropic({ apiKey: anthropicKey }) })]
       : [];
 
+    // Chain default (fast path scanner) : Flash Lite → Claude Opus
     const chain = [
-      new GeminiProvider({ apiKey: this.config.get<string>('GEMINI_API_KEY') }),
+      new GeminiProvider({ apiKey: geminiKey }),
+      ...claudeFallback,
+    ];
+
+    // Chain Pro (raisonnement) : Pro → Flash Lite → Claude Opus
+    // Si Pro fail (quota, timeout), on dégrade automatiquement.
+    const chainPro = [
+      new GeminiProvider({ apiKey: geminiKey, model: 'gemini-2.5-pro' }),
+      new GeminiProvider({ apiKey: geminiKey }),
       ...claudeFallback,
     ];
 
@@ -62,11 +75,20 @@ export class ScannerLlmRouterService {
         retryDelayMs: 1000,
         onCall: (m) => this.handleMetrics(m),
       });
+      // Timeout plus large pour Pro (raisonnement plus long, jusqu'à 15s observés).
+      this.routerPro = new MultiVendorLlmRouter(chainPro, {
+        timeoutMs: 20000,
+        retriesPerProvider: 1,
+        retryDelayMs: 1000,
+        onCall: (m) => this.handleMetrics(m),
+      });
       const active = this.router.getActiveProviders().map((p) => p.id).join(' → ');
-      this.logger.log(`SCANNER_LLM_ROUTER_ENABLED=true — chain: ${active}`);
+      const activePro = this.routerPro.getActiveProviders().map((p) => p.id).join(' → ');
+      this.logger.log(`SCANNER_LLM_ROUTER_ENABLED=true — fast chain: ${active} | pro chain: ${activePro}`);
     } catch (err) {
       this.logger.warn(`Router disabled — no provider configured: ${err instanceof Error ? err.message : err}`);
       this.router = null;
+      this.routerPro = null;
     }
   }
 
@@ -76,15 +98,34 @@ export class ScannerLlmRouterService {
   }
 
   /**
-   * Appel LLM via la chain. Ne lance jamais d'erreur de connectivité
-   * silencieuse — si tous les providers échouent, throw `AllProvidersFailedError`
-   * et le caller décide (fallback déterministe ou propagation).
+   * Appel LLM via la chain rapide (Flash Lite → Opus). Pour les tâches simples /
+   * volumineuses (scanner, screening, classification).
    */
   async call(params: LlmCallParams): Promise<{ content: string; providerId: string; costUsd: number; latencyMs: number; fallbackUsed: boolean }> {
     if (!this.router) {
       throw new Error('ScannerLlmRouterService.call() — router disabled (check SCANNER_LLM_ROUTER_ENABLED + GEMINI_API_KEY)');
     }
     const res = await this.router.call(params);
+    return {
+      content: res.content,
+      providerId: res.providerId,
+      costUsd: res.costUsd,
+      latencyMs: res.latencyMs,
+      fallbackUsed: res.fallbackUsed,
+    };
+  }
+
+  /**
+   * Appel LLM via la chain Pro (Gemini 2.5 Pro → Flash Lite → Opus).
+   * Pour les raisonnements multi-facteurs : décisions trader agent, post-mortem,
+   * auto-correction sizing. Coût ~×125 vs call() mais qualité supérieure.
+   * Auto-fallback sur Flash Lite si Pro indisponible (quota, timeout).
+   */
+  async callWithPro(params: LlmCallParams): Promise<{ content: string; providerId: string; costUsd: number; latencyMs: number; fallbackUsed: boolean }> {
+    if (!this.routerPro) {
+      throw new Error('ScannerLlmRouterService.callWithPro() — router disabled');
+    }
+    const res = await this.routerPro.call(params);
     return {
       content: res.content,
       providerId: res.providerId,

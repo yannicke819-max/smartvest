@@ -98,6 +98,27 @@ RÉPONSE JSON OBLIGATOIRE (1 seul objet, pas de markdown) :
   "max_loss_usd": 18
 }
 
+CONTEXTE MACRO (input \`macro\` — snapshot LisaService) :
+- VIX > 30 = panique : refuse open_directional sauf setup A+ (conf ≥ 0.85)
+- VIX 20-30 = stressé : sizing -30%, privilégie close sur positions -EV
+- US10Y up > +10bps en intraday = pression rates : évite small caps + REITs
+- DXY spike + US10Y > 4.5% = flight from risk assets, prudence equities
+- Brent up > +5% intraday = risk geopolitique : prudence aero/airlines/EU
+- Gold up > +2% AVEC DXY down = flight to safety : refuse shorts risk-on
+- HY OAS > 500bps OU IG OAS > 150bps = credit stress, prudence cycliques
+- USDJPY breakdown < 145 = yen carry unwind, contagion risk-off (cf. août 2024)
+- Si \`macro.dataQuality.fallback\` contient ≥ 3 indicateurs → photo macro
+  dégradée, réduis ton sizing -30% ET ta confidence -0.05
+- Si \`macro.note = 'macro_snapshot_unavailable_this_cycle'\` → contexte aveugle,
+  refuse open_directional (uniquement close/trail_stop/hold autorisés)
+
+CONTEXTE NEWS (input \`news_recent\` — eodhd dernières 2h) :
+- Sentiment fort négatif (≤ -0.6) sur un ticker que tu DÉTIENS → propose close
+- Sentiment fort positif (≥ +0.7) sur un ticker dans candidates → bonus conviction
+- News macro vs news ticker : pondère la macro plus haut sur les décisions sizing
+- Évite d'ouvrir 5 minutes avant un événement \`macro.upcomingEvents\`
+  (FOMC, CPI, NFP) : volatilité non-directionnelle
+
 Sois rigoureux, conservateur, sceptique. Mieux vaut 5 holds qu'1 mauvais trade.`;
 
 @Injectable()
@@ -191,15 +212,16 @@ export class LiveTraderAgentService {
         },
       }, null, 2);
 
-      // 5. Call Gemini Pro
+      // 5. Call Gemini Pro (raisonnement multi-facteurs sur 20 candidats + macro + news + memory).
+      // Auto-fallback Flash Lite → Claude Opus si Pro indisponible (cf. ScannerLlmRouter.callWithPro).
       let response: { content: string; providerId: string; costUsd: number; latencyMs: number };
       try {
-        response = await this.llmRouter.call({
+        response = await this.llmRouter.callWithPro({
           system: systemPrompt,
           user: userPrompt,
           temperature: 0.3,
           maxTokens: 1000,
-          timeoutMs: 15_000,
+          timeoutMs: 20_000,
         });
       } catch (e) {
         this.logger.warn(`[trader-agent] LLM call failed: ${String(e).slice(0, 150)}`);
@@ -319,6 +341,16 @@ export class LiveTraderAgentService {
         }
       }
 
+      // Macro snapshot frais — sert à corréler les outcomes (gagnant/perdant)
+      // au régime du jour. Cache 2 min côté LisaService (probablement déjà chaud).
+      let macroSnapshot: object;
+      try {
+        macroSnapshot = await this.lisa.getRecentMarketSnapshot(120);
+      } catch (e) {
+        this.logger.warn(`[trader-agent:post-mortem] macro fetch failed: ${String(e).slice(0, 100)}`);
+        macroSnapshot = { note: 'macro_snapshot_unavailable' };
+      }
+
       const postMortemPrompt = `Tu es un coach trader senior. Analyse la journée du Trader Agent (portfolio $10k Gemini Pro autonome) ET le comparatif des 5 portfolios paper (main + 3 shadows + trader_agent).
 
 OBJECTIF : générer 5 lessons concrètes pour DOPER l'apprentissage du Trader Agent. Les lessons doivent :
@@ -328,27 +360,63 @@ OBJECTIF : générer 5 lessons concrètes pour DOPER l'apprentissage du Trader A
 4. Référencer les market_close_reports (Asia/EU/US sessions) pour contextualiser
 5. Être actionable : "Quand le contexte est X, fais Y" (pas "il faut être prudent")
 
+LECTURE MACRO OBLIGATOIRE (input \`macro_snapshot_eod\`) :
+Tu DOIS conditionner chaque lesson au régime macro du jour. Une lesson "ouvrir
+short sur tech au open US" n'a aucune valeur si elle ne précise pas le contexte
+(VIX 28 vs VIX 14, US10Y > 4.5% vs < 4.0%, etc.). Sans condition macro, la
+lesson est rejetée comme "macro-blind".
+
+Grille de lecture :
+- VIX > 25 = stressé / VIX > 30 = panique
+- US10Y up > +10bps = pression rates
+- DXY spike + 10Y > 4.5% = flight from risk assets
+- HY OAS > 500bps = credit stress
+- Gold + DXY contraires = flight to safety
+- Brent +5% intraday = geopolitique
+- USDJPY < 145 = yen carry unwind risk
+
+Chaque \`lesson_text\` DOIT contenir une clause "Quand <CONDITION MACRO>, alors
+<ACTION>". Sinon Gemini rejette la lesson.
+
+PATTERNS CROSS-PORTFOLIO À CHERCHER :
+- "Trader Agent a passé X trades pendant Asia session alors que shadow_high
+  qui était cash a évité une perte de $Y (cf. macro VIX 22 + DXY spike)"
+- "Shadow_small a ouvert 8 positions avec sizing micro pendant US morning :
+  $Z gain net malgré fees 30%. Le Trader Agent aurait dû en faire 4 sur
+  les mêmes patterns avec sizing 2× pour battre les frais"
+- "Trader Agent a ouvert 1 position à 17:00 UTC pendant la blacklist hour US,
+  -$X. Shadow_middle (qui bypass blacklist) a ouvert mais avec sentiment news
+  +0.8 → +$Y. Conclusion : bypass OK SI confirmation news fraîche"
+
 RÉPONSE JSON OBLIGATOIRE :
 {
-  "summary": "1-2 phrases résumé journée trader_agent vs autres portfolios",
+  "summary": "1-2 phrases résumé journée trader_agent vs autres portfolios + régime macro dominant",
+  "macro_regime_today": "ex: VIX 22 (élevé), US10Y 4.45% (rates stress), DXY 103 (USD fort), HY OAS 380bps (calme corporate)",
   "trader_agent_daily_pnl_usd": <nombre net total>,
-  "winning_patterns": ["pattern 1 avec chiffres", "pattern 2", ...],
-  "losing_patterns": ["pattern 1 avec chiffres", "pattern 2", ...],
-  "cross_portfolio_insights": ["X a battu Y de $Z grâce à...", ...],
+  "winning_patterns": ["pattern + chiffres + condition macro"],
+  "losing_patterns": ["pattern + chiffres + condition macro"],
+  "cross_portfolio_insights": ["X a battu Y de $Z grâce à... (régime macro: ...)", ...],
   "new_lessons": [
-    {"lesson_kind": "winning_pattern|losing_pattern|risk_observation|market_regime_rule|sizing_rule|cross_portfolio_insight", "lesson_text": "Quand X, fais Y (référence: Z trades observés)", "confidence": 0.0-1.0}
+    {
+      "lesson_kind": "winning_pattern|losing_pattern|risk_observation|market_regime_rule|sizing_rule|cross_portfolio_insight",
+      "lesson_text": "Quand <condition macro>, alors <action> (référence: Z trades observés)",
+      "confidence": 0.0-1.0,
+      "macro_condition": "VIX>25|US10Y>4.5|DXY>103|GOLD+DXY-|BRENT+5%|HY_OAS>500|USDJPY<145|REGIME_CALME|REGIME_MIXED"
+    }
   ]
 }`;
 
       const userPayload = JSON.stringify({
         date: new Date().toISOString().slice(0, 10),
+        macro_snapshot_eod: macroSnapshot,
         trader_agent_decisions: decisions ?? [],
         trader_agent_positions: positions ?? [],
         cross_portfolio_daily_summary: dailyByPortfolio,
         market_close_reports_today: closeReports ?? [],
       }, null, 2);
 
-      const response = await this.llmRouter.call({
+      // Post-mortem = raisonnement sur 24h × 5 portfolios → Pro requis (qualité d'analyse).
+      const response = await this.llmRouter.callWithPro({
         system: postMortemPrompt,
         user: userPayload,
         temperature: 0.4,
@@ -358,7 +426,7 @@ RÉPONSE JSON OBLIGATOIRE :
 
       const cleaned = response.content.trim().replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
       const parsed = JSON.parse(cleaned);
-      const newLessons = parsed.new_lessons as Array<{ lesson_kind: string; lesson_text: string; confidence: number }>;
+      const newLessons = parsed.new_lessons as Array<{ lesson_kind: string; lesson_text: string; confidence: number; macro_condition?: string }>;
 
       if (!Array.isArray(newLessons) || newLessons.length === 0) {
         this.logger.warn('[trader-agent:post-mortem] no lessons returned');
@@ -366,17 +434,38 @@ RÉPONSE JSON OBLIGATOIRE :
       }
 
       const today = new Date().toISOString().slice(0, 10);
+      const macroRegime = parsed.macro_regime_today ?? null;
+      let persisted = 0;
+      let rejectedMacroBlind = 0;
       for (const l of newLessons) {
+        // Gate macro-condition : refuse les lessons qui n'ont pas de condition macro
+        // explicite (la grille interdit les lessons "macro-blind"). On accepte aussi
+        // les lessons qui contiennent "Quand" + un mot macro (VIX|DXY|10Y|HY|OAS|GOLD|BRENT|USDJPY|REGIME)
+        // dans le texte si macro_condition n'est pas fourni.
+        const hasExplicitMacroCondition = !!l.macro_condition && l.macro_condition.length > 0;
+        const hasInlineMacroClause = /quand\b.*\b(vix|dxy|10y|hy|oas|gold|brent|usdjpy|regime|us10y)\b/i.test(l.lesson_text);
+        if (!hasExplicitMacroCondition && !hasInlineMacroClause) {
+          this.logger.warn(`[trader-agent:post-mortem] reject macro-blind lesson: ${l.lesson_text.slice(0, 80)}`);
+          rejectedMacroBlind++;
+          continue;
+        }
         await this.supabase.getClient().from('trader_agent_memory').insert({
           portfolio_id: TRADER_AGENT_PORTFOLIO_ID,
           lesson_kind: l.lesson_kind,
           lesson_text: l.lesson_text,
           confidence: l.confidence,
           derived_from_date: today,
-          payload: { summary: parsed.summary, winning: parsed.winning_patterns, losing: parsed.losing_patterns },
+          payload: {
+            summary: parsed.summary,
+            macro_regime_today: macroRegime,
+            macro_condition: l.macro_condition ?? null,
+            winning: parsed.winning_patterns,
+            losing: parsed.losing_patterns,
+          },
         });
+        persisted++;
       }
-      this.logger.log(`[trader-agent:post-mortem] persisted ${newLessons.length} new lessons`);
+      this.logger.log(`[trader-agent:post-mortem] persisted ${persisted} lessons (${rejectedMacroBlind} rejected macro-blind)`);
     } catch (e) {
       this.logger.warn(`[trader-agent:post-mortem] failed: ${String(e).slice(0, 200)}`);
     }
@@ -455,12 +544,15 @@ RÉPONSE JSON OBLIGATOIRE :
   }
 
   private async fetchMacroContext(): Promise<object> {
-    // Best-effort : si LisaService expose un cache macro, l'utiliser
+    // Cache 2 min côté LisaService — partagé avec ShadowSizingOrchestrator pour
+    // éviter de re-fetch les 15-20 calls API EODHD/Yahoo à chaque cycle de 5 min.
     try {
-      const cached = (this.lisa as unknown as { lastMarketSnapshot?: object }).lastMarketSnapshot;
-      if (cached) return cached;
-    } catch { /* ignore */ }
-    return { note: 'macro_snapshot_unavailable_this_cycle' };
+      const snap = await this.lisa.getRecentMarketSnapshot(120);
+      return snap;
+    } catch (e) {
+      this.logger.warn(`[trader-agent] macro fetch failed: ${String(e).slice(0, 100)}`);
+      return { note: 'macro_snapshot_unavailable_this_cycle', error: String(e).slice(0, 100) };
+    }
   }
 
   private async fetchRecentNews(n: number): Promise<object[]> {
@@ -554,12 +646,145 @@ Garde ces lessons en tête en priorité pour ta décision actuelle.`;
     }
 
     if (decision.action_kind === 'close') {
-      // TODO future PR : close via paperBroker
-      return { applied: false, error: 'close action not yet wired (follow-up PR)' };
+      // Gemini fournit un symbol → on résout vers le positionId via state.openPositions.
+      if (!decision.symbol) return { applied: false, error: 'close requires symbol' };
+      const sym = decision.symbol.toUpperCase();
+      const match = state.openPositions.find((p) => p.symbol.toUpperCase() === sym);
+      if (!match) {
+        return { applied: false, error: `close: no open position for ${sym} on trader agent portfolio` };
+      }
+      // Need the position id (not exposed in state) — re-query.
+      const { data: row } = await this.supabase.getClient()
+        .from('lisa_positions')
+        .select('id')
+        .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+        .eq('symbol', match.symbol)
+        .eq('status', 'open')
+        .order('entry_timestamp', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!row?.id) return { applied: false, error: `close: position row not found for ${sym}` };
+
+      const livePriceData = await this.lisa.getLivePrice(decision.symbol).catch(() => null);
+      if (!livePriceData?.price) return { applied: false, error: 'close: no live price' };
+      const livePrice = Number(livePriceData.price);
+      if (!Number.isFinite(livePrice) || livePrice <= 0) return { applied: false, error: 'close: invalid live price' };
+
+      const res = await this.lisa.closeForOpportunityScout({
+        positionId: row.id,
+        livePrice,
+        ...(livePriceData.source ? { livePriceSource: String(livePriceData.source) } : {}),
+        reason: 'closed_user',
+        rationale: `[trader-agent] ${decision.thesis ?? 'gemini close decision'}`,
+      });
+      if (res.closed) return { applied: true, positionId: row.id };
+      return { applied: false, ...(res.error !== undefined ? { error: res.error } : {}) };
     }
 
-    if (decision.action_kind === 'open_pairs' || decision.action_kind === 'scale_in' || decision.action_kind === 'trail_stop') {
-      return { applied: false, error: `${decision.action_kind} not yet wired (follow-up PR)` };
+    if (decision.action_kind === 'scale_in') {
+      // Scale-in = nouvelle ligne open_directional sur un symbol DÉJÀ détenu,
+      // notional capé à +50% du sizing standard (cf. system prompt). Le paper-broker
+      // tracke 2 lignes distinctes — comportement attendu.
+      if (!decision.symbol || !decision.direction || !decision.notional_usd) {
+        return { applied: false, error: 'scale_in: missing symbol/direction/notional' };
+      }
+      const sym = decision.symbol.toUpperCase();
+      const hasOpen = state.openPositions.some((p) => p.symbol.toUpperCase() === sym);
+      if (!hasOpen) {
+        return { applied: false, error: `scale_in: no existing position on ${sym} (use open_directional)` };
+      }
+      if (state.openCount >= 5) return { applied: false, error: 'scale_in: max 5 open positions' };
+      const notional = Math.max(MIN_NOTIONAL_USD, Math.min(MAX_CONCENTRATION_USD * 1.5, decision.notional_usd));
+      const slPct = Math.max(0.5, Math.min(3, decision.stop_loss_pct ?? 1.2));
+      const tpPct = Math.max(0.8, Math.min(5, decision.take_profit_pct ?? 2.5));
+
+      const livePriceData = await this.lisa.getLivePrice(decision.symbol).catch(() => null);
+      if (!livePriceData?.price) return { applied: false, error: 'scale_in: no live price' };
+      const livePrice = Number(livePriceData.price);
+      if (!Number.isFinite(livePrice) || livePrice <= 0) return { applied: false, error: 'scale_in: invalid live price' };
+      if (livePriceData.source && (String(livePriceData.source).startsWith('stale_') || String(livePriceData.source).startsWith('fallback'))) {
+        return { applied: false, error: `scale_in: price source unreliable: ${livePriceData.source}` };
+      }
+
+      const sign = decision.direction === 'short' ? -1 : 1;
+      const stopLossPrice = (livePrice * (1 - sign * slPct / 100)).toFixed(6);
+      const takeProfitPrice = (livePrice * (1 + sign * tpPct / 100)).toFixed(6);
+
+      try {
+        const opened = await this.lisa.openForOpportunityScout({
+          portfolioId: TRADER_AGENT_PORTFOLIO_ID,
+          symbol: decision.symbol,
+          assetClass: 'unknown',
+          venue: 'paper',
+          notionalUsd: notional,
+          livePrice,
+          stopLossPrice,
+          takeProfitPrice,
+          horizonDays: Math.ceil((decision.horizon_minutes ?? 60) / (60 * 24)),
+          maxOpenPositions: 5,
+          rationale: `[trader-agent SCALE_IN] ${decision.thesis}`,
+        });
+        if (!opened) return { applied: false, error: 'scale_in: open returned null' };
+        return { applied: true, positionId: opened.id };
+      } catch (e) {
+        return { applied: false, error: String(e).slice(0, 200) };
+      }
+    }
+
+    if (decision.action_kind === 'trail_stop') {
+      // Trail stop = UPDATE stop_loss_price d'une position ouverte.
+      // Gemini fournit symbol + nouveau stop_loss_pct (% sous entry pour long).
+      // Garde-fou : le nouveau stop ne peut JAMAIS être plus permissif que l'ancien
+      // (sinon ce n'est pas un trail mais un loosening — refusé).
+      if (!decision.symbol) return { applied: false, error: 'trail_stop: requires symbol' };
+      const sym = decision.symbol.toUpperCase();
+      const match = state.openPositions.find((p) => p.symbol.toUpperCase() === sym);
+      if (!match) return { applied: false, error: `trail_stop: no open position for ${sym}` };
+
+      const { data: row } = await this.supabase.getClient()
+        .from('lisa_positions')
+        .select('id, stop_loss_price, entry_price, direction')
+        .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+        .eq('symbol', match.symbol)
+        .eq('status', 'open')
+        .order('entry_timestamp', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!row?.id) return { applied: false, error: `trail_stop: position row not found for ${sym}` };
+
+      const livePriceData = await this.lisa.getLivePrice(decision.symbol).catch(() => null);
+      if (!livePriceData?.price) return { applied: false, error: 'trail_stop: no live price' };
+      const livePrice = Number(livePriceData.price);
+      if (!Number.isFinite(livePrice) || livePrice <= 0) return { applied: false, error: 'trail_stop: invalid live price' };
+
+      const slPct = Math.max(0.1, Math.min(5, decision.stop_loss_pct ?? 1.2));
+      const isLong = String(row.direction) !== 'short';
+      const sign = isLong ? -1 : 1;
+      // Nouveau stop calculé depuis livePrice (trail = suit le marché)
+      const newStop = livePrice * (1 + sign * slPct / 100);
+      const oldStop = Number(row.stop_loss_price);
+
+      // Garde-fou : le nouveau stop doit être PLUS strict
+      // - long : newStop > oldStop (on remonte le stop)
+      // - short : newStop < oldStop (on descend le stop)
+      const stricter = isLong ? newStop > oldStop : newStop < oldStop;
+      if (!stricter) {
+        return { applied: false, error: `trail_stop: new stop ${newStop.toFixed(4)} not stricter than current ${oldStop.toFixed(4)} (${isLong ? 'long' : 'short'})` };
+      }
+
+      const { error } = await this.supabase.getClient()
+        .from('lisa_positions')
+        .update({ stop_loss_price: newStop.toFixed(6) })
+        .eq('id', row.id);
+      if (error) return { applied: false, error: `trail_stop: db update failed: ${error.message}` };
+      return { applied: true, positionId: row.id };
+    }
+
+    if (decision.action_kind === 'open_pairs') {
+      // Pair trade = 2 positions simultanées (long A + short B), market neutral.
+      // Hors-scope MVP : nécessite logique d'apariement + sizing partagé. À câbler
+      // dans un PR dédié quand le besoin se manifeste sur les décisions Gemini.
+      return { applied: false, error: 'open_pairs: not yet wired (rare action, follow-up PR)' };
     }
 
     return { applied: false, error: `unknown action: ${decision.action_kind}` };
