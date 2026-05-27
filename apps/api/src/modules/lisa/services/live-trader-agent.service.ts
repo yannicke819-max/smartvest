@@ -355,36 +355,78 @@ export class LiveTraderAgentService {
         const cleaned = response.content.trim().replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
         decision = JSON.parse(cleaned);
       } catch (e) {
-        this.logger.warn(`[trader-agent] parse JSON failed: ${String(e).slice(0, 150)} — raw: ${response.content.slice(0, 200)}`);
+        const errMsg = `parse JSON failed: ${String(e).slice(0, 150)}`;
+        this.logger.warn(`[trader-agent] ${errMsg} — raw: ${response.content.slice(0, 200)}`);
+        // Persist DB row pour visibilité
+        await this.logDecision({
+          cycleStartedAt, state,
+          candidates, macro, news, memory,
+          rawResponse: response.content,
+          provider: response.providerId,
+          latencyMs: response.latencyMs,
+          costUsd: response.costUsd,
+          action: 'hold' as const,
+          actionKindOverride: 'skip_safety_bound',
+          notionalUsd: 0, confidence: 0,
+          thesis: `Gemini response parse failed: ${errMsg}. Raw: ${response.content.slice(0, 200)}`,
+          applied: false,
+          applyError: errMsg,
+        }).catch(() => null);
         return;
       }
 
-      // 7. Apply decision with safety bounds
-      const applyResult = await this.applyDecision(decision, state);
+      // 7. Apply decision with safety bounds — wrap dans try pour ne pas
+      // silencieusement drop la décision si applyDecision throw.
+      let applyResult: { applied: boolean; positionId?: string; error?: string };
+      try {
+        applyResult = await this.applyDecision(decision, state);
+      } catch (e) {
+        const errMsg = `applyDecision throw: ${String(e).slice(0, 200)}`;
+        this.logger.error(`[trader-agent] ${errMsg}`);
+        applyResult = { applied: false, error: errMsg };
+      }
 
-      // 8. Log everything
-      await this.logDecision({
-        cycleStartedAt, state, decision,
-        candidates, macro, news, memory,
-        rawResponse: response.content,
-        provider: response.providerId,
-        latencyMs: response.latencyMs,
-        costUsd: response.costUsd,
-        action: decision.action_kind,
-        notionalUsd: decision.notional_usd ?? 0,
-        confidence: decision.confidence,
-        thesis: decision.thesis,
-        applied: applyResult.applied,
-        ...(applyResult.positionId !== undefined ? { appliedPositionId: applyResult.positionId } : {}),
-        ...(applyResult.error !== undefined ? { applyError: applyResult.error } : {}),
-      });
+      // 8. Log everything — try/catch pour ne jamais dropper silencieusement
+      try {
+        await this.logDecision({
+          cycleStartedAt, state, decision,
+          candidates, macro, news, memory,
+          rawResponse: response.content,
+          provider: response.providerId,
+          latencyMs: response.latencyMs,
+          costUsd: response.costUsd,
+          action: decision.action_kind,
+          notionalUsd: decision.notional_usd ?? 0,
+          confidence: decision.confidence,
+          thesis: decision.thesis,
+          applied: applyResult.applied,
+          ...(applyResult.positionId !== undefined ? { appliedPositionId: applyResult.positionId } : {}),
+          ...(applyResult.error !== undefined ? { applyError: applyResult.error } : {}),
+        });
+      } catch (e) {
+        this.logger.error(`[trader-agent] logDecision failed (cycle ran but trace lost): ${String(e).slice(0, 200)}`);
+      }
 
       const tag = applyResult.applied ? '✅' : (decision.action_kind === 'hold' ? '⏸️' : '⚠️');
       this.logger.log(
         `[trader-agent] ${tag} ${decision.action_kind} ${decision.symbol ?? ''} conf=${decision.confidence?.toFixed(2)} — ${decision.thesis?.slice(0, 80) ?? ''}`,
       );
     } catch (e) {
-      this.logger.error(`[trader-agent] cycle failed: ${String(e).slice(0, 200)}`);
+      const errMsg = `cycle failed: ${String(e).slice(0, 200)}`;
+      this.logger.error(`[trader-agent] ${errMsg}`);
+      // Trace l'erreur en DB pour visibilité (best-effort).
+      try {
+        await this.supabase.getClient().from('trader_agent_decisions').insert({
+          portfolio_id: TRADER_AGENT_PORTFOLIO_ID,
+          cycle_started_at: new Date().toISOString(),
+          input_state: { cycle_error_sentinel: true, error: errMsg },
+          action_kind: 'hold',
+          thesis: `[CYCLE_ERROR] ${errMsg}`,
+          confidence: 0,
+          action_applied: false,
+          apply_error: errMsg,
+        });
+      } catch { /* swallow */ }
     }
   }
 
