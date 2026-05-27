@@ -939,6 +939,22 @@ Garde ces lessons en tête en priorité pour ta décision actuelle.`;
       if (!decision.symbol || !decision.direction || !decision.notional_usd) {
         return { applied: false, error: 'missing symbol/direction/notional' };
       }
+      // Anti-revenge ticker cooldown (incident 27/05 — AMKR.US ouvert 4× en 5h,
+      // 3 closes losers + 1 open). Refuse open si même ticker déjà ouvert ≥ 2×
+      // dans les 4 dernières heures (toutes statuses confondus, open/closed).
+      {
+        const sym = decision.symbol.toUpperCase();
+        const since4h = new Date(Date.now() - 4 * 60 * 60_000).toISOString();
+        const { count } = await this.supabase.getClient()
+          .from('lisa_positions')
+          .select('id', { count: 'exact', head: true })
+          .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+          .eq('symbol', sym)
+          .gte('entry_timestamp', since4h);
+        if ((count ?? 0) >= 2) {
+          return { applied: false, error: `anti-revenge: ${sym} déjà ouvert ${count}× en 4h` };
+        }
+      }
       const notional = Math.max(MIN_NOTIONAL_USD, Math.min(MAX_CONCENTRATION_USD, decision.notional_usd));
       // Autonomie cadrée : bornes larges (Gemini peut dévier si raison LIVE),
       // default backtest-validé 1%/6%. Justification obligatoire si écart > 30%

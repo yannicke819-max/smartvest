@@ -2658,6 +2658,24 @@ export class TopGainersScannerService implements OnModuleInit {
         continue;
       }
 
+      // Venue blacklist (analyse 27/05/2026, n=112 winners vs 234 losers) :
+      //   - .KO Korea large caps : WR 20%, sumPnl très négatif
+      //   - Configurable via `GAINERS_VENUE_BLACKLIST=KO,XYZ` (vide = pas de filtre).
+      //   - Note : .KQ (KOSDAQ) reste autorisé (2 mega-winners, distinguer venues).
+      const venueBlacklistRaw = (this.config.get<string>('GAINERS_VENUE_BLACKLIST') ?? '').trim();
+      if (venueBlacklistRaw.length > 0 && cand.exchange) {
+        const blacklistedVenues = new Set(
+          venueBlacklistRaw.split(',').map((v) => v.trim().toUpperCase()).filter((v) => v.length > 0),
+        );
+        if (blacklistedVenues.has(cand.exchange.toUpperCase())) {
+          this.logger.log(
+            `[top-gainers] ${cand.symbol} venue ${cand.exchange} blacklistée → skip long (data-driven 27/05)`,
+          );
+          recordShadowDecision(cand, 'reject_other', undefined);
+          continue;
+        }
+      }
+
       // Dead-zone gate — analyse stats 06-27/05/2026 (n=363 positions matchées).
       // Buckets changePct structurellement perdants :
       //   - 4-8%   : WR 13%, Σpnl% -28% (n=91)
@@ -4043,7 +4061,16 @@ export class TopGainersScannerService implements OnModuleInit {
     } | null,
   ): Promise<string | null> {
     const effectiveTp = overrides?.tpPct ?? 1.5;
-    const effectiveSl = overrides?.slPct ?? 1.0;
+    let effectiveSl = overrides?.slPct ?? 1.0;
+    // Defensive sanity guardrail (incident 27/05 — MOD.US opened with SL=entry,
+    // slPct=0 leaked via matrix cache stale ou autre voie). Tout slPct < 0.1%
+    // ramené à 1.0% par défaut + log warning pour investigation.
+    if (effectiveSl < 0.1) {
+      this.logger.warn(
+        `[top-gainers] effectiveSl=${effectiveSl} < 0.1% (would trigger SL=entry bug) → forced to 1.0% defensively`,
+      );
+      effectiveSl = 1.0;
+    }
     // Fallbacks identiques aux defaults DB migration 0115 si overrides absents
     // (caller hors scanPortfolio = legacy / test).
     const effectiveCapital = overrides?.capitalUsd ?? FALLBACK_CAPITAL_USD;
