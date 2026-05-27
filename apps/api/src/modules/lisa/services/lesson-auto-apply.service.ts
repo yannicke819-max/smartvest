@@ -133,26 +133,59 @@ export class LessonAutoApplyService {
         }
 
         // Apply chaque DB column change sur les 4 portfolios gainers
+        // Bug fix 27/05/2026 : utiliser `.select()` pour récupérer les rows
+        // affectées et marker `applied=true` uniquement si ≥ 1 UPDATE a
+        // réellement changé une row. PostgREST ne lève PAS d'erreur si la
+        // colonne n'existe pas (UPDATE silently no-op), donc un check sur
+        // `error` seul ne suffit pas — il faut compter les rows retournées.
+        let rowsChangedTotal = 0;
+        const failedTargets: string[] = [];
         for (const target of dbColumnTargets) {
           const col = target.replace('lisa_session_configs.', '');
           const value = change[target];
-          const { error: updErr } = await sb
+          const { data: updated, error: updErr } = await sb
             .from('lisa_session_configs')
             .update({ [col]: value })
-            .in('portfolio_id', GAINERS_PORTFOLIO_IDS);
+            .in('portfolio_id', GAINERS_PORTFOLIO_IDS)
+            .select('portfolio_id');
 
           if (updErr) {
             this.logger.warn(
               `[lesson-auto-apply] UPDATE ${col}=${JSON.stringify(value)} failed: ${updErr.message}`,
             );
             errorCount++;
+            failedTargets.push(`${col}:${updErr.message.slice(0, 50)}`);
             continue;
           }
 
+          const rowsChanged = Array.isArray(updated) ? updated.length : 0;
+          if (rowsChanged === 0) {
+            this.logger.warn(
+              `[lesson-auto-apply] UPDATE ${col}=${JSON.stringify(value)} affected 0 rows ` +
+              `(column probably missing or rows didn't match). Lesson ${lesson.id.slice(0, 8)} NOT marked applied.`,
+            );
+            failedTargets.push(`${col}:0_rows_affected`);
+            errorCount++;
+            continue;
+          }
+
+          rowsChangedTotal += rowsChanged;
           this.logger.log(
             `[lesson-auto-apply] APPLIED lesson=${lesson.id.slice(0, 8)} ${col}=${JSON.stringify(value)} ` +
-            `confidence=${lesson.confidence} sample=${lesson.sample_size}`,
+            `(${rowsChanged} rows) confidence=${lesson.confidence} sample=${lesson.sample_size}`,
           );
+        }
+
+        // Guard : si AUCUN UPDATE n'a changé de row, ne pas marker applied=true
+        // → audit "needs_manual_review" pour visibilité.
+        if (rowsChangedTotal === 0) {
+          await this.logDecision(lesson, 'lesson_needs_manual_review', {
+            reason: 'all_updates_zero_rows',
+            db_targets: dbColumnTargets,
+            failed_targets: failedTargets,
+          });
+          needsReviewCount++;
+          continue;
         }
 
         // Marquer la lesson appliquée
@@ -234,16 +267,20 @@ export class LessonAutoApplyService {
     kind: 'lesson_auto_applied' | 'lesson_needs_manual_review',
     extra: Record<string, unknown>,
   ): Promise<void> {
-    try {
-      await this.supabase.getClient().from('lisa_decision_log').insert({
-        portfolio_id: GAINERS_PORTFOLIO_IDS[0], // MAIN portfolio comme audit dest
-        kind,
-        rationale: `[lesson-auto-apply] ${lesson.lesson_text.slice(0, 200)} (lesson_id=${lesson.id.slice(0, 8)} ` +
-          `confidence=${lesson.confidence} sample=${lesson.sample_size})`,
-        payload: { lesson_id: lesson.id, lesson_kind: lesson.lesson_kind, ...extra },
-      });
-    } catch (e) {
-      this.logger.debug(`[lesson-auto-apply] decision_log insert failed: ${String(e).slice(0, 80)}`);
+    // Insert sur lisa_decision_log : triggered_by est NOT NULL + CHECK constraint
+    // (cf. daily-catalyst-brief.service:160-162). Valeur compatible : 'autopilot_cron'.
+    // summary requis aussi (NOT NULL probable). Sans ces champs l'insert silently fail.
+    const { error } = await this.supabase.getClient().from('lisa_decision_log').insert({
+      portfolio_id: GAINERS_PORTFOLIO_IDS[0],
+      kind,
+      triggered_by: 'autopilot_cron',
+      summary: `[lesson-auto-apply] ${kind} lesson=${lesson.id.slice(0, 8)} kind=${lesson.lesson_kind}`,
+      rationale: `[lesson-auto-apply] ${lesson.lesson_text.slice(0, 200)} (lesson_id=${lesson.id.slice(0, 8)} ` +
+        `confidence=${lesson.confidence} sample=${lesson.sample_size})`,
+      payload: { lesson_id: lesson.id, lesson_kind: lesson.lesson_kind, ...extra },
+    });
+    if (error) {
+      this.logger.warn(`[lesson-auto-apply] decision_log insert failed: ${error.message}`);
     }
   }
 }
