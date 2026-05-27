@@ -53,6 +53,7 @@ import { GainersUserShadowService } from './services/gainers-user-shadow.service
 import { ShadowSizingOrchestratorService } from './services/shadow-sizing-orchestrator.service';
 import { LiveTraderAgentService } from './services/live-trader-agent.service';
 import { MainScannerPostMortemService } from './services/main-scanner-postmortem.service';
+import { LessonAutoApplyService } from './services/lesson-auto-apply.service';
 import { ScannerLessonsContextService } from './services/scanner-lessons-context.service';
 import { MarketCloseReportService } from './services/market-close-report.service';
 import { GainersAutoRelaxService } from './services/gainers-auto-relax.service';
@@ -202,6 +203,10 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     // à injecter dans les system prompts (signal validation, ranking, risk manager, macro veto).
     // Cache TTL 5 min pour éviter requêtes DB répétées (scanner ~500 calls/cycle).
     ScannerLessonsContextService,
+    // LessonAutoApplyService — boucle d'amélioration continue : auto-applique les
+    // proposed_config_change à haute confiance (≥0.85, sample ≥10) sur les 4 portfolios
+    // gainers. Cron hourly. Cibles env vars → manual review (Fly secrets).
+    LessonAutoApplyService,
     // Market Close Reports — comparatif 5 portfolios à chaque cloche (Asia/EU/US) + daily wrap.
     MarketCloseReportService,
     // PR #282 — Auto-relax adaptive : lit cumulative_regret 7j et propose/auto-applique relax
@@ -360,6 +365,8 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     LiveTraderAgentService,
     // Export pour AdminScannerPostMortemController (cf. /admin/scanner-postmortem/{status,run}).
     MainScannerPostMortemService,
+    // Export pour AdminLessonAutoApplyController (cf. /admin/lesson-auto-apply/{status,run}).
+    LessonAutoApplyService,
     // Export pour AdminMarketCloseReportsController.
     MarketCloseReportService,
   ],

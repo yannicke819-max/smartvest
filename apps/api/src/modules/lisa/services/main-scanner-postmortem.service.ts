@@ -129,8 +129,11 @@ export class MainScannerPostMortemService {
   ) {}
 
   onModuleInit(): void {
+    // Default ON depuis 27/05/2026 — pipeline d'amélioration continue exige
+    // régénération nightly automatique. Override possible via Fly secret
+    // `MAIN_SCANNER_POSTMORTEM_ENABLED=false` pour désactiver en cas de bug.
     this.enabled =
-      (this.config.get<string>('MAIN_SCANNER_POSTMORTEM_ENABLED') ?? 'false').toLowerCase() === 'true';
+      (this.config.get<string>('MAIN_SCANNER_POSTMORTEM_ENABLED') ?? 'true').toLowerCase() === 'true';
     this.logger.log(
       `[scanner-postmortem] onModuleInit fired — enabled=${this.enabled}`,
     );

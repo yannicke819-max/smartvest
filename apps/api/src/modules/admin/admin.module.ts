@@ -45,6 +45,7 @@ import { AdminTraderAgentController } from './admin-trader-agent.controller';
 import { AdminScannerPostMortemController } from './admin-scanner-postmortem.controller';
 import { AdminScannerDebugController } from './admin-scanner-debug.controller';
 import { AdminMarketCloseReportsController } from './admin-market-close-reports.controller';
+import { AdminLessonAutoApplyController } from './admin-lesson-auto-apply.controller';
 
 @Module({
   imports: [SupabaseModule, forwardRef(() => LisaModule), GainersModule],
@@ -84,6 +85,8 @@ import { AdminMarketCloseReportsController } from './admin-market-close-reports.
     AdminScannerDebugController,
     // Market Close Reports — comparatif 5 portfolios par session (Asia/EU/US + daily wrap)
     AdminMarketCloseReportsController,
+    // Lesson Auto-Apply — pipeline d'amélioration continue (scanner_lessons → DB UPDATE).
+    AdminLessonAutoApplyController,
   ],
 })
 export class AdminModule {}
