@@ -268,7 +268,7 @@ export class LiveTraderAgentService {
 
       const { data: positions } = await this.supabase.getClient()
         .from('lisa_positions')
-        .select('symbol, direction, entry_price, exit_price, entry_timestamp, closed_at, status, realized_pnl_usd, exit_reason')
+        .select('symbol, direction, entry_price, exit_price, entry_timestamp, exit_timestamp, status, realized_pnl_usd, exit_reason')
         .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
         .gte('entry_timestamp', yesterdayStart.toISOString())
         .order('entry_timestamp', { ascending: true });
@@ -300,7 +300,7 @@ export class LiveTraderAgentService {
         .from('lisa_positions')
         .select('portfolio_id, symbol, direction, realized_pnl_usd, exit_reason')
         .in('portfolio_id', Object.keys(PORTFOLIO_NAMES))
-        .gte('closed_at', yesterdayStart.toISOString())
+        .gte('exit_timestamp', yesterdayStart.toISOString())
         .neq('status', 'open');
 
       const dailyByPortfolio: Record<string, { name: string; closed: number; wins: number; gross_pnl: number; symbols: string[] }> = {};
@@ -408,7 +408,7 @@ RÉPONSE JSON OBLIGATOIRE :
       .from('lisa_positions')
       .select('realized_pnl_usd')
       .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
-      .gte('closed_at', todayStart)
+      .gte('exit_timestamp', todayStart)
       .neq('status', 'open');
 
     const openPositions = (open ?? []).map((p) => ({

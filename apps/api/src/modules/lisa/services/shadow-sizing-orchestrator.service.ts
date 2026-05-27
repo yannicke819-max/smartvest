@@ -251,7 +251,7 @@ export class ShadowSizingOrchestratorService {
       .from('lisa_positions')
       .select('asset_class, realized_pnl_usd, entry_notional_usd, exit_reason')
       .eq('portfolio_id', portfolioId)
-      .gte('closed_at', todayStart)
+      .gte('exit_timestamp', todayStart)
       .neq('status', 'open');
 
     const closedCount = closedToday?.length ?? 0;
