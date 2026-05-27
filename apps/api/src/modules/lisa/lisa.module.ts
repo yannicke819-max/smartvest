@@ -52,6 +52,7 @@ import { TopGainersScannerService } from './services/top-gainers-scanner.service
 import { GainersUserShadowService } from './services/gainers-user-shadow.service';
 import { ShadowSizingOrchestratorService } from './services/shadow-sizing-orchestrator.service';
 import { LiveTraderAgentService } from './services/live-trader-agent.service';
+import { MainScannerPostMortemService } from './services/main-scanner-postmortem.service';
 import { MarketCloseReportService } from './services/market-close-report.service';
 import { GainersAutoRelaxService } from './services/gainers-auto-relax.service';
 import { PostSlBackfillService } from './services/post-sl-backfill.service';
@@ -193,6 +194,9 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     // Live Trader Agent — portfolio dédié $10k piloté à 100% par Gemini Pro.
     // Cron 5min decision + cron 02:00 UTC post-mortem nightly + memory store.
     LiveTraderAgentService,
+    // MainScannerPostMortemService — apprentissage Gemini Pro sur le scanner gainers
+    // (cron 02:30 UTC : analyse 24h × 4 portfolios → lessons macro-conditionnelles).
+    MainScannerPostMortemService,
     // Market Close Reports — comparatif 5 portfolios à chaque cloche (Asia/EU/US) + daily wrap.
     MarketCloseReportService,
     // PR #282 — Auto-relax adaptive : lit cumulative_regret 7j et propose/auto-applique relax
@@ -349,6 +353,8 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     ShadowSizingOrchestratorService,
     // Export pour AdminTraderAgentController (cf. /admin/trader-agent/status).
     LiveTraderAgentService,
+    // Export pour AdminScannerPostMortemController (cf. /admin/scanner-postmortem/{status,run}).
+    MainScannerPostMortemService,
     // Export pour AdminMarketCloseReportsController.
     MarketCloseReportService,
   ],
