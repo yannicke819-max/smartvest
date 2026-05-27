@@ -119,19 +119,41 @@ export class ScannerLlmRouterService {
    * Appel LLM via la chain Pro (Gemini 2.5 Pro → Flash Lite → Opus).
    * Pour les raisonnements multi-facteurs : décisions trader agent, post-mortem,
    * auto-correction sizing. Coût ~×125 vs call() mais qualité supérieure.
-   * Auto-fallback sur Flash Lite si Pro indisponible (quota, timeout).
+   *
+   * Stratégie défensive : si la chain Pro entière fail (AllProvidersFailedError
+   * ou exception non capturée), on retombe automatiquement sur la chain rapide
+   * call() (Flash Lite → Opus). Garantit qu'un consumer ne se retrouve JAMAIS
+   * silencieusement skipé à cause d'un quota/modèle Pro indisponible.
    */
   async callWithPro(params: LlmCallParams): Promise<{ content: string; providerId: string; costUsd: number; latencyMs: number; fallbackUsed: boolean }> {
-    if (!this.routerPro) {
-      throw new Error('ScannerLlmRouterService.callWithPro() — router disabled');
+    if (this.routerPro) {
+      try {
+        const res = await this.routerPro.call(params);
+        return {
+          content: res.content,
+          providerId: res.providerId,
+          costUsd: res.costUsd,
+          latencyMs: res.latencyMs,
+          fallbackUsed: res.fallbackUsed,
+        };
+      } catch (e) {
+        this.logger.warn(
+          `[scanner-llm] callWithPro routerPro failed → fallback to fast chain. err=${String(e).slice(0, 200)}`,
+        );
+        // tombe sur le fast path ci-dessous
+      }
     }
-    const res = await this.routerPro.call(params);
+    // Fallback : Flash Lite → Opus (la chain "call" classique).
+    if (!this.router) {
+      throw new Error('ScannerLlmRouterService.callWithPro() — both routerPro and router disabled');
+    }
+    const res = await this.router.call(params);
     return {
       content: res.content,
-      providerId: res.providerId,
+      providerId: `${res.providerId}-via-pro-fallback`,
       costUsd: res.costUsd,
       latencyMs: res.latencyMs,
-      fallbackUsed: res.fallbackUsed,
+      fallbackUsed: true,
     };
   }
 
