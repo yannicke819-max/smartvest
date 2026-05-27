@@ -224,7 +224,19 @@ export class LiveTraderAgentService {
           timeoutMs: 20_000,
         });
       } catch (e) {
-        this.logger.warn(`[trader-agent] LLM call failed: ${String(e).slice(0, 150)}`);
+        const errMsg = `LLM call failed: ${String(e).slice(0, 200)}`;
+        this.logger.warn(`[trader-agent] ${errMsg}`);
+        // Persist le fail en DB pour visibilité sans accès Fly logs.
+        await this.logDecision({
+          cycleStartedAt, state,
+          candidates, macro, news, memory,
+          action: 'hold' as const,
+          actionKindOverride: 'skip_safety_bound',
+          notionalUsd: 0, confidence: 0,
+          thesis: `LLM unavailable: ${errMsg}`,
+          applied: false,
+          applyError: errMsg,
+        }).catch(() => null);
         return;
       }
 

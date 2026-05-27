@@ -696,7 +696,20 @@ export class ShadowSizingOrchestratorService {
         timeoutMs: 20_000,
       });
     } catch (e) {
-      this.logger.warn(`[shadow-sizing-gemini] LLM call failed: ${String(e).slice(0, 150)}`);
+      const errMsg = `LLM call failed: ${String(e).slice(0, 200)}`;
+      this.logger.warn(`[shadow-sizing-gemini] ${errMsg}`);
+      // Persist le fail en DB pour visibilité sans accès Fly logs.
+      await this.logAutoTune({
+        portfolioId: snapshots[0].portfolioId,
+        profileName: 'gemini_fail',
+        decisionKind: 'no_action',
+        triggerMetric: 'gemini_llm_error',
+        triggerValue: 0,
+        thresholdValue: 0,
+        actionApplied: false,
+        rationale: `🤖 Gemini call FAILED — ${errMsg}`,
+        payload: { error: errMsg },
+      }).catch(() => null);
       return;
     }
 
