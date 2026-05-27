@@ -53,6 +53,7 @@ import {
   type PerClassHourBlacklistConfig,
   type TickerSizeMultConfig,
 } from './data-driven-gates.helper';
+import { mergeHourBlacklist, parseHoursCsvSet } from './lesson-driven-config.helper';
 import { SizingABTestService } from './research/sizing-ab-test.service';
 import { ScannerLessonsContextService } from './scanner-lessons-context.service';
 import { EodhdQuotaService } from './eodhd-quota.service';
@@ -2123,9 +2124,46 @@ export class TopGainersScannerService implements OnModuleInit {
     const { data: cfgRow } = await this.supabase
       .getClient()
       .from('lisa_session_configs')
-      .select('capital_usd, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes, gainers_universe_us, gainers_universe_eu, gainers_universe_asia, gainers_universe_crypto, gainers_p_win_gate_enabled, gainers_min_p_win, gainers_rotation_stagnant_min_age_min, gainers_rotation_min_path_efficiency, gainers_session_filter_enabled, gainers_force_close_before_close_enabled, gainers_force_close_offset_min, gainers_smart_close_enabled, gainers_smart_close_window_min, gainers_smart_close_min_profit_pct, gainers_post_sl_cooldown_min, gainers_asia_strictness_boost, gainers_capital_rotation_enabled, gainers_high_grading_enabled, gainers_rotation_min_score, gainers_top_pool_size')
+      .select('capital_usd, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes, gainers_universe_us, gainers_universe_eu, gainers_universe_asia, gainers_universe_crypto, gainers_p_win_gate_enabled, gainers_min_p_win, gainers_rotation_stagnant_min_age_min, gainers_rotation_min_path_efficiency, gainers_session_filter_enabled, gainers_force_close_before_close_enabled, gainers_force_close_offset_min, gainers_smart_close_enabled, gainers_smart_close_window_min, gainers_smart_close_min_profit_pct, gainers_post_sl_cooldown_min, gainers_asia_strictness_boost, gainers_capital_rotation_enabled, gainers_high_grading_enabled, gainers_rotation_min_score, gainers_top_pool_size, "gainers_hour_blacklist_ASIA_UTC", "gainers_hour_blacklist_EU_UTC", "gainers_hour_blacklist_US_UTC"')
       .eq('portfolio_id', portfolioId)
       .maybeSingle();
+    // Lesson-driven hour blacklist (migration 0172) — per-portfolio override.
+    // UNION avec la blacklist globale (env Fly) : safety wins, on n'allège
+    // jamais le filtre global même si la lesson active a un set plus restreint.
+    // Si les colonnes DB sont null/'' (cas par défaut), l'effectif = global pur.
+    const effectivePerClassHourGate: PerClassHourBlacklistConfig = {
+      asia_equity: mergeHourBlacklist(
+        this.perClassHourGate.asia_equity,
+        (cfgRow as Record<string, unknown> | null)?.['gainers_hour_blacklist_ASIA_UTC'] as string | null | undefined,
+      ),
+      us_equity_large: mergeHourBlacklist(
+        this.perClassHourGate.us_equity_large,
+        (cfgRow as Record<string, unknown> | null)?.['gainers_hour_blacklist_US_UTC'] as string | null | undefined,
+      ),
+      us_equity_small_mid: mergeHourBlacklist(
+        this.perClassHourGate.us_equity_small_mid,
+        (cfgRow as Record<string, unknown> | null)?.['gainers_hour_blacklist_US_UTC'] as string | null | undefined,
+      ),
+      eu_equity: mergeHourBlacklist(
+        this.perClassHourGate.eu_equity,
+        (cfgRow as Record<string, unknown> | null)?.['gainers_hour_blacklist_EU_UTC'] as string | null | undefined,
+      ),
+      crypto_major: this.perClassHourGate.crypto_major,
+      crypto_alt: this.perClassHourGate.crypto_alt,
+    };
+    // Log discret si DB ajoute des heures non présentes dans le global
+    const dbAsiaSet = parseHoursCsvSet((cfgRow as Record<string, unknown> | null)?.['gainers_hour_blacklist_ASIA_UTC'] as string | null | undefined);
+    const dbUsSet = parseHoursCsvSet((cfgRow as Record<string, unknown> | null)?.['gainers_hour_blacklist_US_UTC'] as string | null | undefined);
+    const dbEuSet = parseHoursCsvSet((cfgRow as Record<string, unknown> | null)?.['gainers_hour_blacklist_EU_UTC'] as string | null | undefined);
+    if (dbAsiaSet.size > 0 || dbUsSet.size > 0 || dbEuSet.size > 0) {
+      this.logger.log(
+        `[hour-blacklist-overlay] ${portfolioId.slice(0, 8)} DB-overlay: ` +
+        `asia=[${[...dbAsiaSet].sort((a,b)=>a-b).join(',')}] ` +
+        `us=[${[...dbUsSet].sort((a,b)=>a-b).join(',')}] ` +
+        `eu=[${[...dbEuSet].sort((a,b)=>a-b).join(',')}]`,
+      );
+    }
+
     const minScore = this.resolveMinPersistenceScore(
       cfgRow?.gainers_min_persistence_score != null
         ? Number(cfgRow.gainers_min_persistence_score)
@@ -2726,7 +2764,7 @@ export class TopGainersScannerService implements OnModuleInit {
       // Si la classe a une blacklist per-class configurée, elle REMPLACE le gate
       // global (pas d'OR additif). Permet d'autoriser asia@8h même si global
       // blacklist inclut 8h. Le gate per-class ci-dessous gère alors seul l'heure.
-      const classHasPerClassConfig = hasPerClassOverride(String(cand.assetClass), this.perClassHourGate);
+      const classHasPerClassConfig = hasPerClassOverride(String(cand.assetClass), effectivePerClassHourGate);
       const gateApplies = !bypassHourGate
         && !classHasPerClassConfig
         && (whitelistRaw.length > 0 || blacklistRaw.length > 0)
@@ -2759,7 +2797,7 @@ export class TopGainersScannerService implements OnModuleInit {
       // REMPLACE le gate global pour les classes configurées (voir classHasPerClassConfig ci-dessus).
       // Recommandation : GAINERS_HOUR_BLACKLIST_ASIA_UTC=0,1,2,3,4,5 (asia H00-05 = -$1300+ / 91 trades, WR 26%).
       // Bypass pour shadow portfolios (cf. HOUR_GATE_BYPASS_PORTFOLIO_IDS).
-      if (!bypassHourGate && shouldSkipByPerClassHourGate(cand.assetClass, nowUtc.getUTCHours(), this.perClassHourGate)) {
+      if (!bypassHourGate && shouldSkipByPerClassHourGate(cand.assetClass, nowUtc.getUTCHours(), effectivePerClassHourGate)) {
         this.logger.log(
           `[top-gainers] ${cand.symbol} (${cand.assetClass}) hour ${nowUtc.getUTCHours()}h UTC blacklist par-classe → skip long`,
         );

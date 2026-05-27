@@ -29,6 +29,13 @@ import {
 import { mapPositionRows } from '../helpers/position.mapper';
 import { isLongPosition } from '../utils/position-direction';
 import { computeBreakEvenStopUpdate } from './trailing-stop.helper';
+import {
+  extractBreakevenActivationPct,
+  extractChoppyExitThresholds,
+  computeMonotonicityProxy,
+  type ChoppyExitThresholds,
+  type LessonTargetsRow,
+} from './lesson-driven-config.helper';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { PerformanceService } from '../../performance/performance.service';
 import { DecisionLogService } from './decision-log.service';
@@ -171,6 +178,13 @@ interface SessionConfig {
    *  capital (Step 0 drawdown, Step 0.6 news shock, Step 2 stops/TP/trailing)
    *  restent actives universellement. */
   strategy_mode?: string;
+  // === Lesson-driven config (migration 0172) — read au runtime depuis cfg ===
+  /** % seuil activation breakeven trailing-stop (ex 0.5 = 0.5%). Override env. */
+  gainers_trailing_stop_breakeven_min_drawdown_pct?: number | string | null;
+  /** Min age (minutes) avant de considérer un trade choppy → close. */
+  gainers_choppy_exit_after_min?: number | null;
+  /** Monotonicity min (ratio currentPnl/peakPnl) en deçà duquel = choppy. */
+  gainers_choppy_min_monotonicity?: number | string | null;
 }
 
 @Injectable()
@@ -1916,7 +1930,14 @@ export class MechanicalTradingService {
     if (breakEvenEnabled) {
       const portfolioIdBE = String((pos as unknown as Record<string, unknown>)['portfolio_id'] ?? '');
       if (portfolioIdBE && await this.isGainersStrategy(portfolioIdBE)) {
-        const activationPct = Number(process.env.GAINERS_TRAILING_STOP_ACTIVATION_PCT ?? '0.003');
+        // Lesson-driven override (migration 0172) — la colonne DB est en %
+        // (ex 0.5 = 0.5%), à convertir en ratio (×0.01) pour matcher l'API
+        // historique `computeBreakEvenStopUpdate(activationPct: ratio)`.
+        const lessonCfg = await this.getLessonCfg(portfolioIdBE);
+        const envActivation = Number(process.env.GAINERS_TRAILING_STOP_ACTIVATION_PCT ?? '0.003');
+        const activationPct = lessonCfg.breakevenActivationPct !== null
+          ? lessonCfg.breakevenActivationPct / 100
+          : envActivation;
         const lockPct = Number(process.env.GAINERS_TRAILING_STOP_LOCK_PCT ?? '0.0005');
         // Pic = max(MFE persistée, prix courant). recordMfe au-dessus est async,
         // mais on lit la valeur EN MÉMOIRE (pos.peak_pre_exit) qui peut être stale
@@ -1941,6 +1962,59 @@ export class MechanicalTradingService {
             .from('lisa_positions')
             .update({ stop_loss_price: newStop })
             .eq('id', pos.id);
+        }
+      }
+    }
+
+    // Lesson-driven choppy-exit (migration 0172). Mesure approximée de
+    // monotonicity via le ratio currentPnl/peakPnl (cf. computeMonotonicityProxy).
+    // Ne fetch PAS de candles intraday (trop coûteux) — utilise peak_pre_exit
+    // (MFE persistée) déjà à jour grâce à recordMfe quelques lignes plus haut.
+    //
+    // Si age >= afterMinutes ET ratio < minMonotonicity → close immédiat avec
+    // reason='closed_invalidated' + rationale "choppy". Scope strict gainers
+    // (le reste du portfolio garde le comportement habituel).
+    const portfolioIdChoppy = String((pos as unknown as Record<string, unknown>)['portfolio_id'] ?? '');
+    if (portfolioIdChoppy && await this.isGainersStrategy(portfolioIdChoppy)) {
+      const { choppy } = await this.getLessonCfg(portfolioIdChoppy);
+      if (choppy.afterMinutes !== null && choppy.minMonotonicity !== null) {
+        const entryTsStr = (pos as unknown as Record<string, unknown>)['entry_timestamp'] as string | undefined;
+        if (entryTsStr) {
+          const ageMin = (Date.now() - new Date(entryTsStr).getTime()) / 60_000;
+          if (ageMin >= choppy.afterMinutes) {
+            const rawPeak = Number((pos as unknown as Record<string, unknown>)['peak_pre_exit']);
+            const peakPx = Number.isFinite(rawPeak) && rawPeak > 0 ? rawPeak : null;
+            const mono = computeMonotonicityProxy({
+              entryPrice: entryPx.toNumber(),
+              currentPrice: currentPrice.toNumber(),
+              peakPrice: peakPx,
+              isLong,
+            });
+            // Guard "peak amplitude" : ne tue pas les positions à wide range
+            // (un peakPnl ≥ 1.2% est un mouvement utile, on laisse respirer
+            // même si la rétention monotonicité est faible — c'est un trail
+            // classique pas un chop). Le user a explicitement demandé ce
+            // garde-fou : "peak_to_trough < 1.2%".
+            const peakPnlPct = peakPx !== null
+              ? isLong
+                ? ((peakPx - entryPx.toNumber()) / entryPx.toNumber()) * 100
+                : ((entryPx.toNumber() - peakPx) / entryPx.toNumber()) * 100
+              : 0;
+            const choppyAmplitudeOk = peakPnlPct < 1.2;
+            if (mono !== null && mono < choppy.minMonotonicity && choppyAmplitudeOk) {
+              this.logger.warn(
+                `[choppy-exit] ${pos.symbol} age=${ageMin.toFixed(1)}min monotonicity=${mono.toFixed(2)} < ${choppy.minMonotonicity} peakPnl=${peakPnlPct.toFixed(2)}% → close (lesson-driven)`,
+              );
+              await this.closePosition(
+                pos.id,
+                currentPrice.toFixed(8),
+                'closed_invalidated',
+                `[CHOPPY-EXIT] giveback détecté : monotonicity ${mono.toFixed(2)} < ${choppy.minMonotonicity} après ${ageMin.toFixed(1)}min (peak ${peakPnlPct.toFixed(2)}% < 1.2%, lesson auto-apply).`,
+                'closed_choppy',
+              );
+              return;
+            }
+          }
         }
       }
     }
@@ -2091,6 +2165,51 @@ export class MechanicalTradingService {
   // Cache court (60s) du strategy_mode par portfolio — évite un lookup DB par
   // position par tick. Utilisé pour scoper le trailing-TP aux portfolios gainers.
   private gainersStrategyCache = new Map<string, { isGainers: boolean; asOf: number }>();
+
+  // Cache (60s) des seuils lesson-driven per-portfolio (migration 0172).
+  // Évite un fetch DB par position/tick. Fail-safe : null si non trouvé.
+  private lessonCfgCache = new Map<string, {
+    breakevenActivationPct: number | null;
+    choppy: ChoppyExitThresholds;
+    asOf: number;
+  }>();
+  private static readonly LESSON_CFG_TTL_MS = 60_000;
+
+  /**
+   * Charge (cache 60s) les colonnes lesson-driven per-portfolio.
+   * Migration 0172 — gainers_trailing_stop_breakeven_min_drawdown_pct +
+   * gainers_choppy_exit_after_min + gainers_choppy_min_monotonicity.
+   */
+  private async getLessonCfg(portfolioId: string): Promise<{
+    breakevenActivationPct: number | null;
+    choppy: ChoppyExitThresholds;
+  }> {
+    if (!portfolioId) {
+      return { breakevenActivationPct: null, choppy: { afterMinutes: null, minMonotonicity: null } };
+    }
+    const cached = this.lessonCfgCache.get(portfolioId);
+    if (cached && Date.now() - cached.asOf < MechanicalTradingService.LESSON_CFG_TTL_MS) {
+      return { breakevenActivationPct: cached.breakevenActivationPct, choppy: cached.choppy };
+    }
+    let breakevenActivationPct: number | null = null;
+    let choppy: ChoppyExitThresholds = { afterMinutes: null, minMonotonicity: null };
+    try {
+      const { data } = await this.supabase.getClient()
+        .from('lisa_session_configs')
+        .select('gainers_trailing_stop_breakeven_min_drawdown_pct, gainers_choppy_exit_after_min, gainers_choppy_min_monotonicity')
+        .eq('portfolio_id', portfolioId)
+        .maybeSingle();
+      if (data) {
+        const row = data as LessonTargetsRow;
+        breakevenActivationPct = extractBreakevenActivationPct(row);
+        choppy = extractChoppyExitThresholds(row);
+      }
+    } catch {
+      // Fail-safe : keep nulls, callers fallback to env/default.
+    }
+    this.lessonCfgCache.set(portfolioId, { breakevenActivationPct, choppy, asOf: Date.now() });
+    return { breakevenActivationPct, choppy };
+  }
 
   /**
    * true si le portfolio est en mode gainers. Sert à scoper le trailing-TP :
