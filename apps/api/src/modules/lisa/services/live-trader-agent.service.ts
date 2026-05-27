@@ -137,16 +137,33 @@ export class LiveTraderAgentService {
   onModuleInit(): void {
     const raw = this.config.get<string>('LIVE_TRADER_AGENT_ENABLED');
     this.enabled = (raw ?? 'false').toLowerCase() === 'true';
-    // Log TOUJOURS (même si disabled) pour visibilité boot — sinon on ne sait
-    // pas si onModuleInit est appelé OU si le flag est mal lu.
     this.logger.log(
       `[trader-agent] onModuleInit fired — LIVE_TRADER_AGENT_ENABLED raw="${raw}" parsed_enabled=${this.enabled}`,
     );
+    // PREUVE DB sentinel : écrit une row trader_agent_decisions au boot pour
+    // prouver que onModuleInit est appelé (sans dépendre des Fly logs).
+    // Tag distinctif via action_kind='hold' + thesis='[BOOT_SENTINEL]'.
+    this.writeBootSentinel(raw).catch(() => null);
     if (this.enabled) {
       this.logger.log(
         `[trader-agent] ENABLED — portfolio=${TRADER_AGENT_PORTFOLIO_ID.slice(0, 8)} capital=$${TRADER_AGENT_CAPITAL_USD} cron */5min`,
       );
     }
+  }
+
+  private async writeBootSentinel(rawFlag: string | undefined): Promise<void> {
+    if (!this.supabase.isReady()) return;
+    const now = new Date();
+    await this.supabase.getClient().from('trader_agent_decisions').insert({
+      portfolio_id: TRADER_AGENT_PORTFOLIO_ID,
+      cycle_started_at: now.toISOString(),
+      input_state: { boot_sentinel: true, raw_flag: rawFlag ?? 'undefined', parsed_enabled: this.enabled },
+      action_kind: 'hold',
+      thesis: `[BOOT_SENTINEL] onModuleInit fired @ ${now.toISOString()} — flag raw="${rawFlag}" parsed=${this.enabled}`,
+      confidence: 0,
+      action_applied: false,
+      apply_error: '[BOOT_SENTINEL] proof onModuleInit was called',
+    });
   }
 
   /**
