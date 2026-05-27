@@ -145,11 +145,16 @@ export class ShadowSizingOrchestratorService {
   ) {}
 
   onModuleInit(): void {
-    this.enabled = (this.config.get<string>('SHADOW_SIZING_ORCHESTRATOR_ENABLED') ?? 'false')
-      .toLowerCase() === 'true';
+    const raw = this.config.get<string>('SHADOW_SIZING_ORCHESTRATOR_ENABLED');
+    const rawGem = this.config.get<string>('SHADOW_SIZING_GEMINI_ENABLED');
+    this.enabled = (raw ?? 'false').toLowerCase() === 'true';
+    // Log TOUJOURS pour visibilité boot.
+    this.logger.log(
+      `[shadow-sizing] onModuleInit fired — SHADOW_SIZING_ORCHESTRATOR_ENABLED raw="${raw}" parsed_enabled=${this.enabled} | SHADOW_SIZING_GEMINI_ENABLED raw="${rawGem}"`,
+    );
     if (this.enabled) {
       this.logger.log(
-        `[shadow-sizing] ENABLED — cron */30min, target=$${DAILY_TARGET_USD}/d, drawdown_kill=${DRAWDOWN_KILL_PCT}%`,
+        `[shadow-sizing] ENABLED — cron */5min, target=$${DAILY_TARGET_USD}/d, drawdown_kill=${DRAWDOWN_KILL_PCT}%`,
       );
     }
   }
@@ -161,6 +166,8 @@ export class ShadowSizingOrchestratorService {
    */
   @Cron('*/5 * * * *', { name: 'shadow-sizing-orchestrator', timeZone: 'UTC' })
   async runCycle(): Promise<void> {
+    // Log inconditionnel chaque tick.
+    this.logger.log(`[shadow-sizing] cron tick @ ${new Date().toISOString()} enabled=${this.enabled} supabase=${this.supabase.isReady()}`);
     if (!this.enabled) return;
     if (!this.supabase.isReady()) return;
 

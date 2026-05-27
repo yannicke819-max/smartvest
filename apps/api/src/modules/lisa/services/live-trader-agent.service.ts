@@ -135,8 +135,13 @@ export class LiveTraderAgentService {
   ) {}
 
   onModuleInit(): void {
-    this.enabled = (this.config.get<string>('LIVE_TRADER_AGENT_ENABLED') ?? 'false')
-      .toLowerCase() === 'true';
+    const raw = this.config.get<string>('LIVE_TRADER_AGENT_ENABLED');
+    this.enabled = (raw ?? 'false').toLowerCase() === 'true';
+    // Log TOUJOURS (même si disabled) pour visibilité boot — sinon on ne sait
+    // pas si onModuleInit est appelé OU si le flag est mal lu.
+    this.logger.log(
+      `[trader-agent] onModuleInit fired — LIVE_TRADER_AGENT_ENABLED raw="${raw}" parsed_enabled=${this.enabled}`,
+    );
     if (this.enabled) {
       this.logger.log(
         `[trader-agent] ENABLED — portfolio=${TRADER_AGENT_PORTFOLIO_ID.slice(0, 8)} capital=$${TRADER_AGENT_CAPITAL_USD} cron */5min`,
@@ -149,6 +154,8 @@ export class LiveTraderAgentService {
    */
   @Cron('*/5 * * * *', { name: 'live-trader-agent-decision', timeZone: 'UTC' })
   async runDecisionCycle(): Promise<void> {
+    // Log inconditionnel chaque tick pour vérifier que le cron tire vraiment.
+    this.logger.log(`[trader-agent] cron tick @ ${new Date().toISOString()} enabled=${this.enabled} supabase=${this.supabase.isReady()} llmRouter=${this.llmRouter.isEnabled()}`);
     if (!this.enabled) return;
     if (!this.supabase.isReady()) return;
     if (!this.llmRouter.isEnabled()) {
