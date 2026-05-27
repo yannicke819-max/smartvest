@@ -201,6 +201,15 @@ const SHADOW_PORTFOLIO_IDS = new Set<string>([
   'a0000002-0000-0000-0000-000000000002',  // shadow_middle : 15 pos × $700
   'a0000003-0000-0000-0000-000000000003',  // shadow_small  : 20 pos × $525 (cap DB)
 ]);
+// Portfolios qui bypassent les hour-blacklists (LONG global + per-class).
+// Objectif : maximiser le nombre de signaux collectés sur la durée complète
+// de chaque session (US/EU/Asia). Le gate session par-bourse (isInExchangeSession)
+// reste appliqué — on n'ouvre pas sur marché fermé.
+const HOUR_GATE_BYPASS_PORTFOLIO_IDS = new Set<string>([
+  'a0000001-0000-0000-0000-000000000001',
+  'a0000002-0000-0000-0000-000000000002',
+  'a0000003-0000-0000-0000-000000000003',
+]);
 const MAIN_PORTFOLIO_ID_FOR_DEDUPE = '58439d86-3f20-4a60-82a4-307f3f252bc2';
 // P19d (29/04/2026 14:30 CEST) — Ajout SSE (Shanghai) + SZSE (Shenzhen) pour
 // couverture mondiale complète.
@@ -2622,6 +2631,10 @@ export class TopGainersScannerService implements OnModuleInit {
       // GAINERS_LONG_HOUR_BLACKLIST_UTC=8,19,22,23,0,1,2,3,4 → ces heures KO
       // Crypto exempt par défaut (24/7, le pattern horaire vient des equities US).
       // Override via GAINERS_LONG_HOUR_GATE_CRYPTO=true pour gater aussi crypto.
+      // Bypass hour-gates pour shadow portfolios (HIGH/MIDDLE/SMALL).
+      // Objectif : collecter signaux sur durée complète de chaque session.
+      // Le gate session par-bourse reste appliqué (cf. plus bas, ligne ~2680).
+      const bypassHourGate = HOUR_GATE_BYPASS_PORTFOLIO_IDS.has(portfolioId);
       const whitelistRaw = (this.config.get<string>('GAINERS_LONG_HOUR_WHITELIST_UTC') ?? '').trim();
       const blacklistRaw = (this.config.get<string>('GAINERS_LONG_HOUR_BLACKLIST_UTC') ?? '').trim();
       const cryptoGated = (this.config.get<string>('GAINERS_LONG_HOUR_GATE_CRYPTO') ?? 'false').toLowerCase() === 'true';
@@ -2630,7 +2643,8 @@ export class TopGainersScannerService implements OnModuleInit {
       // global (pas d'OR additif). Permet d'autoriser asia@8h même si global
       // blacklist inclut 8h. Le gate per-class ci-dessous gère alors seul l'heure.
       const classHasPerClassConfig = hasPerClassOverride(String(cand.assetClass), this.perClassHourGate);
-      const gateApplies = !classHasPerClassConfig
+      const gateApplies = !bypassHourGate
+        && !classHasPerClassConfig
         && (whitelistRaw.length > 0 || blacklistRaw.length > 0)
         && (cryptoGated || !isCryptoCandHourGate);
       if (gateApplies) {
@@ -2660,7 +2674,8 @@ export class TopGainersScannerService implements OnModuleInit {
       // Gate horaire PAR CLASSE (audit 23-24/05 data-driven).
       // REMPLACE le gate global pour les classes configurées (voir classHasPerClassConfig ci-dessus).
       // Recommandation : GAINERS_HOUR_BLACKLIST_ASIA_UTC=0,1,2,3,4,5 (asia H00-05 = -$1300+ / 91 trades, WR 26%).
-      if (shouldSkipByPerClassHourGate(cand.assetClass, nowUtc.getUTCHours(), this.perClassHourGate)) {
+      // Bypass pour shadow portfolios (cf. HOUR_GATE_BYPASS_PORTFOLIO_IDS).
+      if (!bypassHourGate && shouldSkipByPerClassHourGate(cand.assetClass, nowUtc.getUTCHours(), this.perClassHourGate)) {
         this.logger.log(
           `[top-gainers] ${cand.symbol} (${cand.assetClass}) hour ${nowUtc.getUTCHours()}h UTC blacklist par-classe → skip long`,
         );
