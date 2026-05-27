@@ -21,11 +21,12 @@
  *   Mettre à 1.1 pour désactiver l'auto-close tout en gardant le log.
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../../supabase/supabase.service';
 import { ScannerLlmRouterService } from '../scanner-llm-router.service';
+import { ScannerLessonsContextService } from '../scanner-lessons-context.service';
 import { EodhdNewsService } from '../eodhd-news.service';
 import { type EodhdNewsItem } from '../eodhd-enrichment.service';
 import { NewsAggregatorService } from '../news-aggregator.service';
@@ -139,6 +140,8 @@ export class GeminiRiskManagerService {
     private readonly newsAggregator: NewsAggregatorService,
     private readonly mechanical: MechanicalTradingService,
     private readonly lisa: LisaService,
+    // Phase 3 — inject scanner_lessons dans system prompt (Optional pour back-compat tests).
+    @Optional() private readonly lessonsContext?: ScannerLessonsContextService,
   ) {
     this.enabled = (this.config.get<string>('GEMINI_RISK_MANAGER_ENABLED') ?? 'false').toLowerCase() === 'true';
     const rawConf = parseFloat(this.config.get<string>('GEMINI_RISK_MANAGER_AUTO_CLOSE_MIN_CONFIDENCE') ?? '0.8');
@@ -335,10 +338,17 @@ export class GeminiRiskManagerService {
       `Apply the anti-friction rules from system prompt. Is the thesis broken AND ` +
       `actionable NOW (not redundant with mechanical SL/TP nor EarlyExitGuard)? Output strict JSON only.`;
 
+    // Phase 3 — inject scanner_lessons context (post-mortem nightly insights).
+    const lessonsBlock = this.lessonsContext
+      ? await this.lessonsContext.getLessonsBlock('all_scanner', { assetClass: String(pos.asset_class ?? '') }).catch(() => '')
+      : '';
+    const baseSystem = this.useGrounding ? SYSTEM_PROMPT_GROUNDED : SYSTEM_PROMPT;
+    const systemPrompt = lessonsBlock ? `${baseSystem}\n\n${lessonsBlock}` : baseSystem;
+
     let llmResult;
     try {
       llmResult = await this.llm.call({
-        system: this.useGrounding ? SYSTEM_PROMPT_GROUNDED : SYSTEM_PROMPT,
+        system: systemPrompt,
         user: userPrompt,
         temperature: 0.1,
         maxTokens: this.useGrounding ? 400 : 200, // grounded = + de tokens (cite sources)
