@@ -42,6 +42,7 @@ import { AdminResearchController } from './admin-research.controller';
 import { AdminDebateGateMetricsController } from './admin-debate-gate-metrics.controller';
 import { AdminShadowSizingController } from './admin-shadow-sizing.controller';
 import { AdminTraderAgentController } from './admin-trader-agent.controller';
+import { AdminScannerPostMortemController } from './admin-scanner-postmortem.controller';
 import { AdminMarketCloseReportsController } from './admin-market-close-reports.controller';
 
 @Module({
@@ -76,6 +77,8 @@ import { AdminMarketCloseReportsController } from './admin-market-close-reports.
     AdminShadowSizingController,
     // Live Trader Agent (Gemini Pro) — observability + status portfolio dédié $10k
     AdminTraderAgentController,
+    // Scanner Post-Mortem (Gemini Pro) — lessons macro-conditionnelles + run manuel
+    AdminScannerPostMortemController,
     // Market Close Reports — comparatif 5 portfolios par session (Asia/EU/US + daily wrap)
     AdminMarketCloseReportsController,
   ],
