@@ -24,13 +24,14 @@
  *   - Notional clamp $50 ≤ N ≤ $3000 (max 30% du capital $10k)
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { CronJob } from 'cron';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
 import { LisaService } from './lisa.service';
+import { ScannerLessonsContextService } from './scanner-lessons-context.service';
 
 const TRADER_AGENT_PORTFOLIO_ID = 'b0000001-0000-0000-0000-000000000001';
 const TRADER_AGENT_USER_ID = '5f164201-9736-4867-8756-a1653d65fd1c';
@@ -140,6 +141,7 @@ export class LiveTraderAgentService {
     private readonly llmRouter: ScannerLlmRouterService,
     private readonly lisa: LisaService,
     private readonly schedulerRegistry: SchedulerRegistry,
+    @Optional() private readonly lessonsContext?: ScannerLessonsContextService,
   ) {}
 
   onModuleInit(): void {
@@ -290,28 +292,30 @@ export class LiveTraderAgentService {
         return;
       }
 
-      // 3. Fetch candidates + macro + news + memory — chaque fetch en allSettled
-      // pour qu'un échec individuel (DB query fail, API down) ne stoppe pas le
-      // cycle entier. Fallback aux valeurs vides en cas de fail.
+      // 3. Fetch candidates + macro + news + memory + lessons — chaque fetch
+      // en allSettled pour qu'un échec individuel (DB query fail, API down) ne
+      // stoppe pas le cycle entier. Fallback aux valeurs vides en cas de fail.
       const settled = await Promise.allSettled([
         this.fetchTopCandidates(20),
         this.fetchMacroContext(),
         this.fetchRecentNews(10),
         this.fetchActiveMemory(50),
+        this.lessonsContext?.getLessonsBlock('all_scanner') ?? Promise.resolve(''),
       ]);
       const candidates = settled[0].status === 'fulfilled' ? settled[0].value : [];
       const macro = settled[1].status === 'fulfilled' ? settled[1].value : { note: 'macro_fetch_failed' };
       const news = settled[2].status === 'fulfilled' ? settled[2].value : [];
       const memory = settled[3].status === 'fulfilled' ? settled[3].value : [];
+      const crossScannerLessons = settled[4].status === 'fulfilled' ? (settled[4].value as string) : '';
       const fetchFailures = settled
-        .map((s, i) => s.status === 'rejected' ? `${['candidates','macro','news','memory'][i]}=${String(s.reason).slice(0,80)}` : null)
+        .map((s, i) => s.status === 'rejected' ? `${['candidates','macro','news','memory','lessons'][i]}=${String(s.reason).slice(0,80)}` : null)
         .filter((x) => x !== null);
       if (fetchFailures.length > 0) {
         this.logger.warn(`[trader-agent] fetch partial failures: ${fetchFailures.join(' | ')}`);
       }
 
-      // 4. Build system + user prompts
-      const systemPrompt = this.buildSystemPrompt(memory);
+      // 4. Build system + user prompts (memory trader + cross-scanner lessons)
+      const systemPrompt = this.buildSystemPrompt(memory, crossScannerLessons);
       const userPrompt = JSON.stringify({
         current_time_utc: cycleStartedAt.toISOString(),
         portfolio_capital_usd: TRADER_AGENT_CAPITAL_USD,
@@ -910,17 +914,32 @@ Recommendation rules :
     return (data ?? []) as Array<{ lesson_kind: string; lesson_text: string; confidence: number }>;
   }
 
-  private buildSystemPrompt(memory: Array<{ lesson_kind: string; lesson_text: string; confidence: number }>): string {
-    if (memory.length === 0) return SYSTEM_PROMPT_BASE;
-    const lessonsBlock = memory
-      .map((l, i) => `${i + 1}. [${l.lesson_kind}] ${l.lesson_text} (conf=${l.confidence})`)
-      .join('\n');
-    return `${SYSTEM_PROMPT_BASE}
+  private buildSystemPrompt(
+    memory: Array<{ lesson_kind: string; lesson_text: string; confidence: number }>,
+    crossScannerLessons: string,
+  ): string {
+    let prompt = SYSTEM_PROMPT_BASE;
 
-LESSONS APPRISES (post-mortems précédents, ordre confidence descendant) :
-${lessonsBlock}
+    // Bloc 1 : memory trader-spécifique (post-mortems Trader Agent)
+    if (memory.length > 0) {
+      const memoryBlock = memory
+        .map((l, i) => `${i + 1}. [${l.lesson_kind}] ${l.lesson_text} (conf=${l.confidence})`)
+        .join('\n');
+      prompt += `\n\nLESSONS APPRISES TRADER AGENT (post-mortems précédents, ordre confidence descendant) :\n${memoryBlock}`;
+    }
 
-Garde ces lessons en tête en priorité pour ta décision actuelle.`;
+    // Bloc 2 : lessons cross-scanner (winners/losers patterns identifiés par
+    // l'analyse 3 semaines, persistés dans scanner_lessons). Lecture des
+    // gainers MAIN/HIGH/MIDDLE/SMALL + post-mortem nightly partagé.
+    if (crossScannerLessons.length > 0) {
+      prompt += `\n\n${crossScannerLessons}`;
+    }
+
+    if (memory.length > 0 || crossScannerLessons.length > 0) {
+      prompt += `\n\nGarde ces lessons en tête en priorité pour ta décision actuelle.`;
+    }
+
+    return prompt;
   }
 
   private async applyDecision(
