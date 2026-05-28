@@ -2801,6 +2801,35 @@ export class TopGainersScannerService implements OnModuleInit {
         }
       }
 
+      // ASIA OPENING SUFFIX BAN (28/05/2026 soirée, analyse MFE/MAE 3-week n=250
+      // asia_equity) — opening auctions 00:00-02:00 UTC sont structurellement
+      // toxiques sur :
+      //  - .T/.HK/.SS/.SZ/.SI : n=16, WR 12%, Σ -$527 (Nikkei + HSI + Shanghai/Shenzhen + SGX)
+      //  - .KQ                : n=32, WR 31%, Σ -$407 (KOSDAQ opening)
+      // En revanche .KQ rest 02-08h UTC = WR 57%, Σ +$96 sur n=63 — veine prouvée.
+      // Le gate envisage donc une fenêtre stricte 00-02h UTC ban sur ces 6 suffixes.
+      // Opt-out via env `GAINERS_ASIA_OPENING_SUFFIX_BAN_ENABLED=false` (default true).
+      const asiaOpeningBanEnabled = (this.config.get<string>('GAINERS_ASIA_OPENING_SUFFIX_BAN_ENABLED') ?? 'true').toLowerCase() === 'true';
+      if (asiaOpeningBanEnabled) {
+        const nowHourUtc = new Date().getUTCHours();
+        if (nowHourUtc < 2) {
+          const symUpper = cand.symbol.toUpperCase();
+          const isBanned = symUpper.endsWith('.T')
+            || symUpper.endsWith('.HK')
+            || symUpper.endsWith('.SS')
+            || symUpper.endsWith('.SZ')
+            || symUpper.endsWith('.SI')
+            || symUpper.endsWith('.KQ');
+          if (isBanned) {
+            this.logger.log(
+              `[top-gainers] ${cand.symbol} ASIA_OPENING_SUFFIX_BAN actif (heure UTC ${nowHourUtc} < 02:00, suffix opening-toxic) → skip (lesson MFE/MAE 3w)`,
+            );
+            recordShadowDecision(cand, 'reject_other', undefined);
+            continue;
+          }
+        }
+      }
+
       // XETRA small-cap blacklist (28/05/2026, ADDENDUM A4) — porte la logique
       // de live-trader-agent.service.ts au scanner. Cas QH9.XETRA 28/05 :
       // entry $16.68, SL $16.35, prix tombé à $14.58 sans trigger polling →

@@ -1165,6 +1165,26 @@ Recommendation rules :
         return { applied: false, error: 'XETRA small-cap blacklist (notional <$3000) — anti-gap risk' };
       }
 
+      // ASIA OPENING SUFFIX BAN (28/05/2026 soirée, MFE/MAE 3w n=250 asia_equity).
+      // .T/.HK/.SS/.SZ/.SI 00-02h UTC : n=16 WR 12% Σ -$527 / .KQ 00-02h : n=32 WR 31% Σ -$407.
+      // Cas TRADER vérifié 28/05 : 166480.KQ 0/2 wins -$17. KOSDAQ 02-08h reste OK.
+      {
+        const sym = decision.symbol.toUpperCase();
+        const nowHourUtc = new Date().getUTCHours();
+        const bannedSuffix = sym.endsWith('.T')
+          || sym.endsWith('.HK')
+          || sym.endsWith('.SS')
+          || sym.endsWith('.SZ')
+          || sym.endsWith('.SI')
+          || sym.endsWith('.KQ');
+        if (nowHourUtc < 2 && bannedSuffix) {
+          return {
+            applied: false,
+            error: `ASIA_OPENING_SUFFIX_BAN : ${sym} (heure UTC ${nowHourUtc} < 02:00, lesson MFE/MAE 3w n=48 Σ -$934 sur opening auctions)`,
+          };
+        }
+      }
+
       // Autonomie cadrée : bornes resserrées post-MFE/MAE 27/05 (MAE/R 1.78,
       // capture rate -45.8% sur 7 trades). SL min 1.5% obligatoire (sinon
       // stop-out garanti avant retracement). TP max 8% (au-delà = capture rate
