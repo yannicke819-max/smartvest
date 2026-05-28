@@ -56,6 +56,7 @@ import { MainScannerPostMortemService } from './services/main-scanner-postmortem
 import { LessonAutoApplyService } from './services/lesson-auto-apply.service';
 import { ScannerLessonsContextService } from './services/scanner-lessons-context.service';
 import { ConfigSanityValidatorService } from './services/config-sanity-validator.service';
+import { RealTimeLessonDetectorService } from './services/realtime-lesson-detector.service';
 import { MarketCloseReportService } from './services/market-close-report.service';
 import { GainersAutoRelaxService } from './services/gainers-auto-relax.service';
 import { PostSlBackfillService } from './services/post-sl-backfill.service';
@@ -212,6 +213,10 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     // min_chg trop strict, max_open trop bas) et applique DIRECTEMENT les fixes en DB
     // au confidence ≥ 0.95. Insère aussi une lesson gate_calibration pour audit.
     ConfigSanityValidatorService,
+    // RealTimeLessonDetectorService — cron */5min, détecte automatiquement 5 patterns
+    // (BIG_WIN/BIG_LOSS/SL_GAP/TP_DOUBLE/ORPHAN_PRE_CLOSE) et insère lessons direct
+    // dans trader_agent_memory ou scanner_lessons. Anti-spam 24h par pattern.
+    RealTimeLessonDetectorService,
     // Market Close Reports — comparatif 5 portfolios à chaque cloche (Asia/EU/US) + daily wrap.
     MarketCloseReportService,
     // PR #282 — Auto-relax adaptive : lit cumulative_regret 7j et propose/auto-applique relax

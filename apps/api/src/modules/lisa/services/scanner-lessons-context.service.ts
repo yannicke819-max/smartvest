@@ -19,7 +19,10 @@ import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../../supabase/supabase.service';
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
-const MAX_LESSONS_PER_BLOCK = 10;
+// 28/05/2026 — Gemini 2.5 Pro = 2M context tokens. Pas besoin de cap à 10.
+// On bump à 100 pour injecter TOUTES les lessons disponibles par scope.
+// Le score composite (confidence × log(sample)) ordonne, mais on n'élimine plus.
+const MAX_LESSONS_PER_BLOCK = 100;
 
 interface LessonRow {
   lesson_kind: string;
