@@ -1103,6 +1103,7 @@ Recommendation rules :
 
       const res = await this.lisa.closeForOpportunityScout({
         positionId: row.id,
+        symbol: decision.symbol,
         livePrice,
         ...(livePriceData.source ? { livePriceSource: String(livePriceData.source) } : {}),
         reason: 'closed_user',

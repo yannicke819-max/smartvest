@@ -71,6 +71,7 @@ import {
   fetchWithRetry,
 } from '../helpers/macro-fallback.helper';
 import { assertRegimeInputsHealthy } from '../helpers/regime-healthcheck.helper';
+import { isInExchangeSession } from './exchange-sessions.helper';
 
 /**
  * LisaService — orchestrateur principal du module AI analyst.
@@ -4804,14 +4805,30 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
    */
   async closeForOpportunityScout(cmd: {
     positionId: string;
+    symbol?: string;
     livePrice: number;
     livePriceSource?: string;
     reason: 'closed_target' | 'closed_stop' | 'closed_invalidated' | 'closed_user' | 'closed_kill' | 'closed_expired';
     rationale: string;
   }): Promise<{ closed: boolean; error?: string }> {
-    // Refuse si source unreliable (fallback / stale)
-    if (cmd.livePriceSource && (cmd.livePriceSource.startsWith('stale_') || cmd.livePriceSource.startsWith('fallback'))) {
-      return { closed: false, error: `price source unreliable: ${cmd.livePriceSource}` };
+    // Garde-fous prix source (cf. Phase 3 — fix LMT/SEE.LSE :$0 → SL destructive).
+    // Nuance 28/05/2026 : si marché vraiment fermé (exchange-session check) ET
+    // source = `stale_*` (prix = last close valide, juste pas frais), on autorise
+    // la close. Le `fallback_*` reste TOUJOURS bloquant (= prix corrompu $0 / NaN).
+    if (cmd.livePriceSource) {
+      const src = cmd.livePriceSource;
+      if (src.startsWith('fallback')) {
+        // Prix corrompu ou inconnu : on bloque toujours (anti-bug LMT/SEE.LSE).
+        return { closed: false, error: `price source unreliable (fallback): ${src}` };
+      }
+      if (src.startsWith('stale_')) {
+        // Stale : on accepte UNIQUEMENT si marché vraiment fermé. Sinon suspect.
+        const marketOpen = cmd.symbol ? isInExchangeSession(cmd.symbol, new Date()) : true;
+        if (marketOpen) {
+          return { closed: false, error: `price source stale on open market: ${src} (suspect)` };
+        }
+        // Marché fermé + stale : OK, on close au last close price (valide).
+      }
     }
     if (!Number.isFinite(cmd.livePrice) || cmd.livePrice <= 0) {
       return { closed: false, error: `invalid livePrice ${cmd.livePrice}` };
