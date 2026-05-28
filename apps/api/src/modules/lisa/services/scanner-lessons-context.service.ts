@@ -91,7 +91,9 @@ export class ScannerLessonsContextService {
         .select('lesson_kind, lesson_text, macro_condition, scope, confidence, sample_size, win_rate_observed')
         .eq('is_active', true)
         .order('confidence', { ascending: false })
-        .limit(50);  // garde 50 max au cache, le filter narrow ensuite
+        .limit(500);  // Cumulatif jour après jour (post-mortem nightly cron). Avec
+        // ~5 lessons/nuit × 6 semaines = 210 lessons attendues. 500 = headroom
+        // confortable. Le top 10 par scope reste injecté au prompt (MAX_LESSONS_PER_BLOCK).
       if (error) {
         this.logger.warn(`[scanner-lessons-context] fetch failed: ${error.message}`);
         // Garde l'ancien cache si dispo, sinon empty
