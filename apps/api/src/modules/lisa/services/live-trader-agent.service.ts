@@ -1029,6 +1029,14 @@ Recommendation rules :
         }
       }
       const notional = Math.max(MIN_NOTIONAL_USD, Math.min(MAX_CONCENTRATION_USD, decision.notional_usd));
+      // XETRA small-cap blacklist (28/05/2026) — 2 incidents : SNG.XETRA -$35
+      // (gap SL slippage) + QH9.XETRA -$132 (gap -12% non capté par polling SL).
+      // XETRA small-caps notionnel < $3000 = liquidité trop mince pour gérer
+      // les gaps intra-session. Bloque pour Trader Agent.
+      if (decision.symbol.endsWith('.XETRA') && notional < 3000) {
+        return { applied: false, error: 'XETRA small-cap blacklist (notional <$3000) — anti-gap risk' };
+      }
+
       // Autonomie cadrée : bornes resserrées post-MFE/MAE 27/05 (MAE/R 1.78,
       // capture rate -45.8% sur 7 trades). SL min 1.5% obligatoire (sinon
       // stop-out garanti avant retracement). TP max 8% (au-delà = capture rate
