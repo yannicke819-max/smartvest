@@ -166,6 +166,32 @@ export class EodhdEconomicEventsService {
       .order('event_date', { ascending: true })
       .limit(50);
     if (error || !data) return [];
-    return data as PersistedEconomicEvent[];
+    // Importance fallback (28/05/2026) : EODHD ne surface jamais `importance`
+    // dans son payload même quand on le demande dans la requête. On dérive
+    // déterministiquement depuis le keyword du `event_name`. Validation web :
+    // PCE/NFP/CPI/FOMC/GDP/payroll/rate-decisions = HIGH, PMI/retail/Fed-speech/
+    // trade-balance/durable-goods = MEDIUM, reste = LOW.
+    return (data as PersistedEconomicEvent[]).map((e) => ({
+      ...e,
+      importance: e.importance ?? EodhdEconomicEventsService.deriveImportance(e.event_name),
+    }));
+  }
+
+  /**
+   * Keyword-driven importance fallback. Source de vérité : conventions
+   * standards (TradingEconomics, Investing.com) sur les data USD/EUR/JPY/GBP
+   * qui movent les marchés cross-asset. À jour 28/05/2026.
+   */
+  static deriveImportance(eventName: string): 'high' | 'medium' | 'low' {
+    const n = (eventName ?? '').toLowerCase();
+    // HIGH : data macro structurelle qui drive multi-day repricing
+    if (/\b(pce|nfp|non.?farm|cpi|fomc|gdp|payroll|unemployment rate|jobless claims|interest rate decision|rate decision|ecb (rate|press)|fed (chair|funds)|boj (rate|outlook)|nbs (cpi|manufacturing pmi)|inflation rate)\b/.test(n)) {
+      return 'high';
+    }
+    // MEDIUM : data secondaire significative
+    if (/\b(pmi|retail sales|industrial production|fed.*speech|ecb.*speech|trade balance|housing starts|durable goods|consumer (confidence|sentiment)|chicago pmi|ism|adp|jolts|core inflation|ppi)\b/.test(n)) {
+      return 'medium';
+    }
+    return 'low';
   }
 }
