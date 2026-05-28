@@ -335,7 +335,11 @@ export class LiveTraderAgentService {
         this.fetchMacroContext(),
         this.fetchRecentNews(10),
         this.fetchActiveMemory(50),
-        this.lessonsContext?.getLessonsBlock('trader_agent_only') ?? Promise.resolve(''),
+        // 28/05/2026 : Trader consomme TOUTES les scopes scanner_lessons
+        // (all_scanner + asia_only + eu_only + us_only + crypto_only +
+        // trader_agent_only) car il trade cross-classe. Pas de filtrage par
+        // assetClass — Gemini Pro raisonne sur tout l'univers.
+        this.lessonsContext?.getLessonsBlock('trader_agent_only', { assetClass: 'asia_eu_us_crypto' }) ?? Promise.resolve(''),
       ]);
       const candidates = settled[0].status === 'fulfilled' ? settled[0].value : [];
       const macro = settled[1].status === 'fulfilled' ? settled[1].value : { note: 'macro_fetch_failed' };

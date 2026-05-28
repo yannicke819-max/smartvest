@@ -49,14 +49,16 @@ export class ScannerLessonsContextService {
     const lessons = await this.getActiveLessons();
     if (lessons.length === 0) return '';
 
-    // Filter : include 'all_scanner' + scope spécifique + scope dérivé d'assetClass
+    // Filter : include 'all_scanner' + scope spécifique + scope(s) dérivé(s) d'assetClass
     const scopes = new Set<string>(['all_scanner', scope]);
     if (options?.assetClass) {
       const cls = options.assetClass.toLowerCase();
+      // Note 28/05/2026 : "if" (pas "else if") pour supporter caller cross-classe
+      // (ex: Trader Agent assetClass='asia_eu_us_crypto' active TOUS les scopes).
       if (cls.includes('asia')) scopes.add('asia_only');
-      else if (cls.includes('eu')) scopes.add('eu_only');
-      else if (cls.includes('us')) scopes.add('us_only');
-      else if (cls.includes('crypto')) scopes.add('crypto_only');
+      if (cls.includes('eu')) scopes.add('eu_only');
+      if (cls.includes('us')) scopes.add('us_only');
+      if (cls.includes('crypto')) scopes.add('crypto_only');
     }
     // Score composite (28/05/2026) — avec mémoire permanente potentiellement
     // milliers de lessons, on ne peut PAS se limiter à confidence seul.
