@@ -55,6 +55,7 @@ import { LiveTraderAgentService } from './services/live-trader-agent.service';
 import { MainScannerPostMortemService } from './services/main-scanner-postmortem.service';
 import { LessonAutoApplyService } from './services/lesson-auto-apply.service';
 import { ScannerLessonsContextService } from './services/scanner-lessons-context.service';
+import { ConfigSanityValidatorService } from './services/config-sanity-validator.service';
 import { MarketCloseReportService } from './services/market-close-report.service';
 import { GainersAutoRelaxService } from './services/gainers-auto-relax.service';
 import { PostSlBackfillService } from './services/post-sl-backfill.service';
@@ -207,6 +208,10 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     // proposed_config_change à haute confiance (≥0.85, sample ≥10) sur les 4 portfolios
     // gainers. Cron hourly. Cibles env vars → manual review (Fly secrets).
     LessonAutoApplyService,
+    // ConfigSanityValidatorService — cron hourly :17, détecte anti-patterns (R/R inversé,
+    // min_chg trop strict, max_open trop bas) et applique DIRECTEMENT les fixes en DB
+    // au confidence ≥ 0.95. Insère aussi une lesson gate_calibration pour audit.
+    ConfigSanityValidatorService,
     // Market Close Reports — comparatif 5 portfolios à chaque cloche (Asia/EU/US) + daily wrap.
     MarketCloseReportService,
     // PR #282 — Auto-relax adaptive : lit cumulative_regret 7j et propose/auto-applique relax
