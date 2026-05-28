@@ -2651,6 +2651,39 @@ export class TopGainersScannerService implements OnModuleInit {
     }
     const postSlCooldownMs = postSlCooldownMin * 60_000;
 
+    // SL_CONTAGION_CROSS_PORTFOLIO (lesson 28/05/2026 conf 0.95) : si un ticker
+    // a hit SL sur N'IMPORTE QUEL portfolio (MAIN/HIGH/MIDDLE/SMALL/TRADER) dans
+    // les X dernières minutes, on bloque la ré-ouverture sur ce portfolio.
+    // Cas vérifié : EVC.US SL MAIN 17:12 → HIGH re-entre 17:32 même setup →
+    // SL imminent. Cross-scanner cooldown anti-revenge.
+    // env GAINERS_CROSS_PORTFOLIO_SL_COOLDOWN_MIN (default 120, 0 = off).
+    const crossPortfolioSlCooldownMin = Math.max(
+      0,
+      Math.min(1440, Number(this.config.get<string>('GAINERS_CROSS_PORTFOLIO_SL_COOLDOWN_MIN') ?? '120')),
+    );
+    const crossPortfolioRecentSl = new Map<string, number>();
+    if (crossPortfolioSlCooldownMin > 0) {
+      try {
+        const sinceIso = new Date(Date.now() - crossPortfolioSlCooldownMin * 60_000).toISOString();
+        const { data: crossClosesRaw } = await this.supabase
+          .getClient()
+          .from('lisa_positions')
+          .select('symbol, exit_timestamp, portfolio_id')
+          .eq('status', 'closed_stop')
+          .neq('portfolio_id', portfolioId)
+          .gte('exit_timestamp', sinceIso);
+        for (const row of crossClosesRaw ?? []) {
+          const sym = String(row.symbol).toUpperCase();
+          const ms = new Date(String(row.exit_timestamp)).getTime();
+          if (!Number.isFinite(ms)) continue;
+          const prev = crossPortfolioRecentSl.get(sym) ?? 0;
+          if (ms > prev) crossPortfolioRecentSl.set(sym, ms);
+        }
+      } catch (e) {
+        this.logger.debug(`[top-gainers] cross-portfolio SL query skipped: ${String(e).slice(0, 100)}`);
+      }
+    }
+
     // PR #280 — Shadow user-pipeline : capte chaque décision (accept / reject_*)
     // pour mesurer le regret cost via /lisa/gainers-shadow-regret. Fire-and-forget.
     const recordShadowDecision = (
@@ -2937,6 +2970,22 @@ export class TopGainersScannerService implements OnModuleInit {
           this.logger.log(
             `[top-gainers] ${cand.symbol} POST_SL_COOLDOWN bypass (changePct=${(cand.changePct ?? 0).toFixed(1)}% ≥ ${bypassPct}%) → délégué au falling-knife guard`,
           );
+        }
+      }
+
+      // SL_CONTAGION cross-portfolio (lesson 28/05/2026 conf 0.95) — refuse la
+      // ré-ouverture si un AUTRE portfolio a SL ce même ticker dans la fenêtre
+      // GAINERS_CROSS_PORTFOLIO_SL_COOLDOWN_MIN (default 120 min). Évite que
+      // HIGH/MIDDLE re-pickent un loser que MAIN vient de stopper.
+      if (crossPortfolioSlCooldownMin > 0) {
+        const crossSlMs = crossPortfolioRecentSl.get(cand.symbol.toUpperCase());
+        if (crossSlMs) {
+          const elapsedMin = Math.floor((Date.now() - crossSlMs) / 60_000);
+          this.logger.log(
+            `[top-gainers] ${cand.symbol} CROSS_PORTFOLIO_SL_COOLDOWN actif (SL autre portfolio il y a ${elapsedMin} min < ${crossPortfolioSlCooldownMin} min) → skip`,
+          );
+          recordShadowDecision(cand, 'reject_post_sl_cooldown', undefined);
+          continue;
         }
       }
 
