@@ -65,7 +65,25 @@ interface TraderDecision {
   max_loss_usd?: number;
 }
 
-const SYSTEM_PROMPT_BASE = `Tu es un trader intraday professionnel autonome qui pilote un portfolio paper-trading de $10000 sur SmartVest. Ton mandat : générer $200/jour de PnL net (après fees Binance/broker ~0.20% round-trip). Tu trades en momentum + retournements rapides sur US/EU/Asia equities + crypto majors.
+const SYSTEM_PROMPT_BASE = `Tu es un trader intraday professionnel autonome qui pilote un portfolio paper-trading de $10500 sur SmartVest. Ton mandat : générer **$400/jour de PnL net** (après fees ~0.20% round-trip) = +3.8%/jour, agressif. Tu trades en momentum + retournements rapides sur US/EU/Asia equities + crypto majors.
+
+PATTERNS VALIDÉS (priorité haute — observation 28/05/2026, à amplifier dès Asia 00:00 UTC) :
+
+★ KOSDAQ SMALL-MID (suffix .KQ) = veine PROUVÉE : MIDDLE 28/05 a fait 2 TP clean = +$120 sur 208710.KQ (+2.10%, hold 4min) et 200470.KQ (+1.89%, hold 3min) en session asia matin. Pattern : KOSDAQ small-mid momentum 1m persistant 1-5min, TP rapide 2%. Si un .KQ apparaît dans candidates avec changePct 3-8% et persistenceScore ≥ 0.6 → setup A+, conf 0.85+, notional 3000-4000, TP 2-2.5%, SL 1.5%.
+
+★ ORPHAN_CLOSE PRE-CLOCHE = R/R ABSURDE : TRADER 28/05 a fait +$190 net (CHRT.LSE +$105 +$37, IQE.LSE +$47) en fermant systématiquement les positions sur marchés fermant <30 min. Règle dure : si position ouverte sur un marché qui ferme dans <30 min, ferme-la AU MOINS au breakeven (sauf si PnL fortement positif et trailing-stop OK). Détail : LSE close 16:30 UTC, XETRA/PA 15:30 UTC, TSE 06:00 UTC, KRX/KQ 06:30 UTC, HK 08:00 UTC, AU 06:00 UTC, NYSE 21:00 UTC. **Le orphan-close est appliqué automatiquement avant ton cycle — si tu reçois state.orphan_closed = true, c'est déjà fait.**
+
+ANTI-PATTERNS À ÉVITER (priorité haute — observation 28/05/2026) :
+
+✗ ASIA EARLY SESSION 00:00-01:00 UTC sur asia_equity = 0/5 wins. Opening auctions Nikkei + HSI sont chop par construction. Skip les candidats asia_equity de l'heure UTC 0 et 1. Re-prends à partir de 01:00 UTC (KOSDAQ active).
+
+✗ US SMALL_MID changePct 4-8% post 15:30 UTC : 28/05 a vu 3 SL / 5 trades (EVC.US -$45.84, NVAX.US -$25.41, FWRD.US +$4.92). Setups choppy early-session américain. Si candidat us_equity_small_mid avec changePct < 8%, requires conf ≥ 0.80 ET catalyseur news ≥ 60.
+
+✗ NUF.AU-type CROSS-PORTFOLIO REVENGE : NUF.AU 28/05 tradé par 3 portfolios presque simultanément en asia session, tous closed losing. Si un ticker apparaît comme top-1 mais a déjà été SL'd sur un autre portfolio dans les 2h, propose hold + thesis "[CROSS_PF_SL] {ticker} SL'd il y a Xmin sur portfolio Y → wait".
+
+✗ XETRA SMALL-CAP <$3000 notional : SNG.XETRA -$35 + QH9.XETRA -$132 (gap polling failure). Liquidité trop mince. Le système te bloquera de toute façon mais ne perds pas de quota dessus.
+
+
 
 ACTIONS DISPONIBLES (action_kind) :
 - "open_directional" : ouvrir une position simple (long ou short) sur 1 ticker
@@ -310,6 +328,20 @@ export class LiveTraderAgentService {
     try {
       // 1. Read state (positions, capital, daily PnL)
       const state = await this.readState();
+
+      // 1.5 — Pre-flight ORPHAN_CLOSE déterministe (28/05/2026, ADDENDUM TRADER).
+      // TRADER a généré +$190 net jour en orphan-close manuel (CHRT.LSE 2x, IQE.LSE).
+      // Codification : pour chaque position ouverte sur un marché fermant <30 min
+      // ET PnL unreal ≥ -0.1% (breakeven ou mieux), close maintenant. Évite que
+      // Gemini oublie cette règle ou rate son cycle.
+      const orphanClosed = await this.preFlightOrphanClose(state);
+      if (orphanClosed.length > 0) {
+        this.logger.log(
+          `[trader-agent] preFlightOrphanClose closed ${orphanClosed.length} positions: ${orphanClosed.join(', ')}`,
+        );
+        // Re-read state — les positions fermées sont reflétées
+        Object.assign(state, await this.readState());
+      }
 
       // 2. Check daily loss limit
       if (state.dailyPnlUsd < -MAX_DAILY_LOSS_USD) {
@@ -850,6 +882,91 @@ Recommendation rules :
   // ====================================================================
   // Helpers
   // ====================================================================
+
+  /**
+   * Pre-flight orphan-close (28/05/2026, ADDENDUM TRADER) — déterministe, pas LLM.
+   * Pour chaque position ouverte : si le marché du ticker ferme dans <30 min ET
+   * PnL unreal ≥ -0.1% (breakeven+), close. Codification du pattern qui a fait
+   * +$190 net jour TRADER (CHRT.LSE 2x, IQE.LSE).
+   *
+   * Returns la liste des symboles fermés.
+   */
+  private async preFlightOrphanClose(
+    state: { openPositions: Array<{ symbol: string; direction: string; entry_price: number; entry_notional_usd: number; entry_timestamp: string }> },
+  ): Promise<string[]> {
+    if (state.openPositions.length === 0) return [];
+
+    // Map suffix → heure UTC de fermeture (CLAUDE.md §6quater + P4-A).
+    // Couvre toutes les bourses tradées par TRADER.
+    const closeByMarket = (sym: string): number | null => {
+      const s = sym.toUpperCase();
+      if (s.endsWith('.US')) return 21 * 60;          // NYSE 21:00 UTC
+      if (s.endsWith('.LSE') || s.endsWith('.L')) return 16 * 60 + 30;  // LSE 16:30 UTC
+      if (s.endsWith('.XETRA') || s.endsWith('.DE') || s.endsWith('.F') || s.endsWith('.PA') || s.endsWith('.AS') || s.endsWith('.BR') || s.endsWith('.MI') || s.endsWith('.MC') || s.endsWith('.SW')) return 15 * 60 + 30;
+      if (s.endsWith('.T')) return 6 * 60;            // TSE Tokyo 06:00 UTC
+      if (s.endsWith('.HK')) return 8 * 60;           // HKEX 08:00 UTC
+      if (s.endsWith('.KO') || s.endsWith('.KQ')) return 6 * 60 + 30;   // KRX/KOSDAQ 06:30 UTC
+      if (s.endsWith('.AU')) return 6 * 60;           // ASX 06:00 UTC
+      // Crypto et tickers sans suffixe reconnu = 24/7, no orphan close
+      return null;
+    };
+
+    const nowMin = (() => {
+      const d = new Date();
+      return d.getUTCHours() * 60 + d.getUTCMinutes();
+    })();
+
+    const closed: string[] = [];
+    for (const pos of state.openPositions) {
+      const closeMin = closeByMarket(pos.symbol);
+      if (closeMin === null) continue;
+      const minutesToClose = closeMin - nowMin;
+      // Marché fermé ou ferme dans <30 min mais > 0 (sinon on est déjà après close)
+      if (minutesToClose >= 30 || minutesToClose < -5) continue;
+
+      // Fetch live price + PnL
+      const livePriceData = await this.lisa.getLivePrice(pos.symbol).catch(() => null);
+      if (!livePriceData?.price) continue;
+      const livePrice = Number(livePriceData.price);
+      if (!Number.isFinite(livePrice) || livePrice <= 0) continue;
+      // Ne pas fermer sur fallback price — risque corruption (cf. CLAUDE.md §6quater).
+      const src = String(livePriceData.source ?? '');
+      if (src.startsWith('fallback')) continue;
+
+      const pnlPct = pos.direction === 'short'
+        ? ((pos.entry_price - livePrice) / pos.entry_price) * 100
+        : ((livePrice - pos.entry_price) / pos.entry_price) * 100;
+
+      // Seuil : close si breakeven ou positif. Tolérance -0.1% pour les fees.
+      // Si la position est en grosse perte (<-0.5%), on laisse Gemini gérer
+      // (peut-être un stop-loss qui va déclencher avant la cloche).
+      if (pnlPct < -0.1) continue;
+
+      const { data: row } = await this.supabase.getClient()
+        .from('lisa_positions')
+        .select('id')
+        .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+        .eq('symbol', pos.symbol)
+        .eq('status', 'open')
+        .order('entry_timestamp', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!row?.id) continue;
+
+      const res = await this.lisa.closeForOpportunityScout({
+        positionId: row.id,
+        symbol: pos.symbol,
+        livePrice,
+        livePriceSource: src,
+        reason: 'closed_user',
+        rationale: `[trader-agent preflight-orphan] marché ferme dans ${minutesToClose}min, PnL ${pnlPct.toFixed(2)}% — close pre-cloche systématique (lesson 28/05 +$190 net)`,
+      });
+      if (res.closed) {
+        closed.push(`${pos.symbol} (PnL ${pnlPct.toFixed(2)}%, ${minutesToClose}min to close)`);
+      }
+    }
+    return closed;
+  }
 
   private async readState(): Promise<{
     openPositions: Array<{ symbol: string; direction: string; entry_price: number; entry_notional_usd: number; entry_timestamp: string }>;
