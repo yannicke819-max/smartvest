@@ -2801,6 +2801,19 @@ export class TopGainersScannerService implements OnModuleInit {
         }
       }
 
+      // XETRA small-cap blacklist (28/05/2026, ADDENDUM A4) — porte la logique
+      // de live-trader-agent.service.ts au scanner. Cas QH9.XETRA 28/05 :
+      // entry $16.68, SL $16.35, prix tombé à $14.58 sans trigger polling →
+      // force-close manuel -$132. Les XETRA small/mid-cap ont des gaps de liquidité
+      // qui contournent le SL polling. Skip si notional < $3000.
+      if (cand.symbol.toUpperCase().endsWith('.XETRA') && positionNotionalUsd < 3000) {
+        this.logger.log(
+          `[top-gainers] ${cand.symbol} XETRA small-cap blacklist (notional=$${positionNotionalUsd.toFixed(0)} < $3000 — anti-gap polling failure QH9 28/05) → skip`,
+        );
+        recordShadowDecision(cand, 'reject_other', undefined);
+        continue;
+      }
+
       // Dead-zone gate — analyse stats 06-27/05/2026 (n=363 positions matchées).
       // Buckets changePct structurellement perdants :
       //   - 4-8%   : WR 13%, Σpnl% -28% (n=91)
@@ -2812,7 +2825,15 @@ export class TopGainersScannerService implements OnModuleInit {
       // des early movers US/EU tombent dans 4-8%. Le bucket 4-8% reste un peu perdant
       // historiquement mais on accepte le tradeoff vs zéro trade. Le bucket 15-20%
       // reste banni (-111% Σpnl, mean reversion certaine).
-      const deadZonesRaw = (this.config.get<string>('GAINERS_DEAD_ZONES_PCT') ?? '15-20').trim();
+      // ADDENDUM A3 28/05 : override per-class via `GAINERS_DEAD_ZONES_PCT_<CLASS>`.
+      // Cas vérifié : us_equity_small_mid avait 3 SL / 5 trades post-relax → on
+      // peut restaurer "4-8,15-20" pour cette classe uniquement, sans pénaliser
+      // EU/Asia/crypto qui ont les patterns KOSDAQ/LSE gagnants en 4-8%.
+      const classUpper = String(cand.assetClass ?? '').toUpperCase();
+      const deadZonesPerClass = classUpper.length > 0
+        ? this.config.get<string>(`GAINERS_DEAD_ZONES_PCT_${classUpper}`)
+        : undefined;
+      const deadZonesRaw = (deadZonesPerClass ?? this.config.get<string>('GAINERS_DEAD_ZONES_PCT') ?? '15-20').trim();
       if (deadZonesRaw.length > 0) {
         const changePct = cand.changePct ?? 0;
         const matchedZone = deadZonesRaw.split(',')
