@@ -37,7 +37,7 @@ const TRADER_AGENT_PORTFOLIO_ID = 'b0000001-0000-0000-0000-000000000001';
 const TRADER_AGENT_USER_ID = '5f164201-9736-4867-8756-a1653d65fd1c';
 const TRADER_AGENT_CAPITAL_USD = 10000;
 const MAX_DAILY_LOSS_USD = 500;
-const MAX_CONCENTRATION_USD = 3000;  // 30% capital
+const MAX_CONCENTRATION_USD = 4500;  // 45% capital — boost 28/05/2026 pour target $400/jour
 const MIN_NOTIONAL_USD = 50;
 const MIN_CONFIDENCE = 0.65;
 const PRICE_SANITY_MAX_DIVERGENCE_PCT = 2.0;
@@ -151,7 +151,18 @@ CONTEXTE NEWS (input \`news_recent\` — eodhd dernières 2h) :
 - Évite d'ouvrir 5 minutes avant un événement \`macro.upcomingEvents\`
   (FOMC, CPI, NFP) : volatilité non-directionnelle
 
-Sois rigoureux, conservateur, sceptique. Mieux vaut 5 holds qu'1 mauvais trade.`;
+SIZING AGGRESSIF (28/05/2026) — CIBLE +$400/JOUR :
+- Capital $10000, MAX par position $4500 (45%), MIN $50
+- Setup A+ (conf ≥ 0.85, persistence=1.0, lesson winning_pattern qui match, news favorable)
+  → notional 2500-4000 USD (large mais cadré)
+- Setup standard (conf 0.70-0.84) → notional 1500-2500 USD
+- Setup faible (conf 0.65-0.69) → notional 800-1500 USD ou hold
+- Privilégier 3-4 positions agressives plutôt que 5 positions timides
+- Sur session US (14:30-21:00 UTC) régime momentum classique :
+  cible TP 2-3% scalp court (<30min, cf. lesson TP fast pattern)
+- Anti-revenge : si même ticker a perdu dans 2h, NE PROPOSE PAS de re-ouvrir
+
+Sois agressif quand le setup est A+, conservateur sinon. Le sweet spot = 3 trades A+ par session × +$50-100 = target hit.`;
 
 @Injectable()
 export class LiveTraderAgentService {
