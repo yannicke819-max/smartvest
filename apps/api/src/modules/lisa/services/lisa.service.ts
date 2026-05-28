@@ -4815,6 +4815,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     // Nuance 28/05/2026 : si marché vraiment fermé (exchange-session check) ET
     // source = `stale_*` (prix = last close valide, juste pas frais), on autorise
     // la close. Le `fallback_*` reste TOUJOURS bloquant (= prix corrompu $0 / NaN).
+    let marketClosed = false;
     if (cmd.livePriceSource) {
       const src = cmd.livePriceSource;
       if (src.startsWith('fallback')) {
@@ -4823,11 +4824,12 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       }
       if (src.startsWith('stale_')) {
         // Stale : on accepte UNIQUEMENT si marché vraiment fermé. Sinon suspect.
-        const marketOpen = cmd.symbol ? isInExchangeSession(cmd.symbol, new Date()) : true;
-        if (marketOpen) {
+        const inSession = cmd.symbol ? isInExchangeSession(cmd.symbol, new Date()) : true;
+        if (inSession) {
           return { closed: false, error: `price source stale on open market: ${src} (suspect)` };
         }
-        // Marché fermé + stale : OK, on close au last close price (valide).
+        // Marché fermé + stale : OK, on propage marketClosed=true au paper-broker R5 sanity.
+        marketClosed = true;
       }
     }
     if (!Number.isFinite(cmd.livePrice) || cmd.livePrice <= 0) {
@@ -4840,6 +4842,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         livePrice: cmd.livePrice.toFixed(6),
         rationale: cmd.rationale.slice(0, 500),
         ...(cmd.livePriceSource ? { livePriceSource: cmd.livePriceSource } : {}),
+        ...(marketClosed ? { marketClosed: true } : {}),
       });
       return { closed: true };
     } catch (e) {

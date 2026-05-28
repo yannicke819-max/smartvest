@@ -630,9 +630,17 @@ export class PaperBrokerService {
       // Évite l'incident découvert 25/05 : TD `/quote` retourne data.close =
       // EOD close si marché fermé → exit_price = entry_price systématique →
       // break-even artificiel sur force-close-before-close + early-exit.
+      //
+      // Nuancement 28/05/2026 : si cmd.marketClosed=true (vérifié en amont
+      // via isInExchangeSession), on accepte source=`stale_*` car le prix
+      // EST le last close valide pendant que le marché dort. Les autres
+      // protections (entry < ratio, pnl_pct < threshold) restent actives.
+      // `fallback_*` reste TOUJOURS bloquant (anti-bug LMT/SEE.LSE).
       const src = cmd.livePriceSource;
-      if (src && (src.startsWith('stale_') || src.startsWith('fallback'))) {
-        r5Block = { code: 'R5_LIVE_PRICE_STALE_OR_FALLBACK', detail: `source=${src}` };
+      if (src && src.startsWith('fallback')) {
+        r5Block = { code: 'R5_LIVE_PRICE_FALLBACK', detail: `source=${src}` };
+      } else if (src && src.startsWith('stale_') && !cmd.marketClosed) {
+        r5Block = { code: 'R5_LIVE_PRICE_STALE_ON_OPEN', detail: `source=${src} (market open suspect)` };
       } else if (!Number.isFinite(exitPxN) || exitPxN <= 0) {
         r5Block = { code: 'R5_EXIT_PRICE_ZERO', detail: `exit_price=${exitPxN}` };
       } else if (Number.isFinite(entryPxN) && entryPxN > 0 && exitPxN < entryPxN * minRatio) {

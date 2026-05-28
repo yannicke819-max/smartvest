@@ -168,7 +168,17 @@ export const ClosePositionCommand = z.object({
    * `stale_*`...). Optionnel pour back-compat ; si fourni, le paper-broker
    * R5 sanity rejette le close quand source = `stale_*` ou `fallback_*`,
    * évitant les closes break-even artificiels sur EOD close post-cloche.
+   *
+   * Nuancement 28/05/2026 : si `marketClosed=true` ET source=`stale_*`, on
+   * accepte la close (prix = last close valide, marché fermé pour de vrai).
+   * `fallback_*` reste TOUJOURS bloquant (anti-bug LMT/SEE.LSE).
    */
   livePriceSource: z.string().optional(),
+  /**
+   * 28/05/2026 — Indique au paper-broker que le marché du symbole est
+   * vraiment fermé (vérifié en amont via `isInExchangeSession`). Permet
+   * d'accepter une close sur prix `stale_*` (last close valide).
+   */
+  marketClosed: z.boolean().optional(),
 });
 export type ClosePositionCommand = z.infer<typeof ClosePositionCommand>;
