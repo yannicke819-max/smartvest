@@ -1676,7 +1676,18 @@ export class MechanicalTradingService {
     // les setups dans leur fenêtre normale de jeu (~30-60 min Asia).
     // Le `expectancy watchdog` (skip cycle si E<0 sur 10 derniers trades)
     // reste actif comme circuit-breaker structurel.
+    //
+    // 28/05/2026 SOIRÉE — Extension TRADER (b0000001) : même rationale,
+    // TRADER pilote son propre risk via LiveTraderAgent + SL 1.2-1.5%
+    // par position + max-loss-cap -$50 pre-flight (commit 1167e5d). Le P4.1
+    // a flip kill_switch_active 3× en 1h sur TRADER aujourd'hui — trip causé
+    // par un single losing trade -1.5% qui dépasse le threshold default 1%.
+    // Symptôme : positions TRADER non protégées par recordMfe (kill_switch
+    // pause MechanicalTradingService entier). Cause root identifiée + fix ici.
     if ((cfg.strategy_mode as string | null | undefined) === 'gainers') {
+      return 'ok';
+    }
+    if (cfg.portfolio_id === 'b0000001-0000-0000-0000-000000000001') {
       return 'ok';
     }
 
