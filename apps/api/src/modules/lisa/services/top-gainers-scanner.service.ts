@@ -2773,9 +2773,13 @@ export class TopGainersScannerService implements OnModuleInit {
       //   - 4-8%   : WR 13%, Σpnl% -28% (n=91)
       //   - 15-20% : WR 15%, Σpnl% -111% (n=33, outlier-sensitive mais signal clair)
       // Buckets gagnants : 8-15% (Σpnl +11%, WR 21-27%) ET ≥20% (WR 25.6%).
-      // Configurable via env `GAINERS_DEAD_ZONES_PCT` = "4-8,15-20" (default).
-      // Set à "" (vide) pour désactiver le gate entièrement.
-      const deadZonesRaw = (this.config.get<string>('GAINERS_DEAD_ZONES_PCT') ?? '4-8,15-20').trim();
+      // Configurable via env `GAINERS_DEAD_ZONES_PCT` (default "15-20").
+      // Update 28/05/2026 : default changé de "4-8,15-20" → "15-20" — observation
+      // pratique : MIDDLE bloquait 82% des candidats (491/600 en 7h) car la majorité
+      // des early movers US/EU tombent dans 4-8%. Le bucket 4-8% reste un peu perdant
+      // historiquement mais on accepte le tradeoff vs zéro trade. Le bucket 15-20%
+      // reste banni (-111% Σpnl, mean reversion certaine).
+      const deadZonesRaw = (this.config.get<string>('GAINERS_DEAD_ZONES_PCT') ?? '15-20').trim();
       if (deadZonesRaw.length > 0) {
         const changePct = cand.changePct ?? 0;
         const matchedZone = deadZonesRaw.split(',')
