@@ -334,7 +334,7 @@ export class LiveTraderAgentService {
         this.fetchTopCandidates(20),
         this.fetchMacroContext(),
         this.fetchRecentNews(10),
-        this.fetchActiveMemory(50),
+        this.fetchActiveMemory(1000),
         // 28/05/2026 : Trader consomme TOUTES les scopes scanner_lessons
         // (all_scanner + asia_only + eu_only + us_only + crypto_only +
         // trader_agent_only) car il trade cross-classe. Pas de filtrage par
