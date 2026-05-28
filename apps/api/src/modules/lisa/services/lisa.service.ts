@@ -155,7 +155,23 @@ export class LisaService {
     @Optional() private readonly mtfPersistence?: MultiTimeframePersistenceService,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
-    if (anthropicKey) {
+    const geminiKey = this.config.get<string>('GEMINI_API_KEY');
+
+    // Migration 28/05/2026 — LISA_PROPOSAL_PROVIDER permet de switcher
+    // entre Gemini 2.5 Pro (default, ~10× moins cher) et Claude Opus
+    // (fallback / legacy). Si GEMINI_API_KEY absent, l'effectif tombe sur
+    // claude (cf. LisaClaudeClient constructor logic).
+    const proposalProviderRaw = (
+      this.config.get<string>('LISA_PROPOSAL_PROVIDER') ?? 'gemini'
+    ).toLowerCase();
+    const proposalProvider: 'gemini' | 'claude' =
+      proposalProviderRaw === 'claude' ? 'claude' : 'gemini';
+    const proposalFallbackEnabled = (
+      this.config.get<string>('LISA_PROPOSAL_FALLBACK_ENABLED') ?? 'true'
+    ).toLowerCase() !== 'false';
+    const geminiModel = this.config.get<string>('LISA_PROPOSAL_GEMINI_MODEL') ?? 'gemini-2.5-pro';
+
+    if (anthropicKey || geminiKey) {
       // PATCH 6 P1 cost-01-llm-router — Toute requête Anthropic passe par le
       // routeur centralisé : il choisit le modèle par tâche, applique le
       // circuit breaker budget, et persiste le coût après chaque appel.
@@ -167,20 +183,73 @@ export class LisaService {
         this.config.get<string>('LLM_ROUTER_FALLBACK_ON_BUDGET') ?? 'true'
       ).toLowerCase() !== 'false';
 
-      const router = new LlmRouter(
-        new Anthropic({ apiKey: anthropicKey }),
-        this.apiCostTracker,
-        { dailyCostBudgetUsd: dailyBudget, fallbackOnBudget },
-        {
-          warn: (event, details) => this.logger.warn(
-            `[llm-router:${event}] ${JSON.stringify(details)}`,
-          ),
-        },
-      );
-      this.claudeClient = new LisaClaudeClient(router);
+      // Router Anthropic instancié uniquement si la clé est dispo (sinon
+      // Gemini-only — pas de fallback Claude possible).
+      const router = anthropicKey
+        ? new LlmRouter(
+            new Anthropic({ apiKey: anthropicKey }),
+            this.apiCostTracker,
+            { dailyCostBudgetUsd: dailyBudget, fallbackOnBudget },
+            {
+              warn: (event, details) => this.logger.warn(
+                `[llm-router:${event}] ${JSON.stringify(details)}`,
+              ),
+            },
+          )
+        : null;
+
+      if (!router && proposalProvider === 'claude') {
+        this.claudeClient = null;
+        this.logger.warn(
+          'ANTHROPIC_API_KEY absent + LISA_PROPOSAL_PROVIDER=claude — thesis generation disabled',
+        );
+      } else if (router) {
+        this.claudeClient = new LisaClaudeClient(router, {
+          ...(geminiKey ? { apiKey: geminiKey } : {}),
+          model: geminiModel,
+          provider: proposalProvider,
+          claudeFallbackEnabled: proposalFallbackEnabled,
+          logger: {
+            warn: (msg) => this.logger.warn(msg),
+            info: (msg) => this.logger.log(msg),
+          },
+        });
+        this.logger.log(
+          `[lisa-llm] provider=${proposalProvider} geminiKey=${!!geminiKey} `
+          + `claudeKey=${!!anthropicKey} fallback=${proposalFallbackEnabled} model=${geminiModel}`,
+        );
+      } else {
+        // Gemini-only path : pas de router Anthropic, on construit un client
+        // minimal qui ne peut PAS fallback Claude. On passe un router stub
+        // qui throw si jamais appelé (théoriquement impossible vu effective=gemini).
+        const stubRouter = new LlmRouter(
+          {
+            messages: {
+              create: async () => {
+                throw new Error('ANTHROPIC_API_KEY absent — Claude fallback impossible');
+              },
+            },
+          },
+          this.apiCostTracker,
+          { dailyCostBudgetUsd: dailyBudget, fallbackOnBudget: false },
+        );
+        this.claudeClient = new LisaClaudeClient(stubRouter, {
+          ...(geminiKey ? { apiKey: geminiKey } : {}),
+          model: geminiModel,
+          provider: 'gemini',
+          claudeFallbackEnabled: false,
+          logger: {
+            warn: (msg) => this.logger.warn(msg),
+            info: (msg) => this.logger.log(msg),
+          },
+        });
+        this.logger.log(
+          `[lisa-llm] provider=gemini (no Anthropic fallback) model=${geminiModel}`,
+        );
+      }
     } else {
       this.claudeClient = null;
-      this.logger.warn('ANTHROPIC_API_KEY absent — thesis generation disabled');
+      this.logger.warn('ANTHROPIC_API_KEY + GEMINI_API_KEY absents — thesis generation disabled');
     }
 
     this.corpusQuery = new CorpusQueryService(this.supabase.getClient());
