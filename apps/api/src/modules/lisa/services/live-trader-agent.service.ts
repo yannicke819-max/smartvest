@@ -39,7 +39,7 @@ const TRADER_AGENT_CAPITAL_USD = 10000;
 const MAX_DAILY_LOSS_USD = 500;
 const MAX_CONCENTRATION_USD = 4500;  // 45% capital — boost 28/05/2026 pour target $400/jour
 const MIN_NOTIONAL_USD = 50;
-const MIN_CONFIDENCE = 0.65;
+const MIN_CONFIDENCE = 0.72;  // bump 28/05 soirée (G1) — 0.65 laissait passer setups marginaux, WR jour 44%. À 0.72, attendu ~10 trades/jour mais WR 55-60%.
 const PRICE_SANITY_MAX_DIVERGENCE_PCT = 2.0;
 
 type TraderAction =
@@ -72,6 +72,13 @@ PATTERNS VALIDÉS (priorité haute — observation 28/05/2026, à amplifier dès
 ★ KOSDAQ SMALL-MID (suffix .KQ) = veine PROUVÉE : MIDDLE 28/05 a fait 2 TP clean = +$120 sur 208710.KQ (+2.10%, hold 4min) et 200470.KQ (+1.89%, hold 3min) en session asia matin. Pattern : KOSDAQ small-mid momentum 1m persistant 1-5min, TP rapide 2%. Si un .KQ apparaît dans candidates avec changePct 3-8% et persistenceScore ≥ 0.6 → setup A+, conf 0.85+, notional 3000-4000, TP 2-2.5%, SL 1.5%.
 
 ★ ORPHAN_CLOSE PRE-CLOCHE = R/R ABSURDE : TRADER 28/05 a fait +$190 net (CHRT.LSE +$105 +$37, IQE.LSE +$47) en fermant systématiquement les positions sur marchés fermant <30 min. Règle dure : si position ouverte sur un marché qui ferme dans <30 min, ferme-la AU MOINS au breakeven (sauf si PnL fortement positif et trailing-stop OK). Détail : LSE close 16:30 UTC, XETRA/PA 15:30 UTC, TSE 06:00 UTC, KRX/KQ 06:30 UTC, HK 08:00 UTC, AU 06:00 UTC, NYSE 21:00 UTC. **Le orphan-close est appliqué automatiquement avant ton cycle — si tu reçois state.orphan_closed = true, c'est déjà fait.**
+
+★ ORPHAN_CLOSE HARVEST STRATEGY (28/05 soirée, G2) — règle PROACTIVE : l'orphan-close auto te garantit la cloche, MAIS ne tire que si tu AS ouvert des positions sur les marchés qui vont fermer. Donc ouvre activement pour nourrir la mécanique :
+- Fenêtre **02:00-05:00 UTC** : si candidat A+ sur .T / .HK / .KQ / .KO / .AU avec persistenceScore ≥ 0.6 et changePct 3-8%, OUVRE — la cloche TSE/KRX/AU 06:00-06:30 UTC harvestera (90-180 min de respiration).
+- Fenêtre **13:00-15:00 UTC** : si candidat A+ sur .LSE / .L / .PA / .XETRA / .DE avec setup propre (catalyseur news ≥ 60 OU KOSDAQ-like momentum), OUVRE — la cloche EU 15:30/16:30 UTC harvestera.
+- Logique R/R : tu vises TP intraday (2-3%) mais la cloche te ramène au breakeven minimum SI le mouvement fade. Downside borné à fees, upside = TP normal. **Asymétrie positive quasi-garantie.**
+- À éviter : ouvrir une position EU/Asia trop près de la cloche (<60 min) — pas assez de respiration. Privilégie 90-180 min avant cloche.
+- Cas pratique 28/05 : tu as ouvert CHRT.LSE à 13h00 UTC, position +PnL à 16:24, fermée à $105 net avant cloche. Reproductible.
 
 ANTI-PATTERNS À ÉVITER (priorité haute — observation 28/05/2026) :
 
