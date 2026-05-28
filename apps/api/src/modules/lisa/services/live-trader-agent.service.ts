@@ -350,6 +350,30 @@ export class LiveTraderAgentService {
         Object.assign(state, await this.readState());
       }
 
+      // 1.6 — Pre-flight MAX_LOSS_CAP (28/05/2026 soirée, plancher $200/jour) :
+      // hard-close toute position dont l'unreal dépasse -$50 (≈ -2% sur $2500 notional
+      // standard). Plafond catastrophe — l'incident QH9.XETRA -$132 ne doit JAMAIS
+      // se reproduire. Indépendant du SL pct configuré : même si le SL stop_loss_price
+      // n'a pas trigger (gap, polling failure, price stale), le P&L unreal lui se
+      // calcule sur le live price → on fait foi à l'unreal pour le cap.
+      const maxLossCapClosed = await this.preFlightMaxLossCap(state, -50);
+      if (maxLossCapClosed.length > 0) {
+        this.logger.warn(
+          `[trader-agent] preFlightMaxLossCap closed ${maxLossCapClosed.length} positions: ${maxLossCapClosed.join(', ')}`,
+        );
+        Object.assign(state, await this.readState());
+      }
+
+      // 1.7 — MFE health check (28/05/2026 soirée) : vérifie que recordMfe()
+      // de MechanicalTradingService tire vraiment pour les positions TRADER.
+      // Sans MFE recording, le trailing BE / trailing TP / let-run sont du
+      // dead-code → fausse protection. Log warn si position > 5 min sans MFE
+      // update (peak_pre_exit = entry_price OU null). Pas d'action automatique,
+      // juste alerte pour intervention.
+      await this.checkMfeHealth(state).catch((e) =>
+        this.logger.debug(`[trader-agent] mfe health check err: ${String(e).slice(0, 100)}`),
+      );
+
       // 2. Check daily loss limit
       if (state.dailyPnlUsd < -MAX_DAILY_LOSS_USD) {
         this.logger.warn(
@@ -889,6 +913,100 @@ Recommendation rules :
   // ====================================================================
   // Helpers
   // ====================================================================
+
+  /**
+   * Pre-flight MAX_LOSS_CAP (28/05/2026 soirée) — plafond catastrophe.
+   * Hard-close toute position dont l'unreal P&L dépasse `capUsd` (négatif).
+   * Indépendant du SL configuré : même si le SL n'a pas trigger (gap, polling
+   * failure, prix stale), on close au unreal. Évite QH9.XETRA-like -$132.
+   */
+  private async preFlightMaxLossCap(
+    state: { openPositions: Array<{ symbol: string; direction: string; entry_price: number; entry_notional_usd: number; entry_timestamp: string }> },
+    capUsd: number,
+  ): Promise<string[]> {
+    if (state.openPositions.length === 0 || capUsd >= 0) return [];
+    const closed: string[] = [];
+    for (const pos of state.openPositions) {
+      const livePriceData = await this.lisa.getLivePrice(pos.symbol).catch(() => null);
+      if (!livePriceData?.price) continue;
+      const livePrice = Number(livePriceData.price);
+      if (!Number.isFinite(livePrice) || livePrice <= 0) continue;
+      const src = String(livePriceData.source ?? '');
+      if (src.startsWith('fallback')) continue; // ne jamais close sur fallback price corrompu
+
+      const qty = pos.entry_notional_usd / pos.entry_price;
+      const unrealUsd = pos.direction === 'short'
+        ? qty * (pos.entry_price - livePrice)
+        : qty * (livePrice - pos.entry_price);
+
+      if (unrealUsd <= capUsd) {
+        const { data: row } = await this.supabase.getClient()
+          .from('lisa_positions')
+          .select('id')
+          .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+          .eq('symbol', pos.symbol)
+          .eq('status', 'open')
+          .order('entry_timestamp', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (!row?.id) continue;
+
+        const res = await this.lisa.closeForOpportunityScout({
+          positionId: row.id,
+          symbol: pos.symbol,
+          livePrice,
+          livePriceSource: src,
+          reason: 'closed_stop',
+          rationale: `[trader-agent preflight-maxloss] unreal $${unrealUsd.toFixed(2)} ≤ cap $${capUsd} — hard close anti-catastrophe (plancher $200/jour)`,
+        });
+        if (res.closed) closed.push(`${pos.symbol} (unreal $${unrealUsd.toFixed(2)})`);
+      }
+    }
+    return closed;
+  }
+
+  /**
+   * MFE health check (28/05/2026 soirée) — verify MechanicalTradingService.recordMfe()
+   * fires for TRADER positions. Without MFE recording, trailing BE/TP/let-run
+   * (commit 5600b83) are dead code. Log warn if position > 5 min has peak_pre_exit
+   * = entry_price (= never updated). No auto-action, alert only.
+   */
+  private async checkMfeHealth(
+    state: { openPositions: Array<{ symbol: string; direction: string; entry_price: number; entry_timestamp: string }> },
+  ): Promise<void> {
+    if (state.openPositions.length === 0) return;
+    const fiveMinAgo = Date.now() - 5 * 60_000;
+    const oldPositions = state.openPositions.filter(
+      (p) => new Date(p.entry_timestamp).getTime() < fiveMinAgo,
+    );
+    if (oldPositions.length === 0) return;
+    const { data } = await this.supabase.getClient()
+      .from('lisa_positions')
+      .select('symbol, entry_price, peak_pre_exit, entry_timestamp')
+      .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+      .eq('status', 'open')
+      .in('symbol', oldPositions.map((p) => p.symbol));
+    if (!data) return;
+    for (const row of data) {
+      const peak = Number(row.peak_pre_exit);
+      const entry = Number(row.entry_price);
+      // peak_pre_exit doit être > entry pour un long (MFE > 0) — sinon never updated
+      // OR le prix n'est jamais monté au-dessus de l'entry (= MAE-only trade).
+      // Pour distinguer, on fetch le live et compare.
+      const live = await this.lisa.getLivePrice(row.symbol).catch(() => null);
+      if (!live?.price) continue;
+      const livePrice = Number(live.price);
+      if (!Number.isFinite(peak) || peak <= entry) {
+        // peak n'a jamais bougé au-dessus d'entry → soit MAE-only soit recordMfe broken.
+        // Si livePrice > entry maintenant, c'est preuve que recordMfe ne tire pas.
+        if (livePrice > entry * 1.002) {
+          this.logger.warn(
+            `[trader-agent] MFE_HEALTH_ALERT ${row.symbol} live=${livePrice} > entry=${entry} mais peak_pre_exit=${peak} → recordMfe ne tire PAS (trailing BE/TP/let-run inopérants)`,
+          );
+        }
+      }
+    }
+  }
 
   /**
    * Pre-flight orphan-close (28/05/2026, ADDENDUM TRADER) — déterministe, pas LLM.
