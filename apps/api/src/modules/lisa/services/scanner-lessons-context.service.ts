@@ -58,10 +58,21 @@ export class ScannerLessonsContextService {
       else if (cls.includes('us')) scopes.add('us_only');
       else if (cls.includes('crypto')) scopes.add('crypto_only');
     }
+    // Score composite (28/05/2026) — avec mémoire permanente potentiellement
+    // milliers de lessons, on ne peut PAS se limiter à confidence seul.
+    // Score = confidence × log(1 + sample_size) → favorise lessons à fort sample
+    // tout en gardant confidence comme dimension principale. Évite que des lessons
+    // n=5/conf=0.95 écrasent des lessons n=200/conf=0.80 (statistiquement meilleures).
     const filtered = lessons
       .filter((l) => scopes.has(l.scope))
-      .sort((a, b) => b.confidence - a.confidence)
-      .slice(0, MAX_LESSONS_PER_BLOCK);
+      .map((l) => {
+        const samplePenalty = Math.log(1 + (l.sample_size ?? 0));
+        const score = l.confidence * (1 + samplePenalty * 0.15);
+        return { lesson: l, score };
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, MAX_LESSONS_PER_BLOCK)
+      .map((e) => e.lesson);
 
     if (filtered.length === 0) return '';
 
@@ -91,9 +102,11 @@ export class ScannerLessonsContextService {
         .select('lesson_kind, lesson_text, macro_condition, scope, confidence, sample_size, win_rate_observed')
         .eq('is_active', true)
         .order('confidence', { ascending: false })
-        .limit(500);  // Cumulatif jour après jour (post-mortem nightly cron). Avec
-        // ~5 lessons/nuit × 6 semaines = 210 lessons attendues. 500 = headroom
-        // confortable. Le top 10 par scope reste injecté au prompt (MAX_LESSONS_PER_BLOCK).
+        .limit(10000);  // MÉMOIRE PERMANENTE — pas de plafond pratique. Le cron
+        // nightly génère ~5 lessons/jour × années = milliers de lessons. Le système
+        // doit accumuler indéfiniment (cf. user 28/05/2026 : "sa mémoire doit aller
+        // bien au-delà"). 10k = headroom multi-années. La sélection intelligente
+        // (scope + confidence + sample_size) reste au niveau prompt (top N).
       if (error) {
         this.logger.warn(`[scanner-lessons-context] fetch failed: ${error.message}`);
         // Garde l'ancien cache si dispo, sinon empty
