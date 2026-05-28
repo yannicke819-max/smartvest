@@ -1935,7 +1935,7 @@ export class MechanicalTradingService {
     const breakEvenEnabled = (process.env.GAINERS_TRAILING_STOP_BREAKEVEN_ENABLED ?? 'false').toLowerCase() === 'true';
     if (breakEvenEnabled) {
       const portfolioIdBE = String((pos as unknown as Record<string, unknown>)['portfolio_id'] ?? '');
-      if (portfolioIdBE && await this.isGainersStrategy(portfolioIdBE)) {
+      if (portfolioIdBE && await this.isTrailingEligible(portfolioIdBE)) {
         // Lesson-driven override (migration 0172) — la colonne DB est en %
         // (ex 0.5 = 0.5%), à convertir en ratio (×0.01) pour matcher l'API
         // historique `computeBreakEvenStopUpdate(activationPct: ratio)`.
@@ -2128,7 +2128,7 @@ export class MechanicalTradingService {
       // dans la branche `!hitTarget` et `checkReactiveSignals` prend le relais.
       // Scope : gainers strategy uniquement (pas de modif TP swing Lisa).
       const letRunPortfolioId = String((pos as unknown as Record<string, unknown>)['portfolio_id'] ?? '');
-      if (letRunPortfolioId && await this.isGainersStrategy(letRunPortfolioId)) {
+      if (letRunPortfolioId && await this.isTrailingEligible(letRunPortfolioId)) {
         const lessonCfgLR = await this.getLessonCfg(letRunPortfolioId);
         if (isLetRunOnMonotonicActive(lessonCfgLR.letRun)) {
           const rawPeakLR = Number((pos as unknown as Record<string, unknown>)['peak_pre_exit']);
@@ -2188,7 +2188,7 @@ export class MechanicalTradingService {
       // Lookup (caché 60s) effectué uniquement ici → quand le TP est franchi ET
       // le flag actif, donc rarement.
       const trailingTpPortfolioId = String((pos as unknown as Record<string, unknown>)['portfolio_id'] ?? '');
-      if (trailingTpEnabled && await this.isGainersStrategy(trailingTpPortfolioId)) {
+      if (trailingTpEnabled && await this.isTrailingEligible(trailingTpPortfolioId)) {
         const giveback = Math.max(0.2, Math.min(10, Number(process.env.GAINERS_TRAILING_TP_GIVEBACK_PCT ?? '1.5')));
         // Pic = max(MFE persistée, prix courant) — recordMfe ci-dessus a déjà
         // poussé le pic en DB mais l'objet `pos` en mémoire date du début de cycle.
@@ -2360,6 +2360,19 @@ export class MechanicalTradingService {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Trailing mechanics eligibility (28/05/2026, MFE/MAE 3-week analysis).
+   * Inclut gainers + TRADER (b0000001-...) qui bénéficie aussi des trailing
+   * BE/TP/let-run/choppy malgré son strategy_mode='investment'. Analyse n=343
+   * trades confirme : 56/134 SL avaient MFE > 0.5% pré-stop = $3685 recoverable
+   * sur 22j. TRADER seul = $776 left on table.
+   */
+  private async isTrailingEligible(portfolioId: string): Promise<boolean> {
+    if (!portfolioId) return false;
+    if (portfolioId === 'b0000001-0000-0000-0000-000000000001') return true;
+    return this.isGainersStrategy(portfolioId);
   }
 
   private async getMinNetProfitGate(portfolioId: string, notional: Decimal): Promise<Decimal> {

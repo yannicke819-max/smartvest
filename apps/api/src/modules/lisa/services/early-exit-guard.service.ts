@@ -206,6 +206,16 @@ export class EarlyExitGuardService {
       );
       return false;
     }
+    // RM-FILTER-ON-PROFIT (28/05/2026, MFE/MAE 3-week confirmation) — skip FADE
+    // si position en profit significatif. 10/11 FADE'd winners ont continué après
+    // FADE = $124 left on table sur 22j. 6/7 sur 27-28/05 seul. Skip si unrealPct
+    // > +0.3% (laisse FADE sur breakeven / pertes faibles).
+    if (unrealPct > 0.3) {
+      this.logger.log(
+        `[early-exit-guard] ${pos.symbol} skip — unreal ${unrealPct.toFixed(2)}% > +0.3% (RM-FILTER-ON-PROFIT, lesson MFE/MAE 3w)`,
+      );
+      return false;
+    }
     const slDistPct = pos.stop_loss_price != null
       ? ((Number(pos.stop_loss_price) - livePx) / livePx) * 100
       : null;
