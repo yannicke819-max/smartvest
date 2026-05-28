@@ -1,7 +1,7 @@
 /**
  * RealTimeLessonDetectorService — Détection auto de lessons en live.
  *
- * Tourne toutes les 5 min (cron */5). Analyse les closes des 5 portfolios
+ * Tourne toutes les 5 min (cron "*\/5 * * * *"). Analyse les closes des 5 portfolios
  * dans les 30 dernières minutes et insère automatiquement des lessons
  * si pattern significatif détecté :
  *
