@@ -1187,7 +1187,9 @@ Recommendation rules :
         || sym.endsWith('.AU') || sym.endsWith('.SHG') || sym.endsWith('.SHE')) return 'asia_equity';
     if (['LSE', 'L', 'XETRA', 'DE', 'F', 'PA', 'AS', 'BR', 'MI', 'MC', 'SW'].includes(exch)
         || sym.endsWith('.LSE') || sym.endsWith('.L') || sym.endsWith('.XETRA')
-        || sym.endsWith('.DE') || sym.endsWith('.PA')) return 'eu_equity';
+        || sym.endsWith('.DE') || sym.endsWith('.PA') || sym.endsWith('.F')
+        || sym.endsWith('.AS') || sym.endsWith('.BR') || sym.endsWith('.MI')
+        || sym.endsWith('.MC') || sym.endsWith('.SW')) return 'eu_equity';
     return 'unknown';
   }
 
