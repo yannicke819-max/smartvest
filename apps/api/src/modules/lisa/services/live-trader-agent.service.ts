@@ -33,6 +33,7 @@ import { ScannerLlmRouterService } from './scanner-llm-router.service';
 import { LisaService } from './lisa.service';
 import { ScannerLessonsContextService } from './scanner-lessons-context.service';
 import { TopGainersScannerService } from './top-gainers-scanner.service';
+import type { TopGainerCandidate } from '@smartvest/ai-analyst';
 
 const TRADER_AGENT_PORTFOLIO_ID = 'b0000001-0000-0000-0000-000000000001';
 const TRADER_AGENT_USER_ID = '5f164201-9736-4867-8756-a1653d65fd1c';
@@ -1210,6 +1211,17 @@ Recommendation rules :
     // RWS.LSE que MAIN a pris) étaient enterrés position #30-50, hors top 20.
     // Fix : filtrer [TRADER_FEED_MIN_PCT, TRADER_FEED_MAX_PCT] AVANT top-N.
     // Bornes alignées sur l'overpump gate (15%) et un plancher anti-bruit (2%).
+    //
+    // P-KTOS ENRICHMENT (29/05 17:15) — chaque candidat est enrichi de 4 métriques
+    // computées pour aider le LLM Gemini à appliquer les lessons KTOS (#319e867e,
+    // #ab035237, #42101ada, #aa6eda5f) :
+    //   - pumpScore : changePct / max_changePct du pool (signal proximity-to-peak)
+    //   - closeToHighRatio : close / high (1.0 = au top du jour, < 0.9 = retrace)
+    //   - volumeRatio : volume / avgVol50d (>2.0 = momentum confirmé)
+    //   - kellyMaxNotional : USD plafond Kelly fraction (TP 2.5% SL 1.5% p_win=0.5 → max 20% cap)
+    //   - sweetSpotEntry : booléen, true si changePct ∈ [3,8]% (winning bucket)
+    // Ces champs sont injectés dans le userPrompt JSON et lus naturellement par le LLM.
+    // PAS de gate hardcodé — décision reste autonome côté Gemini Pro.
     const feedMin = Number(this.config.get<string>('TRADER_FEED_MIN_PCT') ?? '2');
     const feedMax = Number(this.config.get<string>('TRADER_FEED_MAX_PCT') ?? '15');
     try {
@@ -1230,13 +1242,11 @@ Recommendation rules :
           this.logger.debug(
             `[trader-agent] feed: ${candidates.length} scanned → ${sorted.length} in band [${feedMin},${feedMax}]% → top ${Math.min(n, sorted.length)}`,
           );
-          return sorted.slice(0, n).map((c) => ({
-            symbol: c.symbol,
-            assetClass: this.classifyAssetClass(c.exchange ?? undefined, c.symbol),
-            changePct: c.changePct,
-            close: c.close,
-            exchange: c.exchange,
-          }));
+          // P-KTOS — Compute pool-wide max for pumpScore
+          const maxChangePctInPool = sorted.reduce((m, c) => Math.max(m, c.changePct ?? 0), 0);
+          return sorted.slice(0, n).map((c) =>
+            this.enrichCandidateWithMath(c, maxChangePctInPool),
+          );
         }
       }
     } catch (e) {
@@ -1260,6 +1270,78 @@ Recommendation rules :
       persistenceScore: c.persistenceScore,
       close: c.close,
     }));
+  }
+
+  /**
+   * P-KTOS (29/05) — Enrichit un TopGainerCandidate avec 4 métriques computées
+   * pour aider le LLM Gemini Pro à appliquer les lessons KTOS (entry discipline +
+   * sizing). PAS de gate hardcodé — le LLM voit les chiffres et décide en autonomie.
+   *
+   * Formules :
+   *   - pumpScore = changePct / max_changePct_du_pool
+   *     · > 0.85 → au peak local, retrace probable
+   *     · 0.50-0.75 → sweet spot (retrace en cours, momentum encore présent)
+   *     · < 0.40 → momentum perdu
+   *   - closeToHighRatio = close / high (jour)
+   *     · 1.00 → au top du jour (chase the top)
+   *     · 0.95-0.98 → momentum sain
+   *     · < 0.90 → retrace significative
+   *   - volumeRatio = volume / avgVol50d
+   *     · > 2.0 → momentum confirmé volume
+   *     · 1.0-2.0 → volume normal
+   *     · < 0.8 → volume faible, signal douteux
+   *   - kellyMaxNotional = TRADER_CAPITAL × Kelly fraction (TP 2.5% SL 1.5% p_win=0.5 fallback)
+   *     · Formule : f* = (TP×p_win - SL×(1-p_win)) / TP = 0.20 (default 0.5 win prob)
+   *     · → max $2000 sur $10k capital tant que p_win pas remontée par P9
+   *   - sweetSpotEntry = (changePct ∈ [3,8]%) : true si dans le bucket gagnant historique
+   *
+   * Cf. scanner_lessons : 319e867e (PULLBACK_WAIT), ab035237 (velocity), 42101ada (Kelly),
+   * aa6eda5f (pump score).
+   */
+  private enrichCandidateWithMath(
+    c: TopGainerCandidate,
+    maxChangePctInPool: number,
+  ): Record<string, unknown> {
+    const changePct = c.changePct ?? 0;
+    const high = c.high ?? c.close ?? 0;
+    const close = c.close ?? 0;
+    const volume = c.volume ?? 0;
+    const avgVol50d = c.avgVol50d ?? 0;
+
+    const pumpScore = maxChangePctInPool > 0
+      ? Math.round((changePct / maxChangePctInPool) * 100) / 100
+      : null;
+    const closeToHighRatio = high > 0
+      ? Math.round((close / high) * 1000) / 1000
+      : null;
+    const volumeRatio = avgVol50d > 0
+      ? Math.round((volume / avgVol50d) * 100) / 100
+      : null;
+
+    // Kelly notional — TP/SL standards trader (2.5% / 1.5%), p_win=0.5 par défaut
+    // (sera affiné par P9 quand p_win_at_entry sera correctement persisté).
+    // f* = (TP*p_win - SL*(1-p_win)) / TP avec TP=2.5, SL=1.5, p_win=0.5
+    //    = (1.25 - 0.75) / 2.5 = 0.20
+    // Capital trader = $10000 → max $2000 = Kelly cap par défaut.
+    const kellyMaxNotional = Math.round(TRADER_AGENT_CAPITAL_USD * 0.20);
+
+    // Sweet spot bucket gagnant historique (lesson aa6eda5f) : [3,8]%
+    const sweetSpotEntry = changePct >= 3 && changePct <= 8;
+
+    return {
+      symbol: c.symbol,
+      assetClass: this.classifyAssetClass(c.exchange ?? undefined, c.symbol),
+      changePct,
+      close,
+      high,
+      exchange: c.exchange,
+      // P-KTOS enrichment fields :
+      pumpScore,
+      closeToHighRatio,
+      volumeRatio,
+      kellyMaxNotional,
+      sweetSpotEntry,
+    };
   }
 
   private async fetchMacroContext(): Promise<object> {
