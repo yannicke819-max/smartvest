@@ -2888,6 +2888,25 @@ export class TopGainersScannerService implements OnModuleInit {
         }
       }
 
+      // OVERPUMP GATE (29/05/2026 03:30 UTC, extension du TRADER overpump à scanners) :
+      // refuse l'open si le candidat a déjà pumpé > X% sur la 1m. Cause root identifiée :
+      // entry au peak local d'un move déjà mature → drawdown ≥ 2% quasi-systématique.
+      // Cas vérifié 29/05 02:48 → 03:23 : MIDDLE re-entre 393890.KQ à $15950 (+4.5% au
+      // dessus du MAIN entry $15270) — exactement quand TRADER refusait l'entrée à
+      // changePct=14.15%. Threshold default 12% : entre le "8-15% winning bucket" et
+      // le ban dead-zone 15-20%. Configurable via GAINERS_OVERPUMP_THRESHOLD_PCT.
+      const overpumpThreshold = Number(this.config.get<string>('GAINERS_OVERPUMP_THRESHOLD_PCT') ?? '12');
+      if (Number.isFinite(overpumpThreshold) && overpumpThreshold > 0) {
+        const changePct = cand.changePct ?? 0;
+        if (changePct > overpumpThreshold) {
+          this.logger.log(
+            `[top-gainers] ${cand.symbol} OVERPUMP_GATE actif (changePct=${changePct.toFixed(1)}% > ${overpumpThreshold}% — entry au peak refusée, attendre pullback)`,
+          );
+          recordShadowDecision(cand, 'reject_overextended', undefined);
+          continue;
+        }
+      }
+
       // PR A — Gate horaire LONG. Data mining 15j (23/05/2026, n=7000 signaux) :
       //   - LONG mean H8 (EU open) = -0.60%, H19 (US close) = -1.01%, H22 = -0.93%, H0-H5 = -0.5%
       //   - LONG mean H13-H17 (US active) = neutre à légèrement positif (+0.03 à +0.27%)
