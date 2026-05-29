@@ -2655,13 +2655,17 @@ export class TopGainersScannerService implements OnModuleInit {
     }
     const postSlCooldownMs = postSlCooldownMin * 60_000;
 
-    // SL_CONTAGION_CROSS_PORTFOLIO (lesson 28/05/2026 conf 0.95) — opt-in strict.
-    // Active SI env GAINERS_CROSS_PORTFOLIO_SL_COOLDOWN_MIN > 0 (default 0 = off).
-    // Quand actif : bloque la ré-ouverture sur ce portfolio uniquement si le
-    // ticker a SL sur un autre portfolio dans la fenêtre ET asset_class identique.
+    // SL_CONTAGION_CROSS_PORTFOLIO (lesson 28/05 + extension 29/05) — ON par défaut.
+    // 29/05 09:30 : contagion ITM.LSE -$57 sur 3 portfolios (MAIN choppy -$26,
+    // MIDDLE +$12, HIGH SL -$42). HIGH a pris ITM APRÈS la perte MAIN. L'ancien
+    // gate ne catchait que closed_stop → ratait les closes choppy perdants.
+    //
+    // FIX : (1) default 90 min au lieu de 0 (ON par défaut). (2) catch TOUS les
+    // closes PERDANTS (realized_pnl < 0), pas juste closed_stop. (3) même
+    // asset_class requis. Désactivable via GAINERS_CROSS_PORTFOLIO_SL_COOLDOWN_MIN=0.
     const crossPortfolioSlCooldownMin = Math.max(
       0,
-      Math.min(1440, Number(this.config.get<string>('GAINERS_CROSS_PORTFOLIO_SL_COOLDOWN_MIN') ?? '0')),
+      Math.min(1440, Number(this.config.get<string>('GAINERS_CROSS_PORTFOLIO_SL_COOLDOWN_MIN') ?? '90')),
     );
     const crossPortfolioRecentSl = new Map<string, { ms: number; assetClass: string }>();
     if (crossPortfolioSlCooldownMin > 0) {
@@ -2670,9 +2674,10 @@ export class TopGainersScannerService implements OnModuleInit {
         const { data: crossClosesRaw } = await this.supabase
           .getClient()
           .from('lisa_positions')
-          .select('symbol, asset_class, exit_timestamp, portfolio_id')
-          .eq('status', 'closed_stop')
+          .select('symbol, asset_class, exit_timestamp, portfolio_id, realized_pnl_usd, status')
           .neq('portfolio_id', portfolioId)
+          .neq('status', 'open')
+          .lt('realized_pnl_usd', 0)
           .gte('exit_timestamp', sinceIso);
         for (const row of crossClosesRaw ?? []) {
           const sym = String(row.symbol).toUpperCase();
@@ -2684,7 +2689,7 @@ export class TopGainersScannerService implements OnModuleInit {
           }
         }
       } catch (e) {
-        this.logger.debug(`[top-gainers] cross-portfolio SL query skipped: ${String(e).slice(0, 100)}`);
+        this.logger.debug(`[top-gainers] cross-portfolio loss query skipped: ${String(e).slice(0, 100)}`);
       }
     }
 
@@ -3160,15 +3165,15 @@ export class TopGainersScannerService implements OnModuleInit {
         }
       }
 
-      // SL_CONTAGION cross-portfolio (opt-in via env > 0) — refuse la ré-ouverture
-      // uniquement si SL même ticker + même asset_class sur un autre portfolio
-      // dans la fenêtre. Scope strict pour éviter de généraliser.
+      // SL_CONTAGION cross-portfolio (ON default 90min) — refuse la ré-ouverture
+      // si le ticker a été fermé EN PERTE (SL OU choppy) sur un autre portfolio
+      // dans la fenêtre ET même asset_class. Évite la contagion ITM.LSE-like.
       if (crossPortfolioSlCooldownMin > 0) {
         const crossSl = crossPortfolioRecentSl.get(cand.symbol.toUpperCase());
         if (crossSl && crossSl.assetClass === String(cand.assetClass)) {
           const elapsedMin = Math.floor((Date.now() - crossSl.ms) / 60_000);
           this.logger.log(
-            `[top-gainers] ${cand.symbol} CROSS_PORTFOLIO_SL_COOLDOWN actif (SL autre portfolio ${crossSl.assetClass} il y a ${elapsedMin} min < ${crossPortfolioSlCooldownMin} min) → skip`,
+            `[top-gainers] ${cand.symbol} CROSS_PORTFOLIO_LOSS_COOLDOWN actif (perte autre portfolio ${crossSl.assetClass} il y a ${elapsedMin} min < ${crossPortfolioSlCooldownMin} min) → skip`,
           );
           recordShadowDecision(cand, 'reject_post_sl_cooldown', undefined);
           continue;
