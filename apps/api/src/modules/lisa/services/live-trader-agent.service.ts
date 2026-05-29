@@ -1316,13 +1316,16 @@ Recommendation rules :
       }
 
       // ASIA OPENING SUFFIX BAN (28/05/2026 soirée, MFE/MAE 3w n=250 asia_equity).
-      // .T/.HK/.SS/.SZ/.SI 00-02h UTC : n=16 WR 12% Σ -$527 / .KQ 00-02h : n=32 WR 31% Σ -$407.
+      // .T/.HK/.SHG/.SHE/.SI 00-02h UTC : n=16 WR 12% Σ -$527 / .KQ 00-02h : n=32 WR 31% Σ -$407.
+      // .SS/.SZ inclus aussi (convention Yahoo Finance) ; EODHD utilise .SHG/.SHE
       // Cas TRADER vérifié 28/05 : 166480.KQ 0/2 wins -$17. KOSDAQ 02-08h reste OK.
       {
         const sym = decision.symbol.toUpperCase();
         const nowHourUtc = new Date().getUTCHours();
         const bannedSuffix = sym.endsWith('.T')
           || sym.endsWith('.HK')
+          || sym.endsWith('.SHG')
+          || sym.endsWith('.SHE')
           || sym.endsWith('.SS')
           || sym.endsWith('.SZ')
           || sym.endsWith('.SI')

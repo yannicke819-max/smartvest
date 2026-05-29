@@ -2804,7 +2804,8 @@ export class TopGainersScannerService implements OnModuleInit {
       // ASIA OPENING SUFFIX BAN (28/05/2026 soirée, analyse MFE/MAE 3-week n=250
       // asia_equity) — opening auctions 00:00-02:00 UTC sont structurellement
       // toxiques sur :
-      //  - .T/.HK/.SS/.SZ/.SI : n=16, WR 12%, Σ -$527 (Nikkei + HSI + Shanghai/Shenzhen + SGX)
+      //  - .T/.HK/.SHG/.SHE/.SI : n=16, WR 12%, Σ -$527 (Nikkei + HSI + Shanghai/Shenzhen + SGX)
+      // .SS/.SZ inclus aussi pour back-compat (convention Yahoo Finance ; EODHD utilise .SHG/.SHE)
       //  - .KQ                : n=32, WR 31%, Σ -$407 (KOSDAQ opening)
       // En revanche .KQ rest 02-08h UTC = WR 57%, Σ +$96 sur n=63 — veine prouvée.
       // Le gate envisage donc une fenêtre stricte 00-02h UTC ban sur ces 6 suffixes.
@@ -2816,6 +2817,8 @@ export class TopGainersScannerService implements OnModuleInit {
           const symUpper = cand.symbol.toUpperCase();
           const isBanned = symUpper.endsWith('.T')
             || symUpper.endsWith('.HK')
+            || symUpper.endsWith('.SHG')
+            || symUpper.endsWith('.SHE')
             || symUpper.endsWith('.SS')
             || symUpper.endsWith('.SZ')
             || symUpper.endsWith('.SI')
