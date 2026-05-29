@@ -40,7 +40,7 @@ const TRADER_AGENT_CAPITAL_USD = 10000;
 const MAX_DAILY_LOSS_USD = 500;
 const MAX_CONCENTRATION_USD = 4500;  // 45% capital — boost 28/05/2026 pour target $400/jour
 const MIN_NOTIONAL_USD = 50;
-const MIN_CONFIDENCE = 0.72;  // bump 28/05 soirée (G1) — 0.65 laissait passer setups marginaux, WR jour 44%. À 0.72, attendu ~10 trades/jour mais WR 55-60%.
+const MIN_CONFIDENCE = 0.80;  // bump 29/05 matin (audit vs MIDDLE) — 0.72 laissait passer setups marginaux, WR jour 37%. Analyse 58 trades : TRADER over-trade (37 vs MIDDLE 21) avec WR/2 → bump à 0.80 pour réduire le bruit et viser WR ≥ 55%.
 const PRICE_SANITY_MAX_DIVERGENCE_PCT = 2.0;
 
 type TraderAction =
@@ -420,26 +420,34 @@ export class LiveTraderAgentService {
         this.fetchMacroContext(),
         this.fetchRecentNews(10),
         this.fetchActiveMemory(1000),
-        // 28/05/2026 : Trader consomme TOUTES les scopes scanner_lessons
-        // (all_scanner + asia_only + eu_only + us_only + crypto_only +
-        // trader_agent_only) car il trade cross-classe. Pas de filtrage par
-        // assetClass — Gemini Pro raisonne sur tout l'univers.
         this.lessonsContext?.getLessonsBlock('trader_agent_only', { assetClass: 'asia_eu_us_crypto' }) ?? Promise.resolve(''),
+        // COMMIT 5 (29/05) — MIDDLE reference block
+        this.fetchMiddleReference(),
+        // AUTO-CORRECTION DYNAMIQUE (29/05) — self-reflection sur dernières 5 décisions
+        this.computeSelfReflection(),
       ]);
       const candidates = settled[0].status === 'fulfilled' ? settled[0].value : [];
       const macro = settled[1].status === 'fulfilled' ? settled[1].value : { note: 'macro_fetch_failed' };
       const news = settled[2].status === 'fulfilled' ? settled[2].value : [];
       const memory = settled[3].status === 'fulfilled' ? settled[3].value : [];
       const crossScannerLessons = settled[4].status === 'fulfilled' ? (settled[4].value as string) : '';
+      const middleReference = settled[5].status === 'fulfilled' ? (settled[5].value as string) : '';
+      const selfReflection = settled[6].status === 'fulfilled' ? (settled[6].value as string) : '';
       const fetchFailures = settled
-        .map((s, i) => s.status === 'rejected' ? `${['candidates','macro','news','memory','lessons'][i]}=${String(s.reason).slice(0,80)}` : null)
+        .map((s, i) => s.status === 'rejected' ? `${['candidates','macro','news','memory','lessons','middle_ref','self_reflect'][i]}=${String(s.reason).slice(0,80)}` : null)
         .filter((x) => x !== null);
       if (fetchFailures.length > 0) {
         this.logger.warn(`[trader-agent] fetch partial failures: ${fetchFailures.join(' | ')}`);
       }
+      if (middleReference.length > 0) {
+        this.logger.debug(`[trader-agent] MIDDLE reference block injected (${middleReference.length} chars)`);
+      }
+      if (selfReflection.length > 0) {
+        this.logger.log(`[trader-agent] SELF-REFLECTION triggered : ${selfReflection.slice(0, 100)}...`);
+      }
 
-      // 4. Build system + user prompts (memory trader + cross-scanner lessons)
-      const systemPrompt = this.buildSystemPrompt(memory, crossScannerLessons);
+      // 4. Build system prompt (memory + cross-lessons + MIDDLE ref + self-reflection)
+      const systemPrompt = this.buildSystemPrompt(memory, crossScannerLessons, middleReference, selfReflection);
       const userPrompt = JSON.stringify({
         current_time_utc: cycleStartedAt.toISOString(),
         portfolio_capital_usd: TRADER_AGENT_CAPITAL_USD,
@@ -1163,38 +1171,47 @@ Recommendation rules :
     };
   }
 
+  /**
+   * Classify asset_class from exchange suffix. Aligné sur le système global.
+   * BUGFIX 29/05 : 37/37 trades TRADER avaient asset_class=unknown faute de
+   * mapping. Sans asset_class, les lessons par-classe ne s'appliquent pas
+   * et l'audit/MFE par-classe est faussé.
+   */
+  private classifyAssetClass(exchange: string | undefined, symbol: string): string {
+    const exch = String(exchange ?? '').toUpperCase();
+    const sym = String(symbol ?? '').toUpperCase();
+    if (exch === 'US' || sym.endsWith('.US')) return 'us_equity_large';
+    if (exch === 'CC' || sym.includes('USDT') || sym.endsWith('.CC')) return 'crypto_major';
+    if (['T', 'HK', 'KO', 'KQ', 'AU', 'SHG', 'SHE', 'SS', 'SZ', 'SI'].includes(exch)
+        || sym.endsWith('.T') || sym.endsWith('.HK') || sym.endsWith('.KO') || sym.endsWith('.KQ')
+        || sym.endsWith('.AU') || sym.endsWith('.SHG') || sym.endsWith('.SHE')) return 'asia_equity';
+    if (['LSE', 'L', 'XETRA', 'DE', 'F', 'PA', 'AS', 'BR', 'MI', 'MC', 'SW'].includes(exch)
+        || sym.endsWith('.LSE') || sym.endsWith('.L') || sym.endsWith('.XETRA')
+        || sym.endsWith('.DE') || sym.endsWith('.PA')) return 'eu_equity';
+    return 'unknown';
+  }
+
   private async fetchTopCandidates(n: number): Promise<object[]> {
-    // BUGFIX 29/05/2026 — Le snapshot gainers_persistence_log était peuplé
-    // UNIQUEMENT quand l'UI consultait l'endpoint /lisa/gainers-persistence-snapshot.
-    // Sans utilisateur sur le dashboard, TRADER lisait une photo jusqu'à 7h obsolète.
-    // Désormais on lit directement depuis le scanner gainers (cache live ~30s).
+    // COMMIT 1 (29/05) — Lecture directe du cache scanner pour avoir des candidats
+    // FRAIS (le snapshot table gainers_persistence_log était peuplé uniquement par
+    // l'UI dashboard → jusqu'à 7h de retard). Avec topGainersScanner injecté, on
+    // récupère le cache live 30s + classifie asset_class correctement.
     try {
       const candidates = await this.topGainersScanner.fetchAllCandidates();
       if (candidates && candidates.length > 0) {
-        // Tri par changePct desc — identique à la logique du controller
         const sorted = [...candidates].sort((a, b) => (b.changePct ?? 0) - (a.changePct ?? 0));
-        return sorted.slice(0, n).map((c) => {
-          // Classification market → asset_class identique au scanner
-          const exch = String(c.exchange ?? '').toUpperCase();
-          let assetClass = 'unknown';
-          if (exch === 'US') assetClass = 'us_equity_large';
-          else if (exch.startsWith('CC') || exch.includes('BINANCE')) assetClass = 'crypto_major';
-          else if (['T', 'HK', 'KO', 'KQ', 'AU', 'SS', 'SZ', 'SI'].includes(exch)) assetClass = 'asia_equity';
-          else if (['LSE', 'L', 'XETRA', 'DE', 'F', 'PA', 'AS', 'BR', 'MI', 'MC', 'SW'].includes(exch)) assetClass = 'eu_equity';
-          return {
-            symbol: c.symbol,
-            assetClass,
-            changePct: c.changePct,
-            close: c.close,
-            exchange: c.exchange,
-          };
-        });
+        return sorted.slice(0, n).map((c) => ({
+          symbol: c.symbol,
+          assetClass: this.classifyAssetClass(c.exchange ?? undefined, c.symbol),
+          changePct: c.changePct,
+          close: c.close,
+          exchange: c.exchange,
+        }));
       }
     } catch (e) {
       this.logger.warn(`[trader-agent] fetchAllCandidates failed: ${String(e).slice(0, 100)}`);
     }
-    // Fallback : ancien path (lecture table gainers_persistence_log) si le
-    // scanner cache est vide. Évite de bloquer le cycle complètement.
+    // Fallback : ancien path (table) si scanner cache vide ou non injecté.
     const { data } = await this.supabase.getClient()
       .from('gainers_persistence_log')
       .select('snapshot_json, summary, captured_at')
@@ -1206,7 +1223,8 @@ Recommendation rules :
     const candidates = (snap?.candidates ?? []) as Array<Record<string, unknown>>;
     return candidates.slice(0, n).map((c) => ({
       symbol: c.symbol,
-      assetClass: c.assetClass ?? c.asset_class,
+      assetClass: c.assetClass ?? c.asset_class
+        ?? this.classifyAssetClass(undefined, String(c.symbol ?? '')),
       changePct: c.changePct,
       persistenceScore: c.persistenceScore,
       close: c.close,
@@ -1250,6 +1268,8 @@ Recommendation rules :
   private buildSystemPrompt(
     memory: Array<{ lesson_kind: string; lesson_text: string; confidence: number }>,
     crossScannerLessons: string,
+    middleReference: string,
+    selfReflection: string,
   ): string {
     let prompt = SYSTEM_PROMPT_BASE;
 
@@ -1261,18 +1281,104 @@ Recommendation rules :
       prompt += `\n\nLESSONS APPRISES TRADER AGENT (post-mortems précédents, ordre confidence descendant) :\n${memoryBlock}`;
     }
 
-    // Bloc 2 : lessons cross-scanner (winners/losers patterns identifiés par
-    // l'analyse 3 semaines, persistés dans scanner_lessons). Lecture des
-    // gainers MAIN/HIGH/MIDDLE/SMALL + post-mortem nightly partagé.
+    // Bloc 2 : lessons cross-scanner
     if (crossScannerLessons.length > 0) {
       prompt += `\n\n${crossScannerLessons}`;
     }
 
-    if (memory.length > 0 || crossScannerLessons.length > 0) {
+    // COMMIT 5 (29/05) — Bloc MIDDLE reference : injecte les 5 derniers trades
+    // MIDDLE (le champion mécanique +$125 sur 2j vs ton -$96) pour que tu
+    // calques son comportement. MIDDLE n'utilise PAS de LLM mais te bat.
+    if (middleReference.length > 0) {
+      prompt += `\n\n${middleReference}`;
+    }
+
+    // AUTO-CORRECTION DYNAMIQUE (29/05) — Si tes dernières décisions ont une
+    // capture rate négative OU WR < 40%, on injecte une auto-correction.
+    if (selfReflection.length > 0) {
+      prompt += `\n\n${selfReflection}`;
+    }
+
+    if (memory.length > 0 || crossScannerLessons.length > 0 || middleReference.length > 0 || selfReflection.length > 0) {
       prompt += `\n\nGarde ces lessons en tête en priorité pour ta décision actuelle.`;
     }
 
     return prompt;
+  }
+
+  /**
+   * COMMIT 5 (29/05) — Fetch les 5 derniers trades MIDDLE (champion) pour
+   * injection comme référence à imiter dans le prompt TRADER.
+   */
+  private async fetchMiddleReference(): Promise<string> {
+    try {
+      const { data } = await this.supabase.getClient()
+        .from('lisa_positions')
+        .select('symbol, asset_class, entry_notional_usd, entry_price, realized_pnl_usd, realized_pnl_pct, exit_reason, entry_timestamp, exit_timestamp')
+        .eq('portfolio_id', 'a0000002-0000-0000-0000-000000000002')
+        .neq('status', 'open')
+        .order('exit_timestamp', { ascending: false })
+        .limit(5);
+      if (!data || data.length === 0) return '';
+      const lines = data.map((p, i) => {
+        const entry = String(p.entry_timestamp ?? '').slice(11, 16);
+        const exit = String(p.exit_timestamp ?? '').slice(11, 16);
+        const pnl = Number(p.realized_pnl_usd ?? 0);
+        const pct = Number(p.realized_pnl_pct ?? 0);
+        const reason = String(p.exit_reason ?? '').slice(0, 30);
+        return `  ${i + 1}. ${entry}→${exit} ${p.symbol} (${p.asset_class}) $${p.entry_notional_usd} pnl=$${pnl.toFixed(2)} (${pct.toFixed(2)}%) — ${reason}`;
+      }).join('\n');
+      return `RÉFÉRENCE MIDDLE (le champion mécanique, 5 derniers trades) :\n${lines}\n→ MIDDLE n'utilise PAS de LLM mais te bat (+$125 vs ton -$96 sur 2j). Observe : sizing constant, hold 5-25min, exits par TP/choppy mécanique, AUCUN close manuel arbitraire. CALQUE CE COMPORTEMENT.`;
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * AUTO-CORRECTION DYNAMIQUE (29/05) — Analyse les 5 dernières décisions
+   * TRADER. Si capture rate < 0% ou WR < 40%, retourne un avertissement
+   * à injecter dans le prompt pour forcer mode défensif.
+   */
+  private async computeSelfReflection(): Promise<string> {
+    try {
+      const { data } = await this.supabase.getClient()
+        .from('lisa_positions')
+        .select('entry_price, exit_price, peak_pre_exit, realized_pnl_usd, direction')
+        .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+        .neq('status', 'open')
+        .order('exit_timestamp', { ascending: false })
+        .limit(5);
+      if (!data || data.length < 3) return '';
+
+      const captures: number[] = [];
+      let wins = 0;
+      for (const p of data) {
+        const entry = Number(p.entry_price);
+        const exit = Number(p.exit_price);
+        const peak = Number(p.peak_pre_exit);
+        const pnl = Number(p.realized_pnl_usd ?? 0);
+        if (pnl > 0) wins++;
+        if (Number.isFinite(entry) && Number.isFinite(peak) && Number.isFinite(exit) && entry > 0) {
+          const dir = String(p.direction ?? 'long');
+          const mfePct = dir === 'short' ? ((entry - peak) / entry) * 100 : ((peak - entry) / entry) * 100;
+          const realPct = dir === 'short' ? ((entry - exit) / entry) * 100 : ((exit - entry) / entry) * 100;
+          if (mfePct > 0) captures.push(realPct / mfePct);
+        }
+      }
+      const wr = (wins / data.length) * 100;
+      const avgCapture = captures.length > 0 ? (captures.reduce((a, b) => a + b, 0) / captures.length) * 100 : null;
+      const warnings: string[] = [];
+      if (avgCapture !== null && avgCapture < 0) {
+        warnings.push(`⚠️ CAPTURE RATE NÉGATIVE : ${avgCapture.toFixed(1)}% sur tes 5 derniers trades. Tu fermes systématiquement au pire moment. CONSÉQUENCE : ce cycle, l'action "close" est interdite si la position est en perte (gate déterministe ajoutée). Utilise trail_stop ou hold.`);
+      }
+      if (wr < 40 && data.length >= 5) {
+        warnings.push(`⚠️ WR ${wr.toFixed(0)}% sur 5 derniers = sous le seuil sain 40%. MODE DÉFENSIF ACTIVÉ : confidence threshold relevé à 0.85 pour ce cycle. Privilégie hold ou trail_stop. Ne propose open_directional QUE sur setup A++ (conviction ≥ 0.85, lesson winning_pattern qui match, persistence ≥ 0.95, path_eff ≥ 0.7).`);
+      }
+      if (warnings.length === 0) return '';
+      return `AUTO-CORRECTION DYNAMIQUE (basée sur tes 5 derniers trades) :\n${warnings.join('\n')}`;
+    } catch {
+      return '';
+    }
   }
 
   private async applyDecision(
@@ -1291,6 +1397,25 @@ Recommendation rules :
       if (state.openCount >= 5) return { applied: false, error: 'max 5 open positions' };
       if (!decision.symbol || !decision.direction || !decision.notional_usd) {
         return { applied: false, error: 'missing symbol/direction/notional' };
+      }
+
+      // COMMIT 3 (29/05) — Zone horaire toxique US opening 13:00-15:30 UTC.
+      // Audit TRADER 2 jours : 46% des trades dans cette fenêtre, WR 37%, capture
+      // rate -56.5%. Data 3 semaines confirme : us_equity_large 14h UTC = WR 25%,
+      // Σ -$174. Désactivable via TRADER_US_OPENING_BLOCK_ENABLED=false.
+      const blockUsOpening = (this.config.get<string>('TRADER_US_OPENING_BLOCK_ENABLED') ?? 'true').toLowerCase() === 'true';
+      if (blockUsOpening) {
+        const now = new Date();
+        const hourUtc = now.getUTCHours();
+        const minUtc = now.getUTCMinutes();
+        const totalMin = hourUtc * 60 + minUtc;
+        // 13:00-15:30 UTC = 780-930 minutes
+        if (totalMin >= 780 && totalMin < 930) {
+          return {
+            applied: false,
+            error: `TRADER_US_OPENING_BLOCK actif (${String(hourUtc).padStart(2, '0')}:${String(minUtc).padStart(2, '0')} UTC ∈ [13:00, 15:30] — zone toxique audit 2j WR 25-37%)`,
+          };
+        }
       }
       // Anti-revenge ticker cooldown (renforcé post-MFE/MAE 27/05).
       // Règle 1 : pas plus de 2 ouvertures dans les 4h sur le même ticker.
@@ -1449,6 +1574,26 @@ Recommendation rules :
       if (!livePriceData?.price) return { applied: false, error: 'close: no live price' };
       const livePrice = Number(livePriceData.price);
       if (!Number.isFinite(livePrice) || livePrice <= 0) return { applied: false, error: 'close: invalid live price' };
+
+      // COMMIT 4 (29/05) — Refuse "close" si position en perte. Audit TRADER :
+      // 5 gemini_manual closes + 12 closed_invalidated, plupart en perte → capture
+      // rate -56.5%. Gemini ferme au pire moment. Pour PnL<0, force trail_stop ou
+      // hold (le SL existant + pre-flight max-loss-cap -$50 gèrent l'urgence).
+      // Désactivable via TRADER_DISABLE_LOSS_CLOSE=false. Skip si fallback price.
+      const disableLossClose = (this.config.get<string>('TRADER_DISABLE_LOSS_CLOSE') ?? 'true').toLowerCase() === 'true';
+      if (disableLossClose && livePriceData.source && !String(livePriceData.source).startsWith('fallback')) {
+        const entryPrice = Number(match.entry_price);
+        const direction = match.direction;
+        const unrealPct = direction === 'short'
+          ? ((entryPrice - livePrice) / entryPrice) * 100
+          : ((livePrice - entryPrice) / entryPrice) * 100;
+        if (Number.isFinite(unrealPct) && unrealPct < -0.1) {
+          return {
+            applied: false,
+            error: `close blocked : ${decision.symbol} unrealPct=${unrealPct.toFixed(2)}% < -0.1% (audit TRADER: capture rate -56.5% → closes prématurés interdits en perte, utilise trail_stop ou hold)`,
+          };
+        }
+      }
 
       const res = await this.lisa.closeForOpportunityScout({
         positionId: row.id,
