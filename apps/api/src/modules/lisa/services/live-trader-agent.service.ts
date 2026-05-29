@@ -1198,17 +1198,42 @@ Recommendation rules :
     // FRAIS (le snapshot table gainers_persistence_log était peuplé uniquement par
     // l'UI dashboard → jusqu'à 7h de retard). Avec topGainersScanner injecté, on
     // récupère le cache live 30s + classifie asset_class correctement.
+    //
+    // FIX 29/05 09:00 (audit feed) — Filtre BANDE TRADEABLE avant top-N.
+    // Bug identifié : sort changePct DESC + slice(top 20) → TRADER ne voyait QUE
+    // les paraboliques >20% (overpump junk) et holdait éternellement (30 min
+    // straight). Les candidats modérés tradeables (3-12% = winning bucket, ex
+    // RWS.LSE que MAIN a pris) étaient enterrés position #30-50, hors top 20.
+    // Fix : filtrer [TRADER_FEED_MIN_PCT, TRADER_FEED_MAX_PCT] AVANT top-N.
+    // Bornes alignées sur l'overpump gate (15%) et un plancher anti-bruit (2%).
+    const feedMin = Number(this.config.get<string>('TRADER_FEED_MIN_PCT') ?? '2');
+    const feedMax = Number(this.config.get<string>('TRADER_FEED_MAX_PCT') ?? '15');
     try {
       const candidates = await this.topGainersScanner.fetchAllCandidates();
       if (candidates && candidates.length > 0) {
-        const sorted = [...candidates].sort((a, b) => (b.changePct ?? 0) - (a.changePct ?? 0));
-        return sorted.slice(0, n).map((c) => ({
-          symbol: c.symbol,
-          assetClass: this.classifyAssetClass(c.exchange ?? undefined, c.symbol),
-          changePct: c.changePct,
-          close: c.close,
-          exchange: c.exchange,
-        }));
+        // 1. Filtre bande tradeable. 2. sort DESC. 3. top-N.
+        const tradeable = candidates.filter((c) => {
+          const cp = c.changePct ?? 0;
+          return cp >= feedMin && cp <= feedMax;
+        });
+        // Fallback : si la bande est vide (marché calme ou tout >max), on garde
+        // les candidats < feedMax triés DESC pour ne pas aveugler TRADER.
+        const pool = tradeable.length > 0
+          ? tradeable
+          : candidates.filter((c) => (c.changePct ?? 0) <= feedMax);
+        const sorted = [...pool].sort((a, b) => (b.changePct ?? 0) - (a.changePct ?? 0));
+        if (sorted.length > 0) {
+          this.logger.debug(
+            `[trader-agent] feed: ${candidates.length} scanned → ${sorted.length} in band [${feedMin},${feedMax}]% → top ${Math.min(n, sorted.length)}`,
+          );
+          return sorted.slice(0, n).map((c) => ({
+            symbol: c.symbol,
+            assetClass: this.classifyAssetClass(c.exchange ?? undefined, c.symbol),
+            changePct: c.changePct,
+            close: c.close,
+            exchange: c.exchange,
+          }));
+        }
       }
     } catch (e) {
       this.logger.warn(`[trader-agent] fetchAllCandidates failed: ${String(e).slice(0, 100)}`);
