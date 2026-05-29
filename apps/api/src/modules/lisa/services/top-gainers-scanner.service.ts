@@ -2907,6 +2907,31 @@ export class TopGainersScannerService implements OnModuleInit {
         }
       }
 
+      // FALLING KNIFE GATE (29/05/2026 05:10 UTC, lesson MAIN 347850.KQ) :
+      // refuse l'open si le prix actuel est X% sous le high de la journée — détecte
+      // les rebonds techniques dans un downtrend journalier.
+      // Cas vérifié 29/05 04:41 : MAIN ouvre 347850.KQ à $94700 alors que le ticker
+      // avait open $106000, high $106300, low $92600 = -11.5% sur la journée. Entry
+      // en plein dead-cat-bounce d'un panic sell intraday. Le changePct 1m positif
+      // a trompé le scanner — il n'a pas vu la chute jour.
+      // Threshold default -8% (configurable GAINERS_FALLING_KNIFE_THRESHOLD_PCT).
+      // Pour disable : GAINERS_FALLING_KNIFE_THRESHOLD_PCT=0.
+      const fallingKnifeThreshold = Number(this.config.get<string>('GAINERS_FALLING_KNIFE_THRESHOLD_PCT') ?? '-8');
+      if (Number.isFinite(fallingKnifeThreshold) && fallingKnifeThreshold < 0) {
+        const high = cand.high;
+        const close = cand.close;
+        if (Number.isFinite(high) && Number.isFinite(close) && high > 0) {
+          const dropFromHigh = ((close - high) / high) * 100;
+          if (dropFromHigh < fallingKnifeThreshold) {
+            this.logger.log(
+              `[top-gainers] ${cand.symbol} FALLING_KNIFE actif (close=${close} ${dropFromHigh.toFixed(1)}% < ${fallingKnifeThreshold}% du high=${high}) → skip (lesson MAIN 347850.KQ 29/05)`,
+            );
+            recordShadowDecision(cand, 'reject_other', undefined);
+            continue;
+          }
+        }
+      }
+
       // PR A — Gate horaire LONG. Data mining 15j (23/05/2026, n=7000 signaux) :
       //   - LONG mean H8 (EU open) = -0.60%, H19 (US close) = -1.01%, H22 = -0.93%, H0-H5 = -0.5%
       //   - LONG mean H13-H17 (US active) = neutre à légèrement positif (+0.03 à +0.27%)
