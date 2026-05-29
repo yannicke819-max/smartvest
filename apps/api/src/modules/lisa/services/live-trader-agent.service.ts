@@ -32,6 +32,7 @@ import { SupabaseService } from '../../supabase/supabase.service';
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
 import { LisaService } from './lisa.service';
 import { ScannerLessonsContextService } from './scanner-lessons-context.service';
+import { TopGainersScannerService } from './top-gainers-scanner.service';
 
 const TRADER_AGENT_PORTFOLIO_ID = 'b0000001-0000-0000-0000-000000000001';
 const TRADER_AGENT_USER_ID = '5f164201-9736-4867-8756-a1653d65fd1c';
@@ -201,6 +202,7 @@ export class LiveTraderAgentService {
     private readonly llmRouter: ScannerLlmRouterService,
     private readonly lisa: LisaService,
     private readonly schedulerRegistry: SchedulerRegistry,
+    private readonly topGainersScanner: TopGainersScannerService,
     @Optional() private readonly lessonsContext?: ScannerLessonsContextService,
   ) {}
 
@@ -1142,7 +1144,37 @@ Recommendation rules :
   }
 
   private async fetchTopCandidates(n: number): Promise<object[]> {
-    // On lit le dernier snapshot global du scanner gainers (persistence_log)
+    // BUGFIX 29/05/2026 — Le snapshot gainers_persistence_log était peuplé
+    // UNIQUEMENT quand l'UI consultait l'endpoint /lisa/gainers-persistence-snapshot.
+    // Sans utilisateur sur le dashboard, TRADER lisait une photo jusqu'à 7h obsolète.
+    // Désormais on lit directement depuis le scanner gainers (cache live ~30s).
+    try {
+      const candidates = await this.topGainersScanner.fetchAllCandidates();
+      if (candidates && candidates.length > 0) {
+        // Tri par changePct desc — identique à la logique du controller
+        const sorted = [...candidates].sort((a, b) => (b.changePct ?? 0) - (a.changePct ?? 0));
+        return sorted.slice(0, n).map((c) => {
+          // Classification market → asset_class identique au scanner
+          const exch = String(c.exchange ?? '').toUpperCase();
+          let assetClass = 'unknown';
+          if (exch === 'US') assetClass = 'us_equity_large';
+          else if (exch.startsWith('CC') || exch.includes('BINANCE')) assetClass = 'crypto_major';
+          else if (['T', 'HK', 'KO', 'KQ', 'AU', 'SS', 'SZ', 'SI'].includes(exch)) assetClass = 'asia_equity';
+          else if (['LSE', 'L', 'XETRA', 'DE', 'F', 'PA', 'AS', 'BR', 'MI', 'MC', 'SW'].includes(exch)) assetClass = 'eu_equity';
+          return {
+            symbol: c.symbol,
+            assetClass,
+            changePct: c.changePct,
+            close: c.close,
+            exchange: c.exchange,
+          };
+        });
+      }
+    } catch (e) {
+      this.logger.warn(`[trader-agent] fetchAllCandidates failed: ${String(e).slice(0, 100)}`);
+    }
+    // Fallback : ancien path (lecture table gainers_persistence_log) si le
+    // scanner cache est vide. Évite de bloquer le cycle complètement.
     const { data } = await this.supabase.getClient()
       .from('gainers_persistence_log')
       .select('snapshot_json, summary, captured_at')
