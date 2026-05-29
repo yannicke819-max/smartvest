@@ -1345,18 +1345,27 @@ Recommendation rules :
       const slPct = Math.max(1.5, Math.min(3, decision.stop_loss_pct ?? 2.0));
       const tpPct = Math.max(2.5, Math.min(8.0, decision.take_profit_pct ?? 4.0));
 
-      // Overpump gate : refuse l'open si le candidat correspondant a déjà pumpé
-      // > 5% sur la 1m (changePct dans le snapshot scanner). Cause root MAE/R 1.78 :
-      // Gemini entre au peak local d'un move déjà mature. Cf. CLAUDE.md règle
-      // calibration scanner 25/05 — un pump > 5% sans retracement est presque
-      // toujours suivi d'un drawdown ≥ 2%.
+      // Overpump gate : refuse l'open si le candidat a pumpé > threshold sur la 1m.
+      //
+      // RECALIBRATION URGENTE 29/05/2026 03:50 UTC (5% → 15%) :
+      // Data nuit 29/05 : TRADER bloqué 8× consécutifs (393890.KQ, 416180.KQ tous
+      // à 12-14% changePct) — pendant que MIDDLE entrait sur les MÊMES tickers
+      // sans gate et faisait +$53 net (3 wins KOSDAQ).
+      //
+      // Data 3 semaines : le bucket 8-15% est le WINNING bucket (WR 21-27%,
+      // Σ +$11 sur 363 trades). À 5%, TRADER bloquait l'intégralité du bucket
+      // gagnant. À 15%, on garde le ban du dead-zone 15-20% (perdant -$111) et
+      // on autorise le bucket gagnant 8-15%.
+      //
+      // Configurable via TRADER_OVERPUMP_THRESHOLD_PCT (default 15).
       {
         const sym = decision.symbol.toUpperCase();
         const candidate = candidates.find((c) => String(c.symbol ?? '').toUpperCase() === sym);
         if (candidate) {
           const changePct = Number(candidate.changePct ?? 0);
-          if (Number.isFinite(changePct) && changePct > 5.0) {
-            return { applied: false, error: `overpump_gate: ${sym} changePct=${changePct.toFixed(2)}% > 5% (entry au peak refusée, attendre pullback)` };
+          const threshold = Number(this.config.get<string>('TRADER_OVERPUMP_THRESHOLD_PCT') ?? '15');
+          if (Number.isFinite(changePct) && Number.isFinite(threshold) && threshold > 0 && changePct > threshold) {
+            return { applied: false, error: `overpump_gate: ${sym} changePct=${changePct.toFixed(2)}% > ${threshold}% (entry au peak refusée, attendre pullback)` };
           }
         }
       }
