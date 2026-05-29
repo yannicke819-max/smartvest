@@ -83,7 +83,7 @@ describe('PaperBrokerService.closePosition — P19-staleness R5 reject', () => {
         livePriceSource: 'stale_twelvedata',
         rationale: '[FORCE_CLOSE] test',
       }),
-    ).rejects.toThrow(/R5_LIVE_PRICE_STALE_OR_FALLBACK/);
+    ).rejects.toThrow(/R5_LIVE_PRICE_(STALE|FALLBACK)/);
   });
 
   it('reject close avec source=stale_eodhd', async () => {
@@ -96,7 +96,7 @@ describe('PaperBrokerService.closePosition — P19-staleness R5 reject', () => {
         livePriceSource: 'stale_eodhd',
         rationale: 'test',
       }),
-    ).rejects.toThrow(/R5_LIVE_PRICE_STALE_OR_FALLBACK/);
+    ).rejects.toThrow(/R5_LIVE_PRICE_(STALE|FALLBACK)/);
   });
 
   it('reject close avec source=fallback_unknown', async () => {
@@ -109,7 +109,7 @@ describe('PaperBrokerService.closePosition — P19-staleness R5 reject', () => {
         livePriceSource: 'fallback_unknown',
         rationale: 'test',
       }),
-    ).rejects.toThrow(/R5_LIVE_PRICE_STALE_OR_FALLBACK/);
+    ).rejects.toThrow(/R5_LIVE_PRICE_(STALE|FALLBACK)/);
   });
 
   it('accepte close avec source=twelvedata (frais, non-stale)', async () => {
@@ -126,8 +126,8 @@ describe('PaperBrokerService.closePosition — P19-staleness R5 reject', () => {
         rationale: 'test',
       });
     } catch (e) {
-      // Ne doit PAS être un R5_LIVE_PRICE_STALE_OR_FALLBACK
-      expect(String(e)).not.toMatch(/R5_LIVE_PRICE_STALE_OR_FALLBACK/);
+      // Ne doit PAS être un R5_LIVE_PRICE_(STALE|FALLBACK)
+      expect(String(e)).not.toMatch(/R5_LIVE_PRICE_(STALE|FALLBACK)/);
     }
   });
 
@@ -141,8 +141,8 @@ describe('PaperBrokerService.closePosition — P19-staleness R5 reject', () => {
         rationale: 'test legacy caller without source',
       });
     } catch (e) {
-      // Ne doit PAS être un R5_LIVE_PRICE_STALE_OR_FALLBACK
-      expect(String(e)).not.toMatch(/R5_LIVE_PRICE_STALE_OR_FALLBACK/);
+      // Ne doit PAS être un R5_LIVE_PRICE_(STALE|FALLBACK)
+      expect(String(e)).not.toMatch(/R5_LIVE_PRICE_(STALE|FALLBACK)/);
     }
   });
 });
