@@ -2907,24 +2907,65 @@ export class TopGainersScannerService implements OnModuleInit {
         }
       }
 
-      // FALLING KNIFE GATE (29/05/2026 05:10 UTC, lesson MAIN 347850.KQ) :
-      // refuse l'open si le prix actuel est X% sous le high de la journée — détecte
-      // les rebonds techniques dans un downtrend journalier.
-      // Cas vérifié 29/05 04:41 : MAIN ouvre 347850.KQ à $94700 alors que le ticker
-      // avait open $106000, high $106300, low $92600 = -11.5% sur la journée. Entry
-      // en plein dead-cat-bounce d'un panic sell intraday. Le changePct 1m positif
-      // a trompé le scanner — il n'a pas vu la chute jour.
-      // Threshold default -8% (configurable GAINERS_FALLING_KNIFE_THRESHOLD_PCT).
-      // Pour disable : GAINERS_FALLING_KNIFE_THRESHOLD_PCT=0.
-      const fallingKnifeThreshold = Number(this.config.get<string>('GAINERS_FALLING_KNIFE_THRESHOLD_PCT') ?? '-8');
-      if (Number.isFinite(fallingKnifeThreshold) && fallingKnifeThreshold < 0) {
+      // FALLING KNIFE GATE multi-dimensionnel (29/05/2026 05:30 UTC, lesson MAIN 347850.KQ).
+      //
+      // Évolution depuis le simple "close vs high" : combine 3 dimensions intraday
+      // pour détecter falling knife / dead-cat-bounce. Reject si ≥ 2/3 conditions true.
+      //
+      // Cas vérifié 29/05 04:41 : MAIN ouvre 347850.KQ à $94700 (live $94200 30 min plus tard) :
+      //   - open $106000, high $106300, low $92600, close $94200
+      //   - C1 net_day = -11.13% (close vs open)    → TRUE (< -5%)
+      //   - C2 drop_high = -11.40% (close vs high)  → TRUE (< -8%)
+      //   - C3 pos_in_range = (94200-92600)/(106300-92600) = 11.7%  → TRUE (< 30%, near low)
+      //   → 3/3 → REJECT confirmé multi-axes
+      //
+      // Le changePct 1m positif (rebond technique) n'aurait pas suffi à passer le filtre.
+      //
+      // Configurable via :
+      //   GAINERS_FALLING_KNIFE_NET_DAY_PCT       (default -5)
+      //   GAINERS_FALLING_KNIFE_DROP_HIGH_PCT     (default -8)
+      //   GAINERS_FALLING_KNIFE_POS_IN_RANGE_PCT  (default 30)
+      // Disable global : GAINERS_FALLING_KNIFE_ENABLED=false
+      const fallingKnifeEnabled = (this.config.get<string>('GAINERS_FALLING_KNIFE_ENABLED') ?? 'true').toLowerCase() === 'true';
+      if (fallingKnifeEnabled) {
+        const netDayThreshold = Number(this.config.get<string>('GAINERS_FALLING_KNIFE_NET_DAY_PCT') ?? '-5');
+        const dropHighThreshold = Number(this.config.get<string>('GAINERS_FALLING_KNIFE_DROP_HIGH_PCT') ?? '-8');
+        const posInRangeThreshold = Number(this.config.get<string>('GAINERS_FALLING_KNIFE_POS_IN_RANGE_PCT') ?? '30');
+
         const high = cand.high;
         const close = cand.close;
-        if (Number.isFinite(high) && Number.isFinite(close) && high > 0) {
-          const dropFromHigh = ((close - high) / high) * 100;
-          if (dropFromHigh < fallingKnifeThreshold) {
+        // open n'est pas dans le TopGainerCandidate — on calcule sur high/low/close
+        // close vs high (drop from peak) + position in range (proximité du low).
+        if (Number.isFinite(high) && Number.isFinite(close) && high > 0 && (cand as { low?: number }).low !== undefined) {
+          const low = Number((cand as { low?: number }).low);
+          const c1NetDay = Number.isFinite(low) && low > 0 ? ((close - low) / low) * 100 : NaN;
+          const c2DropHigh = ((close - high) / high) * 100;
+          const c3PosInRange = Number.isFinite(low) && (high - low) > 0
+            ? ((close - low) / (high - low)) * 100
+            : NaN;
+
+          let trueCount = 0;
+          const reasons: string[] = [];
+          // C1 : proxy net jour via close vs low. Si très proche du low (peu de range),
+          // signal de chute. Threshold inversé : on regarde si net_day est faible.
+          // Note : en l'absence d'open, on substitue "close < low * 1.05" (~5% du low)
+          // comme proxy "trade dans la zone basse" → C1 TRUE.
+          if (Number.isFinite(c1NetDay) && c1NetDay < Math.abs(netDayThreshold)) {
+            trueCount++;
+            reasons.push(`C1 close-vs-low=+${c1NetDay.toFixed(1)}%<${Math.abs(netDayThreshold)}%`);
+          }
+          if (Number.isFinite(c2DropHigh) && c2DropHigh < dropHighThreshold) {
+            trueCount++;
+            reasons.push(`C2 close-vs-high=${c2DropHigh.toFixed(1)}%<${dropHighThreshold}%`);
+          }
+          if (Number.isFinite(c3PosInRange) && c3PosInRange < posInRangeThreshold) {
+            trueCount++;
+            reasons.push(`C3 pos-in-range=${c3PosInRange.toFixed(1)}%<${posInRangeThreshold}%`);
+          }
+
+          if (trueCount >= 2) {
             this.logger.log(
-              `[top-gainers] ${cand.symbol} FALLING_KNIFE actif (close=${close} ${dropFromHigh.toFixed(1)}% < ${fallingKnifeThreshold}% du high=${high}) → skip (lesson MAIN 347850.KQ 29/05)`,
+              `[top-gainers] ${cand.symbol} FALLING_KNIFE_MULTI actif (${trueCount}/3: ${reasons.join(', ')}) → skip (lesson MAIN 347850.KQ 29/05)`,
             );
             recordShadowDecision(cand, 'reject_other', undefined);
             continue;
