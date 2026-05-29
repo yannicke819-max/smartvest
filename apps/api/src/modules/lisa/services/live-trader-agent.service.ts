@@ -72,7 +72,27 @@ PATTERNS VALIDÉS (priorité haute — observation 28/05/2026, à amplifier dès
 
 ★ KOSDAQ SMALL-MID (suffix .KQ) = veine PROUVÉE : MIDDLE 28/05 a fait 2 TP clean = +$120 sur 208710.KQ (+2.10%, hold 4min) et 200470.KQ (+1.89%, hold 3min) en session asia matin. Pattern : KOSDAQ small-mid momentum 1m persistant 1-5min, TP rapide 2%. Si un .KQ apparaît dans candidates avec changePct 3-8% et persistenceScore ≥ 0.6 → setup A+, conf 0.85+, notional 3000-4000, TP 2-2.5%, SL 1.5%.
 
-★ ORPHAN_CLOSE PRE-CLOCHE = R/R ABSURDE : TRADER 28/05 a fait +$190 net (CHRT.LSE +$105 +$37, IQE.LSE +$47) en fermant systématiquement les positions sur marchés fermant <30 min. Règle dure : si position ouverte sur un marché qui ferme dans <30 min, ferme-la AU MOINS au breakeven (sauf si PnL fortement positif et trailing-stop OK). Détail : LSE close 16:30 UTC, XETRA/PA 15:30 UTC, TSE 06:00 UTC, KRX/KQ 06:30 UTC, HK 08:00 UTC, AU 06:00 UTC, NYSE 21:00 UTC. **Le orphan-close est appliqué automatiquement avant ton cycle — si tu reçois state.orphan_closed = true, c'est déjà fait.**
+★ ORPHAN_CLOSE PRE-CLOCHE = R/R ABSURDE : TRADER 28/05 a fait +$190 net (CHRT.LSE +$105 +$37, IQE.LSE +$47) en fermant systématiquement les positions sur marchés fermant <30 min. **RÈGLE IMPÉRATIVE NON-AMBIGUË** (révisée 29/05 après incident 382840.KQ fermée à -$16.97 par erreur de discipline) :
+
+  CAS 1 — PnL unrealized ≥ 0% (breakeven OU profit) ET marché ferme dans <30 min :
+    → CLOSE OBLIGATOIRE ce cycle (lock le profit avant cloche).
+
+  CAS 2 — PnL unrealized < 0% (en perte) ET marché ferme dans <30 min :
+    → **N'UTILISE PAS l'action "close" manuellement.** Laisse le SL ou la cloche gérer.
+    → Si SL est proche → il triggera automatiquement.
+    → Si la cloche arrive avant SL → orphan_close automatique via mechanical-trading.
+    → Tu peux utiliser "trail_stop" pour resserrer le SL si la chute s'aggrave, MAIS PAS "close".
+    → Logique : fermer manuellement à -0.8% verrouille une perte qui aurait pu :
+      a) être recouvrée si le marché rebondit avant cloche (rare mais arrive)
+      b) être limitée naturellement par le SL existant à -1.5%
+      c) être réduite par le orphan-close automatique au breakeven si remontée
+
+  Le orphan-close DÉTERMINISTE est appliqué automatiquement avant ton cycle UNIQUEMENT
+  si PnL ≥ -0.1% (proche breakeven). Si tu reçois state.orphan_closed = true, c'est fait.
+  Sinon, NE PRENDS PAS L'INITIATIVE DE FERMER MANUELLEMENT EN PERTE.
+
+  Marchés concernés et horaires de cloche : LSE 16:30 UTC, XETRA/PA 15:30 UTC,
+  TSE 06:00 UTC, KRX/KQ 06:30 UTC, HK 08:00 UTC, AU 06:00 UTC, NYSE 21:00 UTC.
 
 ★ ORPHAN_CLOSE HARVEST STRATEGY (28/05 soirée, G2) — règle PROACTIVE : l'orphan-close auto te garantit la cloche, MAIS ne tire que si tu AS ouvert des positions sur les marchés qui vont fermer. Donc ouvre activement pour nourrir la mécanique :
 - Fenêtre **02:00-05:00 UTC** : si candidat A+ sur .T / .HK / .KQ / .KO / .AU avec persistenceScore ≥ 0.6 et changePct 3-8%, OUVRE — la cloche TSE/KRX/AU 06:00-06:30 UTC harvestera (90-180 min de respiration).
