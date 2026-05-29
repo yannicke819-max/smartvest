@@ -65,6 +65,8 @@ import {
 } from './lesson-driven-config.helper';
 import { SizingABTestService } from './research/sizing-ab-test.service';
 import { ScannerLessonsContextService } from './scanner-lessons-context.service';
+import { EodhdIntradayService } from './eodhd-intraday.service';
+import { evaluateVelocityGate, type PricePoint } from './velocity-gate.helper';
 import { EodhdQuotaService } from './eodhd-quota.service';
 import { EodhdCalendarService } from './eodhd-calendar.service';
 import { EodhdNewsService } from './eodhd-news.service';
@@ -805,6 +807,8 @@ export class TopGainersScannerService implements OnModuleInit {
     // Phase 3 — scanner_lessons injecté dans les system prompts Gemini.
     // Optional pour back-compat tests (le getter retourne '' si pas fourni).
     @Optional() private readonly lessonsContext?: ScannerLessonsContextService,
+    // 29/05/2026 — EODHD intraday pour velocity gate (option robuste falling-knife)
+    @Optional() private readonly eodhdIntraday?: EodhdIntradayService,
   ) {
     // Parse stagflation hedge guard config 1× au boot. ConfigService.get retourne
     // toujours string|undefined ; on convertit via le helper pur.
@@ -2970,6 +2974,51 @@ export class TopGainersScannerService implements OnModuleInit {
             recordShadowDecision(cand, 'reject_other', undefined);
             continue;
           }
+        }
+      }
+
+      // VELOCITY GATE (29/05/2026 05:40 UTC, option robuste) — fetch candles 1m
+      // EODHD + régression linéaire pour calculer la vraie vélocité (%/min) et
+      // accélération (%/min²) du prix. Détecte les chutes brutales et accélérantes
+      // que les snapshots statiques (open/high/low/close) ne révèlent pas avec
+      // assez de granularité.
+      //
+      // Reject si :
+      //   A) velocity < minNegativeVelocity (default -2%/min) — chute rapide
+      //   B) velocity < 0 ET acceleration < minNegativeAccel (default -0.5%/min²) — chute qui accélère
+      //
+      // Désactivable via GAINERS_VELOCITY_GATE_ENABLED=false (default true mais
+      // skip silencieusement si EodhdIntradayService non injecté ou ticker .US,
+      // car les .US sont déjà filtrés par les autres gates et la latence EODHD
+      // intraday US est suffisante).
+      const velocityGateEnabled = (this.config.get<string>('GAINERS_VELOCITY_GATE_ENABLED') ?? 'true').toLowerCase() === 'true';
+      if (velocityGateEnabled && this.eodhdIntraday) {
+        const minNegVel = Number(this.config.get<string>('GAINERS_VELOCITY_MIN_NEG_PCT_PER_MIN') ?? '-2');
+        const minNegAccel = Number(this.config.get<string>('GAINERS_VELOCITY_MIN_NEG_ACCEL_PCT_PER_MIN2') ?? '-0.5');
+        const minCandles = Number(this.config.get<string>('GAINERS_VELOCITY_MIN_CANDLES') ?? '5');
+        try {
+          const series = await this.eodhdIntraday.getCandles(cand.symbol, '1m', 10);
+          if (series && series.candles.length >= minCandles) {
+            const points: PricePoint[] = series.candles.map((c) => ({
+              timestampSec: c.timestamp,
+              close: c.close,
+            }));
+            const decision = evaluateVelocityGate(points, {
+              minNegativeVelocityPctPerMin: minNegVel,
+              minNegativeAccelPctPerMin2: minNegAccel,
+              minCandlesRequired: minCandles,
+            });
+            if (decision.reject) {
+              this.logger.log(
+                `[top-gainers] ${cand.symbol} VELOCITY_GATE actif (${decision.reason}, n=${decision.features?.n} R²=${decision.features?.rSquared.toFixed(2)}) → skip`,
+              );
+              recordShadowDecision(cand, 'reject_other', undefined);
+              continue;
+            }
+          }
+        } catch (e) {
+          // Tolérant : si fetch EODHD échoue, on laisse passer (les autres gates couvrent).
+          this.logger.debug(`[top-gainers] ${cand.symbol} velocity gate skipped: ${String(e).slice(0, 80)}`);
         }
       }
 
