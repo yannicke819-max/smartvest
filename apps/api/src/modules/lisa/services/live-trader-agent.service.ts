@@ -40,7 +40,7 @@ const TRADER_AGENT_CAPITAL_USD = 10000;
 const MAX_DAILY_LOSS_USD = 500;
 const MAX_CONCENTRATION_USD = 4500;  // 45% capital — boost 28/05/2026 pour target $400/jour
 const MIN_NOTIONAL_USD = 50;
-const MIN_CONFIDENCE = 0.80;  // bump 29/05 matin (audit vs MIDDLE) — 0.72 laissait passer setups marginaux, WR jour 37%. Analyse 58 trades : TRADER over-trade (37 vs MIDDLE 21) avec WR/2 → bump à 0.80 pour réduire le bruit et viser WR ≥ 55%.
+const MIN_CONFIDENCE = 0.75;  // recalibré 29/05 10:35. 0.80 bloquait OVH.PA +9.6% conf 0.73 (setup champion 3-10%). Le 0.80 était justifié quand le feed était plein de paraboliques >20% (confidence = dernier filtre). Maintenant le feed est nettoyé EN AMONT (band [2,15] + pullback >10% + overpump >15% + falling-knife + velocity), donc exiger 0.80 fait double-emploi et bloque les setups modérés légitimes. 0.75 = compromis : laisse passer 3-10% conf 0.75-0.79, garde sélectivité vs 0.72.
 const PRICE_SANITY_MAX_DIVERGENCE_PCT = 2.0;
 
 type TraderAction =
