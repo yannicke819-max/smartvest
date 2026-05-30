@@ -1525,6 +1525,13 @@ export class LisaController {
     return this.lisa.rejectCoachProposal(extractUserId(headers), id, comment);
   }
 
+  // LISA Shadows Summary read-only widget (compare TRADER vs HIGH/MIDDLE/SMALL).
+  @Get('shadows-summary')
+  getShadowsSummary(@Headers() headers: Record<string, string>) {
+    extractUserId(headers); // auth check anti-abuse, pas de filtre user_id
+    return this.lisa.getShadowsSummary();
+  }
+
   // LISA refonte B.4.a — In-app notifications (badge + dropdown).
   @Get('notifications/:portfolioId')
   getNotifications(
