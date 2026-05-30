@@ -18,12 +18,38 @@ interface Props {
 }
 
 export function LisaStickyHeader({ portfolioId }: Props) {
-  const { targets, stats, currentCapital, isLoading } = useLisaTargetsAndStats(portfolioId);
+  const {
+    targets, stats, currentCapital, drawdownFromInitialPct, killSwitchActive, isLoading,
+  } = useLisaTargetsAndStats(portfolioId);
 
   if (isLoading || !stats || !targets) {
     return (
       <div className="sticky top-0 z-30 bg-card/80 backdrop-blur border-b py-2 px-4">
         <div className="animate-pulse h-6 bg-muted rounded w-32" />
+      </div>
+    );
+  }
+
+  // LISA refonte A.4.1 — Bandeau anti-spirale si kill_switch_active=true.
+  // Backend arme kill_switch_active dans lisa_session_configs quand drawdown
+  // depuis capital initial < -30%. UI affiche bandeau rouge non-dismissible :
+  // l'utilisateur doit aller dans la config pour reset manuellement (à wirer
+  // dans la section Config Phase B.3).
+  if (killSwitchActive) {
+    return (
+      <div className="sticky top-0 z-30 bg-rose-600 dark:bg-rose-700 text-white border-b py-3 px-4 shadow-md">
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="text-xl">🛑</span>
+          <div className="flex-1 min-w-0">
+            <div className="font-semibold text-sm">
+              Kill-switch anti-spirale activé
+            </div>
+            <div className="text-xs opacity-90 mt-0.5">
+              Drawdown {drawdownFromInitialPct !== null ? drawdownFromInitialPct.toFixed(1) : '—'}% depuis capital initial.
+              TRADER suspendu. Reset manuel requis dans Config LISA.
+            </div>
+          </div>
+        </div>
       </div>
     );
   }

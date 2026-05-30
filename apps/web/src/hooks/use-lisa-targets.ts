@@ -102,15 +102,22 @@ export function useLisaTargetsAndStats(portfolioId: string | null) {
     const positions = (positionsQuery.data ?? []) as LisaPosition[];
 
     if (!config) {
-      return { targets: null, stats: null, currentCapital: null, isLoading: true };
+      return {
+        targets: null, stats: null, currentCapital: null,
+        initialCapital: null, drawdownFromInitialPct: null, killSwitchActive: false,
+        isLoading: true,
+      };
     }
 
     const initialCapital = Number(config.lisa_initial_capital_usd ?? 10000);
     const compoundEnabled = Boolean(config.lisa_compound_pnl_enabled ?? true);
+    const killSwitchActive = Boolean(config.kill_switch_active ?? false);
 
     // Compute current capital from closed positions
     const closedPositions = positions.filter((p) => p.status !== 'open');
     const currentCapital = computeCurrentCapital(initialCapital, closedPositions, compoundEnabled);
+    const drawdownFromInitialPct =
+      initialCapital > 0 ? ((currentCapital - initialCapital) / initialCapital) * 100 : 0;
 
     // Build targets Mode C (MAX usd, pct × capital)
     const targets: LisaTargets = {
@@ -176,7 +183,11 @@ export function useLisaTargetsAndStats(portfolioId: string | null) {
       annual: buildStats('annual', targets.annual.effective),
     };
 
-    return { targets, stats, currentCapital, isLoading: false };
+    return {
+      targets, stats, currentCapital,
+      initialCapital, drawdownFromInitialPct, killSwitchActive,
+      isLoading: false,
+    };
   }, [configQuery.data, positionsQuery.data]);
 
   return {

@@ -363,6 +363,35 @@ export class LiveTraderAgentService {
       // 1. Read state (positions, capital, daily PnL)
       const state = await this.readState();
 
+      // 1.1 — LISA refonte A.4.1 — Anti-spiral safety guard.
+      // Si drawdown depuis le capital initial < -30%, on arme kill_switch_active=true
+      // dans la DB et on skip le cycle. L'agent ne reprendra qu'après reset manuel
+      // explicite côté UI (ConfirmDialog). Protège contre l'effondrement non détecté
+      // par les caps daily (-$500/jour) sur une suite de mauvaises journées.
+      if (state.drawdownFromInitialPct < -30 && !state.killSwitchActive) {
+        this.logger.error(
+          `[trader-agent] ANTI-SPIRAL armed — DD=${state.drawdownFromInitialPct.toFixed(1)}% < -30% — kill_switch_active=true`,
+        );
+        await this.supabase.getClient()
+          .from('lisa_session_configs')
+          .update({ kill_switch_active: true })
+          .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID);
+        await this.logDecision({
+          cycleStartedAt, state, action: 'hold' as const,
+          notionalUsd: 0, confidence: 0,
+          thesis: `Anti-spirale armé : drawdown ${state.drawdownFromInitialPct.toFixed(1)}% < -30% depuis capital initial $${state.initialCapitalUsd.toFixed(0)} (current $${state.currentCapitalUsd.toFixed(0)}). Kill-switch DB activé. Reset manuel requis via UI /lisa.`,
+          applied: false,
+          actionKindOverride: 'kill_switch_anti_spiral',
+        });
+        return;
+      }
+      if (state.killSwitchActive) {
+        this.logger.warn(
+          `[trader-agent] kill_switch_active=true (DD=${state.drawdownFromInitialPct.toFixed(1)}%) — cycle skipped, manual reset required`,
+        );
+        return;
+      }
+
       // 1.5 — Pre-flight ORPHAN_CLOSE déterministe (28/05/2026, ADDENDUM TRADER).
       // TRADER a généré +$190 net jour en orphan-close manuel (CHRT.LSE 2x, IQE.LSE).
       // Codification : pour chaque position ouverte sur un marché fermant <30 min
@@ -1151,6 +1180,7 @@ Recommendation rules :
     compoundPnlEnabled: boolean;
     cumulativePnlUsd: number;
     drawdownFromInitialPct: number;
+    killSwitchActive: boolean;
     recentClosesLast60min: Array<{
       symbol: string;
       direction: string;
@@ -1168,7 +1198,7 @@ Recommendation rules :
     // LISA refonte A.4 — Lecture config capital composé
     const { data: cfg } = await client
       .from('lisa_session_configs')
-      .select('lisa_initial_capital_usd, lisa_compound_pnl_enabled')
+      .select('lisa_initial_capital_usd, lisa_compound_pnl_enabled, kill_switch_active')
       .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
       .maybeSingle();
     const initialCapital = Number(
@@ -1177,6 +1207,9 @@ Recommendation rules :
     );
     const compoundEnabled = Boolean(
       (cfg as { lisa_compound_pnl_enabled?: unknown } | null)?.lisa_compound_pnl_enabled ?? true
+    );
+    const killSwitchActive = Boolean(
+      (cfg as { kill_switch_active?: unknown } | null)?.kill_switch_active ?? false
     );
 
     const { data: open } = await client
@@ -1250,6 +1283,7 @@ Recommendation rules :
       compoundPnlEnabled: compoundEnabled,
       cumulativePnlUsd: cumulativePnl,
       drawdownFromInitialPct: drawdownPct,
+      killSwitchActive,
       recentClosesLast60min,
     };
   }
