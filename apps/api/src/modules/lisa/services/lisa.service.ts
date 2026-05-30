@@ -2875,6 +2875,92 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
   }
 
   /**
+   * LISA — Shadows Summary read-only (B-shadow widget).
+   *
+   * Retourne un snapshot compact des 3 Shadow Sizing portfolios (HIGH/MIDDLE/SMALL)
+   * pour comparaison vs TRADER côté UI. Pas de check ownership : ces portfolios
+   * sont system-managed par ShadowSizingOrchestrator et peuvent ne pas être
+   * owned par l'user qui consulte. Le service-role bypass RLS, donc OK.
+   *
+   * Endpoint public (auth simple via extractUserId pour anti-abuse) — read-only.
+   */
+  async getShadowsSummary() {
+    const client = this.supabase.getClient();
+    const SHADOW_IDS = [
+      { id: 'a0000001-0000-0000-0000-000000000001', name: 'Shadow High Sizing', label: 'HIGH' },
+      { id: 'a0000002-0000-0000-0000-000000000002', name: 'Shadow Middle Sizing', label: 'MIDDLE' },
+      { id: 'a0000003-0000-0000-0000-000000000003', name: 'Shadow Small Sizing', label: 'SMALL' },
+    ];
+    const todayStart = `${new Date().toISOString().slice(0, 10)}T00:00:00Z`;
+
+    const results = await Promise.all(SHADOW_IDS.map(async (shadow) => {
+      const [openRes, closedTodayRes, allClosedRes, configRes] = await Promise.all([
+        client.from('lisa_positions')
+          .select('symbol, entry_price, entry_notional_usd, entry_timestamp')
+          .eq('portfolio_id', shadow.id)
+          .eq('status', 'open'),
+        client.from('lisa_positions')
+          .select('realized_pnl_usd')
+          .eq('portfolio_id', shadow.id)
+          .gte('exit_timestamp', todayStart)
+          .neq('status', 'open'),
+        client.from('lisa_positions')
+          .select('realized_pnl_usd')
+          .eq('portfolio_id', shadow.id)
+          .neq('status', 'open'),
+        client.from('lisa_session_configs')
+          .select('capital_usd, kill_switch_active')
+          .eq('portfolio_id', shadow.id)
+          .maybeSingle(),
+      ]);
+
+      const open = openRes.data ?? [];
+      const closedToday = (closedTodayRes.data ?? []) as Array<{ realized_pnl_usd?: unknown }>;
+      const allClosed = (allClosedRes.data ?? []) as Array<{ realized_pnl_usd?: unknown }>;
+
+      const todayPnl = closedToday.reduce((s, p) => s + Number(p.realized_pnl_usd ?? 0), 0);
+      const todayWins = closedToday.filter((p) => Number(p.realized_pnl_usd ?? 0) > 0).length;
+      const todayLosses = closedToday.filter((p) => Number(p.realized_pnl_usd ?? 0) < 0).length;
+      const cumulativePnl = allClosed.reduce((s, p) => s + Number(p.realized_pnl_usd ?? 0), 0);
+      const allWins = allClosed.filter((p) => Number(p.realized_pnl_usd ?? 0) > 0).length;
+      const allLosses = allClosed.filter((p) => Number(p.realized_pnl_usd ?? 0) < 0).length;
+
+      const cfg = configRes.data as { capital_usd?: string; kill_switch_active?: boolean } | null;
+      const baseCapital = cfg?.capital_usd ? parseFloat(cfg.capital_usd) : 10000;
+      const deployedUsd = open.reduce((s, p) => s + Number((p as { entry_notional_usd?: unknown }).entry_notional_usd ?? 0), 0);
+
+      return {
+        id: shadow.id,
+        name: shadow.name,
+        label: shadow.label,
+        base_capital_usd: baseCapital,
+        current_capital_usd: baseCapital + cumulativePnl,
+        cumulative_pnl_usd: cumulativePnl,
+        return_from_inception_pct: baseCapital > 0 ? (cumulativePnl / baseCapital) * 100 : 0,
+        open_positions: open.length,
+        deployed_usd: deployedUsd,
+        today: {
+          pnl_usd: todayPnl,
+          trades: closedToday.length,
+          wins: todayWins,
+          losses: todayLosses,
+          win_rate_pct: closedToday.length > 0 ? (todayWins / closedToday.length) * 100 : null,
+        },
+        all_time: {
+          trades: allClosed.length,
+          wins: allWins,
+          losses: allLosses,
+          win_rate_pct: allClosed.length > 0 ? (allWins / allClosed.length) * 100 : null,
+        },
+        kill_switch_active: cfg?.kill_switch_active === true,
+        open_symbols: open.map((p) => (p as { symbol?: string }).symbol).filter(Boolean),
+      };
+    }));
+
+    return { generated_at: new Date().toISOString(), shadows: results };
+  }
+
+  /**
    * LISA refonte B.4.a — In-app notifications.
    *
    * Agrège des "items" virtuels depuis plusieurs sources :
