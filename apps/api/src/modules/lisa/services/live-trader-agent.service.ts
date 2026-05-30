@@ -1136,9 +1136,22 @@ Recommendation rules :
     dailyPnlUsd: number;
     closedTodayCount: number;
     winRateTodayPct: number | null;
+    recentClosesLast60min: Array<{
+      symbol: string;
+      direction: string;
+      exit_at: string;
+      exit_reason: string;
+      pnl_usd: number;
+      pnl_pct: number;
+      minutes_ago: number;
+    }>;
   }> {
     const client = this.supabase.getClient();
     const todayStart = `${new Date().toISOString().slice(0, 10)}T00:00:00Z`;
+    // Fenêtre 60 min — couvre la lesson b4c48e13 ANTI_REENTRY_POST_INVALIDATION
+    // (30 min) avec marge contextuelle. Volume typique TRADER ≈ 1-2 closes/h
+    // donc liste typique de 1-2 entrées (~200-400 tokens prompt, négligeable).
+    const sixtyMinAgoIso = new Date(Date.now() - 60 * 60_000).toISOString();
 
     const { data: open } = await client
       .from('lisa_positions')
@@ -1153,6 +1166,17 @@ Recommendation rules :
       .gte('exit_timestamp', todayStart)
       .neq('status', 'open');
 
+    // Closes des 60 dernières minutes — injecté dans le state pour que le LLM
+    // voie ses propres actions récentes (sans cela il est aveugle aux closes
+    // qu'il vient lui-même de décider, cas vérifié XRPUSDT 30/05 02:05 -$22).
+    const { data: recentClosed } = await client
+      .from('lisa_positions')
+      .select('symbol, direction, exit_timestamp, exit_reason, realized_pnl_usd, realized_pnl_pct')
+      .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+      .gte('exit_timestamp', sixtyMinAgoIso)
+      .neq('status', 'open')
+      .order('exit_timestamp', { ascending: false });
+
     const openPositions = (open ?? []).map((p) => ({
       symbol: p.symbol as string,
       direction: p.direction as string,
@@ -1165,6 +1189,17 @@ Recommendation rules :
     const wins = (closed ?? []).filter((c) => Number(c.realized_pnl_usd ?? 0) > 0).length;
     const winRate = (closed?.length ?? 0) > 0 ? (wins / closed!.length) * 100 : null;
 
+    const nowMs = Date.now();
+    const recentClosesLast60min = (recentClosed ?? []).map((c) => ({
+      symbol: c.symbol as string,
+      direction: c.direction as string,
+      exit_at: c.exit_timestamp as string,
+      exit_reason: (c.exit_reason as string | null) ?? 'unknown',
+      pnl_usd: Number(c.realized_pnl_usd ?? 0),
+      pnl_pct: Number(c.realized_pnl_pct ?? 0),
+      minutes_ago: Math.floor((nowMs - new Date(c.exit_timestamp as string).getTime()) / 60_000),
+    }));
+
     return {
       openPositions,
       openCount: openPositions.length,
@@ -1173,6 +1208,7 @@ Recommendation rules :
       dailyPnlUsd: dailyPnl,
       closedTodayCount: closed?.length ?? 0,
       winRateTodayPct: winRate,
+      recentClosesLast60min,
     };
   }
 
