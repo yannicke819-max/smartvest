@@ -30,6 +30,7 @@ import { PostSlBackfillService } from './services/post-sl-backfill.service';
 import { MultiTimeframePersistenceService } from './services/multi-tf-persistence.service';
 import { PersistenceProbabilityService } from './services/persistence-probability.service';
 import { EodhdQuotaService } from './services/eodhd-quota.service';
+import { PushNotificationsService, type PushSubscriptionPayload } from './services/push-notifications.service';
 import { summarizeByTf, type PersistenceResult } from '@smartvest/ai-analyst';
 import type { DailyHarvestConfig, CapitalDisciplineMode } from './types/capital-discipline.types';
 
@@ -61,7 +62,37 @@ export class LisaController {
     private readonly riskState: RiskStateService,
     private readonly dailyCatalystBrief: DailyCatalystBriefService,
     private readonly eventEngine: EventEngineService,
+    private readonly pushNotifs: PushNotificationsService,
   ) {}
+
+  // LISA refonte B.4.c — Web Push API VAPID endpoints.
+  @Get('push/vapid-public-key')
+  getVapidPublicKey() {
+    return { publicKey: this.pushNotifs.getPublicKey() };
+  }
+
+  @Post('push/subscribe')
+  @HttpCode(200)
+  pushSubscribe(
+    @Headers() headers: Record<string, string>,
+    @Body() body: PushSubscriptionPayload,
+  ) {
+    return this.pushNotifs.subscribe(extractUserId(headers), body);
+  }
+
+  @Post('push/unsubscribe')
+  @HttpCode(200)
+  pushUnsubscribe(
+    @Headers() headers: Record<string, string>,
+    @Body('endpoint') endpoint: string,
+  ) {
+    return this.pushNotifs.unsubscribe(extractUserId(headers), endpoint);
+  }
+
+  @Get('push/subscriptions')
+  pushList(@Headers() headers: Record<string, string>) {
+    return this.pushNotifs.listSubscriptions(extractUserId(headers));
+  }
 
   // ─────────────────────────────────────────────────────────────────
   // PR #338 — UI Phase 5 N1+N2 endpoints

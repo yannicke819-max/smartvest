@@ -54,6 +54,7 @@ import { ShadowSizingOrchestratorService } from './services/shadow-sizing-orches
 import { LiveTraderAgentService } from './services/live-trader-agent.service';
 import { MainScannerPostMortemService } from './services/main-scanner-postmortem.service';
 import { DailyDigestService } from './services/daily-digest.service';
+import { PushNotificationsService } from './services/push-notifications.service';
 import { LessonAutoApplyService } from './services/lesson-auto-apply.service';
 import { ScannerLessonsContextService } from './services/scanner-lessons-context.service';
 import { ConfigSanityValidatorService } from './services/config-sanity-validator.service';
@@ -205,6 +206,9 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     // DailyDigestService (B.4.b) — email récap quotidien via Resend (09:00 UTC).
     // Requires RESEND_API_KEY + DAILY_DIGEST_FROM_EMAIL Fly secrets, sinon DRY mode.
     DailyDigestService,
+    // PushNotificationsService (B.4.c) — Web Push API trigger-only.
+    // Requires VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY / VAPID_SUBJECT (sinon subscribe OK, sends SKIP).
+    PushNotificationsService,
     // ScannerLessonsContextService — fournit le bloc Markdown des lessons actives
     // à injecter dans les system prompts (signal validation, ranking, risk manager, macro veto).
     // Cache TTL 5 min pour éviter requêtes DB répétées (scanner ~500 calls/cycle).

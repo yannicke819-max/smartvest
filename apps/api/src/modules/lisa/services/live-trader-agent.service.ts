@@ -33,6 +33,7 @@ import { ScannerLlmRouterService } from './scanner-llm-router.service';
 import { LisaService } from './lisa.service';
 import { ScannerLessonsContextService } from './scanner-lessons-context.service';
 import { TopGainersScannerService } from './top-gainers-scanner.service';
+import { PushNotificationsService } from './push-notifications.service';
 import type { TopGainerCandidate } from '@smartvest/ai-analyst';
 
 const TRADER_AGENT_PORTFOLIO_ID = 'b0000001-0000-0000-0000-000000000001';
@@ -229,6 +230,7 @@ export class LiveTraderAgentService {
     private readonly schedulerRegistry: SchedulerRegistry,
     private readonly topGainersScanner: TopGainersScannerService,
     @Optional() private readonly lessonsContext?: ScannerLessonsContextService,
+    @Optional() private readonly pushNotifs?: PushNotificationsService,
   ) {}
 
   onModuleInit(): void {
@@ -382,6 +384,20 @@ export class LiveTraderAgentService {
           .from('lisa_session_configs')
           .update({ kill_switch_active: true })
           .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID);
+        // B.4.c — push notification au user du portfolio (best-effort).
+        if (this.pushNotifs) {
+          const { data: portfolioRow } = await this.supabase.getClient()
+            .from('portfolios')
+            .select('user_id')
+            .eq('id', TRADER_AGENT_PORTFOLIO_ID)
+            .maybeSingle();
+          const userId = (portfolioRow as { user_id?: string } | null)?.user_id;
+          if (userId) {
+            this.pushNotifs.notifyUser(userId, 'kill_switch_armed').catch((e) =>
+              this.logger.debug(`[trader-agent] push notify err: ${String(e).slice(0, 100)}`),
+            );
+          }
+        }
         await this.logDecision({
           cycleStartedAt, state, action: 'hold' as const,
           notionalUsd: 0, confidence: 0,

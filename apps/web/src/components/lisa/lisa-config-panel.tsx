@@ -22,6 +22,7 @@ import {
   useToggleScannerLesson,
   useResetKillSwitch,
 } from '@/hooks/use-scanner-lessons';
+import { usePushSubscription } from '@/hooks/use-push-subscription';
 
 interface Props {
   portfolioId: string;
@@ -188,9 +189,55 @@ export function LisaConfigPanel({ portfolioId }: Props) {
         </div>
       </div>
 
-      {/* 4. Lessons management */}
+      {/* 4. Push notifications */}
+      <PushNotificationsSection />
+
+      {/* 5. Lessons management */}
       <LessonsManagementSection />
     </Card>
+  );
+}
+
+function PushNotificationsSection() {
+  const { status, error, subscribe, unsubscribe } = usePushSubscription();
+  return (
+    <div className="mb-4 pb-4 border-b">
+      <div className="text-xs font-semibold mb-2">🔔 Notifications push</div>
+      {status === 'loading' && (
+        <div className="text-xs text-muted-foreground">Détection…</div>
+      )}
+      {status === 'unsupported' && (
+        <div className="text-xs text-muted-foreground">
+          Push API non supportée sur ce navigateur.
+        </div>
+      )}
+      {status === 'permission-denied' && (
+        <div className="text-xs text-rose-600 dark:text-rose-400">
+          Permission notifications refusée. Active-la dans les réglages navigateur puis recharge.
+        </div>
+      )}
+      {status === 'not-subscribed' && (
+        <Button size="sm" onClick={subscribe}>
+          Activer notifications push
+        </Button>
+      )}
+      {status === 'subscribed' && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-xs text-emerald-600 dark:text-emerald-400">✓ Actives sur cet appareil</span>
+          <Button size="sm" variant="outline" onClick={unsubscribe}>
+            Désactiver
+          </Button>
+        </div>
+      )}
+      {error && (
+        <div className="text-[11px] text-rose-600 dark:text-rose-400 mt-1">
+          {error}
+        </div>
+      )}
+      <p className="text-[10px] text-muted-foreground mt-1">
+        Notifications kill-switch + propositions Strategy Coach. Trigger-only (le contenu est rafraîchi à l'ouverture).
+      </p>
+    </div>
   );
 }
 
