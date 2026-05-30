@@ -640,11 +640,11 @@ export default function LisaPage() {
       {/* LISA refonte A.3 — Section Gains (badges + reset display-only) */}
       {selectedPortfolioId && <GainsTracker portfolioId={selectedPortfolioId} />}
 
-      {/* LISA refonte C.2 — Strategy Coach proposals (Gemini hourly + review modal) */}
-      {selectedPortfolioId && <CoachProposalsPanel portfolioId={selectedPortfolioId} />}
-
       {/* Shadow Sizing read-only — comparatif HIGH/MIDDLE/SMALL vs TRADER */}
       <ShadowsSummaryPanel />
+
+      {/* LISA refonte C.2 — Strategy Coach proposals (Gemini hourly + review modal) */}
+      {selectedPortfolioId && <CoachProposalsPanel portfolioId={selectedPortfolioId} />}
 
       {/* LISA refonte B.2 — Lessons Impact Tracker (citations agrégées TRADER) */}
       {selectedPortfolioId && <LessonsImpactPanel portfolioId={selectedPortfolioId} />}
