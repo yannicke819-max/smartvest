@@ -1464,6 +1464,15 @@ export class LisaController {
     return this.lisa.triggerKillSwitch(extractUserId(headers), portfolioId, reason ?? 'Manual user kill');
   }
 
+  // LISA refonte B.4.a — In-app notifications (badge + dropdown).
+  @Get('notifications/:portfolioId')
+  getNotifications(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    return this.lisa.getNotifications(extractUserId(headers), portfolioId);
+  }
+
   // LISA refonte B.3 — Désarme le kill-switch (anti-spirale ou manuel).
   // Pas de force-close, juste UPDATE kill_switch_active=false.
   @Post('kill-switch-reset/:portfolioId')

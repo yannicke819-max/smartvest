@@ -12,6 +12,7 @@
  */
 
 import { useLisaTargetsAndStats } from '@/hooks/use-lisa-targets';
+import { NotificationsBell } from './notifications-bell';
 
 interface Props {
   portfolioId: string;
@@ -49,6 +50,7 @@ export function LisaStickyHeader({ portfolioId }: Props) {
               TRADER suspendu. Reset manuel requis dans Config LISA.
             </div>
           </div>
+          <NotificationsBell portfolioId={portfolioId} />
         </div>
       </div>
     );
@@ -73,6 +75,7 @@ export function LisaStickyHeader({ portfolioId }: Props) {
           <span className="hidden md:inline text-[10px] text-muted-foreground">
             Agent autonome Gemini Pro 2.5
           </span>
+          <NotificationsBell portfolioId={portfolioId} />
         </div>
 
         {/* Capital + Cible + PnL today */}

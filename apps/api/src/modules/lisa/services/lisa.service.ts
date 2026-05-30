@@ -2777,6 +2777,80 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
   }
 
   /**
+   * LISA refonte B.4.a — In-app notifications.
+   *
+   * Agrège des "items" virtuels depuis plusieurs sources :
+   *   - coach_proposals status='pending' (Strategy Coach C.1)
+   *   - kill_switch_active=true (anti-spirale ou manuel)
+   *
+   * Le client gère "unread" via localStorage (last_seen_at) car pas de
+   * besoin de cross-device sync à ce stade. Le badge UI = items dont
+   * created_at > last_seen client-side.
+   */
+  async getNotifications(userId: string, portfolioId: string) {
+    await this.assertPortfolioOwner(userId, portfolioId);
+    const client = this.supabase.getClient();
+
+    const [cfgRes, propRes] = await Promise.all([
+      client
+        .from('lisa_session_configs')
+        .select('kill_switch_active, updated_at')
+        .eq('portfolio_id', portfolioId)
+        .maybeSingle(),
+      client
+        .from('coach_proposals')
+        .select('id, created_at, source, llm_model, feasibility_verdict, feasibility_probability_pct, proposed_lessons, proposed_parameter_changes')
+        .eq('portfolio_id', portfolioId)
+        .eq('status', 'pending')
+        .order('created_at', { ascending: false })
+        .limit(50),
+    ]);
+
+    type Item = {
+      id: string;
+      kind: 'kill_switch_armed' | 'coach_proposal_pending';
+      severity: 'critical' | 'info' | 'warning';
+      title: string;
+      body: string;
+      created_at: string;
+      href?: string;
+      payload?: Record<string, unknown>;
+    };
+    const items: Item[] = [];
+
+    const cfg = cfgRes.data as { kill_switch_active?: boolean; updated_at?: string } | null;
+    if (cfg?.kill_switch_active) {
+      items.push({
+        id: `kill_switch:${portfolioId}`,
+        kind: 'kill_switch_armed',
+        severity: 'critical',
+        title: 'Kill-switch anti-spirale armé',
+        body: 'TRADER suspendu. Désarme manuellement dans Config LISA pour reprendre les cycles.',
+        created_at: cfg.updated_at ?? new Date().toISOString(),
+      });
+    }
+
+    for (const p of (propRes.data ?? []) as Array<Record<string, unknown>>) {
+      const lessons = Array.isArray(p.proposed_lessons) ? p.proposed_lessons.length : 0;
+      const params = Array.isArray(p.proposed_parameter_changes) ? p.proposed_parameter_changes.length : 0;
+      const verdict = String(p.feasibility_verdict ?? 'UNKNOWN');
+      const probPct = p.feasibility_probability_pct as number | null;
+      items.push({
+        id: `coach:${p.id}`,
+        kind: 'coach_proposal_pending',
+        severity: verdict === 'UNREALISTIC' ? 'warning' : 'info',
+        title: `Proposition Strategy Coach (${String(p.llm_model)})`,
+        body: `Verdict ${verdict}${probPct !== null ? ` · ${probPct}%` : ''} · ${lessons} lesson(s) · ${params} param(s) proposé(s)`,
+        created_at: String(p.created_at),
+        payload: { proposal_id: String(p.id), lessons, params, verdict },
+      });
+    }
+
+    items.sort((a, b) => b.created_at.localeCompare(a.created_at));
+    return { items, total: items.length };
+  }
+
+  /**
    * LISA refonte B.3 — Désarme le kill-switch (anti-spirale ou manuel).
    * Pas de force-close, juste UPDATE kill_switch_active=false.
    * Audit dans lisa_decision_log pour traçabilité.
