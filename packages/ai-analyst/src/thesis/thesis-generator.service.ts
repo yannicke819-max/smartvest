@@ -396,9 +396,16 @@ export class ThesisGeneratorService {
       }))
       .filter((r) => r.positionId.length > 0 && openPositionIds.has(r.positionId));
 
-    // 6. Compute metadata
-    const costUsd = (this.claudeClient.constructor as typeof LisaClaudeClient)
-      .estimateCostUsd(toolResult.usage);
+    // 6. Compute metadata. Si le modèle est Gemini, applique le pricing
+    // Gemini ($1.25/$10 par 1M pour Pro) au lieu d'Opus ($15/$75).
+    const isGemini = toolResult.model.toLowerCase().startsWith('gemini');
+    const costUsd = isGemini
+      ? (this.claudeClient.constructor as typeof LisaClaudeClient).estimateCostUsdGemini(
+          toolResult.usage.inputTokens ?? 0,
+          toolResult.usage.outputTokens ?? 0,
+          toolResult.model,
+        )
+      : (this.claudeClient.constructor as typeof LisaClaudeClient).estimateCostUsd(toolResult.usage);
 
     const totalInput =
       (toolResult.usage.inputTokens ?? 0) +

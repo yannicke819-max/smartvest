@@ -52,9 +52,18 @@ describe('detectAssetClass', () => {
     expect(detectAssetClass('EURJPY', 'FOREX')).toBe('fx_cross');
     expect(detectAssetClass('USDTRY', 'FOREX')).toBe('fx_cross');
   });
-  it('detects commodity (futures pattern XX.F)', () => {
+  it('detects commodity via COMM exchange or .COMM suffix', () => {
     expect(detectAssetClass('CL.F', 'COMM')).toBe('commodity');
     expect(detectAssetClass('GC.F', 'COMM')).toBe('commodity');
+    expect(detectAssetClass('BRENT.COMM', '')).toBe('commodity');
+  });
+  it('FIX 29/05 — Frankfurt .F is eu_equity, NOT commodity', () => {
+    // Bug : l'ancien regex /^[A-Z]{2,3}\.F$/ classait tous les Frankfurt en
+    // commodity. .F = Frankfurt exchange (BMW.F), pas commodity future.
+    expect(detectAssetClass('RAC.F', 'F')).toBe('eu_equity');
+    expect(detectAssetClass('HTD.F', 'F')).toBe('eu_equity');
+    expect(detectAssetClass('JPX.F', '')).toBe('eu_equity'); // suffix only
+    expect(detectAssetClass('BMW.XETRA', 'XETRA')).toBe('eu_equity');
   });
 });
 

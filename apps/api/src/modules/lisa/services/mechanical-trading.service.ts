@@ -29,6 +29,19 @@ import {
 import { mapPositionRows } from '../helpers/position.mapper';
 import { isLongPosition } from '../utils/position-direction';
 import { computeBreakEvenStopUpdate } from './trailing-stop.helper';
+import {
+  extractBreakevenActivationPct,
+  extractChoppyExitThresholds,
+  computeMonotonicityProxy,
+  extractLetRunOnMonotonicConfig,
+  isLetRunOnMonotonicActive,
+  extractTrailingMinAgeAsiaMin,
+  extractNewsShockLseOverride,
+  type ChoppyExitThresholds,
+  type LessonTargetsRow,
+  type LetRunOnMonotonicConfig,
+  type NewsShockLseOverride,
+} from './lesson-driven-config.helper';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { PerformanceService } from '../../performance/performance.service';
 import { DecisionLogService } from './decision-log.service';
@@ -171,6 +184,13 @@ interface SessionConfig {
    *  capital (Step 0 drawdown, Step 0.6 news shock, Step 2 stops/TP/trailing)
    *  restent actives universellement. */
   strategy_mode?: string;
+  // === Lesson-driven config (migration 0172) — read au runtime depuis cfg ===
+  /** % seuil activation breakeven trailing-stop (ex 0.5 = 0.5%). Override env. */
+  gainers_trailing_stop_breakeven_min_drawdown_pct?: number | string | null;
+  /** Min age (minutes) avant de considérer un trade choppy → close. */
+  gainers_choppy_exit_after_min?: number | null;
+  /** Monotonicity min (ratio currentPnl/peakPnl) en deçà duquel = choppy. */
+  gainers_choppy_min_monotonicity?: number | string | null;
 }
 
 @Injectable()
@@ -427,7 +447,7 @@ export class MechanicalTradingService {
     // Ne réveille pas Lisa : ferme directement avant qu'un wake-up Lisa
     // ne tarde 5-20 min. Critères stricts (sentiment ≤ -0.6, age < 30 min,
     // direct hit ticker tenu) pour éviter les faux positifs.
-    await this.checkNewsShockClose(openPositions)
+    await this.checkNewsShockClose(openPositions, portfolioId)
       .catch((e) => this.logger.warn(`[news-shock-close] eval failed: ${String(e).slice(0, 120)}`));
 
     // Step 1 — Explicit close requests from Lisa
@@ -1656,7 +1676,18 @@ export class MechanicalTradingService {
     // les setups dans leur fenêtre normale de jeu (~30-60 min Asia).
     // Le `expectancy watchdog` (skip cycle si E<0 sur 10 derniers trades)
     // reste actif comme circuit-breaker structurel.
+    //
+    // 28/05/2026 SOIRÉE — Extension TRADER (b0000001) : même rationale,
+    // TRADER pilote son propre risk via LiveTraderAgent + SL 1.2-1.5%
+    // par position + max-loss-cap -$50 pre-flight (commit 1167e5d). Le P4.1
+    // a flip kill_switch_active 3× en 1h sur TRADER aujourd'hui — trip causé
+    // par un single losing trade -1.5% qui dépasse le threshold default 1%.
+    // Symptôme : positions TRADER non protégées par recordMfe (kill_switch
+    // pause MechanicalTradingService entier). Cause root identifiée + fix ici.
     if ((cfg.strategy_mode as string | null | undefined) === 'gainers') {
+      return 'ok';
+    }
+    if (cfg.portfolio_id === 'b0000001-0000-0000-0000-000000000001') {
       return 'ok';
     }
 
@@ -1915,8 +1946,43 @@ export class MechanicalTradingService {
     const breakEvenEnabled = (process.env.GAINERS_TRAILING_STOP_BREAKEVEN_ENABLED ?? 'false').toLowerCase() === 'true';
     if (breakEvenEnabled) {
       const portfolioIdBE = String((pos as unknown as Record<string, unknown>)['portfolio_id'] ?? '');
-      if (portfolioIdBE && await this.isGainersStrategy(portfolioIdBE)) {
-        const activationPct = Number(process.env.GAINERS_TRAILING_STOP_ACTIVATION_PCT ?? '0.003');
+      if (portfolioIdBE && await this.isTrailingEligible(portfolioIdBE)) {
+        // Lesson-driven override (migration 0172) — la colonne DB est en %
+        // (ex 0.5 = 0.5%), à convertir en ratio (×0.01) pour matcher l'API
+        // historique `computeBreakEvenStopUpdate(activationPct: ratio)`.
+        const lessonCfg = await this.getLessonCfg(portfolioIdBE);
+        // Phase 5b — Min age trailing pour Asia : ne pas activer le break-even
+        // sur asia_equity avant N min (évite couper U-shapes au creux). Pour les
+        // autres classes, comportement inchangé. On skip uniquement la branche
+        // break-even — stops/TP/choppy/reactive plus bas continuent normalement.
+        const posAssetClass = String(
+          (pos as unknown as Record<string, unknown>)['asset_class'] ?? pos.assetClass ?? '',
+        ).toLowerCase();
+        let skipBreakEvenForAsia = false;
+        if (
+          posAssetClass === 'asia_equity' &&
+          lessonCfg.trailingAsiaMinAgeMin !== null
+        ) {
+          const entryTsRaw = (pos as unknown as Record<string, unknown>)['entry_timestamp'];
+          const ageMin = entryTsRaw
+            ? (Date.now() - new Date(String(entryTsRaw)).getTime()) / 60_000
+            : Infinity;
+          if (ageMin < lessonCfg.trailingAsiaMinAgeMin) {
+            this.logger.debug(
+              `[trailing-stop] ${pos.symbol} (asia) age=${ageMin.toFixed(1)}min < min ${lessonCfg.trailingAsiaMinAgeMin}min — break-even skipped (lesson-driven)`,
+            );
+            skipBreakEvenForAsia = true;
+          }
+        }
+        if (skipBreakEvenForAsia) {
+          // n'évalue pas break-even pour Asia trop frais ; pas de return → on
+          // continue avec stops/TP/choppy/reactive en aval.
+          /* no-op */
+        } else {
+        const envActivation = Number(process.env.GAINERS_TRAILING_STOP_ACTIVATION_PCT ?? '0.003');
+        const activationPct = lessonCfg.breakevenActivationPct !== null
+          ? lessonCfg.breakevenActivationPct / 100
+          : envActivation;
         const lockPct = Number(process.env.GAINERS_TRAILING_STOP_LOCK_PCT ?? '0.0005');
         // Pic = max(MFE persistée, prix courant). recordMfe au-dessus est async,
         // mais on lit la valeur EN MÉMOIRE (pos.peak_pre_exit) qui peut être stale
@@ -1941,6 +2007,60 @@ export class MechanicalTradingService {
             .from('lisa_positions')
             .update({ stop_loss_price: newStop })
             .eq('id', pos.id);
+        }
+        } // end else (asia-min-age skip)
+      }
+    }
+
+    // Lesson-driven choppy-exit (migration 0172). Mesure approximée de
+    // monotonicity via le ratio currentPnl/peakPnl (cf. computeMonotonicityProxy).
+    // Ne fetch PAS de candles intraday (trop coûteux) — utilise peak_pre_exit
+    // (MFE persistée) déjà à jour grâce à recordMfe quelques lignes plus haut.
+    //
+    // Si age >= afterMinutes ET ratio < minMonotonicity → close immédiat avec
+    // reason='closed_invalidated' + rationale "choppy". Scope strict gainers
+    // (le reste du portfolio garde le comportement habituel).
+    const portfolioIdChoppy = String((pos as unknown as Record<string, unknown>)['portfolio_id'] ?? '');
+    if (portfolioIdChoppy && await this.isGainersStrategy(portfolioIdChoppy)) {
+      const { choppy } = await this.getLessonCfg(portfolioIdChoppy);
+      if (choppy.afterMinutes !== null && choppy.minMonotonicity !== null) {
+        const entryTsStr = (pos as unknown as Record<string, unknown>)['entry_timestamp'] as string | undefined;
+        if (entryTsStr) {
+          const ageMin = (Date.now() - new Date(entryTsStr).getTime()) / 60_000;
+          if (ageMin >= choppy.afterMinutes) {
+            const rawPeak = Number((pos as unknown as Record<string, unknown>)['peak_pre_exit']);
+            const peakPx = Number.isFinite(rawPeak) && rawPeak > 0 ? rawPeak : null;
+            const mono = computeMonotonicityProxy({
+              entryPrice: entryPx.toNumber(),
+              currentPrice: currentPrice.toNumber(),
+              peakPrice: peakPx,
+              isLong,
+            });
+            // Guard "peak amplitude" : ne tue pas les positions à wide range
+            // (un peakPnl ≥ 1.2% est un mouvement utile, on laisse respirer
+            // même si la rétention monotonicité est faible — c'est un trail
+            // classique pas un chop). Le user a explicitement demandé ce
+            // garde-fou : "peak_to_trough < 1.2%".
+            const peakPnlPct = peakPx !== null
+              ? isLong
+                ? ((peakPx - entryPx.toNumber()) / entryPx.toNumber()) * 100
+                : ((entryPx.toNumber() - peakPx) / entryPx.toNumber()) * 100
+              : 0;
+            const choppyAmplitudeOk = peakPnlPct < 1.2;
+            if (mono !== null && mono < choppy.minMonotonicity && choppyAmplitudeOk) {
+              this.logger.warn(
+                `[choppy-exit] ${pos.symbol} age=${ageMin.toFixed(1)}min monotonicity=${mono.toFixed(2)} < ${choppy.minMonotonicity} peakPnl=${peakPnlPct.toFixed(2)}% → close (lesson-driven)`,
+              );
+              await this.closePosition(
+                pos.id,
+                currentPrice.toFixed(8),
+                'closed_invalidated',
+                `[CHOPPY-EXIT] giveback détecté : monotonicity ${mono.toFixed(2)} < ${choppy.minMonotonicity} après ${ageMin.toFixed(1)}min (peak ${peakPnlPct.toFixed(2)}% < 1.2%, lesson auto-apply).`,
+                'closed_choppy',
+              );
+              return;
+            }
+          }
         }
       }
     }
@@ -2012,6 +2132,54 @@ export class MechanicalTradingService {
       }
     }
     if (hitTarget) {
+      // Phase 5b — Let-run sur monotones (lesson-driven). Si la position retient
+      // ≥ monotonicityThreshold de son pic ET son drawdown observé reste ≤
+      // maxDrawdownPct%, on étend le TP de × tpMultiplier (let-winners-run).
+      // L'extension décale la barre `tpPrice` plus haut/bas, donc on revient
+      // dans la branche `!hitTarget` et `checkReactiveSignals` prend le relais.
+      // Scope : gainers strategy uniquement (pas de modif TP swing Lisa).
+      const letRunPortfolioId = String((pos as unknown as Record<string, unknown>)['portfolio_id'] ?? '');
+      if (letRunPortfolioId && await this.isTrailingEligible(letRunPortfolioId)) {
+        const lessonCfgLR = await this.getLessonCfg(letRunPortfolioId);
+        if (isLetRunOnMonotonicActive(lessonCfgLR.letRun)) {
+          const rawPeakLR = Number((pos as unknown as Record<string, unknown>)['peak_pre_exit']);
+          const peakNumLR = Number.isFinite(rawPeakLR) && rawPeakLR > 0 ? rawPeakLR : currentPrice.toNumber();
+          const monoLR = computeMonotonicityProxy({
+            entryPrice: entryPx.toNumber(),
+            currentPrice: currentPrice.toNumber(),
+            peakPrice: peakNumLR,
+            isLong,
+          });
+          // Drawdown observé depuis le pic, en % (toujours positif).
+          const drawdownPct = isLong
+            ? ((peakNumLR - currentPrice.toNumber()) / peakNumLR) * 100
+            : ((currentPrice.toNumber() - peakNumLR) / peakNumLR) * 100;
+          const threshold = lessonCfgLR.letRun.monotonicityThreshold as number;
+          const maxDd = lessonCfgLR.letRun.maxDrawdownPct as number;
+          const mult = lessonCfgLR.letRun.tpMultiplier as number;
+          if (
+            monoLR !== null &&
+            monoLR >= threshold &&
+            Math.abs(drawdownPct) <= maxDd &&
+            mult > 1
+          ) {
+            // Décale le TP de mult× la distance entry→TP initiale et persiste
+            // pour les prochains ticks. Évite la fermeture sec ici.
+            const tpDistance = tpPrice!.minus(entryPx).abs();
+            const newTp = isLong
+              ? entryPx.plus(tpDistance.mul(mult))
+              : entryPx.minus(tpDistance.mul(mult));
+            this.logger.log(
+              `[let-run-monotonic] ${pos.symbol} mono=${monoLR.toFixed(2)} ≥ ${threshold} drawdown=${drawdownPct.toFixed(2)}% ≤ ${maxDd}% → TP étendu ${tpPrice!.toFixed(4)} → ${newTp.toFixed(4)} (× ${mult}, lesson-driven)`,
+            );
+            void this.supabase.getClient()
+              .from('lisa_positions')
+              .update({ take_profit_price: newTp.toFixed(8) })
+              .eq('id', pos.id);
+            return; // skip TP close ce cycle ; prochain tick verra le nouveau TP
+          }
+        }
+      }
       // ─── Trailing take-profit (anti « sell winners too early », Shefrin-Statman) ─
       // Au lieu de fermer sec dès que le TP est touché (qui cappe les gagnants),
       // on LAISSE COURIR au-delà du TP et on ne sort que sur un repli de `giveback`%
@@ -2031,7 +2199,7 @@ export class MechanicalTradingService {
       // Lookup (caché 60s) effectué uniquement ici → quand le TP est franchi ET
       // le flag actif, donc rarement.
       const trailingTpPortfolioId = String((pos as unknown as Record<string, unknown>)['portfolio_id'] ?? '');
-      if (trailingTpEnabled && await this.isGainersStrategy(trailingTpPortfolioId)) {
+      if (trailingTpEnabled && await this.isTrailingEligible(trailingTpPortfolioId)) {
         const giveback = Math.max(0.2, Math.min(10, Number(process.env.GAINERS_TRAILING_TP_GIVEBACK_PCT ?? '1.5')));
         // Pic = max(MFE persistée, prix courant) — recordMfe ci-dessus a déjà
         // poussé le pic en DB mais l'objet `pos` en mémoire date du début de cycle.
@@ -2092,6 +2260,95 @@ export class MechanicalTradingService {
   // position par tick. Utilisé pour scoper le trailing-TP aux portfolios gainers.
   private gainersStrategyCache = new Map<string, { isGainers: boolean; asOf: number }>();
 
+  // Cache (60s) des seuils lesson-driven per-portfolio (migration 0172).
+  // Évite un fetch DB par position/tick. Fail-safe : null si non trouvé.
+  // Phase 5b — étendu avec letRun + trailingAsiaMinAgeMin + newsShockLse.
+  private lessonCfgCache = new Map<string, {
+    breakevenActivationPct: number | null;
+    choppy: ChoppyExitThresholds;
+    letRun: LetRunOnMonotonicConfig;
+    trailingAsiaMinAgeMin: number | null;
+    newsShockLse: NewsShockLseOverride;
+    asOf: number;
+  }>();
+  private static readonly LESSON_CFG_TTL_MS = 60_000;
+
+  /**
+   * Charge (cache 60s) les colonnes lesson-driven per-portfolio.
+   * Migration 0172 — gainers_trailing_stop_breakeven_min_drawdown_pct +
+   * gainers_choppy_exit_after_min + gainers_choppy_min_monotonicity (Phase 5a)
+   * et Phase 5b : let-run × 3, trailing_min_age_asia, news_shock_lse × 2.
+   */
+  private async getLessonCfg(portfolioId: string): Promise<{
+    breakevenActivationPct: number | null;
+    choppy: ChoppyExitThresholds;
+    letRun: LetRunOnMonotonicConfig;
+    trailingAsiaMinAgeMin: number | null;
+    newsShockLse: NewsShockLseOverride;
+  }> {
+    const emptyLetRun: LetRunOnMonotonicConfig = {
+      monotonicityThreshold: null,
+      maxDrawdownPct: null,
+      tpMultiplier: null,
+    };
+    const emptyNewsShockLse: NewsShockLseOverride = { maxAgeMinutes: null, sentimentThreshold: null };
+    if (!portfolioId) {
+      return {
+        breakevenActivationPct: null,
+        choppy: { afterMinutes: null, minMonotonicity: null },
+        letRun: emptyLetRun,
+        trailingAsiaMinAgeMin: null,
+        newsShockLse: emptyNewsShockLse,
+      };
+    }
+    const cached = this.lessonCfgCache.get(portfolioId);
+    if (cached && Date.now() - cached.asOf < MechanicalTradingService.LESSON_CFG_TTL_MS) {
+      return {
+        breakevenActivationPct: cached.breakevenActivationPct,
+        choppy: cached.choppy,
+        letRun: cached.letRun,
+        trailingAsiaMinAgeMin: cached.trailingAsiaMinAgeMin,
+        newsShockLse: cached.newsShockLse,
+      };
+    }
+    let breakevenActivationPct: number | null = null;
+    let choppy: ChoppyExitThresholds = { afterMinutes: null, minMonotonicity: null };
+    let letRun: LetRunOnMonotonicConfig = emptyLetRun;
+    let trailingAsiaMinAgeMin: number | null = null;
+    let newsShockLse: NewsShockLseOverride = emptyNewsShockLse;
+    try {
+      const { data } = await this.supabase.getClient()
+        .from('lisa_session_configs')
+        .select(
+          'gainers_trailing_stop_breakeven_min_drawdown_pct, gainers_choppy_exit_after_min, gainers_choppy_min_monotonicity, ' +
+            'gainers_let_run_if_monotonic_threshold, gainers_let_run_max_drawdown_pct, gainers_trailing_tp_multiplier_monotonic, ' +
+            'gainers_trailing_min_age_minutes_asia, ' +
+            'news_shock_close_max_age_minutes_lse, news_shock_close_sentiment_threshold_lse',
+        )
+        .eq('portfolio_id', portfolioId)
+        .maybeSingle();
+      if (data) {
+        const row = data as LessonTargetsRow;
+        breakevenActivationPct = extractBreakevenActivationPct(row);
+        choppy = extractChoppyExitThresholds(row);
+        letRun = extractLetRunOnMonotonicConfig(row);
+        trailingAsiaMinAgeMin = extractTrailingMinAgeAsiaMin(row);
+        newsShockLse = extractNewsShockLseOverride(row);
+      }
+    } catch {
+      // Fail-safe : keep nulls, callers fallback to env/default.
+    }
+    this.lessonCfgCache.set(portfolioId, {
+      breakevenActivationPct,
+      choppy,
+      letRun,
+      trailingAsiaMinAgeMin,
+      newsShockLse,
+      asOf: Date.now(),
+    });
+    return { breakevenActivationPct, choppy, letRun, trailingAsiaMinAgeMin, newsShockLse };
+  }
+
   /**
    * true si le portfolio est en mode gainers. Sert à scoper le trailing-TP :
    * on ne modifie le comportement du TP que pour les positions du scanner
@@ -2114,6 +2371,19 @@ export class MechanicalTradingService {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Trailing mechanics eligibility (28/05/2026, MFE/MAE 3-week analysis).
+   * Inclut gainers + TRADER (b0000001-...) qui bénéficie aussi des trailing
+   * BE/TP/let-run/choppy malgré son strategy_mode='investment'. Analyse n=343
+   * trades confirme : 56/134 SL avaient MFE > 0.5% pré-stop = $3685 recoverable
+   * sur 22j. TRADER seul = $776 left on table.
+   */
+  private async isTrailingEligible(portfolioId: string): Promise<boolean> {
+    if (!portfolioId) return false;
+    if (portfolioId === 'b0000001-0000-0000-0000-000000000001') return true;
+    return this.isGainersStrategy(portfolioId);
   }
 
   private async getMinNetProfitGate(portfolioId: string, notional: Decimal): Promise<Decimal> {
@@ -2166,14 +2436,25 @@ export class MechanicalTradingService {
    * latence avant que Lisa émette un closeRecommendation explicite). Ici
    * on ferme dans la minute si les critères stricts matchent.
    */
-  private async checkNewsShockClose(openPositions: OpenPosition[]): Promise<void> {
+  private async checkNewsShockClose(openPositions: OpenPosition[], portfolioId?: string): Promise<void> {
     const longs = openPositions.filter((p) => p.direction === 'long');
     if (longs.length === 0) return;
 
-    const SENTIMENT_THRESHOLD = -0.6;
-    const NEWS_MAX_AGE_MS = 30 * 60 * 1000;
+    const DEFAULT_SENTIMENT_THRESHOLD = -0.6;
+    const DEFAULT_NEWS_MAX_AGE_MS = 30 * 60 * 1000;
     const POSITION_MIN_AGE_MS = 5 * 60 * 1000;
     const now = Date.now();
+
+    // Phase 5b — Lesson-driven LSE override (migration 0172). Si présent, écrase
+    // les seuils par défaut UNIQUEMENT pour les tickers .LSE. Lookup unique
+    // (cache 60s côté getLessonCfg). Fallback : back-compat defaults ci-dessus.
+    const lessonCfg = portfolioId
+      ? await this.getLessonCfg(portfolioId).catch(() => null)
+      : null;
+    const lseSentimentThreshold = lessonCfg?.newsShockLse?.sentimentThreshold ?? DEFAULT_SENTIMENT_THRESHOLD;
+    const lseMaxAgeMs = lessonCfg?.newsShockLse?.maxAgeMinutes != null
+      ? lessonCfg.newsShockLse.maxAgeMinutes * 60_000
+      : DEFAULT_NEWS_MAX_AGE_MS;
 
     for (const pos of longs) {
       const entryTs = (pos as unknown as Record<string, unknown>)['entry_timestamp'];
@@ -2185,11 +2466,16 @@ export class MechanicalTradingService {
         news = await this.enrichment.fetchRecentNews([pos.symbol], 10);
       } catch { continue; }
 
+      // Per-venue thresholds (LSE override si lesson configurée, sinon defaults)
+      const isLse = pos.symbol.toUpperCase().endsWith('.LSE');
+      const effSentimentThreshold = isLse ? lseSentimentThreshold : DEFAULT_SENTIMENT_THRESHOLD;
+      const effNewsMaxAgeMs = isLse ? lseMaxAgeMs : DEFAULT_NEWS_MAX_AGE_MS;
+
       const heldUpper = pos.symbol.toUpperCase();
       for (const n of news) {
-        if (n.sentiment == null || n.sentiment > SENTIMENT_THRESHOLD) continue;
+        if (n.sentiment == null || n.sentiment > effSentimentThreshold) continue;
         const ts = n.date ? new Date(n.date).getTime() : 0;
-        if (now - ts > NEWS_MAX_AGE_MS) continue;
+        if (now - ts > effNewsMaxAgeMs) continue;
         const articleSymbols = (n.symbols ?? []).map((s) => s.toUpperCase());
         if (!articleSymbols.includes(heldUpper)) continue;
 

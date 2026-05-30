@@ -52,6 +52,15 @@ import { TopGainersScannerService } from './services/top-gainers-scanner.service
 import { GainersUserShadowService } from './services/gainers-user-shadow.service';
 import { ShadowSizingOrchestratorService } from './services/shadow-sizing-orchestrator.service';
 import { LiveTraderAgentService } from './services/live-trader-agent.service';
+import { MainScannerPostMortemService } from './services/main-scanner-postmortem.service';
+import { DailyDigestService } from './services/daily-digest.service';
+import { PushNotificationsService } from './services/push-notifications.service';
+import { StrategyCoachService } from './services/strategy-coach.service';
+import { TraderRetrospectiveService } from './services/trader-retrospective.service';
+import { LessonAutoApplyService } from './services/lesson-auto-apply.service';
+import { ScannerLessonsContextService } from './services/scanner-lessons-context.service';
+import { ConfigSanityValidatorService } from './services/config-sanity-validator.service';
+import { RealTimeLessonDetectorService } from './services/realtime-lesson-detector.service';
 import { MarketCloseReportService } from './services/market-close-report.service';
 import { GainersAutoRelaxService } from './services/gainers-auto-relax.service';
 import { PostSlBackfillService } from './services/post-sl-backfill.service';
@@ -193,6 +202,38 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     // Live Trader Agent — portfolio dédié $10k piloté à 100% par Gemini Pro.
     // Cron 5min decision + cron 02:00 UTC post-mortem nightly + memory store.
     LiveTraderAgentService,
+    // MainScannerPostMortemService — apprentissage Gemini Pro sur le scanner gainers
+    // (cron 02:30 UTC : analyse 24h × 4 portfolios → lessons macro-conditionnelles).
+    MainScannerPostMortemService,
+    // DailyDigestService (B.4.b) — email récap quotidien via Resend (09:00 UTC).
+    // Requires RESEND_API_KEY + DAILY_DIGEST_FROM_EMAIL Fly secrets, sinon DRY mode.
+    DailyDigestService,
+    // PushNotificationsService (B.4.c) — Web Push API trigger-only.
+    // Requires VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY / VAPID_SUBJECT (sinon subscribe OK, sends SKIP).
+    PushNotificationsService,
+    // StrategyCoachService (C.1) — cron hourly @ minute 17, Gemini Flash + Pro
+    // escalations. Génère coach_proposals consommées par UI review (C.2).
+    StrategyCoachService,
+    // TraderRetrospectiveService (C.4) — cron daily 02:00 UTC. Analyse trades
+    // TRADER veille via Gemini Pro, INSERT scanner_lessons scope='trader_agent_only'
+    // is_active=true (réinjectées dans system prompt trader cycle suivant).
+    TraderRetrospectiveService,
+    // ScannerLessonsContextService — fournit le bloc Markdown des lessons actives
+    // à injecter dans les system prompts (signal validation, ranking, risk manager, macro veto).
+    // Cache TTL 5 min pour éviter requêtes DB répétées (scanner ~500 calls/cycle).
+    ScannerLessonsContextService,
+    // LessonAutoApplyService — boucle d'amélioration continue : auto-applique les
+    // proposed_config_change à haute confiance (≥0.85, sample ≥10) sur les 4 portfolios
+    // gainers. Cron hourly. Cibles env vars → manual review (Fly secrets).
+    LessonAutoApplyService,
+    // ConfigSanityValidatorService — cron hourly :17, détecte anti-patterns (R/R inversé,
+    // min_chg trop strict, max_open trop bas) et applique DIRECTEMENT les fixes en DB
+    // au confidence ≥ 0.95. Insère aussi une lesson gate_calibration pour audit.
+    ConfigSanityValidatorService,
+    // RealTimeLessonDetectorService — cron */5min, détecte automatiquement 5 patterns
+    // (BIG_WIN/BIG_LOSS/SL_GAP/TP_DOUBLE/ORPHAN_PRE_CLOSE) et insère lessons direct
+    // dans trader_agent_memory ou scanner_lessons. Anti-spam 24h par pattern.
+    RealTimeLessonDetectorService,
     // Market Close Reports — comparatif 5 portfolios à chaque cloche (Asia/EU/US) + daily wrap.
     MarketCloseReportService,
     // PR #282 — Auto-relax adaptive : lit cumulative_regret 7j et propose/auto-applique relax
@@ -349,6 +390,10 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     ShadowSizingOrchestratorService,
     // Export pour AdminTraderAgentController (cf. /admin/trader-agent/status).
     LiveTraderAgentService,
+    // Export pour AdminScannerPostMortemController (cf. /admin/scanner-postmortem/{status,run}).
+    MainScannerPostMortemService,
+    // Export pour AdminLessonAutoApplyController (cf. /admin/lesson-auto-apply/{status,run}).
+    LessonAutoApplyService,
     // Export pour AdminMarketCloseReportsController.
     MarketCloseReportService,
   ],

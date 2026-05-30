@@ -42,7 +42,10 @@ import { AdminResearchController } from './admin-research.controller';
 import { AdminDebateGateMetricsController } from './admin-debate-gate-metrics.controller';
 import { AdminShadowSizingController } from './admin-shadow-sizing.controller';
 import { AdminTraderAgentController } from './admin-trader-agent.controller';
+import { AdminScannerPostMortemController } from './admin-scanner-postmortem.controller';
+import { AdminScannerDebugController } from './admin-scanner-debug.controller';
 import { AdminMarketCloseReportsController } from './admin-market-close-reports.controller';
+import { AdminLessonAutoApplyController } from './admin-lesson-auto-apply.controller';
 
 @Module({
   imports: [SupabaseModule, forwardRef(() => LisaModule), GainersModule],
@@ -76,8 +79,14 @@ import { AdminMarketCloseReportsController } from './admin-market-close-reports.
     AdminShadowSizingController,
     // Live Trader Agent (Gemini Pro) — observability + status portfolio dédié $10k
     AdminTraderAgentController,
+    // Scanner Post-Mortem (Gemini Pro) — lessons macro-conditionnelles + run manuel
+    AdminScannerPostMortemController,
+    // Scanner Debug — test EODHD screener par exchange (diagnostic porte d'entrée)
+    AdminScannerDebugController,
     // Market Close Reports — comparatif 5 portfolios par session (Asia/EU/US + daily wrap)
     AdminMarketCloseReportsController,
+    // Lesson Auto-Apply — pipeline d'amélioration continue (scanner_lessons → DB UPDATE).
+    AdminLessonAutoApplyController,
   ],
 })
 export class AdminModule {}
