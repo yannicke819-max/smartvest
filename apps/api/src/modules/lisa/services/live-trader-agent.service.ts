@@ -360,6 +360,12 @@ export class LiveTraderAgentService {
 
     const cycleStartedAt = new Date();
     try {
+      // LISA refonte B.1 — backfill outcomes des citations en attente.
+      // Best-effort, ne fait jamais échouer le cycle.
+      this.resolveCitationOutcomes().catch((e) =>
+        this.logger.debug(`[trader-agent] resolveCitationOutcomes err: ${String(e).slice(0, 100)}`),
+      );
+
       // 1. Read state (positions, capital, daily PnL)
       const state = await this.readState();
 
@@ -619,6 +625,22 @@ export class LiveTraderAgentService {
         });
       } catch (e) {
         this.logger.error(`[trader-agent] logDecision failed (cycle ran but trace lost): ${String(e).slice(0, 200)}`);
+      }
+
+      // LISA refonte B.1 — parse markers thèse + insert citations
+      // Best-effort : catch + log, ne fait jamais échouer le cycle.
+      try {
+        await this.insertLessonCitations({
+          thesis: decision.thesis ?? '',
+          cycleStartedAt,
+          actionKind: decision.action_kind,
+          actionApplied: applyResult.applied,
+          targetSymbol: decision.symbol ?? null,
+          confidence: decision.confidence ?? null,
+          positionId: applyResult.positionId ?? null,
+        });
+      } catch (e) {
+        this.logger.warn(`[trader-agent] insertLessonCitations err: ${String(e).slice(0, 120)}`);
       }
 
       const tag = applyResult.applied ? '✅' : (decision.action_kind === 'hold' ? '⏸️' : '⚠️');
@@ -2032,6 +2054,151 @@ Recommendation rules :
       applied_position_id: p.appliedPositionId ?? null,
       apply_error: p.applyError ?? null,
     });
+  }
+
+  // ====================================================================
+  // LISA refonte B.1 — Lesson markers parsing + citations tracking
+  // ====================================================================
+  //
+  // Le LLM TRADER reçoit dans son system prompt les lessons actives au format
+  //   "lesson_kind: PULLBACK_WAIT_KTOS_LESSON · lesson_text: ..."
+  // et est encouragé à citer le marker en majuscules entre crochets dans sa
+  // thèse — ex: "Setup post-pump, attente confirmé [PULLBACK_WAIT_KTOS_LESSON]".
+  //
+  // À chaque décision, on parse la thèse, extrait les markers, résout chaque
+  // marker vers un lesson_id (par lesson_kind ILIKE) et insère une ligne dans
+  // scanner_lesson_citations. L'outcome (pnl, win) est résolu plus tard quand
+  // la position se ferme — backfill au début de chaque cycle.
+  //
+  // Cible UI Phase B.2 : "Quelle lesson a été citée combien de fois, avec
+  // quel win-rate, sur 30j ?"
+
+  /**
+   * Extrait les markers [XXX] d'une thèse LLM. Dédupliqué.
+   * Pattern : crochets, début majuscule, 3-40 chars [A-Z0-9_+-].
+   * Ignore les markers techniques bas-niveau (DIAGNOSTIC, SANITY_BOUND, etc.)
+   * qui ne sont pas des lessons — uniquement les markers > 6 chars.
+   */
+  private parseLessonMarkers(thesis: string): string[] {
+    if (!thesis || thesis.length === 0) return [];
+    const re = /\[([A-Z][A-Z0-9_+\-]{2,40})\]/g;
+    const set = new Set<string>();
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(thesis)) !== null) {
+      const marker = m[1];
+      // Filtre out les markers infra (pas des lessons)
+      if (['DIAGNOSTIC', 'SANITY_BOUND', 'KILL_SWITCH', 'HT_BYPASS', 'HT_EXCEPTION'].includes(marker)) continue;
+      set.add(marker);
+    }
+    return [...set];
+  }
+
+  /**
+   * Pour chaque marker, tente de matcher un lesson_id via lesson_kind ILIKE.
+   * Insère une ligne scanner_lesson_citations par marker (avec lesson_id=null
+   * si pas de match — utile pour audit "markers cités jamais mappés").
+   */
+  private async insertLessonCitations(args: {
+    thesis: string;
+    cycleStartedAt: Date;
+    actionKind: string;
+    actionApplied: boolean;
+    targetSymbol: string | null;
+    confidence: number | null;
+    positionId: string | null;
+  }): Promise<void> {
+    const markers = this.parseLessonMarkers(args.thesis);
+    if (markers.length === 0) return;
+
+    const client = this.supabase.getClient();
+    // Résolution lesson_id par marker (1 query par marker, OK pour volume faible)
+    const rows: Array<Record<string, unknown>> = [];
+    for (const marker of markers) {
+      const { data: lesson } = await client
+        .from('scanner_lessons')
+        .select('id')
+        .ilike('lesson_kind', `%${marker}%`)
+        .eq('is_active', true)
+        .order('confidence', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      rows.push({
+        lesson_id: (lesson as { id?: string } | null)?.id ?? null,
+        marker_text: `[${marker}]`,
+        portfolio_id: TRADER_AGENT_PORTFOLIO_ID,
+        decision_decided_at: args.cycleStartedAt.toISOString(),
+        action_kind: args.actionKind,
+        action_applied: args.actionApplied,
+        target_symbol: args.targetSymbol,
+        confidence: args.confidence,
+        position_id: args.positionId,
+        thesis_excerpt: args.thesis.slice(0, 300),
+      });
+    }
+    const { error } = await client.from('scanner_lesson_citations').insert(rows);
+    if (error) {
+      this.logger.warn(`[trader-agent] insertLessonCitations failed: ${error.message}`);
+    } else {
+      this.logger.debug(
+        `[trader-agent] inserted ${rows.length} citations (markers: ${markers.join(',')})`,
+      );
+    }
+  }
+
+  /**
+   * Backfill outcomes : pour chaque citation où outcome_resolved_at IS NULL
+   * ET position_id IS NOT NULL, lit la position et résout outcome si closed.
+   * Idempotent (filtre WHERE outcome_resolved_at IS NULL). Limité 50/cycle
+   * pour ne pas saturer.
+   */
+  private async resolveCitationOutcomes(): Promise<void> {
+    const client = this.supabase.getClient();
+    const { data: pending } = await client
+      .from('scanner_lesson_citations')
+      .select('id, position_id')
+      .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+      .is('outcome_resolved_at', null)
+      .not('position_id', 'is', null)
+      .limit(50);
+    if (!pending || pending.length === 0) return;
+
+    const positionIds = [...new Set(
+      pending.map((r) => (r as { position_id: string }).position_id).filter(Boolean),
+    )];
+    const { data: positions } = await client
+      .from('lisa_positions')
+      .select('id, status, realized_pnl_usd, exit_timestamp')
+      .in('id', positionIds)
+      .neq('status', 'open');
+    if (!positions || positions.length === 0) return;
+
+    const posById = new Map<string, { pnl: number; closedAt: string }>();
+    for (const p of positions) {
+      const row = p as { id: string; realized_pnl_usd?: unknown; exit_timestamp?: string };
+      posById.set(row.id, {
+        pnl: Number(row.realized_pnl_usd ?? 0),
+        closedAt: row.exit_timestamp ?? new Date().toISOString(),
+      });
+    }
+
+    let resolved = 0;
+    for (const c of pending) {
+      const row = c as { id: string; position_id: string };
+      const pos = posById.get(row.position_id);
+      if (!pos) continue;
+      await client
+        .from('scanner_lesson_citations')
+        .update({
+          outcome_resolved_at: pos.closedAt,
+          outcome_pnl_usd: pos.pnl,
+          outcome_win: pos.pnl > 0,
+        })
+        .eq('id', row.id);
+      resolved++;
+    }
+    if (resolved > 0) {
+      this.logger.log(`[trader-agent] resolved ${resolved} citation outcomes`);
+    }
   }
 
   // ====================================================================
