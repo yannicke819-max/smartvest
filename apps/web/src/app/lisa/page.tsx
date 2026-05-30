@@ -101,12 +101,15 @@ export default function LisaPage() {
     traderPortfolio?.id ?? null,
   );
 
-  // Force la sélection sur TRADER dès que la liste arrive (cf bug fix initial state).
+  // Initialise la sélection : TRADER par défaut (refonte A.2), fallback 1er
+  // simulation portfolio. Une fois sélectionné, on respecte le choix user
+  // (le sélecteur dropdown permet de switch vers MAIN/HIGH/MIDDLE/SMALL).
   useEffect(() => {
+    if (selectedPortfolioId) return;
     const traderId = simulationPortfolios.find((p) => p.id === TRADER_PORTFOLIO_ID)?.id;
-    if (traderId && selectedPortfolioId !== traderId) {
+    if (traderId) {
       setSelectedPortfolioId(traderId);
-    } else if (!selectedPortfolioId && simulationPortfolios[0]?.id) {
+    } else if (simulationPortfolios[0]?.id) {
       setSelectedPortfolioId(simulationPortfolios[0].id);
     }
   }, [simulationPortfolios, selectedPortfolioId]);
@@ -571,7 +574,9 @@ export default function LisaPage() {
 
       <DisclaimerBanner />
 
-      {/* Portfolio selector */}
+      {/* Portfolio selector — TRADER par défaut (agent autonome Gemini Pro).
+          Switch vers MAIN/HIGH/MIDDLE/SMALL pour inspecter les scanners
+          Gainers déterministes (shadow sizing A/B/C). */}
       {simulationPortfolios.length > 1 && (
         <div className="space-y-1.5">
           <label className="block text-sm font-medium">Portefeuille de simulation</label>
@@ -580,12 +585,19 @@ export default function LisaPage() {
             onChange={(e) => setSelectedPortfolioId(e.target.value || null)}
             className="h-9 w-full rounded-md border bg-background px-3 text-sm"
           >
-            {simulationPortfolios.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
+            {simulationPortfolios.map((p) => {
+              const isTrader = p.id === TRADER_PORTFOLIO_ID;
+              const label = isTrader
+                ? `🤖 ${p.name} (agent autonome LISA)`
+                : `🎯 ${p.name} (scanner Gainers)`;
+              return (
+                <option key={p.id} value={p.id}>{label}</option>
+              );
+            })}
           </select>
+          <p className="text-[11px] text-muted-foreground">
+            TRADER = agent LLM autonome Gemini Pro 2.5. MAIN/HIGH/MIDDLE/SMALL = scanners momentum déterministes (shadow sizing).
+          </p>
         </div>
       )}
 
