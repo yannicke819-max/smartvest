@@ -3,8 +3,9 @@
 import { useState, useMemo } from 'react';
 import {
   ResponsiveContainer,
-  LineChart,
+  ComposedChart,
   Line,
+  Scatter,
   XAxis,
   YAxis,
   Tooltip,
@@ -12,7 +13,7 @@ import {
   ReferenceLine,
 } from 'recharts';
 import { LineChart as LineChartIcon, RefreshCw } from 'lucide-react';
-import { useLisaSnapshotHistory, useLisaSnapshot, useLisaConfig } from '@/hooks/use-lisa';
+import { useLisaSnapshotHistory, useLisaSnapshot, useLisaConfig, useLisaPositions } from '@/hooks/use-lisa';
 import { SkeletonCard } from '@/components/ui/skeleton';
 
 type ChartPoint = {
@@ -24,13 +25,53 @@ type ChartPoint = {
   drawdown: number;
 };
 
+type TradeMarker = {
+  t: number;
+  value: number;
+  symbol: string;
+  pnlUsd: number;
+  pnlPct: number;
+  win: boolean;
+  exitReason: string;
+};
+
 // Tooltip défini hors du composant parent pour garantir que recharts appelle
 // bien le render à chaque déplacement du curseur (pas de closure capturée
 // sur une data point figée).
-function ChartTooltip(props: { active?: boolean; payload?: Array<{ payload: ChartPoint }> }) {
+function ChartTooltip(props: { active?: boolean; payload?: Array<{ payload: ChartPoint | TradeMarker; dataKey?: string }> }) {
   const { active, payload } = props;
   if (!active || !payload || payload.length === 0) return null;
-  const point = payload[0].payload;
+
+  // Cherche marker en priorité (hover sur scatter) sinon ChartPoint (hover sur ligne)
+  const markerEntry = payload.find((e) => (e.payload as TradeMarker).symbol !== undefined);
+  if (markerEntry) {
+    const m = markerEntry.payload as TradeMarker;
+    return (
+      <div className="rounded-md border bg-card p-2 text-[11px] shadow-sm" style={{ minWidth: 180 }}>
+        <div className="flex items-center gap-1.5 mb-1">
+          <span className={m.win ? 'text-emerald-600' : 'text-rose-500'}>
+            {m.win ? '🟢' : '🔴'}
+          </span>
+          <span className="font-semibold">{m.symbol}</span>
+          <span className="ml-auto text-muted-foreground font-mono text-[10px]">
+            {new Date(m.t).toLocaleString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+          </span>
+        </div>
+        <div className="flex justify-between gap-3">
+          <span className="text-muted-foreground">P&amp;L</span>
+          <span className={`font-mono font-semibold tabular-nums ${m.win ? 'text-emerald-600' : 'text-rose-500'}`}>
+            {m.pnlUsd >= 0 ? '+' : ''}${m.pnlUsd.toFixed(2)} ({m.pnlPct >= 0 ? '+' : ''}{m.pnlPct.toFixed(2)}%)
+          </span>
+        </div>
+        <div className="flex justify-between gap-3">
+          <span className="text-muted-foreground">Exit</span>
+          <span className="font-mono text-[10px]">{m.exitReason}</span>
+        </div>
+      </div>
+    );
+  }
+
+  const point = payload[0].payload as ChartPoint;
   if (!point || typeof point.value !== 'number') return null;
   return (
     <div
@@ -94,6 +135,9 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
     ? parseFloat(configQuery.data.capital_usd)
     : null;
 
+  // LISA refonte A.5 — Trade markers : overlay des trades closés sur la courbe.
+  const positionsQuery = useLisaPositions(portfolioId, false);
+
   const data = historyQuery.data ?? [];
 
   const chartData = useMemo(() => {
@@ -142,6 +186,47 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
 
     return points;
   }, [data, liveQuery.data]);
+
+  // LISA refonte A.5 — Compute trade markers (1 dot par close dans la fenêtre).
+  // value (Y) = valeur de la courbe interpolée au timestamp d'exit (sinon on
+  // perd la cohérence visuelle avec la ligne).
+  const tradeMarkers = useMemo<TradeMarker[]>(() => {
+    if (chartData.length === 0) return [];
+    const positions = positionsQuery.data ?? [];
+    const minT = chartData[0].t;
+    const maxT = chartData[chartData.length - 1].t;
+    const closed = positions.filter((p) => {
+      if (p.status === 'open' || !p.exitTimestamp) return false;
+      const t = new Date(p.exitTimestamp).getTime();
+      return t >= minT && t <= maxT;
+    });
+    return closed.map((p) => {
+      const t = new Date(p.exitTimestamp!).getTime();
+      // Interpolation linéaire entre les 2 points de chartData entourant t
+      let value = chartData[chartData.length - 1].value;
+      for (let i = 0; i < chartData.length - 1; i++) {
+        const a = chartData[i];
+        const b = chartData[i + 1];
+        if (t >= a.t && t <= b.t) {
+          const ratio = b.t === a.t ? 0 : (t - a.t) / (b.t - a.t);
+          value = a.value + (b.value - a.value) * ratio;
+          break;
+        }
+      }
+      const pnlUsd = parseFloat(p.realizedPnlUsd ?? '0') || 0;
+      return {
+        t,
+        value,
+        symbol: p.symbol,
+        pnlUsd,
+        pnlPct: p.realizedPnlPct ?? 0,
+        win: pnlUsd > 0,
+        exitReason: (p.exitReason ?? p.status).slice(0, 40),
+      };
+    });
+  }, [chartData, positionsQuery.data]);
+  const winMarkers = useMemo(() => tradeMarkers.filter((m) => m.win), [tradeMarkers]);
+  const lossMarkers = useMemo(() => tradeMarkers.filter((m) => !m.win), [tradeMarkers]);
 
   const hasData = chartData.length > 1;
   const latestValue = chartData[chartData.length - 1]?.value ?? 0;
@@ -244,7 +329,7 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
           aria-label={`Évolution du capital sur ${WINDOW_LABELS[window]} : départ ${baselineValue.toFixed(0)} USD, valeur courante ${latestValue.toFixed(0)} USD, ${periodReturn >= 0 ? 'gain' : 'perte'} de ${Math.abs(periodReturn).toFixed(2)}%`}
         >
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData} margin={{ top: 8, right: 12, bottom: 8, left: 8 }}>
+            <ComposedChart data={chartData} margin={{ top: 8, right: 12, bottom: 8, left: 8 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="currentColor" opacity={0.1} />
               <XAxis
                 dataKey="t"
@@ -297,8 +382,42 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
                 dot={false}
                 activeDot={{ r: 4 }}
               />
-            </LineChart>
+              {/* LISA refonte A.5 — Trade markers overlay. */}
+              {winMarkers.length > 0 && (
+                <Scatter
+                  data={winMarkers}
+                  dataKey="value"
+                  fill="#10b981"
+                  stroke="#065f46"
+                  strokeWidth={1}
+                  shape="circle"
+                  legendType="none"
+                />
+              )}
+              {lossMarkers.length > 0 && (
+                <Scatter
+                  data={lossMarkers}
+                  dataKey="value"
+                  fill="#ef4444"
+                  stroke="#7f1d1d"
+                  strokeWidth={1}
+                  shape="circle"
+                  legendType="none"
+                />
+              )}
+            </ComposedChart>
           </ResponsiveContainer>
+        </div>
+      )}
+
+      {hasData && tradeMarkers.length > 0 && (
+        <div className="flex items-center gap-3 text-[10px] text-muted-foreground -mt-2">
+          <span className="flex items-center gap-1">
+            <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" /> Trade gagnant ({winMarkers.length})
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="inline-block w-2 h-2 rounded-full bg-rose-500" /> Trade perdant ({lossMarkers.length})
+          </span>
         </div>
       )}
 
