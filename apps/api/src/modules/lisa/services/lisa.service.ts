@@ -2891,43 +2891,88 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       { id: 'a0000002-0000-0000-0000-000000000002', name: 'Shadow Middle Sizing', label: 'MIDDLE' },
       { id: 'a0000003-0000-0000-0000-000000000003', name: 'Shadow Small Sizing', label: 'SMALL' },
     ];
-    const todayStart = `${new Date().toISOString().slice(0, 10)}T00:00:00Z`;
 
-    const results = await Promise.all(SHADOW_IDS.map(async (shadow) => {
-      const [openRes, closedTodayRes, allClosedRes, configRes] = await Promise.all([
-        client.from('lisa_positions')
-          .select('symbol, entry_price, entry_notional_usd, entry_timestamp')
-          .eq('portfolio_id', shadow.id)
-          .eq('status', 'open'),
-        client.from('lisa_positions')
-          .select('realized_pnl_usd')
-          .eq('portfolio_id', shadow.id)
-          .gte('exit_timestamp', todayStart)
-          .neq('status', 'open'),
-        client.from('lisa_positions')
-          .select('realized_pnl_usd')
-          .eq('portfolio_id', shadow.id)
-          .neq('status', 'open'),
-        client.from('lisa_session_configs')
-          .select('capital_usd, kill_switch_active')
-          .eq('portfolio_id', shadow.id)
-          .maybeSingle(),
-      ]);
+    // Latest snapshot par portfolio (table shadow_sizing_snapshot, écrite chaque
+    // cycle 5min par ShadowSizingOrchestratorService).
+    const { data: snapshots } = await client
+      .from('shadow_sizing_snapshot')
+      .select('portfolio_id, profile_name, open_positions, closed_today, realized_pnl_usd, unrealized_pnl_usd, total_pnl_usd, win_rate_pct, fees_paid_usd, net_pnl_after_fees_usd, daily_pnl_extrapolated_usd, target_progress_pct, drawdown_today_pct, capacity_used_pct, created_at')
+      .in('portfolio_id', SHADOW_IDS.map((s) => s.id))
+      .order('created_at', { ascending: false })
+      .limit(30);
 
-      const open = openRes.data ?? [];
-      const closedToday = (closedTodayRes.data ?? []) as Array<{ realized_pnl_usd?: unknown }>;
-      const allClosed = (allClosedRes.data ?? []) as Array<{ realized_pnl_usd?: unknown }>;
+    const latestByPortfolio = new Map<string, Record<string, unknown>>();
+    for (const row of (snapshots ?? []) as Array<Record<string, unknown>>) {
+      const pid = String(row.portfolio_id ?? '');
+      if (!latestByPortfolio.has(pid)) latestByPortfolio.set(pid, row);
+    }
 
-      const todayPnl = closedToday.reduce((s, p) => s + Number(p.realized_pnl_usd ?? 0), 0);
-      const todayWins = closedToday.filter((p) => Number(p.realized_pnl_usd ?? 0) > 0).length;
-      const todayLosses = closedToday.filter((p) => Number(p.realized_pnl_usd ?? 0) < 0).length;
-      const cumulativePnl = allClosed.reduce((s, p) => s + Number(p.realized_pnl_usd ?? 0), 0);
-      const allWins = allClosed.filter((p) => Number(p.realized_pnl_usd ?? 0) > 0).length;
-      const allLosses = allClosed.filter((p) => Number(p.realized_pnl_usd ?? 0) < 0).length;
+    const [configsRes, openSymbolsRes, cumPnlRes] = await Promise.all([
+      client
+        .from('lisa_session_configs')
+        .select('portfolio_id, capital_usd, kill_switch_active')
+        .in('portfolio_id', SHADOW_IDS.map((s) => s.id)),
+      client
+        .from('lisa_positions')
+        .select('portfolio_id, symbol, entry_notional_usd')
+        .in('portfolio_id', SHADOW_IDS.map((s) => s.id))
+        .eq('status', 'open'),
+      client
+        .from('lisa_positions')
+        .select('portfolio_id, realized_pnl_usd')
+        .in('portfolio_id', SHADOW_IDS.map((s) => s.id))
+        .neq('status', 'open'),
+    ]);
 
-      const cfg = configRes.data as { capital_usd?: string; kill_switch_active?: boolean } | null;
+    const configByPortfolio = new Map<string, { capital_usd?: string; kill_switch_active?: boolean }>();
+    for (const c of (configsRes.data ?? []) as Array<{ portfolio_id: string; capital_usd?: string; kill_switch_active?: boolean }>) {
+      configByPortfolio.set(c.portfolio_id, c);
+    }
+    const symbolsByPortfolio = new Map<string, string[]>();
+    const deployedByPortfolio = new Map<string, number>();
+    for (const p of (openSymbolsRes.data ?? []) as Array<{ portfolio_id: string; symbol?: string; entry_notional_usd?: unknown }>) {
+      const arr = symbolsByPortfolio.get(p.portfolio_id) ?? [];
+      if (p.symbol) arr.push(p.symbol);
+      symbolsByPortfolio.set(p.portfolio_id, arr);
+      deployedByPortfolio.set(p.portfolio_id, (deployedByPortfolio.get(p.portfolio_id) ?? 0) + Number(p.entry_notional_usd ?? 0));
+    }
+    const cumPnlByPortfolio = new Map<string, number>();
+    const tradesByPortfolio = new Map<string, number>();
+    const winsByPortfolio = new Map<string, number>();
+    for (const p of (cumPnlRes.data ?? []) as Array<{ portfolio_id: string; realized_pnl_usd?: unknown }>) {
+      const pnl = Number(p.realized_pnl_usd ?? 0);
+      cumPnlByPortfolio.set(p.portfolio_id, (cumPnlByPortfolio.get(p.portfolio_id) ?? 0) + pnl);
+      tradesByPortfolio.set(p.portfolio_id, (tradesByPortfolio.get(p.portfolio_id) ?? 0) + 1);
+      if (pnl > 0) winsByPortfolio.set(p.portfolio_id, (winsByPortfolio.get(p.portfolio_id) ?? 0) + 1);
+    }
+
+    const results = SHADOW_IDS.map((shadow) => {
+      const snap = latestByPortfolio.get(shadow.id);
+      const cfg = configByPortfolio.get(shadow.id);
+      const openSyms = symbolsByPortfolio.get(shadow.id) ?? [];
       const baseCapital = cfg?.capital_usd ? parseFloat(cfg.capital_usd) : 10000;
-      const deployedUsd = open.reduce((s, p) => s + Number((p as { entry_notional_usd?: unknown }).entry_notional_usd ?? 0), 0);
+      const cumulativePnl = cumPnlByPortfolio.get(shadow.id) ?? 0;
+
+      const openPositions = snap ? Number(snap.open_positions ?? 0) : openSyms.length;
+      const closedToday = snap ? Number(snap.closed_today ?? 0) : 0;
+      const realizedToday = snap ? Number(snap.realized_pnl_usd ?? 0) : 0;
+      const netToday = snap ? Number(snap.net_pnl_after_fees_usd ?? 0) : 0;
+      const winRateToday = snap?.win_rate_pct !== undefined && snap?.win_rate_pct !== null
+        ? Number(snap.win_rate_pct)
+        : null;
+      const winsToday = winRateToday !== null && closedToday > 0
+        ? Math.round((winRateToday / 100) * closedToday)
+        : 0;
+      const lossesToday = winRateToday !== null && closedToday > 0
+        ? closedToday - winsToday
+        : 0;
+      const drawdownToday = snap ? Number(snap.drawdown_today_pct ?? 0) : 0;
+      const targetProgress = snap ? Number(snap.target_progress_pct ?? 0) : 0;
+      const feesToday = snap ? Number(snap.fees_paid_usd ?? 0) : 0;
+
+      const allTimeTrades = tradesByPortfolio.get(shadow.id) ?? 0;
+      const allTimeWins = winsByPortfolio.get(shadow.id) ?? 0;
+      const allTimeWinRate = allTimeTrades > 0 ? (allTimeWins / allTimeTrades) * 100 : null;
 
       return {
         id: shadow.id,
@@ -2937,25 +2982,30 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         current_capital_usd: baseCapital + cumulativePnl,
         cumulative_pnl_usd: cumulativePnl,
         return_from_inception_pct: baseCapital > 0 ? (cumulativePnl / baseCapital) * 100 : 0,
-        open_positions: open.length,
-        deployed_usd: deployedUsd,
+        open_positions: openPositions,
+        deployed_usd: deployedByPortfolio.get(shadow.id) ?? 0,
         today: {
-          pnl_usd: todayPnl,
-          trades: closedToday.length,
-          wins: todayWins,
-          losses: todayLosses,
-          win_rate_pct: closedToday.length > 0 ? (todayWins / closedToday.length) * 100 : null,
+          pnl_usd: realizedToday,
+          net_pnl_after_fees_usd: netToday,
+          fees_usd: feesToday,
+          trades: closedToday,
+          wins: winsToday,
+          losses: lossesToday,
+          win_rate_pct: winRateToday,
+          drawdown_pct: drawdownToday,
+          target_progress_pct: targetProgress,
         },
         all_time: {
-          trades: allClosed.length,
-          wins: allWins,
-          losses: allLosses,
-          win_rate_pct: allClosed.length > 0 ? (allWins / allClosed.length) * 100 : null,
+          trades: allTimeTrades,
+          wins: allTimeWins,
+          losses: allTimeTrades - allTimeWins,
+          win_rate_pct: allTimeWinRate,
         },
         kill_switch_active: cfg?.kill_switch_active === true,
-        open_symbols: open.map((p) => (p as { symbol?: string }).symbol).filter(Boolean),
+        open_symbols: openSyms,
+        snapshot_at: snap?.created_at ? String(snap.created_at) : null,
       };
-    }));
+    });
 
     return { generated_at: new Date().toISOString(), shadows: results };
   }

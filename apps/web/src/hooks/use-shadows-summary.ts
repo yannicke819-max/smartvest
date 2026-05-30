@@ -1,4 +1,5 @@
 // LISA — Shadows Summary hook (compare TRADER vs HIGH/MIDDLE/SMALL).
+// Source : shadow_sizing_snapshot (latest par portfolio) + cumul lisa_positions.
 
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
@@ -15,10 +16,14 @@ export interface ShadowSummaryRow {
   deployed_usd: number;
   today: {
     pnl_usd: number;
+    net_pnl_after_fees_usd: number;
+    fees_usd: number;
     trades: number;
     wins: number;
     losses: number;
     win_rate_pct: number | null;
+    drawdown_pct: number;
+    target_progress_pct: number;
   };
   all_time: {
     trades: number;
@@ -28,6 +33,7 @@ export interface ShadowSummaryRow {
   };
   kill_switch_active: boolean;
   open_symbols: string[];
+  snapshot_at: string | null;
 }
 
 export interface ShadowsSummaryResponse {

@@ -72,14 +72,24 @@ function ShadowCard({ shadow }: { shadow: ShadowSummaryRow }) {
       {/* Today metrics */}
       <div className="rounded bg-muted/40 p-2 text-[11px] space-y-0.5">
         <div className="flex justify-between">
-          <span className="text-muted-foreground">P&amp;L jour</span>
+          <span className="text-muted-foreground">P&amp;L jour (réalisé)</span>
           <span className={`font-semibold tabular-nums ${todayPnl.cls}`}>{todayPnl.txt}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">Net après frais</span>
+          <span className={`tabular-nums ${fmtPnl(shadow.today.net_pnl_after_fees_usd).cls}`}>
+            {fmtPnl(shadow.today.net_pnl_after_fees_usd).txt}
+          </span>
         </div>
         <div className="flex justify-between">
           <span className="text-muted-foreground">Trades</span>
           <span className="tabular-nums">
             {shadow.today.trades} ({shadow.today.wins}W/{shadow.today.losses}L · <span className={todayWR.cls}>{todayWR.txt}</span>)
           </span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">Cible $200/j</span>
+          <span className="tabular-nums">{shadow.today.target_progress_pct.toFixed(0)}%</span>
         </div>
       </div>
 
@@ -142,9 +152,10 @@ export function ShadowsSummaryPanel() {
         </div>
       )}
 
-      {data && (
+      {data && data.shadows[0]?.snapshot_at && (
         <div className="text-[10px] text-muted-foreground mt-2 text-right">
-          Snapshot {new Date(data.generated_at).toLocaleTimeString('fr-FR')} · refresh 60s
+          Snapshot shadow {new Date(data.shadows[0].snapshot_at).toLocaleTimeString('fr-FR')} ·
+          refresh client 60s · données 5min cycle backend
         </div>
       )}
     </Card>
