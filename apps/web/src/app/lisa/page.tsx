@@ -36,6 +36,7 @@ import { LisaStickyHeader } from '@/components/lisa/lisa-sticky-header';
 import { GainsTracker } from '@/components/lisa/gains-tracker';
 import { LessonsImpactPanel } from '@/components/lisa/lessons-impact-panel';
 import { LisaConfigPanel } from '@/components/lisa/lisa-config-panel';
+import { CoachProposalsPanel } from '@/components/lisa/coach-proposals-panel';
 import { ScalingReadinessPanel } from '@/components/lisa/scaling-readiness-panel';
 import { LiveTradingStatusPanel } from '@/components/lisa/live-trading-status-panel';
 import { LiveTradingWizard } from '@/components/lisa/live-trading-wizard';
@@ -625,6 +626,9 @@ export default function LisaPage() {
 
       {/* LISA refonte A.3 — Section Gains (badges + reset display-only) */}
       {selectedPortfolioId && <GainsTracker portfolioId={selectedPortfolioId} />}
+
+      {/* LISA refonte C.2 — Strategy Coach proposals (Gemini hourly + review modal) */}
+      {selectedPortfolioId && <CoachProposalsPanel portfolioId={selectedPortfolioId} />}
 
       {/* LISA refonte B.2 — Lessons Impact Tracker (citations agrégées TRADER) */}
       {selectedPortfolioId && <LessonsImpactPanel portfolioId={selectedPortfolioId} />}
