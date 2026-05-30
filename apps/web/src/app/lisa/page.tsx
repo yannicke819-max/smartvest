@@ -575,29 +575,40 @@ export default function LisaPage() {
 
       <DisclaimerBanner />
 
-      {/* Portfolio selector — TRADER par défaut (agent autonome Gemini Pro).
-          Switch vers MAIN/HIGH/MIDDLE/SMALL pour inspecter les scanners
-          Gainers déterministes (shadow sizing A/B/C). */}
-      {simulationPortfolios.length > 1 && (
+      {/* Portfolio selector — TOUJOURS visible (même 1 portfolio) + bouton
+          retour rapide TRADER si pas sélectionné. */}
+      {simulationPortfolios.length >= 1 && (
         <div className="space-y-1.5">
           <label className="block text-sm font-medium">Portefeuille de simulation</label>
-          <select
-            value={selectedPortfolioId ?? ''}
-            onChange={(e) => setSelectedPortfolioId(e.target.value || null)}
-            className="h-9 w-full rounded-md border bg-background px-3 text-sm"
-          >
-            {simulationPortfolios.map((p) => {
-              const isTrader = p.id === TRADER_PORTFOLIO_ID;
-              const label = isTrader
-                ? `🤖 ${p.name} (agent autonome LISA)`
-                : `🎯 ${p.name} (scanner Gainers)`;
-              return (
-                <option key={p.id} value={p.id}>{label}</option>
-              );
-            })}
-          </select>
+          <div className="flex gap-2 flex-wrap">
+            <select
+              value={selectedPortfolioId ?? ''}
+              onChange={(e) => setSelectedPortfolioId(e.target.value || null)}
+              className="h-9 flex-1 min-w-[200px] rounded-md border bg-background px-3 text-sm"
+            >
+              {simulationPortfolios.map((p) => {
+                const isTrader = p.id === TRADER_PORTFOLIO_ID;
+                const label = isTrader
+                  ? `🤖 ${p.name} (agent autonome LISA)`
+                  : `🎯 ${p.name}`;
+                return (
+                  <option key={p.id} value={p.id}>{label}</option>
+                );
+              })}
+            </select>
+            {selectedPortfolioId !== TRADER_PORTFOLIO_ID &&
+              simulationPortfolios.some((p) => p.id === TRADER_PORTFOLIO_ID) && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedPortfolioId(TRADER_PORTFOLIO_ID)}
+                  className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 whitespace-nowrap"
+                >
+                  🤖 Retour TRADER
+                </button>
+              )}
+          </div>
           <p className="text-[11px] text-muted-foreground">
-            TRADER = agent LLM autonome Gemini Pro 2.5. MAIN/HIGH/MIDDLE/SMALL = scanners momentum déterministes (shadow sizing).
+            TRADER = agent LLM autonome Gemini Pro 2.5. Shadow High/Middle/Small = scanners momentum A/B (read-only).
           </p>
         </div>
       )}
