@@ -23,6 +23,7 @@ interface Svc {
   closePosition: jest.Mock;
   checkReactiveSignals: jest.Mock;
   isGainersStrategy: jest.Mock;
+  isTrailingEligible: jest.Mock;
   checkStopTarget: (pos: unknown, isHyperActive?: boolean) => Promise<void>;
 }
 
@@ -34,6 +35,8 @@ function makeSvc(price: string, isGainers = true): Svc {
   svc.closePosition = jest.fn(async () => undefined);
   svc.checkReactiveSignals = jest.fn(async () => undefined);
   svc.isGainersStrategy = jest.fn(async () => isGainers);
+  // mechanical-trading.service.ts:2202 — trailing TP gate sur isTrailingEligible(portfolioId).
+  svc.isTrailingEligible = jest.fn(async () => isGainers);
   return svc;
 }
 

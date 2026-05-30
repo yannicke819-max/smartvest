@@ -56,13 +56,22 @@ export function detectAssetClass(
     return FX_MAJORS.has(s) ? 'fx_major' : 'fx_cross';
   }
 
-  // Commodity : exchange=COMM/FUTURES, pattern XX.F
-  if (ex === 'COMM' || ex === 'FUTURES' || /^[A-Z]{2,3}\.F$/.test(s)) {
+  // Commodity : exchange=COMM/FUTURES ou suffix .COMM (EODHD : BRENT.COMM, etc.)
+  // FIX 29/05/2026 : l'ancien regex /^[A-Z]{2,3}\.F$/ matchait TOUS les tickers
+  // Frankfurt 2-3 lettres (.F = Frankfurt exchange, cf. CLAUDE.md BMW.F ≠ BMW.XETRA)
+  // → 10/10 candidats Frankfurt mal classés 'commodity' au lieu de 'eu_equity',
+  // donc bans EU + lessons eu_equity ne s'appliquaient pas. Les vrais futures
+  // commodity EODHD utilisent .COMM (BRENT.COMM), pas .F.
+  if (ex === 'COMM' || ex === 'FUTURES' || /\.COMM$/.test(s)) {
     return 'commodity';
   }
 
-  // EU equity exchanges
-  if (['LSE', 'XETRA', 'PA', 'AMS', 'BR', 'SW', 'BME', 'MI', 'STO', 'L', 'DE'].includes(ex)) {
+  // EU equity exchanges — 'F' (Frankfurt) ajouté 29/05 (cf. fix ci-dessus).
+  if (['LSE', 'XETRA', 'PA', 'AMS', 'BR', 'SW', 'BME', 'MI', 'STO', 'L', 'DE', 'F'].includes(ex)) {
+    return 'eu_equity';
+  }
+  // EU equity par suffix (cas où exchange n'est pas fourni mais le ticker l'indique).
+  if (/\.(LSE|XETRA|PA|AS|BR|SW|MI|MC|L|DE|F)$/.test(s)) {
     return 'eu_equity';
   }
   // Asia equity exchanges

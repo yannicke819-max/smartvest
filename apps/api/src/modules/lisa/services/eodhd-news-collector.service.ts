@@ -39,7 +39,11 @@ export class EodhdNewsCollectorService {
   }
 
   /** Toutes les 30 min, indépendant des sessions (news 24/7 even when markets closed). */
-  @Cron('*/30 * * * *', { timeZone: 'UTC' })
+  // 29/05/2026 — bump 30min → 10min : latence ingestion observée 30-40 min
+  // pre-bump (article publié 03:58 UTC → fetched 04:30 UTC). Pour le scalping
+  // TRADER, 30 min de retard est trop. EODHD plan ALL-IN-ONE (100k calls/jour)
+  // donne marge largement suffisante pour 144 calls/jour vs 48 actuels.
+  @Cron('*/10 * * * *', { timeZone: 'UTC' })
   async cronCollect(): Promise<void> {
     if (!this.enabled || !this.news.isEnabled()) return;
     if (this.collecting) {

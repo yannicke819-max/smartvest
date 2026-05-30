@@ -53,7 +53,20 @@ import {
   type PerClassHourBlacklistConfig,
   type TickerSizeMultConfig,
 } from './data-driven-gates.helper';
+import {
+  mergeHourBlacklist,
+  parseHoursCsvSet,
+  extractSizingMultiplierAsiaEquity,
+  extractEuEquityFilterMode,
+  extractMinChangePctEuEquityFractional,
+  extractMinPathEfficiencyEu,
+  type EuEquityFilterMode,
+  type LessonTargetsRow,
+} from './lesson-driven-config.helper';
 import { SizingABTestService } from './research/sizing-ab-test.service';
+import { ScannerLessonsContextService } from './scanner-lessons-context.service';
+import { EodhdIntradayService } from './eodhd-intraday.service';
+import { evaluateVelocityGate, type PricePoint } from './velocity-gate.helper';
 import { EodhdQuotaService } from './eodhd-quota.service';
 import { EodhdCalendarService } from './eodhd-calendar.service';
 import { EodhdNewsService } from './eodhd-news.service';
@@ -185,7 +198,10 @@ interface EodhdScreenerRow {
  * NB : `MC` et `BME` sont les 2 codes EODHD acceptés selon la version API
  * pour la Bolsa de Madrid ; `AS` et `AMS` idem pour Euronext Amsterdam.
  */
-const EU_EXCHANGES = ['LSE', 'XETRA', 'PA', 'SW', 'MI', 'MC', 'BME', 'AS', 'AMS'];
+// Codes validés via EODHD exchanges-list 27/05/2026 + screener test direct.
+// Retirés (EODHD "Exchange Not Found") : MI (Italie), BME (= doublon MC), AMS (= doublon AS)
+// Ajoutés (testés ✅ rows>0) : F (Frankfurt 2), BR (Brussels), TA (Tel Aviv), WAR (Warsaw)
+const EU_EXCHANGES = ['LSE', 'XETRA', 'PA', 'SW', 'MC', 'AS', 'F', 'BR', 'TA', 'WAR'];
 
 // Shadow sizing × AI auto-tuner — 3 portfolios benchmark sizing (high/middle/small)
 // créés via migration 0166. Tous bypassent persistence (=0) et path_eff (=0) mais
@@ -199,7 +215,16 @@ const EU_EXCHANGES = ['LSE', 'XETRA', 'PA', 'SW', 'MI', 'MC', 'BME', 'AS', 'AMS'
 const SHADOW_PORTFOLIO_IDS = new Set<string>([
   'a0000001-0000-0000-0000-000000000001',  // shadow_high   : 3  pos × $3500
   'a0000002-0000-0000-0000-000000000002',  // shadow_middle : 15 pos × $700
-  'a0000003-0000-0000-0000-000000000003',  // shadow_small  : 20 pos × $525 (cap DB)
+  'a0000003-0000-0000-0000-000000000003',  // shadow_small  : 40 pos × $262
+]);
+// Portfolios qui bypassent les hour-blacklists (LONG global + per-class).
+// Objectif : maximiser le nombre de signaux collectés sur la durée complète
+// de chaque session (US/EU/Asia). Le gate session par-bourse (isInExchangeSession)
+// reste appliqué — on n'ouvre pas sur marché fermé.
+const HOUR_GATE_BYPASS_PORTFOLIO_IDS = new Set<string>([
+  'a0000001-0000-0000-0000-000000000001',
+  'a0000002-0000-0000-0000-000000000002',
+  'a0000003-0000-0000-0000-000000000003',
 ]);
 const MAIN_PORTFOLIO_ID_FOR_DEDUPE = '58439d86-3f20-4a60-82a4-307f3f252bc2';
 // P19d (29/04/2026 14:30 CEST) — Ajout SSE (Shanghai) + SZSE (Shenzhen) pour
@@ -219,7 +244,12 @@ const MAIN_PORTFOLIO_ID_FOR_DEDUPE = '58439d86-3f20-4a60-82a4-307f3f252bc2';
 // Constat 07/05/2026 : ~25 tickers NSE 404 par cycle scanner (~75-100 calls
 // EODHD perdus/cycle + 6-8 secondes de latence supplémentaires). Si le plan
 // est upgradé un jour pour inclure NSE/BSE, réajouter 'NSE', 'BSE' à cette liste.
-const NON_EU_EXCHANGES = ['US', 'T', 'HK', 'AU', 'KO', 'KQ', 'TO', 'SHG', 'SHE'];
+// Codes validés via EODHD screener test 27/05/2026.
+// Retirés (EODHD "Exchange Not Found") : T (Tokyo non supporté par EODHD)
+// HK gardé : screener retourne 0 rows actuellement mais eod-bulk fonctionne (3713 tickers)
+// — à investiguer (filter market_cap?) ou switch endpoint en follow-up
+// Ajouté : NSE (India) — testé 10 rows ✅
+const NON_EU_EXCHANGES = ['US', 'HK', 'AU', 'KO', 'KQ', 'TO', 'SHG', 'SHE', 'NSE'];
 /** Watchlists EU dont la session_open_utc / session_close_utc gate l'EODHD scan. */
 const EU_WATCHLIST_NAMES = ['cac40', 'dax40', 'ftse100'];
 // Bug #G2 (13/05/2026) — MATICUSDT remplacé par POLUSDT suite au rebrand
@@ -774,6 +804,11 @@ export class TopGainersScannerService implements OnModuleInit {
     @Optional() private readonly microProbe?: MicroMomentumProbeService,
     // Sizing A/B test (research) — Optional pour back-compat tests.
     @Optional() private readonly sizingAbTest?: SizingABTestService,
+    // Phase 3 — scanner_lessons injecté dans les system prompts Gemini.
+    // Optional pour back-compat tests (le getter retourne '' si pas fourni).
+    @Optional() private readonly lessonsContext?: ScannerLessonsContextService,
+    // 29/05/2026 — EODHD intraday pour velocity gate (option robuste falling-knife)
+    @Optional() private readonly eodhdIntraday?: EodhdIntradayService,
   ) {
     // Parse stagflation hedge guard config 1× au boot. ConfigService.get retourne
     // toujours string|undefined ; on convertit via le helper pur.
@@ -1636,6 +1671,27 @@ export class TopGainersScannerService implements OnModuleInit {
    *
    * Doc : https://eodhd.com/financial-apis/stock-market-screener-api
    */
+  /**
+   * Public wrapper pour endpoint admin debug — appelle le screener EODHD pour
+   * un exchange donné et retourne les candidats bruts. Utilise la même clé que
+   * la prod. Permet de diagnostiquer pourquoi certains exchanges (T, HK, MI...)
+   * ne remontent jamais aucun ticker.
+   */
+  async debugScreener(exchange: string): Promise<{ exchange: string; candidates_count: number; sample: TopGainerCandidate[]; error?: string }> {
+    const apiKey = this.config.get<string>('EODHD_API_KEY');
+    if (!apiKey || apiKey === 'demo') return { exchange, candidates_count: 0, sample: [], error: 'EODHD_API_KEY not configured' };
+    try {
+      const candidates = await this.fetchEodhdScreener(exchange, apiKey);
+      return {
+        exchange,
+        candidates_count: candidates.length,
+        sample: candidates.slice(0, 10),
+      };
+    } catch (e) {
+      return { exchange, candidates_count: 0, sample: [], error: String(e).slice(0, 300) };
+    }
+  }
+
   private async fetchEodhdScreener(exchange: string, apiKey: string): Promise<TopGainerCandidate[]> {
     const exUpper = exchange.toUpperCase();
     const isUs = exUpper === 'US';
@@ -1669,13 +1725,16 @@ export class TopGainersScannerService implements OnModuleInit {
     //   SCANNER_UNIVERSE_MAX_TICKERS (default 1500, max 3000) : cap global
     // Cap par exchange = ceil(MAX / nbExchanges). Stop précoce si page < pageSize.
     // Hard limit : 10 pages max par exchange (anti-runaway).
+    // Defaults bumpés 27/05/2026 — porte d'entrée investigation révèle 98 674
+    // tickers EODHD dispo sur 19 exchanges. Anciens defaults (100/1500) coupaient
+    // trop tôt. Nouveaux : 500/3000 (max code-side) pour maximiser le funnel.
     const pageSize = Math.max(
       1,
-      Math.min(500, Number(this.config.get<string>('SCANNER_SCREENER_PAGE_SIZE') ?? '100')),
+      Math.min(500, Number(this.config.get<string>('SCANNER_SCREENER_PAGE_SIZE') ?? '500')),
     );
     const universeMax = Math.max(
       pageSize,
-      Math.min(3000, Number(this.config.get<string>('SCANNER_UNIVERSE_MAX_TICKERS') ?? '1500')),
+      Math.min(3000, Number(this.config.get<string>('SCANNER_UNIVERSE_MAX_TICKERS') ?? '3000')),
     );
     const nbExchanges = Math.max(1, EU_EXCHANGES.length + NON_EU_EXCHANGES.length);
     const perExchangeCap = Math.ceil(universeMax / nbExchanges);
@@ -2078,9 +2137,46 @@ export class TopGainersScannerService implements OnModuleInit {
     const { data: cfgRow } = await this.supabase
       .getClient()
       .from('lisa_session_configs')
-      .select('capital_usd, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes, gainers_universe_us, gainers_universe_eu, gainers_universe_asia, gainers_universe_crypto, gainers_p_win_gate_enabled, gainers_min_p_win, gainers_rotation_stagnant_min_age_min, gainers_rotation_min_path_efficiency, gainers_session_filter_enabled, gainers_force_close_before_close_enabled, gainers_force_close_offset_min, gainers_smart_close_enabled, gainers_smart_close_window_min, gainers_smart_close_min_profit_pct, gainers_post_sl_cooldown_min, gainers_asia_strictness_boost, gainers_capital_rotation_enabled, gainers_high_grading_enabled, gainers_rotation_min_score, gainers_top_pool_size')
+      .select('capital_usd, gainers_min_persistence_score, gainers_min_path_efficiency, gainers_default_tp_pct, gainers_default_sl_pct, gainers_max_open_positions, gainers_max_per_cycle, gainers_position_pct, gainers_cash_reserve_pct, gainers_cooldown_minutes, gainers_universe_us, gainers_universe_eu, gainers_universe_asia, gainers_universe_crypto, gainers_p_win_gate_enabled, gainers_min_p_win, gainers_rotation_stagnant_min_age_min, gainers_rotation_min_path_efficiency, gainers_session_filter_enabled, gainers_force_close_before_close_enabled, gainers_force_close_offset_min, gainers_smart_close_enabled, gainers_smart_close_window_min, gainers_smart_close_min_profit_pct, gainers_post_sl_cooldown_min, gainers_asia_strictness_boost, gainers_capital_rotation_enabled, gainers_high_grading_enabled, gainers_rotation_min_score, gainers_top_pool_size, "gainers_hour_blacklist_ASIA_UTC", "gainers_hour_blacklist_EU_UTC", "gainers_hour_blacklist_US_UTC", gainers_sizing_multiplier_asia_equity, gainers_asset_class_filter_eu_equity, gainers_min_change_pct_eu_equity, "gainers_min_path_efficiency_EU"')
       .eq('portfolio_id', portfolioId)
       .maybeSingle();
+    // Lesson-driven hour blacklist (migration 0172) — per-portfolio override.
+    // UNION avec la blacklist globale (env Fly) : safety wins, on n'allège
+    // jamais le filtre global même si la lesson active a un set plus restreint.
+    // Si les colonnes DB sont null/'' (cas par défaut), l'effectif = global pur.
+    const effectivePerClassHourGate: PerClassHourBlacklistConfig = {
+      asia_equity: mergeHourBlacklist(
+        this.perClassHourGate.asia_equity,
+        (cfgRow as Record<string, unknown> | null)?.['gainers_hour_blacklist_ASIA_UTC'] as string | null | undefined,
+      ),
+      us_equity_large: mergeHourBlacklist(
+        this.perClassHourGate.us_equity_large,
+        (cfgRow as Record<string, unknown> | null)?.['gainers_hour_blacklist_US_UTC'] as string | null | undefined,
+      ),
+      us_equity_small_mid: mergeHourBlacklist(
+        this.perClassHourGate.us_equity_small_mid,
+        (cfgRow as Record<string, unknown> | null)?.['gainers_hour_blacklist_US_UTC'] as string | null | undefined,
+      ),
+      eu_equity: mergeHourBlacklist(
+        this.perClassHourGate.eu_equity,
+        (cfgRow as Record<string, unknown> | null)?.['gainers_hour_blacklist_EU_UTC'] as string | null | undefined,
+      ),
+      crypto_major: this.perClassHourGate.crypto_major,
+      crypto_alt: this.perClassHourGate.crypto_alt,
+    };
+    // Log discret si DB ajoute des heures non présentes dans le global
+    const dbAsiaSet = parseHoursCsvSet((cfgRow as Record<string, unknown> | null)?.['gainers_hour_blacklist_ASIA_UTC'] as string | null | undefined);
+    const dbUsSet = parseHoursCsvSet((cfgRow as Record<string, unknown> | null)?.['gainers_hour_blacklist_US_UTC'] as string | null | undefined);
+    const dbEuSet = parseHoursCsvSet((cfgRow as Record<string, unknown> | null)?.['gainers_hour_blacklist_EU_UTC'] as string | null | undefined);
+    if (dbAsiaSet.size > 0 || dbUsSet.size > 0 || dbEuSet.size > 0) {
+      this.logger.log(
+        `[hour-blacklist-overlay] ${portfolioId.slice(0, 8)} DB-overlay: ` +
+        `asia=[${[...dbAsiaSet].sort((a,b)=>a-b).join(',')}] ` +
+        `us=[${[...dbUsSet].sort((a,b)=>a-b).join(',')}] ` +
+        `eu=[${[...dbEuSet].sort((a,b)=>a-b).join(',')}]`,
+      );
+    }
+
     const minScore = this.resolveMinPersistenceScore(
       cfgRow?.gainers_min_persistence_score != null
         ? Number(cfgRow.gainers_min_persistence_score)
@@ -2090,6 +2186,31 @@ export class TopGainersScannerService implements OnModuleInit {
     const minPathEff = cfgRow?.gainers_min_path_efficiency != null
       ? Math.max(0, Math.min(1, Number(cfgRow.gainers_min_path_efficiency)))
       : null;
+
+    // Phase 5b — Lesson-driven per-class overrides (migration 0172).
+    // - asiaSizingMultiplier : multiplie le notional pour asia_equity (default 1.0)
+    // - euFilterMode : 'enabled' (default) / 'disabled' / 'disabled_during_NEWS_SHOCK'
+    // - minChangePctEuPctPoints : seuil entry pour eu_equity (POINTS DE %, ex 1.5)
+    //   override le default 5% du top-gainers-filter pour cette classe uniquement.
+    // - minPathEffEu : override per-class du minPathEff global pour eu_equity
+    // Null DB → fallback comportement actuel (= pas d'override).
+    const lessonRow = (cfgRow as LessonTargetsRow | null | undefined) ?? null;
+    const asiaSizingMultiplier = lessonRow
+      ? extractSizingMultiplierAsiaEquity(lessonRow)
+      : null;
+    const euFilterModeRaw: EuEquityFilterMode | null = lessonRow
+      ? extractEuEquityFilterMode(lessonRow)
+      : null;
+    const euFilterMode: EuEquityFilterMode = euFilterModeRaw ?? 'enabled';
+    // DB stocke fractional (0.015 = 1.5%) — filter top-gainers-filter veut POINTS
+    // (1.5 = 1.5%). Multiplier × 100 pour aligner.
+    const minChangePctEuFractional = lessonRow
+      ? extractMinChangePctEuEquityFractional(lessonRow)
+      : null;
+    const minChangePctEuPctPoints = minChangePctEuFractional !== null
+      ? minChangePctEuFractional * 100
+      : null;
+    const minPathEffEu = lessonRow ? extractMinPathEfficiencyEu(lessonRow) : null;
     // P19x.2 — TP/SL configurables par portfolio. Defaults DB = 1.5% / 1.0%
     // (migration 0093). Si row absent (portfolio sans config), fallback hardcoded
     // aux mêmes defaults.
@@ -2250,6 +2371,18 @@ export class TopGainersScannerService implements OnModuleInit {
       ? Math.max(0, Math.min(1, Number(cfgRow.gainers_min_p_win)))
       : 0.50;
 
+    // Phase 5b — Lesson-driven EU filter mode :
+    //   - 'disabled' → skip toutes les eu_equity
+    //   - 'disabled_during_NEWS_SHOCK' → faute de wiring MacroRegimeService dans
+    //     ce service, on applique la version conservative (safety wins) = skip
+    //     toujours, en logant. Future : wirer le régime live pour un skip
+    //     conditionnel précis.
+    const euEffectivelyDisabled = euFilterMode !== 'enabled';
+    if (euEffectivelyDisabled) {
+      this.logger.log(
+        `[top-gainers] ${portfolioId.slice(0, 8)} lesson-driven EU filter mode='${euFilterMode}' → skip all eu_equity candidates`,
+      );
+    }
     const filteredCandidates = candidates.filter((c) => {
       // detectAssetClass est appliqué dans selectTopGainers ; on doit le faire
       // ici aussi pour pouvoir filtrer la liste pré-selection.
@@ -2257,7 +2390,15 @@ export class TopGainersScannerService implements OnModuleInit {
       // PR #266 — combine universe toggle (volonté user) ET session ouverte.
       // PR #272 — exclut aussi si session en T-N min de close (force-close ON).
       if (assetClass === 'us_equity_large' || assetClass === 'us_equity_small_mid') return universeUs && usOpen && !usApproachingClose;
-      if (assetClass === 'eu_equity') return universeEu && euOpen && !euApproachingClose;
+      if (assetClass === 'eu_equity') {
+        if (euEffectivelyDisabled) return false;
+        // Phase 5b — per-class min_change_pct override (DB en fractional → ×100 pour
+        // matcher l'unité c.changePct qui est en POINTS DE %). Skip si en-deçà.
+        if (minChangePctEuPctPoints !== null && (c.changePct ?? 0) < minChangePctEuPctPoints) {
+          return false;
+        }
+        return universeEu && euOpen && !euApproachingClose;
+      }
       if (assetClass === 'asia_equity') return universeAsia && asiaOpen && !asiaApproachingClose;
       if (assetClass === 'crypto_major' || assetClass === 'crypto_alt') return universeCrypto;
       return true; // fx/commodity etc — pas de toggle, accept par default
@@ -2514,6 +2655,44 @@ export class TopGainersScannerService implements OnModuleInit {
     }
     const postSlCooldownMs = postSlCooldownMin * 60_000;
 
+    // SL_CONTAGION_CROSS_PORTFOLIO (lesson 28/05 + extension 29/05) — ON par défaut.
+    // 29/05 09:30 : contagion ITM.LSE -$57 sur 3 portfolios (MAIN choppy -$26,
+    // MIDDLE +$12, HIGH SL -$42). HIGH a pris ITM APRÈS la perte MAIN. L'ancien
+    // gate ne catchait que closed_stop → ratait les closes choppy perdants.
+    //
+    // FIX : (1) default 90 min au lieu de 0 (ON par défaut). (2) catch TOUS les
+    // closes PERDANTS (realized_pnl < 0), pas juste closed_stop. (3) même
+    // asset_class requis. Désactivable via GAINERS_CROSS_PORTFOLIO_SL_COOLDOWN_MIN=0.
+    const crossPortfolioSlCooldownMin = Math.max(
+      0,
+      Math.min(1440, Number(this.config.get<string>('GAINERS_CROSS_PORTFOLIO_SL_COOLDOWN_MIN') ?? '90')),
+    );
+    const crossPortfolioRecentSl = new Map<string, { ms: number; assetClass: string }>();
+    if (crossPortfolioSlCooldownMin > 0) {
+      try {
+        const sinceIso = new Date(Date.now() - crossPortfolioSlCooldownMin * 60_000).toISOString();
+        const { data: crossClosesRaw } = await this.supabase
+          .getClient()
+          .from('lisa_positions')
+          .select('symbol, asset_class, exit_timestamp, portfolio_id, realized_pnl_usd, status')
+          .neq('portfolio_id', portfolioId)
+          .neq('status', 'open')
+          .lt('realized_pnl_usd', 0)
+          .gte('exit_timestamp', sinceIso);
+        for (const row of crossClosesRaw ?? []) {
+          const sym = String(row.symbol).toUpperCase();
+          const ms = new Date(String(row.exit_timestamp)).getTime();
+          if (!Number.isFinite(ms)) continue;
+          const prev = crossPortfolioRecentSl.get(sym);
+          if (!prev || ms > prev.ms) {
+            crossPortfolioRecentSl.set(sym, { ms, assetClass: String(row.asset_class ?? '') });
+          }
+        }
+      } catch (e) {
+        this.logger.debug(`[top-gainers] cross-portfolio loss query skipped: ${String(e).slice(0, 100)}`);
+      }
+    }
+
     // PR #280 — Shadow user-pipeline : capte chaque décision (accept / reject_*)
     // pour mesurer le regret cost via /lisa/gainers-shadow-regret. Fire-and-forget.
     const recordShadowDecision = (
@@ -2613,6 +2792,241 @@ export class TopGainersScannerService implements OnModuleInit {
         continue;
       }
 
+      // Venue blacklist (analyse 27/05/2026, n=112 winners vs 234 losers) :
+      //   - .KO Korea large caps : WR 20%, sumPnl très négatif
+      //   - Configurable via `GAINERS_VENUE_BLACKLIST=KO,XYZ` (vide = pas de filtre).
+      //   - Note : .KQ (KOSDAQ) reste autorisé (2 mega-winners, distinguer venues).
+      const venueBlacklistRaw = (this.config.get<string>('GAINERS_VENUE_BLACKLIST') ?? '').trim();
+      if (venueBlacklistRaw.length > 0 && cand.exchange) {
+        const blacklistedVenues = new Set(
+          venueBlacklistRaw.split(',').map((v) => v.trim().toUpperCase()).filter((v) => v.length > 0),
+        );
+        if (blacklistedVenues.has(cand.exchange.toUpperCase())) {
+          this.logger.log(
+            `[top-gainers] ${cand.symbol} venue ${cand.exchange} blacklistée → skip long (data-driven 27/05)`,
+          );
+          recordShadowDecision(cand, 'reject_other', undefined);
+          continue;
+        }
+      }
+
+      // ASIA OPENING SUFFIX BAN (28/05/2026 soirée, analyse MFE/MAE 3-week n=250
+      // asia_equity) — opening auctions 00:00-02:00 UTC sont structurellement
+      // toxiques sur :
+      //  - .T/.HK/.SHG/.SHE/.SI : n=16, WR 12%, Σ -$527 (Nikkei + HSI + Shanghai/Shenzhen + SGX)
+      // .SS/.SZ inclus aussi pour back-compat (convention Yahoo Finance ; EODHD utilise .SHG/.SHE)
+      //  - .KQ                : n=32, WR 31%, Σ -$407 (KOSDAQ opening)
+      // En revanche .KQ rest 02-08h UTC = WR 57%, Σ +$96 sur n=63 — veine prouvée.
+      // Le gate envisage donc une fenêtre stricte 00-02h UTC ban sur ces 6 suffixes.
+      // Opt-out via env `GAINERS_ASIA_OPENING_SUFFIX_BAN_ENABLED=false` (default true).
+      const asiaOpeningBanEnabled = (this.config.get<string>('GAINERS_ASIA_OPENING_SUFFIX_BAN_ENABLED') ?? 'true').toLowerCase() === 'true';
+      if (asiaOpeningBanEnabled) {
+        const nowHourUtc = new Date().getUTCHours();
+        if (nowHourUtc < 2) {
+          const symUpper = cand.symbol.toUpperCase();
+          const isBanned = symUpper.endsWith('.T')
+            || symUpper.endsWith('.HK')
+            || symUpper.endsWith('.SHG')
+            || symUpper.endsWith('.SHE')
+            || symUpper.endsWith('.SS')
+            || symUpper.endsWith('.SZ')
+            || symUpper.endsWith('.SI')
+            || symUpper.endsWith('.KQ');
+          if (isBanned) {
+            this.logger.log(
+              `[top-gainers] ${cand.symbol} ASIA_OPENING_SUFFIX_BAN actif (heure UTC ${nowHourUtc} < 02:00, suffix opening-toxic) → skip (lesson MFE/MAE 3w)`,
+            );
+            recordShadowDecision(cand, 'reject_other', undefined);
+            continue;
+          }
+        }
+      }
+
+      // XETRA small-cap blacklist (28/05/2026, ADDENDUM A4) — porte la logique
+      // de live-trader-agent.service.ts au scanner. Cas QH9.XETRA 28/05 :
+      // entry $16.68, SL $16.35, prix tombé à $14.58 sans trigger polling →
+      // force-close manuel -$132. Les XETRA small/mid-cap ont des gaps de liquidité
+      // qui contournent le SL polling. Skip si notional < $3000.
+      if (cand.symbol.toUpperCase().endsWith('.XETRA') && positionNotionalUsd < 3000) {
+        this.logger.log(
+          `[top-gainers] ${cand.symbol} XETRA small-cap blacklist (notional=$${positionNotionalUsd.toFixed(0)} < $3000 — anti-gap polling failure QH9 28/05) → skip`,
+        );
+        recordShadowDecision(cand, 'reject_other', undefined);
+        continue;
+      }
+
+      // Dead-zone gate — analyse stats 06-27/05/2026 (n=363 positions matchées).
+      // Buckets changePct structurellement perdants :
+      //   - 4-8%   : WR 13%, Σpnl% -28% (n=91)
+      //   - 15-20% : WR 15%, Σpnl% -111% (n=33, outlier-sensitive mais signal clair)
+      // Buckets gagnants : 8-15% (Σpnl +11%, WR 21-27%) ET ≥20% (WR 25.6%).
+      // Configurable via env `GAINERS_DEAD_ZONES_PCT` (default "15-20").
+      // Update 28/05/2026 : default changé de "4-8,15-20" → "15-20" — observation
+      // pratique : MIDDLE bloquait 82% des candidats (491/600 en 7h) car la majorité
+      // des early movers US/EU tombent dans 4-8%. Le bucket 4-8% reste un peu perdant
+      // historiquement mais on accepte le tradeoff vs zéro trade. Le bucket 15-20%
+      // reste banni (-111% Σpnl, mean reversion certaine).
+      // ADDENDUM A3 28/05 : override per-class via `GAINERS_DEAD_ZONES_PCT_<CLASS>`.
+      // Cas vérifié : us_equity_small_mid avait 3 SL / 5 trades post-relax → on
+      // peut restaurer "4-8,15-20" pour cette classe uniquement, sans pénaliser
+      // EU/Asia/crypto qui ont les patterns KOSDAQ/LSE gagnants en 4-8%.
+      const classUpper = String(cand.assetClass ?? '').toUpperCase();
+      const deadZonesPerClass = classUpper.length > 0
+        ? this.config.get<string>(`GAINERS_DEAD_ZONES_PCT_${classUpper}`)
+        : undefined;
+      const deadZonesRaw = (deadZonesPerClass ?? this.config.get<string>('GAINERS_DEAD_ZONES_PCT') ?? '15-20').trim();
+      if (deadZonesRaw.length > 0) {
+        const changePct = cand.changePct ?? 0;
+        const matchedZone = deadZonesRaw.split(',')
+          .map((z) => z.trim())
+          .filter((z) => z.length > 0)
+          .map((zone) => {
+            const parts = zone.split('-').map((x) => Number(x.trim()));
+            if (parts.length !== 2) return null;
+            const [lo, hi] = parts as [number, number];
+            if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
+            return changePct >= lo && changePct <= hi ? ([lo, hi] as [number, number]) : null;
+          })
+          .find((m) => m !== null);
+        if (matchedZone) {
+          this.logger.log(
+            `[top-gainers] ${cand.symbol} dead-zone (changePct=${changePct.toFixed(1)}% ∈ [${matchedZone[0]}-${matchedZone[1]}%]) → skip long`,
+          );
+          recordShadowDecision(cand, 'reject_dead_zone', undefined);
+          continue;
+        }
+      }
+
+      // OVERPUMP GATE (29/05/2026 03:30 UTC, extension du TRADER overpump à scanners) :
+      // refuse l'open si le candidat a déjà pumpé > X% sur la 1m. Cause root identifiée :
+      // entry au peak local d'un move déjà mature → drawdown ≥ 2% quasi-systématique.
+      // Cas vérifié 29/05 02:48 → 03:23 : MIDDLE re-entre 393890.KQ à $15950 (+4.5% au
+      // dessus du MAIN entry $15270) — exactement quand TRADER refusait l'entrée à
+      // changePct=14.15%. Threshold default 12% : entre le "8-15% winning bucket" et
+      // le ban dead-zone 15-20%. Configurable via GAINERS_OVERPUMP_THRESHOLD_PCT.
+      const overpumpThreshold = Number(this.config.get<string>('GAINERS_OVERPUMP_THRESHOLD_PCT') ?? '12');
+      if (Number.isFinite(overpumpThreshold) && overpumpThreshold > 0) {
+        const changePct = cand.changePct ?? 0;
+        if (changePct > overpumpThreshold) {
+          this.logger.log(
+            `[top-gainers] ${cand.symbol} OVERPUMP_GATE actif (changePct=${changePct.toFixed(1)}% > ${overpumpThreshold}% — entry au peak refusée, attendre pullback)`,
+          );
+          recordShadowDecision(cand, 'reject_overextended', undefined);
+          continue;
+        }
+      }
+
+      // FALLING KNIFE GATE multi-dimensionnel (29/05/2026 05:30 UTC, lesson MAIN 347850.KQ).
+      //
+      // Évolution depuis le simple "close vs high" : combine 3 dimensions intraday
+      // pour détecter falling knife / dead-cat-bounce. Reject si ≥ 2/3 conditions true.
+      //
+      // Cas vérifié 29/05 04:41 : MAIN ouvre 347850.KQ à $94700 (live $94200 30 min plus tard) :
+      //   - open $106000, high $106300, low $92600, close $94200
+      //   - C1 net_day = -11.13% (close vs open)    → TRUE (< -5%)
+      //   - C2 drop_high = -11.40% (close vs high)  → TRUE (< -8%)
+      //   - C3 pos_in_range = (94200-92600)/(106300-92600) = 11.7%  → TRUE (< 30%, near low)
+      //   → 3/3 → REJECT confirmé multi-axes
+      //
+      // Le changePct 1m positif (rebond technique) n'aurait pas suffi à passer le filtre.
+      //
+      // Configurable via :
+      //   GAINERS_FALLING_KNIFE_NET_DAY_PCT       (default -5)
+      //   GAINERS_FALLING_KNIFE_DROP_HIGH_PCT     (default -8)
+      //   GAINERS_FALLING_KNIFE_POS_IN_RANGE_PCT  (default 30)
+      // Disable global : GAINERS_FALLING_KNIFE_ENABLED=false
+      const fallingKnifeEnabled = (this.config.get<string>('GAINERS_FALLING_KNIFE_ENABLED') ?? 'true').toLowerCase() === 'true';
+      if (fallingKnifeEnabled) {
+        const netDayThreshold = Number(this.config.get<string>('GAINERS_FALLING_KNIFE_NET_DAY_PCT') ?? '-5');
+        const dropHighThreshold = Number(this.config.get<string>('GAINERS_FALLING_KNIFE_DROP_HIGH_PCT') ?? '-8');
+        const posInRangeThreshold = Number(this.config.get<string>('GAINERS_FALLING_KNIFE_POS_IN_RANGE_PCT') ?? '30');
+
+        const high = cand.high;
+        const close = cand.close;
+        // open n'est pas dans le TopGainerCandidate — on calcule sur high/low/close
+        // close vs high (drop from peak) + position in range (proximité du low).
+        if (Number.isFinite(high) && Number.isFinite(close) && high > 0 && (cand as { low?: number }).low !== undefined) {
+          const low = Number((cand as { low?: number }).low);
+          const c1NetDay = Number.isFinite(low) && low > 0 ? ((close - low) / low) * 100 : NaN;
+          const c2DropHigh = ((close - high) / high) * 100;
+          const c3PosInRange = Number.isFinite(low) && (high - low) > 0
+            ? ((close - low) / (high - low)) * 100
+            : NaN;
+
+          let trueCount = 0;
+          const reasons: string[] = [];
+          // C1 : proxy net jour via close vs low. Si très proche du low (peu de range),
+          // signal de chute. Threshold inversé : on regarde si net_day est faible.
+          // Note : en l'absence d'open, on substitue "close < low * 1.05" (~5% du low)
+          // comme proxy "trade dans la zone basse" → C1 TRUE.
+          if (Number.isFinite(c1NetDay) && c1NetDay < Math.abs(netDayThreshold)) {
+            trueCount++;
+            reasons.push(`C1 close-vs-low=+${c1NetDay.toFixed(1)}%<${Math.abs(netDayThreshold)}%`);
+          }
+          if (Number.isFinite(c2DropHigh) && c2DropHigh < dropHighThreshold) {
+            trueCount++;
+            reasons.push(`C2 close-vs-high=${c2DropHigh.toFixed(1)}%<${dropHighThreshold}%`);
+          }
+          if (Number.isFinite(c3PosInRange) && c3PosInRange < posInRangeThreshold) {
+            trueCount++;
+            reasons.push(`C3 pos-in-range=${c3PosInRange.toFixed(1)}%<${posInRangeThreshold}%`);
+          }
+
+          if (trueCount >= 2) {
+            this.logger.log(
+              `[top-gainers] ${cand.symbol} FALLING_KNIFE_MULTI actif (${trueCount}/3: ${reasons.join(', ')}) → skip (lesson MAIN 347850.KQ 29/05)`,
+            );
+            recordShadowDecision(cand, 'reject_other', undefined);
+            continue;
+          }
+        }
+      }
+
+      // VELOCITY GATE (29/05/2026 05:40 UTC, option robuste) — fetch candles 1m
+      // EODHD + régression linéaire pour calculer la vraie vélocité (%/min) et
+      // accélération (%/min²) du prix. Détecte les chutes brutales et accélérantes
+      // que les snapshots statiques (open/high/low/close) ne révèlent pas avec
+      // assez de granularité.
+      //
+      // Reject si :
+      //   A) velocity < minNegativeVelocity (default -2%/min) — chute rapide
+      //   B) velocity < 0 ET acceleration < minNegativeAccel (default -0.5%/min²) — chute qui accélère
+      //
+      // Désactivable via GAINERS_VELOCITY_GATE_ENABLED=false (default true mais
+      // skip silencieusement si EodhdIntradayService non injecté ou ticker .US,
+      // car les .US sont déjà filtrés par les autres gates et la latence EODHD
+      // intraday US est suffisante).
+      const velocityGateEnabled = (this.config.get<string>('GAINERS_VELOCITY_GATE_ENABLED') ?? 'true').toLowerCase() === 'true';
+      if (velocityGateEnabled && this.eodhdIntraday) {
+        const minNegVel = Number(this.config.get<string>('GAINERS_VELOCITY_MIN_NEG_PCT_PER_MIN') ?? '-2');
+        const minNegAccel = Number(this.config.get<string>('GAINERS_VELOCITY_MIN_NEG_ACCEL_PCT_PER_MIN2') ?? '-0.5');
+        const minCandles = Number(this.config.get<string>('GAINERS_VELOCITY_MIN_CANDLES') ?? '5');
+        try {
+          const series = await this.eodhdIntraday.getCandles(cand.symbol, '1m', 10);
+          if (series && series.candles.length >= minCandles) {
+            const points: PricePoint[] = series.candles.map((c) => ({
+              timestampSec: c.timestamp,
+              close: c.close,
+            }));
+            const decision = evaluateVelocityGate(points, {
+              minNegativeVelocityPctPerMin: minNegVel,
+              minNegativeAccelPctPerMin2: minNegAccel,
+              minCandlesRequired: minCandles,
+            });
+            if (decision.reject) {
+              this.logger.log(
+                `[top-gainers] ${cand.symbol} VELOCITY_GATE actif (${decision.reason}, n=${decision.features?.n} R²=${decision.features?.rSquared.toFixed(2)}) → skip`,
+              );
+              recordShadowDecision(cand, 'reject_other', undefined);
+              continue;
+            }
+          }
+        } catch (e) {
+          // Tolérant : si fetch EODHD échoue, on laisse passer (les autres gates couvrent).
+          this.logger.debug(`[top-gainers] ${cand.symbol} velocity gate skipped: ${String(e).slice(0, 80)}`);
+        }
+      }
+
       // PR A — Gate horaire LONG. Data mining 15j (23/05/2026, n=7000 signaux) :
       //   - LONG mean H8 (EU open) = -0.60%, H19 (US close) = -1.01%, H22 = -0.93%, H0-H5 = -0.5%
       //   - LONG mean H13-H17 (US active) = neutre à légèrement positif (+0.03 à +0.27%)
@@ -2622,6 +3036,10 @@ export class TopGainersScannerService implements OnModuleInit {
       // GAINERS_LONG_HOUR_BLACKLIST_UTC=8,19,22,23,0,1,2,3,4 → ces heures KO
       // Crypto exempt par défaut (24/7, le pattern horaire vient des equities US).
       // Override via GAINERS_LONG_HOUR_GATE_CRYPTO=true pour gater aussi crypto.
+      // Bypass hour-gates pour shadow portfolios (HIGH/MIDDLE/SMALL).
+      // Objectif : collecter signaux sur durée complète de chaque session.
+      // Le gate session par-bourse reste appliqué (cf. plus bas, ligne ~2680).
+      const bypassHourGate = HOUR_GATE_BYPASS_PORTFOLIO_IDS.has(portfolioId);
       const whitelistRaw = (this.config.get<string>('GAINERS_LONG_HOUR_WHITELIST_UTC') ?? '').trim();
       const blacklistRaw = (this.config.get<string>('GAINERS_LONG_HOUR_BLACKLIST_UTC') ?? '').trim();
       const cryptoGated = (this.config.get<string>('GAINERS_LONG_HOUR_GATE_CRYPTO') ?? 'false').toLowerCase() === 'true';
@@ -2629,8 +3047,9 @@ export class TopGainersScannerService implements OnModuleInit {
       // Si la classe a une blacklist per-class configurée, elle REMPLACE le gate
       // global (pas d'OR additif). Permet d'autoriser asia@8h même si global
       // blacklist inclut 8h. Le gate per-class ci-dessous gère alors seul l'heure.
-      const classHasPerClassConfig = hasPerClassOverride(String(cand.assetClass), this.perClassHourGate);
-      const gateApplies = !classHasPerClassConfig
+      const classHasPerClassConfig = hasPerClassOverride(String(cand.assetClass), effectivePerClassHourGate);
+      const gateApplies = !bypassHourGate
+        && !classHasPerClassConfig
         && (whitelistRaw.length > 0 || blacklistRaw.length > 0)
         && (cryptoGated || !isCryptoCandHourGate);
       if (gateApplies) {
@@ -2660,7 +3079,8 @@ export class TopGainersScannerService implements OnModuleInit {
       // Gate horaire PAR CLASSE (audit 23-24/05 data-driven).
       // REMPLACE le gate global pour les classes configurées (voir classHasPerClassConfig ci-dessus).
       // Recommandation : GAINERS_HOUR_BLACKLIST_ASIA_UTC=0,1,2,3,4,5 (asia H00-05 = -$1300+ / 91 trades, WR 26%).
-      if (shouldSkipByPerClassHourGate(cand.assetClass, nowUtc.getUTCHours(), this.perClassHourGate)) {
+      // Bypass pour shadow portfolios (cf. HOUR_GATE_BYPASS_PORTFOLIO_IDS).
+      if (!bypassHourGate && shouldSkipByPerClassHourGate(cand.assetClass, nowUtc.getUTCHours(), effectivePerClassHourGate)) {
         this.logger.log(
           `[top-gainers] ${cand.symbol} (${cand.assetClass}) hour ${nowUtc.getUTCHours()}h UTC blacklist par-classe → skip long`,
         );
@@ -2742,6 +3162,21 @@ export class TopGainersScannerService implements OnModuleInit {
           this.logger.log(
             `[top-gainers] ${cand.symbol} POST_SL_COOLDOWN bypass (changePct=${(cand.changePct ?? 0).toFixed(1)}% ≥ ${bypassPct}%) → délégué au falling-knife guard`,
           );
+        }
+      }
+
+      // SL_CONTAGION cross-portfolio (ON default 90min) — refuse la ré-ouverture
+      // si le ticker a été fermé EN PERTE (SL OU choppy) sur un autre portfolio
+      // dans la fenêtre ET même asset_class. Évite la contagion ITM.LSE-like.
+      if (crossPortfolioSlCooldownMin > 0) {
+        const crossSl = crossPortfolioRecentSl.get(cand.symbol.toUpperCase());
+        if (crossSl && crossSl.assetClass === String(cand.assetClass)) {
+          const elapsedMin = Math.floor((Date.now() - crossSl.ms) / 60_000);
+          this.logger.log(
+            `[top-gainers] ${cand.symbol} CROSS_PORTFOLIO_LOSS_COOLDOWN actif (perte autre portfolio ${crossSl.assetClass} il y a ${elapsedMin} min < ${crossPortfolioSlCooldownMin} min) → skip`,
+          );
+          recordShadowDecision(cand, 'reject_post_sl_cooldown', undefined);
+          continue;
         }
       }
 
@@ -3025,12 +3460,21 @@ export class TopGainersScannerService implements OnModuleInit {
         //   - asia → baseFloor + asiaStrictnessBoost (préservé)
         //   - us_/eu_/crypto_ → override per-class env si défini (data-driven mai 2026)
         //   - sinon → baseFloor
-        const effectiveMinPathEff = resolveEffectivePathEffFloor(
+        let effectiveMinPathEff = resolveEffectivePathEffFloor(
           minPathEff,
           cand.assetClass,
           this.pathEffOverrides,
           asiaStrictnessBoost,
         );
+        // Phase 5b — Lesson-driven override per-class EU. Priorité MAX (gate plus
+        // strict que les autres sources si défini en DB) : on conserve le max entre
+        // la valeur résolue ci-dessus et l'override lesson. Permet à une lesson de
+        // resserrer le filet (jamais de l'assouplir vs le global env).
+        if (cand.assetClass === 'eu_equity' && minPathEffEu !== null) {
+          effectiveMinPathEff = effectiveMinPathEff !== null
+            ? Math.max(effectiveMinPathEff, minPathEffEu)
+            : minPathEffEu;
+        }
 
         // Integer gate: Math.round avoids float off-by-one (4/6=0.6666 < 0.67 was
         // silently excluding 4/6-TF candidates). 0.67×6=4.02 → rounds to 4.
@@ -3340,6 +3784,30 @@ export class TopGainersScannerService implements OnModuleInit {
         effectiveSlPct = atrSlMaxPct;
       }
 
+      // Phase 5b — Lesson-driven sizing multiplier per-class. Pour l'instant,
+      // uniquement asia_equity (col `gainers_sizing_multiplier_asia_equity`). Si
+      // null DB → multiplier = 1.0 (no-op). Range [0, 5] (CHECK DB) ; on plancher
+      // à $50 pour ne jamais ouvrir une miette qui s'auto-skip côté broker. Si la
+      // taille résultante est sous le plancher, on annule l'ouverture (log).
+      let effectivePositionNotionalUsd = positionNotionalUsd;
+      if (
+        cand.assetClass === 'asia_equity' &&
+        asiaSizingMultiplier !== null &&
+        asiaSizingMultiplier !== 1
+      ) {
+        const scaled = positionNotionalUsd * asiaSizingMultiplier;
+        if (scaled < 50) {
+          this.logger.log(
+            `[top-gainers] ${cand.symbol} (asia) lesson-sizing skip — notional $${scaled.toFixed(2)} < $50 min (multiplier=${asiaSizingMultiplier})`,
+          );
+          continue;
+        }
+        this.logger.log(
+          `[top-gainers] ${cand.symbol} (asia) lesson-sizing applied: $${positionNotionalUsd.toFixed(2)} → $${scaled.toFixed(2)} (× ${asiaSizingMultiplier})`,
+        );
+        effectivePositionNotionalUsd = Math.round(scaled * 100) / 100;
+      }
+
       const insertedPosId = await this.openTopGainerPosition(
         userId,
         portfolioId,
@@ -3350,7 +3818,7 @@ export class TopGainersScannerService implements OnModuleInit {
           slPct: effectiveSlPct,
           capitalUsd,
           positionPct,
-          positionNotionalUsd,
+          positionNotionalUsd: effectivePositionNotionalUsd,
           cashReservePct,
           // Bug #314 #M3 — propage le cap pour l'ouverture atomique anti-race.
           maxOpenPositions: maxOpen,
@@ -3962,7 +4430,16 @@ export class TopGainersScannerService implements OnModuleInit {
     } | null,
   ): Promise<string | null> {
     const effectiveTp = overrides?.tpPct ?? 1.5;
-    const effectiveSl = overrides?.slPct ?? 1.0;
+    let effectiveSl = overrides?.slPct ?? 1.0;
+    // Defensive sanity guardrail (incident 27/05 — MOD.US opened with SL=entry,
+    // slPct=0 leaked via matrix cache stale ou autre voie). Tout slPct < 0.1%
+    // ramené à 1.0% par défaut + log warning pour investigation.
+    if (effectiveSl < 0.1) {
+      this.logger.warn(
+        `[top-gainers] effectiveSl=${effectiveSl} < 0.1% (would trigger SL=entry bug) → forced to 1.0% defensively`,
+      );
+      effectiveSl = 1.0;
+    }
     // Fallbacks identiques aux defaults DB migration 0115 si overrides absents
     // (caller hors scanPortfolio = legacy / test).
     const effectiveCapital = overrides?.capitalUsd ?? FALLBACK_CAPITAL_USD;
@@ -4391,9 +4868,14 @@ export class TopGainersScannerService implements OnModuleInit {
         tf30m: persistence.tf30m,
         tf1h: persistence.tf1h,
       });
+      const lessonsBlock = this.lessonsContext
+        ? await this.lessonsContext.getLessonsBlock('all_scanner', { assetClass: String(cand.assetClass) }).catch(() => '')
+        : '';
+      const systemPrompt = lessonsBlock
+        ? `You are a momentum scanner validating top market gainers. Assess if this is a genuine momentum signal or noise (pump-and-dump, thin volume, etc.). Return ONLY a JSON object: {"pass":true,"signal_quality":0.85,"reason":"brief reason max 60 chars"}. signal_quality in [0,1]. Set pass=false when signal_quality<0.4.\n\n${lessonsBlock}`
+        : 'You are a momentum scanner validating top market gainers. Assess if this is a genuine momentum signal or noise (pump-and-dump, thin volume, etc.). Return ONLY a JSON object: {"pass":true,"signal_quality":0.85,"reason":"brief reason max 60 chars"}. signal_quality in [0,1]. Set pass=false when signal_quality<0.4.';
       const res = await this.llmRouter.call({
-        system:
-          'You are a momentum scanner validating top market gainers. Assess if this is a genuine momentum signal or noise (pump-and-dump, thin volume, etc.). Return ONLY a JSON object: {"pass":true,"signal_quality":0.85,"reason":"brief reason max 60 chars"}. signal_quality in [0,1]. Set pass=false when signal_quality<0.4.',
+        system: systemPrompt,
         user,
         temperature: 0.1,
         maxTokens: 128,
@@ -4427,9 +4909,14 @@ export class TopGainersScannerService implements OnModuleInit {
       const user = JSON.stringify(
         top.map((c) => ({ symbol: c.symbol, assetClass: c.assetClass, changePct: c.changePct, score: c.score, exchange: c.exchange })),
       );
+      const lessonsBlock = this.lessonsContext
+        ? await this.lessonsContext.getLessonsBlock('all_scanner').catch(() => '')
+        : '';
+      const systemPrompt = lessonsBlock
+        ? `You are a momentum scanner. Re-rank these candidates by expected momentum continuation probability. Return ONLY a JSON array of symbols in rank order, most promising first. Example: ["BTCUSDT","AAPL"]. Preserve all symbols.\n\n${lessonsBlock}`
+        : 'You are a momentum scanner. Re-rank these candidates by expected momentum continuation probability. Return ONLY a JSON array of symbols in rank order, most promising first. Example: ["BTCUSDT","AAPL"]. Preserve all symbols.';
       const res = await this.llmRouter.call({
-        system:
-          'You are a momentum scanner. Re-rank these candidates by expected momentum continuation probability. Return ONLY a JSON array of symbols in rank order, most promising first. Example: ["BTCUSDT","AAPL"]. Preserve all symbols.',
+        system: systemPrompt,
         user,
         temperature: 0.1,
         maxTokens: 128,

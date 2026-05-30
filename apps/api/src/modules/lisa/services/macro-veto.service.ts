@@ -25,12 +25,13 @@
  * bonne journée à cause d'une panne LLM).
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { LisaService } from './lisa.service';
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
+import { ScannerLessonsContextService } from './scanner-lessons-context.service';
 
 /** Décision LLM parsée. */
 export interface MacroVetoDecision {
@@ -63,6 +64,7 @@ export class MacroVetoService {
     private readonly config: ConfigService,
     private readonly lisa: LisaService,
     private readonly llmRouter: ScannerLlmRouterService,
+    @Optional() private readonly lessonsContext?: ScannerLessonsContextService,
   ) {}
 
   /**
@@ -179,7 +181,11 @@ export class MacroVetoService {
    * Si parsing fail OU réponse incoherente → fallback allow.
    */
   private async callLlm(snapshot: Awaited<ReturnType<LisaService['fetchMarketSnapshot']>>): Promise<MacroVetoDecision & { llmCostUsd: number; llmLatencyMs: number; llmProvider: string; rawResponse: string }> {
-    const system = `Tu es un analyste macro-financier conservateur. Ton job est de déterminer si les conditions macro courantes sont compatibles avec une stratégie momentum intraday sur small/mid-cap actions et crypto.
+    // Phase 3 — inject scanner_lessons (lessons macro-conditionnelles).
+    const lessonsBlock = this.lessonsContext
+      ? await this.lessonsContext.getLessonsBlock('all_scanner').catch(() => '')
+      : '';
+    const baseSystem = `Tu es un analyste macro-financier conservateur. Ton job est de déterminer si les conditions macro courantes sont compatibles avec une stratégie momentum intraday sur small/mid-cap actions et crypto.
 
 Output STRICT au format JSON :
 {
@@ -194,6 +200,7 @@ RÈGLES STRICTES :
 - macro_allowed = false si breaking news majeure (FED rate decision, geopolitical shock)
 - macro_allowed = true par défaut (fail-open) — ne veto QUE quand la conviction est haute
 - confidence haute (>0.7) seulement quand le signal est franc, pas borderline`;
+    const system = lessonsBlock ? `${baseSystem}\n\n${lessonsBlock}` : baseSystem;
 
     const user = `Indicateurs macro courants :
 - VIX : ${snapshot.vix.toFixed(1)}

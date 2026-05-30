@@ -5,6 +5,27 @@ Guide de travail pour Claude Code sur ce repo.
 
 ---
 
+## Contexte utilisateur
+
+- **Langue de travail** : français (toujours répondre en français).
+- **Localisation** : France (Europe/Paris timezone, CEST en été = UTC+2,
+  CET en hiver = UTC+1). Quand on logue / compare des heures, garder en
+  tête que **les marchés sont en UTC** mais l'utilisateur raisonne en
+  heure locale (Paris). Exemple : 06:00 UTC = 08:00 CEST chez l'utilisateur.
+- **Habitudes de travail** : commence la journée tôt (matinées 6h-9h CEST
+  intenses). Sessions Asia (00:00-06:00 UTC) tombent en début de matinée
+  locale, sessions US (14:30-21:00 UTC) tombent en après-midi-soirée.
+- **Style de communication** : direct, pragmatique, attend des chiffres
+  et des actions concrètes. Pas de baratin. Quand il valide d'un "oui"
+  ou "go", exécute sans relancer.
+- **Historique projet** : ~6 semaines de réflexion commune sur SmartVest
+  au moment de la rédaction (fin mai 2026). Mémoire Gemini scanner_lessons
+  doit accumuler **indéfiniment** (multi-années), pas juste 24h ni
+  6 semaines — cf. ScannerLessonsContextService cache 10000 lessons +
+  score composite confidence × log(sample_size).
+
+---
+
 ## ADR-002 — Nomenclature UI grand public (Sprint 1, 30/04/2026)
 
 Toute mention texte côté front (sidebar, h1, breadcrumb, document.title) doit

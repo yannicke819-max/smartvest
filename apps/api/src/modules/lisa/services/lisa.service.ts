@@ -71,6 +71,7 @@ import {
   fetchWithRetry,
 } from '../helpers/macro-fallback.helper';
 import { assertRegimeInputsHealthy } from '../helpers/regime-healthcheck.helper';
+import { isInExchangeSession } from './exchange-sessions.helper';
 
 /**
  * LisaService — orchestrateur principal du module AI analyst.
@@ -91,6 +92,10 @@ export class LisaService {
   private readonly riskEnforcer: RiskEnforcer;
   private readonly paperBroker: PaperBrokerService;
   private readonly riskMonitor: RiskMonitorService;
+  // Cache léger du dernier MarketSnapshot. Consommé par les services tiers
+  // (LiveTraderAgent, ShadowSizingOrchestrator) qui ont besoin d'un contexte
+  // macro frais sans payer le coût d'un re-fetch complet à chaque cycle.
+  private lastMarketSnapshotCache: { snap: MarketSnapshot; fetchedAt: number } | null = null;
 
   /**
    * P0-B — Cache last-known macro per indicator. Quand toutes les sources
@@ -151,7 +156,23 @@ export class LisaService {
     @Optional() private readonly mtfPersistence?: MultiTimeframePersistenceService,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
-    if (anthropicKey) {
+    const geminiKey = this.config.get<string>('GEMINI_API_KEY');
+
+    // Migration 28/05/2026 — LISA_PROPOSAL_PROVIDER permet de switcher
+    // entre Gemini 2.5 Pro (default, ~10× moins cher) et Claude Opus
+    // (fallback / legacy). Si GEMINI_API_KEY absent, l'effectif tombe sur
+    // claude (cf. LisaClaudeClient constructor logic).
+    const proposalProviderRaw = (
+      this.config.get<string>('LISA_PROPOSAL_PROVIDER') ?? 'gemini'
+    ).toLowerCase();
+    const proposalProvider: 'gemini' | 'claude' =
+      proposalProviderRaw === 'claude' ? 'claude' : 'gemini';
+    const proposalFallbackEnabled = (
+      this.config.get<string>('LISA_PROPOSAL_FALLBACK_ENABLED') ?? 'true'
+    ).toLowerCase() !== 'false';
+    const geminiModel = this.config.get<string>('LISA_PROPOSAL_GEMINI_MODEL') ?? 'gemini-2.5-pro';
+
+    if (anthropicKey || geminiKey) {
       // PATCH 6 P1 cost-01-llm-router — Toute requête Anthropic passe par le
       // routeur centralisé : il choisit le modèle par tâche, applique le
       // circuit breaker budget, et persiste le coût après chaque appel.
@@ -163,20 +184,73 @@ export class LisaService {
         this.config.get<string>('LLM_ROUTER_FALLBACK_ON_BUDGET') ?? 'true'
       ).toLowerCase() !== 'false';
 
-      const router = new LlmRouter(
-        new Anthropic({ apiKey: anthropicKey }),
-        this.apiCostTracker,
-        { dailyCostBudgetUsd: dailyBudget, fallbackOnBudget },
-        {
-          warn: (event, details) => this.logger.warn(
-            `[llm-router:${event}] ${JSON.stringify(details)}`,
-          ),
-        },
-      );
-      this.claudeClient = new LisaClaudeClient(router);
+      // Router Anthropic instancié uniquement si la clé est dispo (sinon
+      // Gemini-only — pas de fallback Claude possible).
+      const router = anthropicKey
+        ? new LlmRouter(
+            new Anthropic({ apiKey: anthropicKey }),
+            this.apiCostTracker,
+            { dailyCostBudgetUsd: dailyBudget, fallbackOnBudget },
+            {
+              warn: (event, details) => this.logger.warn(
+                `[llm-router:${event}] ${JSON.stringify(details)}`,
+              ),
+            },
+          )
+        : null;
+
+      if (!router && proposalProvider === 'claude') {
+        this.claudeClient = null;
+        this.logger.warn(
+          'ANTHROPIC_API_KEY absent + LISA_PROPOSAL_PROVIDER=claude — thesis generation disabled',
+        );
+      } else if (router) {
+        this.claudeClient = new LisaClaudeClient(router, {
+          ...(geminiKey ? { apiKey: geminiKey } : {}),
+          model: geminiModel,
+          provider: proposalProvider,
+          claudeFallbackEnabled: proposalFallbackEnabled,
+          logger: {
+            warn: (msg) => this.logger.warn(msg),
+            info: (msg) => this.logger.log(msg),
+          },
+        });
+        this.logger.log(
+          `[lisa-llm] provider=${proposalProvider} geminiKey=${!!geminiKey} `
+          + `claudeKey=${!!anthropicKey} fallback=${proposalFallbackEnabled} model=${geminiModel}`,
+        );
+      } else {
+        // Gemini-only path : pas de router Anthropic, on construit un client
+        // minimal qui ne peut PAS fallback Claude. On passe un router stub
+        // qui throw si jamais appelé (théoriquement impossible vu effective=gemini).
+        const stubRouter = new LlmRouter(
+          {
+            messages: {
+              create: async () => {
+                throw new Error('ANTHROPIC_API_KEY absent — Claude fallback impossible');
+              },
+            },
+          },
+          this.apiCostTracker,
+          { dailyCostBudgetUsd: dailyBudget, fallbackOnBudget: false },
+        );
+        this.claudeClient = new LisaClaudeClient(stubRouter, {
+          ...(geminiKey ? { apiKey: geminiKey } : {}),
+          model: geminiModel,
+          provider: 'gemini',
+          claudeFallbackEnabled: false,
+          logger: {
+            warn: (msg) => this.logger.warn(msg),
+            info: (msg) => this.logger.log(msg),
+          },
+        });
+        this.logger.log(
+          `[lisa-llm] provider=gemini (no Anthropic fallback) model=${geminiModel}`,
+        );
+      }
     } else {
       this.claudeClient = null;
-      this.logger.warn('ANTHROPIC_API_KEY absent — thesis generation disabled');
+      this.logger.warn('ANTHROPIC_API_KEY + GEMINI_API_KEY absents — thesis generation disabled');
     }
 
     this.corpusQuery = new CorpusQueryService(this.supabase.getClient());
@@ -2510,6 +2584,139 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     return data ?? [];
   }
 
+  /**
+   * LISA refonte B.2 — Lessons Impact Tracker.
+   *
+   * Agrège les citations de lessons par TRADER sur une fenêtre glissante.
+   * Pour chaque lesson (ou marker orphan non mappé), retourne :
+   *   - citations_count, applied_count, resolved_count, wins, losses
+   *   - sum_pnl_usd, avg_pnl_usd, win_rate_pct, last_cited_at
+   *   - métadonnées scanner_lessons (lesson_kind, lesson_text, confidence, etc.)
+   *
+   * Stratégie : fetch citations + lessons séparément, agrégation TS.
+   * Volumétrie raisonnable jusqu'à ~10k citations (limite hard).
+   */
+  async getLessonsImpact(userId: string, portfolioId: string, days = 30) {
+    await this.assertPortfolioOwner(userId, portfolioId);
+    const client = this.supabase.getClient();
+    const sinceIso = new Date(Date.now() - days * 86400_000).toISOString();
+
+    const { data: citations, error: cErr } = await client
+      .from('scanner_lesson_citations')
+      .select('lesson_id, marker_text, action_applied, outcome_resolved_at, outcome_win, outcome_pnl_usd, cited_at')
+      .eq('portfolio_id', portfolioId)
+      .gte('cited_at', sinceIso)
+      .limit(10000);
+    if (cErr) throw new BadRequestException(cErr.message);
+    const allCitations = citations ?? [];
+
+    type LessonRow = {
+      id: string;
+      lesson_kind: string;
+      lesson_text: string | null;
+      confidence: number | null;
+      is_active: boolean;
+      macro_condition: string | null;
+      sample_size: number | null;
+    };
+
+    const lessonIds = [
+      ...new Set(allCitations.map((c) => (c as { lesson_id?: string }).lesson_id).filter(Boolean)),
+    ] as string[];
+    const lessonMap = new Map<string, LessonRow>();
+    if (lessonIds.length > 0) {
+      const { data: lessons } = await client
+        .from('scanner_lessons')
+        .select('id, lesson_kind, lesson_text, confidence, is_active, macro_condition, sample_size')
+        .in('id', lessonIds);
+      for (const l of (lessons ?? []) as LessonRow[]) lessonMap.set(l.id, l);
+    }
+
+    type Bucket = {
+      lesson_id: string | null;
+      lesson_kind: string;
+      lesson_text: string | null;
+      marker_text: string;
+      confidence: number | null;
+      is_active: boolean | null;
+      macro_condition: string | null;
+      sample_size: number | null;
+      citations_count: number;
+      applied_count: number;
+      resolved_count: number;
+      wins: number;
+      losses: number;
+      sum_pnl_usd: number;
+      avg_pnl_usd: number;
+      win_rate_pct: number | null;
+      last_cited_at: string | null;
+    };
+    const buckets = new Map<string, Bucket>();
+    for (const c of allCitations) {
+      const row = c as {
+        lesson_id?: string | null;
+        marker_text: string;
+        action_applied: boolean;
+        outcome_resolved_at?: string | null;
+        outcome_win?: boolean | null;
+        outcome_pnl_usd?: unknown;
+        cited_at: string;
+      };
+      const key = row.lesson_id ? `id:${row.lesson_id}` : `marker:${row.marker_text}`;
+      let b = buckets.get(key);
+      if (!b) {
+        const lesson = row.lesson_id ? lessonMap.get(row.lesson_id) : null;
+        b = {
+          lesson_id: row.lesson_id ?? null,
+          lesson_kind: lesson?.lesson_kind ?? '(orphan marker)',
+          lesson_text: lesson?.lesson_text ?? null,
+          marker_text: row.marker_text,
+          confidence: lesson?.confidence ?? null,
+          is_active: lesson?.is_active ?? null,
+          macro_condition: lesson?.macro_condition ?? null,
+          sample_size: lesson?.sample_size ?? null,
+          citations_count: 0,
+          applied_count: 0,
+          resolved_count: 0,
+          wins: 0,
+          losses: 0,
+          sum_pnl_usd: 0,
+          avg_pnl_usd: 0,
+          win_rate_pct: null,
+          last_cited_at: null,
+        };
+        buckets.set(key, b);
+      }
+      b.citations_count += 1;
+      if (row.action_applied) b.applied_count += 1;
+      if (row.outcome_resolved_at) {
+        b.resolved_count += 1;
+        const pnl = Number(row.outcome_pnl_usd ?? 0);
+        b.sum_pnl_usd += pnl;
+        if (row.outcome_win === true) b.wins += 1;
+        if (row.outcome_win === false) b.losses += 1;
+      }
+      if (!b.last_cited_at || row.cited_at > b.last_cited_at) {
+        b.last_cited_at = row.cited_at;
+      }
+    }
+
+    const lessonsArr = [...buckets.values()].map((b) => ({
+      ...b,
+      avg_pnl_usd: b.resolved_count > 0 ? b.sum_pnl_usd / b.resolved_count : 0,
+      win_rate_pct: b.resolved_count > 0 ? (b.wins / b.resolved_count) * 100 : null,
+    })).sort((a, b) => b.citations_count - a.citations_count);
+
+    return {
+      windowDays: days,
+      totalCitations: allCitations.length,
+      resolvedCitations: allCitations.filter(
+        (c) => (c as { outcome_resolved_at?: string | null }).outcome_resolved_at,
+      ).length,
+      lessons: lessonsArr,
+    };
+  }
+
   async runRiskCheck(userId: string, portfolioId: string) {
     await this.assertPortfolioOwner(userId, portfolioId);
     const config = await this.getSessionConfig(userId, portfolioId);
@@ -2567,6 +2774,373 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       .eq('portfolio_id', portfolioId);
 
     return { ok: true, portfolioId };
+  }
+
+  /**
+   * LISA refonte C.1 — Coach proposals : list / accept / reject.
+   * Accept = applique les lessons (INSERT scanner_lessons) + (optional)
+   * applique les parameter_changes. Reject = juste UPDATE status='rejected'.
+   */
+  async listCoachProposals(userId: string, portfolioId: string, status?: string) {
+    await this.assertPortfolioOwner(userId, portfolioId);
+    let q = this.supabase.getClient()
+      .from('coach_proposals')
+      .select('id, created_at, source, llm_model, llm_cost_usd, feasibility_verdict, feasibility_probability_pct, feasibility_rationale, proposed_lessons, proposed_parameter_changes, risk_warnings, status, reviewed_at, resulted_lesson_ids')
+      .eq('portfolio_id', portfolioId)
+      .order('created_at', { ascending: false })
+      .limit(50);
+    if (status) q = q.eq('status', status);
+    const { data, error } = await q;
+    if (error) throw new BadRequestException(error.message);
+    return data ?? [];
+  }
+
+  async acceptCoachProposal(
+    userId: string,
+    proposalId: string,
+    body: {
+      accepted_lessons?: number[]; // index dans proposed_lessons
+      accepted_params?: number[]; // index dans proposed_parameter_changes
+      comment?: string;
+    },
+  ) {
+    const client = this.supabase.getClient();
+    const { data: proposal, error: pErr } = await client
+      .from('coach_proposals')
+      .select('id, portfolio_id, proposed_lessons, proposed_parameter_changes, status')
+      .eq('id', proposalId)
+      .maybeSingle();
+    if (pErr || !proposal) throw new NotFoundException('Proposal introuvable');
+    await this.assertPortfolioOwner(userId, String(proposal.portfolio_id));
+    if (proposal.status !== 'pending') {
+      throw new BadRequestException(`Proposal status=${proposal.status}, not pending`);
+    }
+
+    const acceptedLessonIdx = new Set(body.accepted_lessons ?? []);
+    const acceptedParamIdx = new Set(body.accepted_params ?? []);
+    const allLessons = Array.isArray(proposal.proposed_lessons) ? proposal.proposed_lessons : [];
+    const allParams = Array.isArray(proposal.proposed_parameter_changes) ? proposal.proposed_parameter_changes : [];
+
+    const lessonsToInsert = (allLessons as Array<Record<string, unknown>>).filter((_, i) => acceptedLessonIdx.has(i));
+    const resultedLessonIds: string[] = [];
+    if (lessonsToInsert.length > 0) {
+      const rows = lessonsToInsert.map((l) => ({
+        lesson_kind: String(l.lesson_kind ?? 'UNNAMED'),
+        lesson_text: String(l.lesson_text ?? ''),
+        confidence: typeof l.confidence === 'number' ? l.confidence : 0.7,
+        scope: String(l.scope ?? 'trader_agent_only'),
+        derived_from_date: new Date().toISOString().slice(0, 10),
+        is_active: true,
+        applied: true,
+        applied_by: `coach:${userId.slice(0, 8)}`,
+        applied_at: new Date().toISOString(),
+        payload: { from_coach_proposal: proposalId, rationale: l.rationale ?? null, expected_impact_usd: l.expected_impact_usd ?? null },
+      }));
+      const { data: ins, error: insErr } = await client.from('scanner_lessons').insert(rows).select('id');
+      if (insErr) throw new BadRequestException(insErr.message);
+      for (const r of (ins ?? []) as Array<{ id: string }>) resultedLessonIds.push(r.id);
+    }
+
+    const partial = acceptedLessonIdx.size < allLessons.length || acceptedParamIdx.size < allParams.length;
+    const newStatus = (acceptedLessonIdx.size === 0 && acceptedParamIdx.size === 0)
+      ? 'rejected'
+      : (partial ? 'partially_accepted' : 'fully_accepted');
+
+    await client
+      .from('coach_proposals')
+      .update({
+        status: newStatus,
+        reviewed_at: new Date().toISOString(),
+        reviewed_by: userId,
+        user_decision: {
+          accepted_lessons: [...acceptedLessonIdx],
+          rejected_lessons: allLessons.map((_, i) => i).filter((i) => !acceptedLessonIdx.has(i)),
+          applied_params: [...acceptedParamIdx],
+          comment: body.comment ?? null,
+        },
+        resulted_lesson_ids: resultedLessonIds,
+      })
+      .eq('id', proposalId);
+
+    return { ok: true, status: newStatus, resulted_lesson_ids: resultedLessonIds };
+  }
+
+  async rejectCoachProposal(userId: string, proposalId: string, comment?: string) {
+    const body: { accepted_lessons: number[]; accepted_params: number[]; comment?: string } = {
+      accepted_lessons: [],
+      accepted_params: [],
+    };
+    if (comment !== undefined) body.comment = comment;
+    return this.acceptCoachProposal(userId, proposalId, body);
+  }
+
+  /**
+   * LISA — Shadows Summary read-only (B-shadow widget).
+   *
+   * Retourne un snapshot compact des 3 Shadow Sizing portfolios (HIGH/MIDDLE/SMALL)
+   * pour comparaison vs TRADER côté UI. Pas de check ownership : ces portfolios
+   * sont system-managed par ShadowSizingOrchestrator et peuvent ne pas être
+   * owned par l'user qui consulte. Le service-role bypass RLS, donc OK.
+   *
+   * Endpoint public (auth simple via extractUserId pour anti-abuse) — read-only.
+   */
+  async getShadowsSummary() {
+    const client = this.supabase.getClient();
+    const SHADOW_IDS = [
+      { id: 'a0000001-0000-0000-0000-000000000001', name: 'Shadow High Sizing', label: 'HIGH' },
+      { id: 'a0000002-0000-0000-0000-000000000002', name: 'Shadow Middle Sizing', label: 'MIDDLE' },
+      { id: 'a0000003-0000-0000-0000-000000000003', name: 'Shadow Small Sizing', label: 'SMALL' },
+    ];
+
+    // Latest snapshot par portfolio (table shadow_sizing_snapshot, écrite chaque
+    // cycle 5min par ShadowSizingOrchestratorService).
+    const { data: snapshots } = await client
+      .from('shadow_sizing_snapshot')
+      .select('portfolio_id, profile_name, open_positions, closed_today, realized_pnl_usd, unrealized_pnl_usd, total_pnl_usd, win_rate_pct, fees_paid_usd, net_pnl_after_fees_usd, daily_pnl_extrapolated_usd, target_progress_pct, drawdown_today_pct, capacity_used_pct, created_at')
+      .in('portfolio_id', SHADOW_IDS.map((s) => s.id))
+      .order('created_at', { ascending: false })
+      .limit(30);
+
+    const latestByPortfolio = new Map<string, Record<string, unknown>>();
+    for (const row of (snapshots ?? []) as Array<Record<string, unknown>>) {
+      const pid = String(row.portfolio_id ?? '');
+      if (!latestByPortfolio.has(pid)) latestByPortfolio.set(pid, row);
+    }
+
+    const [configsRes, openSymbolsRes, cumPnlRes] = await Promise.all([
+      client
+        .from('lisa_session_configs')
+        .select('portfolio_id, capital_usd, kill_switch_active')
+        .in('portfolio_id', SHADOW_IDS.map((s) => s.id)),
+      client
+        .from('lisa_positions')
+        .select('portfolio_id, symbol, entry_notional_usd')
+        .in('portfolio_id', SHADOW_IDS.map((s) => s.id))
+        .eq('status', 'open'),
+      client
+        .from('lisa_positions')
+        .select('portfolio_id, realized_pnl_usd')
+        .in('portfolio_id', SHADOW_IDS.map((s) => s.id))
+        .neq('status', 'open'),
+    ]);
+
+    const configByPortfolio = new Map<string, { capital_usd?: string; kill_switch_active?: boolean }>();
+    for (const c of (configsRes.data ?? []) as Array<{ portfolio_id: string; capital_usd?: string; kill_switch_active?: boolean }>) {
+      configByPortfolio.set(c.portfolio_id, c);
+    }
+    const symbolsByPortfolio = new Map<string, string[]>();
+    const deployedByPortfolio = new Map<string, number>();
+    for (const p of (openSymbolsRes.data ?? []) as Array<{ portfolio_id: string; symbol?: string; entry_notional_usd?: unknown }>) {
+      const arr = symbolsByPortfolio.get(p.portfolio_id) ?? [];
+      if (p.symbol) arr.push(p.symbol);
+      symbolsByPortfolio.set(p.portfolio_id, arr);
+      deployedByPortfolio.set(p.portfolio_id, (deployedByPortfolio.get(p.portfolio_id) ?? 0) + Number(p.entry_notional_usd ?? 0));
+    }
+    const cumPnlByPortfolio = new Map<string, number>();
+    const tradesByPortfolio = new Map<string, number>();
+    const winsByPortfolio = new Map<string, number>();
+    for (const p of (cumPnlRes.data ?? []) as Array<{ portfolio_id: string; realized_pnl_usd?: unknown }>) {
+      const pnl = Number(p.realized_pnl_usd ?? 0);
+      cumPnlByPortfolio.set(p.portfolio_id, (cumPnlByPortfolio.get(p.portfolio_id) ?? 0) + pnl);
+      tradesByPortfolio.set(p.portfolio_id, (tradesByPortfolio.get(p.portfolio_id) ?? 0) + 1);
+      if (pnl > 0) winsByPortfolio.set(p.portfolio_id, (winsByPortfolio.get(p.portfolio_id) ?? 0) + 1);
+    }
+
+    const results = SHADOW_IDS.map((shadow) => {
+      const snap = latestByPortfolio.get(shadow.id);
+      const cfg = configByPortfolio.get(shadow.id);
+      const openSyms = symbolsByPortfolio.get(shadow.id) ?? [];
+      const baseCapital = cfg?.capital_usd ? parseFloat(cfg.capital_usd) : 10000;
+      const cumulativePnl = cumPnlByPortfolio.get(shadow.id) ?? 0;
+
+      const openPositions = snap ? Number(snap.open_positions ?? 0) : openSyms.length;
+      const closedToday = snap ? Number(snap.closed_today ?? 0) : 0;
+      const realizedToday = snap ? Number(snap.realized_pnl_usd ?? 0) : 0;
+      const netToday = snap ? Number(snap.net_pnl_after_fees_usd ?? 0) : 0;
+      const winRateToday = snap?.win_rate_pct !== undefined && snap?.win_rate_pct !== null
+        ? Number(snap.win_rate_pct)
+        : null;
+      const winsToday = winRateToday !== null && closedToday > 0
+        ? Math.round((winRateToday / 100) * closedToday)
+        : 0;
+      const lossesToday = winRateToday !== null && closedToday > 0
+        ? closedToday - winsToday
+        : 0;
+      const drawdownToday = snap ? Number(snap.drawdown_today_pct ?? 0) : 0;
+      const targetProgress = snap ? Number(snap.target_progress_pct ?? 0) : 0;
+      const feesToday = snap ? Number(snap.fees_paid_usd ?? 0) : 0;
+
+      const allTimeTrades = tradesByPortfolio.get(shadow.id) ?? 0;
+      const allTimeWins = winsByPortfolio.get(shadow.id) ?? 0;
+      const allTimeWinRate = allTimeTrades > 0 ? (allTimeWins / allTimeTrades) * 100 : null;
+
+      return {
+        id: shadow.id,
+        name: shadow.name,
+        label: shadow.label,
+        base_capital_usd: baseCapital,
+        current_capital_usd: baseCapital + cumulativePnl,
+        cumulative_pnl_usd: cumulativePnl,
+        return_from_inception_pct: baseCapital > 0 ? (cumulativePnl / baseCapital) * 100 : 0,
+        open_positions: openPositions,
+        deployed_usd: deployedByPortfolio.get(shadow.id) ?? 0,
+        today: {
+          pnl_usd: realizedToday,
+          net_pnl_after_fees_usd: netToday,
+          fees_usd: feesToday,
+          trades: closedToday,
+          wins: winsToday,
+          losses: lossesToday,
+          win_rate_pct: winRateToday,
+          drawdown_pct: drawdownToday,
+          target_progress_pct: targetProgress,
+        },
+        all_time: {
+          trades: allTimeTrades,
+          wins: allTimeWins,
+          losses: allTimeTrades - allTimeWins,
+          win_rate_pct: allTimeWinRate,
+        },
+        kill_switch_active: cfg?.kill_switch_active === true,
+        open_symbols: openSyms,
+        snapshot_at: snap?.created_at ? String(snap.created_at) : null,
+      };
+    });
+
+    return { generated_at: new Date().toISOString(), shadows: results };
+  }
+
+  /**
+   * LISA refonte B.4.a — In-app notifications.
+   *
+   * Agrège des "items" virtuels depuis plusieurs sources :
+   *   - coach_proposals status='pending' (Strategy Coach C.1)
+   *   - kill_switch_active=true (anti-spirale ou manuel)
+   *
+   * Le client gère "unread" via localStorage (last_seen_at) car pas de
+   * besoin de cross-device sync à ce stade. Le badge UI = items dont
+   * created_at > last_seen client-side.
+   */
+  async getNotifications(userId: string, portfolioId: string) {
+    await this.assertPortfolioOwner(userId, portfolioId);
+    const client = this.supabase.getClient();
+
+    const [cfgRes, propRes] = await Promise.all([
+      client
+        .from('lisa_session_configs')
+        .select('kill_switch_active, updated_at')
+        .eq('portfolio_id', portfolioId)
+        .maybeSingle(),
+      client
+        .from('coach_proposals')
+        .select('id, created_at, source, llm_model, feasibility_verdict, feasibility_probability_pct, proposed_lessons, proposed_parameter_changes')
+        .eq('portfolio_id', portfolioId)
+        .eq('status', 'pending')
+        .order('created_at', { ascending: false })
+        .limit(50),
+    ]);
+
+    type Item = {
+      id: string;
+      kind: 'kill_switch_armed' | 'coach_proposal_pending';
+      severity: 'critical' | 'info' | 'warning';
+      title: string;
+      body: string;
+      created_at: string;
+      href?: string;
+      payload?: Record<string, unknown>;
+    };
+    const items: Item[] = [];
+
+    const cfg = cfgRes.data as { kill_switch_active?: boolean; updated_at?: string } | null;
+    if (cfg?.kill_switch_active) {
+      items.push({
+        id: `kill_switch:${portfolioId}`,
+        kind: 'kill_switch_armed',
+        severity: 'critical',
+        title: 'Kill-switch anti-spirale armé',
+        body: 'TRADER suspendu. Désarme manuellement dans Config LISA pour reprendre les cycles.',
+        created_at: cfg.updated_at ?? new Date().toISOString(),
+      });
+    }
+
+    for (const p of (propRes.data ?? []) as Array<Record<string, unknown>>) {
+      const lessons = Array.isArray(p.proposed_lessons) ? p.proposed_lessons.length : 0;
+      const params = Array.isArray(p.proposed_parameter_changes) ? p.proposed_parameter_changes.length : 0;
+      const verdict = String(p.feasibility_verdict ?? 'UNKNOWN');
+      const probPct = p.feasibility_probability_pct as number | null;
+      items.push({
+        id: `coach:${p.id}`,
+        kind: 'coach_proposal_pending',
+        severity: verdict === 'UNREALISTIC' ? 'warning' : 'info',
+        title: `Proposition Strategy Coach (${String(p.llm_model)})`,
+        body: `Verdict ${verdict}${probPct !== null ? ` · ${probPct}%` : ''} · ${lessons} lesson(s) · ${params} param(s) proposé(s)`,
+        created_at: String(p.created_at),
+        payload: { proposal_id: String(p.id), lessons, params, verdict },
+      });
+    }
+
+    items.sort((a, b) => b.created_at.localeCompare(a.created_at));
+    return { items, total: items.length };
+  }
+
+  /**
+   * LISA refonte B.3 — Désarme le kill-switch (anti-spirale ou manuel).
+   * Pas de force-close, juste UPDATE kill_switch_active=false.
+   * Audit dans lisa_decision_log pour traçabilité.
+   */
+  async resetKillSwitch(userId: string, portfolioId: string) {
+    await this.assertPortfolioOwner(userId, portfolioId);
+    const client = this.supabase.getClient();
+    await client
+      .from('lisa_session_configs')
+      .update({ kill_switch_active: false })
+      .eq('portfolio_id', portfolioId);
+    await client.from('lisa_decision_log').insert({
+      portfolio_id: portfolioId,
+      kind: 'kill_switch_reset',
+      payload: { reset_by: 'user_manual', timestamp: new Date().toISOString() },
+    });
+    return { ok: true };
+  }
+
+  /**
+   * LISA refonte B.3 — Liste les scanner_lessons avec filtres.
+   * Pas de scoping user (table partagée). Limite défaut 200.
+   */
+  async listScannerLessons(opts: {
+    active?: boolean;
+    search?: string;
+    scope?: string;
+    limit?: number;
+  }) {
+    const client = this.supabase.getClient();
+    let q = client
+      .from('scanner_lessons')
+      .select('id, lesson_kind, lesson_text, macro_condition, scope, confidence, sample_size, win_rate_observed, avg_pnl_usd, is_active, derived_from_date, created_at, applied, applied_by')
+      .order('created_at', { ascending: false })
+      .limit(Math.min(opts.limit ?? 200, 1000));
+    if (opts.active !== undefined) q = q.eq('is_active', opts.active);
+    if (opts.scope) q = q.eq('scope', opts.scope);
+    if (opts.search) {
+      const term = `%${opts.search}%`;
+      q = q.or(`lesson_kind.ilike.${term},lesson_text.ilike.${term}`);
+    }
+    const { data, error } = await q;
+    if (error) throw new BadRequestException(error.message);
+    return data ?? [];
+  }
+
+  /**
+   * LISA refonte B.3 — Toggle is_active d'une lesson.
+   */
+  async setScannerLessonActive(lessonId: string, active: boolean) {
+    const { error } = await this.supabase.getClient()
+      .from('scanner_lessons')
+      .update({ is_active: active })
+      .eq('id', lessonId);
+    if (error) throw new BadRequestException(error.message);
+    return { ok: true, lessonId, is_active: active };
   }
 
   async triggerKillSwitch(userId: string, portfolioId: string, reason: string) {
@@ -2840,6 +3414,29 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
 
   private async fetchLivePrice(symbol: string): Promise<{ symbol: string; price: string; asOf: string; source: string }> {
     const raw = await this.fetchLivePriceInner(symbol);
+    // 🛡️ ZERO_PRICE_GUARD centralisé (incident SEE.LSE 14/05/2026, -$1574) :
+    // tout prix <= 0, NaN ou non parsable retourné par fetchLivePriceInner
+    // est re-taggé `fallback_unknown` AVANT d'atteindre les consumers. Couvre
+    // les chemins qui ne validaient pas (price > 0) leur retour : realtime
+    // cache stale à 0, supabase_quotes corrompu, twelvedata candle vide
+    // (intraday-router lignes 580-585 : tdLast.close non validé), EODHD
+    // /real-time avec close=0 derrière proxy router, etc.
+    //
+    // Plutôt que de patcher chaque source individuellement, on impose UN
+    // invariant sortant : un prix avec source non-fallback DOIT être > 0.
+    // Sinon → on re-tag fallback_unknown (sentinel '0', source qui matche
+    // déjà tous les garde-fous existants `isFallbackSource` /
+    // `startsWith('fallback')` dans mechanical-trading, risk-monitor,
+    // rebound-monitor, paper-broker R5 inline).
+    const priceNum = Number(raw.price);
+    if (!Number.isFinite(priceNum) || priceNum <= 0) {
+      if (!raw.source.startsWith('fallback')) {
+        this.logger.error(
+          `[ZERO_PRICE_REJECT] ${symbol}: price=${raw.price} (source=${raw.source}) retourné non-positif — re-tag fallback_unknown (anti-incident SEE.LSE)`,
+        );
+        return { symbol: raw.symbol, price: '0', asOf: raw.asOf, source: 'fallback_unknown' };
+      }
+    }
     return this.tagStaleness(raw);
   }
 
@@ -4676,6 +5273,80 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     } catch (e) {
       this.logger.warn(`[opportunity-scout] openPositionDirect ${cmd.symbol} failed: ${String(e).slice(0, 200)}`);
       return null;
+    }
+  }
+
+  /**
+   * Snapshot macro cached. Re-fetch si plus vieux que maxAgeSec.
+   * Évite à des services tiers (LiveTraderAgent, ShadowSizingOrchestrator) de
+   * payer 15-20 calls API + 3s latency à chaque cycle 5min.
+   *
+   * Le cache n'est PAS partagé avec le pipeline Lisa principal (qui appelle
+   * fetchMarketSnapshot() directement pour garantir la fraîcheur d'un proposal).
+   */
+  async getRecentMarketSnapshot(maxAgeSec: number = 120): Promise<MarketSnapshot> {
+    const now = Date.now();
+    if (this.lastMarketSnapshotCache && (now - this.lastMarketSnapshotCache.fetchedAt) < maxAgeSec * 1000) {
+      return this.lastMarketSnapshotCache.snap;
+    }
+    const fresh = await this.fetchMarketSnapshot();
+    this.lastMarketSnapshotCache = { snap: fresh, fetchedAt: now };
+    return fresh;
+  }
+
+  /**
+   * Close une position par id via le paperBroker. Pattern symétrique à
+   * openForOpportunityScout. Utilisé par LiveTraderAgent quand Gemini propose
+   * un action_kind='close' sur un symbol qu'il détient.
+   *
+   * Le caller résout symbol → positionId via son state (positions ouvertes
+   * du portfolio). Sanity bound : refuse si livePrice diverge > 30% d'entry
+   * (anti-corruption cache, cf. règle "checkStopTarget [SANITY_BOUND]").
+   */
+  async closeForOpportunityScout(cmd: {
+    positionId: string;
+    symbol?: string;
+    livePrice: number;
+    livePriceSource?: string;
+    reason: 'closed_target' | 'closed_stop' | 'closed_invalidated' | 'closed_user' | 'closed_kill' | 'closed_expired';
+    rationale: string;
+  }): Promise<{ closed: boolean; error?: string }> {
+    // Garde-fous prix source (cf. Phase 3 — fix LMT/SEE.LSE :$0 → SL destructive).
+    // Nuance 28/05/2026 : si marché vraiment fermé (exchange-session check) ET
+    // source = `stale_*` (prix = last close valide, juste pas frais), on autorise
+    // la close. Le `fallback_*` reste TOUJOURS bloquant (= prix corrompu $0 / NaN).
+    let marketClosed = false;
+    if (cmd.livePriceSource) {
+      const src = cmd.livePriceSource;
+      if (src.startsWith('fallback')) {
+        // Prix corrompu ou inconnu : on bloque toujours (anti-bug LMT/SEE.LSE).
+        return { closed: false, error: `price source unreliable (fallback): ${src}` };
+      }
+      if (src.startsWith('stale_')) {
+        // Stale : on accepte UNIQUEMENT si marché vraiment fermé. Sinon suspect.
+        const inSession = cmd.symbol ? isInExchangeSession(cmd.symbol, new Date()) : true;
+        if (inSession) {
+          return { closed: false, error: `price source stale on open market: ${src} (suspect)` };
+        }
+        // Marché fermé + stale : OK, on propage marketClosed=true au paper-broker R5 sanity.
+        marketClosed = true;
+      }
+    }
+    if (!Number.isFinite(cmd.livePrice) || cmd.livePrice <= 0) {
+      return { closed: false, error: `invalid livePrice ${cmd.livePrice}` };
+    }
+    try {
+      await this.paperBroker.closePosition({
+        positionId: cmd.positionId,
+        reason: cmd.reason,
+        livePrice: cmd.livePrice.toFixed(6),
+        rationale: cmd.rationale.slice(0, 500),
+        ...(cmd.livePriceSource ? { livePriceSource: cmd.livePriceSource } : {}),
+        ...(marketClosed ? { marketClosed: true } : {}),
+      });
+      return { closed: true };
+    } catch (e) {
+      return { closed: false, error: String(e).slice(0, 200) };
     }
   }
 }

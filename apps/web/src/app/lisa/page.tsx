@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { Sparkles, Target, ShieldAlert, TrendingUp, Activity, ChevronDown, ChevronUp, SlidersHorizontal } from 'lucide-react';
 import { usePortfolios } from '@/hooks/use-portfolio';
-import { deduplicateSimulationPortfolios } from '@/app/actions/paper-portfolio';
+// import { deduplicateSimulationPortfolios } from '@/app/actions/paper-portfolio'; // ⚠️ DÉSACTIVÉ (bug cascade delete)
 import { useQueryClient } from '@tanstack/react-query';
 import {
   useLisaConfig,
@@ -32,6 +32,12 @@ import { DailyHarvestPanel } from '@/components/lisa/daily-harvest-panel';
 import { MacroModeSelector } from '@/components/lisa/macro-mode-selector';
 import { GainersStatusTile } from '@/components/lisa/gainers-status-tile';
 import { GainersConfigPanel } from '@/components/lisa/gainers-config-panel';
+import { LisaStickyHeader } from '@/components/lisa/lisa-sticky-header';
+import { GainsTracker } from '@/components/lisa/gains-tracker';
+import { LessonsImpactPanel } from '@/components/lisa/lessons-impact-panel';
+import { LisaConfigPanel } from '@/components/lisa/lisa-config-panel';
+import { CoachProposalsPanel } from '@/components/lisa/coach-proposals-panel';
+import { ShadowsSummaryPanel } from '@/components/lisa/shadows-summary-panel';
 import { ScalingReadinessPanel } from '@/components/lisa/scaling-readiness-panel';
 import { LiveTradingStatusPanel } from '@/components/lisa/live-trading-status-panel';
 import { LiveTradingWizard } from '@/components/lisa/live-trading-wizard';
@@ -78,34 +84,71 @@ const profileLabelOf = (
   return PROFILE_LABELS[p as SessionProfile] ?? UNKNOWN_PROFILE_LABEL;
 };
 
+// LISA refonte Phase A.2 — La page /lisa affiche uniquement le portefeuille TRADER
+// (= moteur LLM Gemini Pro autonome, futur scanner principal). MAIN/HIGH/MIDDLE/SMALL
+// (= scanners Gainers déterministes) sont visibles séparément en bas (chunk A.2.5).
+const TRADER_PORTFOLIO_ID = 'b0000001-0000-0000-0000-000000000001';
+
 export default function LisaPage() {
   const portfoliosQuery = usePortfolios();
   const qc = useQueryClient();
-  const simulationPortfolios = (portfoliosQuery.data ?? []).filter(
+  // Filter sim portfolios par is_simulation. TRADER + 3 Shadows + le perso.
+  const rawSimPortfolios = (portfoliosQuery.data ?? []).filter(
     (p) => (p as { is_simulation?: boolean }).is_simulation,
   );
 
+  // Garantit que TRADER est TOUJOURS dans la liste (même si is_simulation
+  // est False côté DB suite à un reset par un service système). Évite que
+  // l'user se retrouve bloqué sur un Shadow sans pouvoir revenir.
+  const simulationPortfolios = useMemo(() => {
+    const list = [...rawSimPortfolios];
+    const allPortfolios = portfoliosQuery.data ?? [];
+    const traderInList = list.some((p) => p.id === TRADER_PORTFOLIO_ID);
+    if (!traderInList) {
+      // Cherche TRADER dans la liste complète (sans filtre is_simulation)
+      const traderRaw = allPortfolios.find(
+        (p) => (p as { id?: string }).id === TRADER_PORTFOLIO_ID,
+      );
+      if (traderRaw) {
+        list.unshift(traderRaw as typeof list[number]);
+      } else {
+        // Fallback : entry synthétique. Au moins l'option apparaît au dropdown.
+        list.unshift({
+          id: TRADER_PORTFOLIO_ID,
+          name: 'Trader Agent (Gemini Pro)',
+        } as typeof list[number]);
+      }
+    }
+    return list;
+  }, [rawSimPortfolios, portfoliosQuery.data]);
+
+  // Find TRADER specifically (fallback first simulation portfolio si introuvable).
+  const traderPortfolio = simulationPortfolios.find((p) => p.id === TRADER_PORTFOLIO_ID);
+
   const [selectedPortfolioId, setSelectedPortfolioId] = useState<string | null>(
-    simulationPortfolios[0]?.id ?? null,
+    traderPortfolio?.id ?? null,
   );
 
-  // Bug fix critique : useState(...initial) ne réévalue PAS quand portfoliosQuery.data
-  // arrive après le 1er render. Sans cet effet, selectedPortfolioId reste null,
-  // handleSaveConfig fait return silencieux, et le bouton "Sauvegarder" semble inerte.
+  // Initialise la sélection : TRADER par défaut (refonte A.2), fallback 1er
+  // simulation portfolio. Une fois sélectionné, on respecte le choix user
+  // (le sélecteur dropdown permet de switch vers MAIN/HIGH/MIDDLE/SMALL).
   useEffect(() => {
-    if (!selectedPortfolioId && simulationPortfolios[0]?.id) {
+    if (selectedPortfolioId) return;
+    const traderId = simulationPortfolios.find((p) => p.id === TRADER_PORTFOLIO_ID)?.id;
+    if (traderId) {
+      setSelectedPortfolioId(traderId);
+    } else if (simulationPortfolios[0]?.id) {
       setSelectedPortfolioId(simulationPortfolios[0].id);
     }
   }, [simulationPortfolios, selectedPortfolioId]);
 
-  // Déduplique silencieusement les portefeuilles de simulation au montage.
-  useEffect(() => {
-    if (simulationPortfolios.length > 1) {
-      deduplicateSimulationPortfolios()
-        .then((n) => { if (n > 0) qc.invalidateQueries({ queryKey: ['portfolios'] }); })
-        .catch(() => {});
-    }
-  }, [simulationPortfolios.length]); // eslint-disable-line
+  // 🚨 DÉSACTIVÉ — la fonction deduplicateSimulationPortfolios garde le
+  // portfolio le PLUS RÉCENT et SUPPRIME tous les autres. Sur /lisa où on
+  // a TRADER + 3 Shadows par design (et pas des doublons), elle DESTRUIT
+  // tous les portfolios sauf le dernier créé. Bug catastrophique observé
+  // 30/05/2026 : TRADER + Shadow Middle + Small supprimés en cascade.
+  // La logique reste dispo côté /actions/paper-portfolio.ts pour les pages
+  // qui en ont vraiment besoin (dashboard standard).
   const [userFocus, setUserFocus] = useState('');
   const [killReason, setKillReason] = useState('');
 
@@ -530,18 +573,21 @@ export default function LisaPage() {
 
   // ── Main UI ─────────────────────────────────────────────────────────────────
   return (
-    <div className="mx-auto max-w-5xl space-y-6 p-6">
+    <>
+      {/* LISA refonte A.3 — sticky header avec cible jour + PnL today */}
+      {selectedPortfolioId && <LisaStickyHeader portfolioId={selectedPortfolioId} />}
+
+      <div className="mx-auto max-w-5xl space-y-6 p-4 md:p-6">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <BackButton />
           <div>
             <h1 className="flex items-center gap-2 text-xl font-semibold">
               <Sparkles className="h-5 w-5 text-primary" />
-              Mon assistant Lisa
+              🤖 LISA — Mon agent autonome
             </h1>
             <p className="text-sm text-muted-foreground">
-              Multi-actifs · approche anti-consensus · corpus de 25+ événements historiques ·
-              100 % simulation
+              Agent Gemini Pro 2.5 · lessons accumulées en continu · 100 % simulation
             </p>
           </div>
         </div>
@@ -555,21 +601,41 @@ export default function LisaPage() {
 
       <DisclaimerBanner />
 
-      {/* Portfolio selector */}
-      {simulationPortfolios.length > 1 && (
+      {/* Portfolio selector — TOUJOURS visible (même 1 portfolio) + bouton
+          retour rapide TRADER si pas sélectionné. */}
+      {simulationPortfolios.length >= 1 && (
         <div className="space-y-1.5">
           <label className="block text-sm font-medium">Portefeuille de simulation</label>
-          <select
-            value={selectedPortfolioId ?? ''}
-            onChange={(e) => setSelectedPortfolioId(e.target.value || null)}
-            className="h-9 w-full rounded-md border bg-background px-3 text-sm"
-          >
-            {simulationPortfolios.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
+          <div className="flex gap-2 flex-wrap">
+            <select
+              value={selectedPortfolioId ?? ''}
+              onChange={(e) => setSelectedPortfolioId(e.target.value || null)}
+              className="h-9 flex-1 min-w-[200px] rounded-md border bg-background px-3 text-sm"
+            >
+              {simulationPortfolios.map((p) => {
+                const isTrader = p.id === TRADER_PORTFOLIO_ID;
+                const label = isTrader
+                  ? `🤖 ${p.name} (agent autonome LISA)`
+                  : `🎯 ${p.name}`;
+                return (
+                  <option key={p.id} value={p.id}>{label}</option>
+                );
+              })}
+            </select>
+            {selectedPortfolioId !== TRADER_PORTFOLIO_ID &&
+              simulationPortfolios.some((p) => p.id === TRADER_PORTFOLIO_ID) && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedPortfolioId(TRADER_PORTFOLIO_ID)}
+                  className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 whitespace-nowrap"
+                >
+                  🤖 Retour TRADER
+                </button>
+              )}
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            TRADER = agent LLM autonome Gemini Pro 2.5. Shadow High/Middle/Small = scanners momentum A/B (read-only).
+          </p>
         </div>
       )}
 
@@ -608,14 +674,33 @@ export default function LisaPage() {
       {/* P7 — Mode opératoire 3-way (Investment / Harvest / Gainers) */}
       {selectedPortfolioId && <MacroModeSelector portfolioId={selectedPortfolioId} />}
 
-      {/* P7 — Mini-tile temps réel (visible uniquement en mode Gainers) */}
+      {/* LISA refonte A.3 — Section Gains (badges + reset display-only) */}
+      {selectedPortfolioId && <GainsTracker portfolioId={selectedPortfolioId} />}
+
+      {/* Shadow Sizing read-only — comparatif HIGH/MIDDLE/SMALL vs TRADER */}
+      <ShadowsSummaryPanel />
+
+      {/* LISA refonte C.2 — Strategy Coach proposals (Gemini hourly + review modal) */}
+      {selectedPortfolioId && <CoachProposalsPanel portfolioId={selectedPortfolioId} />}
+
+      {/* LISA refonte B.2 — Lessons Impact Tracker (citations agrégées TRADER) */}
+      {selectedPortfolioId && <LessonsImpactPanel portfolioId={selectedPortfolioId} />}
+
+      {/* LISA refonte B.3 — Config LISA simplifiée (kill-switch reset, capital, digest, lessons mgmt) */}
+      {selectedPortfolioId && <LisaConfigPanel portfolioId={selectedPortfolioId} />}
+
+      {/* LISA refonte A.2 — Mini-tile temps réel scanner LISA (ex-Gainers).
+          Renommé côté composant interne, mais portfolio_id=TRADER force le scope. */}
       {selectedPortfolioId && <GainersStatusTile portfolioId={selectedPortfolioId} />}
 
-      {/* PR #3 — Configuration complète scanner Gainers (capacité, sizing,
-          univers, persistence, fees). Visible quand mode='gainers'. */}
+      {/* LISA refonte A.2 — Panel "Configuration scanner Gainers" CACHÉ sur /lisa.
+          Le panel paramètre MAIN/HIGH/MIDDLE/SMALL (= scanners déterministes).
+          Sera déplacé vers une page dédiée /scanners/gainers dans un sprint futur.
+          Composant + import conservés pour réutilisation.
       {selectedPortfolioId && currentMode === 'gainers' && (
         <GainersConfigPanel portfolioId={selectedPortfolioId} />
       )}
+      */}
 
       {/* PR #268 — Scaling readiness : 5 critères data-driven pour décider
           si on peut scaler le capital ou passer LIVE. Visible quand mode='gainers'. */}
@@ -778,17 +863,17 @@ export default function LisaPage() {
               locale (souvent stale/false), coupant silencieusement le scanner
               Gainers que l'utilisateur venait juste d'activer. */}
           {currentMode === 'gainers' ? (
-            <div className="rounded-md border border-dashed border-orange-300 bg-orange-50/40 dark:bg-orange-950/10 p-3 space-y-1">
+            <div className="rounded-md border border-dashed border-purple-300 bg-purple-50/40 dark:bg-purple-950/10 p-3 space-y-1">
               <div className="flex items-center gap-2">
-                <span className="text-base">🚀</span>
-                <span className="text-xs font-medium">Mode gainers actif</span>
+                <span className="text-base">🤖</span>
+                <span className="text-xs font-medium">Mode LISA actif</span>
               </div>
               <p className="text-[11px] text-muted-foreground">
-                L&apos;autopilote, le cycle scanner et tous les paramètres
-                déterministes sont pilotés depuis le panel{' '}
-                <span className="font-medium">« Configuration scanner Gainers »</span>{' '}
-                ci-dessus. Le filet de garantie event-driven n&apos;est pas
-                utilisé en mode gainers (pipeline LLM bypassé).
+                L&apos;agent autonome LISA (Gemini Pro 2.5) tourne sur ton portefeuille
+                à chaque cycle. Les lessons accumulées dans{' '}
+                <span className="font-medium">scanner_lessons</span> guident ses
+                décisions. Le filet de garantie event-driven n&apos;est pas
+                utilisé en mode LISA (pipeline LLM autonome).
               </p>
             </div>
           ) : (
@@ -1463,7 +1548,8 @@ export default function LisaPage() {
           onCancel={() => setConfirmDialog(null)}
         />
       )}
-    </div>
+      </div>
+    </>
   );
 }
 

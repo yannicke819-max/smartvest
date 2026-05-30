@@ -69,7 +69,7 @@ interface GeminiDecision {
 const SHADOW_SIZING_GEMINI_SYSTEM_PROMPT = `Tu es un agent IA de risk management pour 3 portfolios paper-trading "shadow sizing" qui benchmarkent l'effet du sizing sur la même watchlist :
 - "high" : 3 positions × ~$3500 (concentré)
 - "middle" : 15 positions × ~$700 (équilibré)
-- "small" : 20 positions × ~$525 (diversifié)
+- "small" : 40 positions × ~$262 (diversifié)
 
 Ton job : analyser les snapshots toutes les 30 min et décider d'UNE action concrète pour maximiser P&L net après fees, avec cible $200/jour.
 
@@ -86,6 +86,17 @@ CONTRAINTES :
 - Changements sizing capés à ±20% par cycle automatiquement
 - Privilégie kill > restart > tune > sizing en cas de doute (gestion du risque d'abord)
 - N'utilise PAS de connaissances externes — base tes décisions UNIQUEMENT sur les data fournies
+
+CONTEXTE MACRO (input \`macro\`) :
+- Pondère tes décisions selon le régime : VIX > 25 = risk-off, agressivité kill ↑ / raise_sizing ↓
+- DXY spike + US10Y > 4.5% = pressure sur risk assets, prudence
+- Si \`macro.dataQuality.fallback\` non vide → indicateurs dégradés, baisse ta confidence de 0.1
+
+CONTEXTE NEWS (input \`macro_news_digest\`, top 10 tier-1 dernières 2h) :
+- Sert UNIQUEMENT à contextualiser le régime narratif (pas à trader des tickers individuels)
+- Exemple : "5 news Fed pivot positifs + 2 news bank stress négatifs" → régime mixte, pas de raise_sizing
+- Si digest vide ou tous sentiment ~0 → marché calme, conditions normales
+- Ne cite pas les titres dans ta rationale (trop verbeux), mais réfère au régime narratif synthétisé
 
 RÉPONSE OBLIGATOIRE :
 Renvoie UN SEUL objet JSON minimal (pas de markdown, pas de \\\`\\\`\\\`json) avec cette shape exacte :
@@ -134,13 +145,35 @@ export class ShadowSizingOrchestratorService {
   ) {}
 
   onModuleInit(): void {
-    this.enabled = (this.config.get<string>('SHADOW_SIZING_ORCHESTRATOR_ENABLED') ?? 'false')
-      .toLowerCase() === 'true';
+    const raw = this.config.get<string>('SHADOW_SIZING_ORCHESTRATOR_ENABLED');
+    const rawGem = this.config.get<string>('SHADOW_SIZING_GEMINI_ENABLED');
+    this.enabled = (raw ?? 'false').toLowerCase() === 'true';
+    this.logger.log(
+      `[shadow-sizing] onModuleInit fired — SHADOW_SIZING_ORCHESTRATOR_ENABLED raw="${raw}" parsed_enabled=${this.enabled} | SHADOW_SIZING_GEMINI_ENABLED raw="${rawGem}"`,
+    );
+    // PREUVE DB sentinel : écrit une row shadow_sizing_autotune_log au boot.
+    this.writeBootSentinel(raw, rawGem).catch(() => null);
     if (this.enabled) {
       this.logger.log(
-        `[shadow-sizing] ENABLED — cron */30min, target=$${DAILY_TARGET_USD}/d, drawdown_kill=${DRAWDOWN_KILL_PCT}%`,
+        `[shadow-sizing] ENABLED — cron */5min, target=$${DAILY_TARGET_USD}/d, drawdown_kill=${DRAWDOWN_KILL_PCT}%`,
       );
     }
+  }
+
+  private async writeBootSentinel(raw: string | undefined, rawGem: string | undefined): Promise<void> {
+    if (!this.supabase.isReady()) return;
+    const now = new Date();
+    await this.supabase.getClient().from('shadow_sizing_autotune_log').insert({
+      portfolio_id: SHADOW_PORTFOLIOS[0].id,
+      profile_name: 'boot_sentinel',
+      decision_kind: 'no_action',
+      trigger_metric: 'boot_sentinel',
+      trigger_value: 0,
+      threshold_value: 0,
+      action_applied: false,
+      rationale: `[BOOT_SENTINEL] onModuleInit fired @ ${now.toISOString()} — ORCH raw="${raw}" parsed=${this.enabled} | GEM raw="${rawGem}"`,
+      payload: { boot_sentinel: true, raw_flag: raw, raw_gem: rawGem, parsed_enabled: this.enabled },
+    });
   }
 
   /**
@@ -150,6 +183,8 @@ export class ShadowSizingOrchestratorService {
    */
   @Cron('*/5 * * * *', { name: 'shadow-sizing-orchestrator', timeZone: 'UTC' })
   async runCycle(): Promise<void> {
+    // Log inconditionnel chaque tick.
+    this.logger.log(`[shadow-sizing] cron tick @ ${new Date().toISOString()} enabled=${this.enabled} supabase=${this.supabase.isReady()}`);
     if (!this.enabled) return;
     if (!this.supabase.isReady()) return;
 
@@ -545,6 +580,61 @@ export class ShadowSizingOrchestratorService {
   //   2. Capés par cycle (delta sizing ≤ 20%)
   //   3. Logués dans shadow_sizing_autotune_log (decision_kind='gemini_auto_apply')
   //
+  /**
+   * Macro news digest pour le contexte de raisonnement Gemini auto-tune.
+   *
+   * Filtre :
+   *  - dernières 2h (window de fraîcheur narratif)
+   *  - sources tier-1 uniquement (reuters, bloomberg, cnbc, marketwatch, wsj, ft)
+   *  - sentiment fort (|polarity| ≥ 0.5)
+   *  - dédupliqué par title (même article = plusieurs tickers dans la table)
+   *  - top 10 par |sentiment| × recency
+   *
+   * Best-effort : retourne `[]` si fail.
+   */
+  private async fetchMacroNewsDigest(): Promise<Array<{ title: string; sentiment: number; source: string; published_at: string; tags: string[] }>> {
+    const TIER_1_HOSTS = [
+      'reuters.com', 'bloomberg.com', 'cnbc.com', 'marketwatch.com',
+      'wsj.com', 'ft.com', 'nasdaq.com', 'finance.yahoo.com',
+    ];
+    const sinceIso = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+    try {
+      const { data } = await this.supabase.getClient()
+        .from('eodhd_news_articles')
+        .select('title, sentiment_polarity, source_url, published_at, tags')
+        .gte('published_at', sinceIso)
+        .order('published_at', { ascending: false })
+        .limit(150);  // fetch large pour dédup, filter ensuite
+      if (!data || data.length === 0) return [];
+
+      // Filter + extract host + dédup
+      const seenTitles = new Set<string>();
+      const out: Array<{ title: string; sentiment: number; source: string; published_at: string; tags: string[] }> = [];
+      for (const r of data) {
+        const title = String(r.title ?? '').trim();
+        if (!title || seenTitles.has(title)) continue;
+        const sent = Number(r.sentiment_polarity);
+        if (!Number.isFinite(sent) || Math.abs(sent) < 0.5) continue;
+        const host = (String(r.source_url ?? '').match(/\/\/([^/]+)/)?.[1] ?? '').toLowerCase();
+        if (!TIER_1_HOSTS.some((h) => host.includes(h))) continue;
+        seenTitles.add(title);
+        const tags = Array.isArray(r.tags) ? (r.tags as string[]).slice(0, 5) : [];
+        out.push({
+          title: title.slice(0, 140),
+          sentiment: Number(sent.toFixed(2)),
+          source: host,
+          published_at: String(r.published_at).slice(0, 16),
+          tags,
+        });
+        if (out.length >= 10) break;
+      }
+      return out;
+    } catch (e) {
+      this.logger.warn(`[shadow-sizing-gemini] news digest fetch failed: ${String(e).slice(0, 100)}`);
+      return [];
+    }
+  }
+
   // Gated par SHADOW_SIZING_GEMINI_ENABLED=true (default OFF — safe MVP).
   // Si false, la méthode no-op silencieusement.
   private async geminiDrivenAutoCorrection(snapshots: ProfileSnapshot[]): Promise<void> {
@@ -576,11 +666,29 @@ export class ShadowSizingOrchestratorService {
       recentDecisions[snap.profileName] = (decisions ?? []) as object[];
     }
 
+    // Macro context (cache 2 min côté LisaService — partagé avec LiveTraderAgent).
+    // Critique pour contextualiser les décisions kill/raise/lower (un drawdown en VIX 35
+    // ne se traite pas comme un drawdown en VIX 14).
+    let macro: object;
+    try {
+      macro = await this.lisa.getRecentMarketSnapshot(120);
+    } catch (e) {
+      this.logger.warn(`[shadow-sizing-gemini] macro fetch failed: ${String(e).slice(0, 100)}`);
+      macro = { note: 'macro_snapshot_unavailable_this_cycle' };
+    }
+
+    // Macro news digest : 10 titres tier-1 sentiment fort, < 2h, dédupliqués.
+    // But : enrichir le contexte de raisonnement sizing avec le régime narratif
+    // sans noise (per-ticker news non pertinent à ce niveau méta).
+    const newsDigest = await this.fetchMacroNewsDigest();
+
     const systemPrompt = SHADOW_SIZING_GEMINI_SYSTEM_PROMPT;
     const userPrompt = JSON.stringify({
       current_time_utc: new Date().toISOString(),
       target_usd_per_day: DAILY_TARGET_USD,
       drawdown_kill_threshold_pct: DRAWDOWN_KILL_PCT,
+      macro,
+      macro_news_digest: newsDigest,
       profiles: snapshots.map((s) => ({
         name: s.profileName,
         portfolio_id: s.portfolioId.slice(0, 8),
@@ -600,17 +708,33 @@ export class ShadowSizingOrchestratorService {
       recent_decisions_per_profile: recentDecisions,
     }, null, 2);
 
+    // Gemini Pro pour le raisonnement sizing — qualité supérieure sur l'analyse
+    // comparative multi-profiles + macro. Auto-fallback Flash Lite si Pro down.
     let response: { content: string; providerId: string; costUsd: number; latencyMs: number };
     try {
-      response = await this.llmRouter.call({
+      // maxTokens=3500 : Gemini Pro thinking budget (cf. fix 06:55 — 800 trop bas, content vide).
+      response = await this.llmRouter.callWithPro({
         system: systemPrompt,
         user: userPrompt,
         temperature: 0.2,
-        maxTokens: 800,
-        timeoutMs: 10_000,
+        maxTokens: 3500,
+        timeoutMs: 30_000,
       });
     } catch (e) {
-      this.logger.warn(`[shadow-sizing-gemini] LLM call failed: ${String(e).slice(0, 150)}`);
+      const errMsg = `LLM call failed: ${String(e).slice(0, 200)}`;
+      this.logger.warn(`[shadow-sizing-gemini] ${errMsg}`);
+      // Persist le fail en DB pour visibilité sans accès Fly logs.
+      await this.logAutoTune({
+        portfolioId: snapshots[0].portfolioId,
+        profileName: 'gemini_fail',
+        decisionKind: 'no_action',
+        triggerMetric: 'gemini_llm_error',
+        triggerValue: 0,
+        thresholdValue: 0,
+        actionApplied: false,
+        rationale: `🤖 Gemini call FAILED — ${errMsg}`,
+        payload: { error: errMsg },
+      }).catch(() => null);
       return;
     }
 

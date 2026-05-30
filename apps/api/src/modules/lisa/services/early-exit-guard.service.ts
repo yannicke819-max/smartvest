@@ -24,6 +24,11 @@ import {
   parseEarlyExitVerdict,
   EARLY_EXIT_SYSTEM_PROMPT,
 } from './early-exit-guard.helper';
+import {
+  extractEarlyExitThresholds,
+  type EarlyExitThresholds,
+  type LessonTargetsRow,
+} from './lesson-driven-config.helper';
 
 interface OpenPosRow {
   id: string;
@@ -38,6 +43,11 @@ interface OpenPosRow {
   market_ch1m_at_entry: number | null;
 }
 
+interface PortfolioThresholdsCacheEntry {
+  thresholds: EarlyExitThresholds;
+  asOf: number;
+}
+
 @Injectable()
 export class EarlyExitGuardService {
   private readonly logger = new Logger(EarlyExitGuardService.name);
@@ -45,6 +55,9 @@ export class EarlyExitGuardService {
   private ageMinMin = 5;
   private ageMaxMin = 15;
   private maxActionsPerCycle = 2;
+  /** Cache 60s du seuil per-portfolio pour éviter 1 fetch DB par position/cycle. */
+  private readonly thresholdsCache = new Map<string, PortfolioThresholdsCacheEntry>();
+  private static readonly THRESHOLDS_CACHE_TTL_MS = 60_000;
 
   constructor(
     private readonly config: ConfigService,
@@ -94,6 +107,33 @@ export class EarlyExitGuardService {
     }
   }
 
+  /**
+   * Charge (cache 60s) les seuils early-exit per-portfolio depuis
+   * lisa_session_configs (colonnes ajoutées par migration 0172). Fail-safe :
+   * en cas d'erreur DB → retour défauts neutres (null/null = aucun gate).
+   */
+  private async getPortfolioThresholds(portfolioId: string): Promise<EarlyExitThresholds> {
+    const cached = this.thresholdsCache.get(portfolioId);
+    if (cached && Date.now() - cached.asOf < EarlyExitGuardService.THRESHOLDS_CACHE_TTL_MS) {
+      return cached.thresholds;
+    }
+    let thresholds: EarlyExitThresholds = { drawdownThresholdPct: null, minAgeSeconds: null };
+    try {
+      const { data } = await this.supabase.getClient()
+        .from('lisa_session_configs')
+        .select('gainers_early_exit_drawdown_threshold_pct, gainers_early_exit_min_age_seconds')
+        .eq('portfolio_id', portfolioId)
+        .maybeSingle();
+      if (data) {
+        thresholds = extractEarlyExitThresholds(data as LessonTargetsRow);
+      }
+    } catch (e) {
+      this.logger.debug(`[early-exit-guard] cfg fetch fail ${portfolioId}: ${String(e).slice(0, 100)}`);
+    }
+    this.thresholdsCache.set(portfolioId, { thresholds, asOf: Date.now() });
+    return thresholds;
+  }
+
   private async fetchEligiblePositions(): Promise<OpenPosRow[]> {
     const now = Date.now();
     const minAgeIso = new Date(now - this.ageMaxMin * 60_000).toISOString(); // entries plus vieilles que ageMax
@@ -136,11 +176,46 @@ export class EarlyExitGuardService {
     }
     const entry = Number(pos.entry_price);
     const direction = (pos.direction === 'short') ? 'short' : 'long';
-    const ageMin = Math.round((Date.now() - new Date(pos.entry_timestamp).getTime()) / 60_000);
+    const ageSec = Math.round((Date.now() - new Date(pos.entry_timestamp).getTime()) / 1000);
+    const ageMin = Math.round(ageSec / 60);
     // Signed unrealized
     const unrealPct = direction === 'long'
       ? ((livePx - entry) / entry) * 100
       : ((entry - livePx) / entry) * 100;
+
+    // Lesson-driven gates (migration 0172) — per-portfolio FADE calibration.
+    // Gate 1 : minAgeSeconds → ne JAMAIS FADE-close avant ce seuil (les
+    // U-shapes recovery se signent souvent à -0.3% / -0.7% entre 30s et 90s
+    // d'âge et se redressent). Default code = aucun seuil (back-compat).
+    // Gate 2 : drawdownThresholdPct → ne FADE-close que si la position est
+    // au-delà de ce drawdown (= la position « mérite » d'être évaluée).
+    // En deçà, on garde et on laisse les stops/TP gérer.
+    const thresholds = await this.getPortfolioThresholds(pos.portfolio_id);
+    if (thresholds.minAgeSeconds !== null && ageSec < thresholds.minAgeSeconds) {
+      this.logger.debug(
+        `[early-exit-guard] ${pos.symbol} skip — age ${ageSec}s < min ${thresholds.minAgeSeconds}s (lesson-driven)`,
+      );
+      return false;
+    }
+    if (thresholds.drawdownThresholdPct !== null && unrealPct > -thresholds.drawdownThresholdPct) {
+      // unrealPct > -threshold signifie qu'on n'est PAS encore au-delà du
+      // drawdown calibré (ex : threshold=1.5 → on autorise FADE seulement si
+      // unrealPct ≤ -1.5%). Sinon → laisser respirer.
+      this.logger.debug(
+        `[early-exit-guard] ${pos.symbol} skip — unreal ${unrealPct.toFixed(2)}% > -${thresholds.drawdownThresholdPct}% (lesson-driven)`,
+      );
+      return false;
+    }
+    // RM-FILTER-ON-PROFIT (28/05/2026, MFE/MAE 3-week confirmation) — skip FADE
+    // si position en profit significatif. 10/11 FADE'd winners ont continué après
+    // FADE = $124 left on table sur 22j. 6/7 sur 27-28/05 seul. Skip si unrealPct
+    // > +0.3% (laisse FADE sur breakeven / pertes faibles).
+    if (unrealPct > 0.3) {
+      this.logger.log(
+        `[early-exit-guard] ${pos.symbol} skip — unreal ${unrealPct.toFixed(2)}% > +0.3% (RM-FILTER-ON-PROFIT, lesson MFE/MAE 3w)`,
+      );
+      return false;
+    }
     const slDistPct = pos.stop_loss_price != null
       ? ((Number(pos.stop_loss_price) - livePx) / livePx) * 100
       : null;
