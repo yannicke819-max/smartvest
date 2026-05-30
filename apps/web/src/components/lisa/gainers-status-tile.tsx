@@ -178,8 +178,8 @@ export function GainersStatusTile({ portfolioId }: { portfolioId: string }) {
   return (
     <div className="rounded-lg border border-orange-200 dark:border-orange-900/40 bg-orange-50/40 dark:bg-orange-950/10 p-4 space-y-3">
       <div className="flex items-center gap-2">
-        <Rocket className="h-4 w-4 text-orange-600" />
-        <h3 className="text-sm font-medium">Scanner Gainers · état temps réel</h3>
+        <Rocket className="h-4 w-4 text-purple-600" />
+        <h3 className="text-sm font-medium">Scanner LISA · état temps réel</h3>
       </div>
 
       {!data && (
