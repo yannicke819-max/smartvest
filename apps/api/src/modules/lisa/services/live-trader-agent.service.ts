@@ -33,6 +33,7 @@ import { ScannerLlmRouterService } from './scanner-llm-router.service';
 import { LisaService } from './lisa.service';
 import { ScannerLessonsContextService } from './scanner-lessons-context.service';
 import { TopGainersScannerService } from './top-gainers-scanner.service';
+import { PushNotificationsService } from './push-notifications.service';
 import type { TopGainerCandidate } from '@smartvest/ai-analyst';
 
 const TRADER_AGENT_PORTFOLIO_ID = 'b0000001-0000-0000-0000-000000000001';
@@ -229,6 +230,7 @@ export class LiveTraderAgentService {
     private readonly schedulerRegistry: SchedulerRegistry,
     private readonly topGainersScanner: TopGainersScannerService,
     @Optional() private readonly lessonsContext?: ScannerLessonsContextService,
+    @Optional() private readonly pushNotifs?: PushNotificationsService,
   ) {}
 
   onModuleInit(): void {
@@ -360,8 +362,57 @@ export class LiveTraderAgentService {
 
     const cycleStartedAt = new Date();
     try {
+      // LISA refonte B.1 — backfill outcomes des citations en attente.
+      // Best-effort, ne fait jamais échouer le cycle.
+      this.resolveCitationOutcomes().catch((e) =>
+        this.logger.debug(`[trader-agent] resolveCitationOutcomes err: ${String(e).slice(0, 100)}`),
+      );
+
       // 1. Read state (positions, capital, daily PnL)
       const state = await this.readState();
+
+      // 1.1 — LISA refonte A.4.1 — Anti-spiral safety guard.
+      // Si drawdown depuis le capital initial < -30%, on arme kill_switch_active=true
+      // dans la DB et on skip le cycle. L'agent ne reprendra qu'après reset manuel
+      // explicite côté UI (ConfirmDialog). Protège contre l'effondrement non détecté
+      // par les caps daily (-$500/jour) sur une suite de mauvaises journées.
+      if (state.drawdownFromInitialPct < -30 && !state.killSwitchActive) {
+        this.logger.error(
+          `[trader-agent] ANTI-SPIRAL armed — DD=${state.drawdownFromInitialPct.toFixed(1)}% < -30% — kill_switch_active=true`,
+        );
+        await this.supabase.getClient()
+          .from('lisa_session_configs')
+          .update({ kill_switch_active: true })
+          .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID);
+        // B.4.c — push notification au user du portfolio (best-effort).
+        if (this.pushNotifs) {
+          const { data: portfolioRow } = await this.supabase.getClient()
+            .from('portfolios')
+            .select('user_id')
+            .eq('id', TRADER_AGENT_PORTFOLIO_ID)
+            .maybeSingle();
+          const userId = (portfolioRow as { user_id?: string } | null)?.user_id;
+          if (userId) {
+            this.pushNotifs.notifyUser(userId, 'kill_switch_armed').catch((e) =>
+              this.logger.debug(`[trader-agent] push notify err: ${String(e).slice(0, 100)}`),
+            );
+          }
+        }
+        await this.logDecision({
+          cycleStartedAt, state, action: 'hold' as const,
+          notionalUsd: 0, confidence: 0,
+          thesis: `Anti-spirale armé : drawdown ${state.drawdownFromInitialPct.toFixed(1)}% < -30% depuis capital initial $${state.initialCapitalUsd.toFixed(0)} (current $${state.currentCapitalUsd.toFixed(0)}). Kill-switch DB activé. Reset manuel requis via UI /lisa.`,
+          applied: false,
+          actionKindOverride: 'kill_switch_anti_spiral',
+        });
+        return;
+      }
+      if (state.killSwitchActive) {
+        this.logger.warn(
+          `[trader-agent] kill_switch_active=true (DD=${state.drawdownFromInitialPct.toFixed(1)}%) — cycle skipped, manual reset required`,
+        );
+        return;
+      }
 
       // 1.5 — Pre-flight ORPHAN_CLOSE déterministe (28/05/2026, ADDENDUM TRADER).
       // TRADER a généré +$190 net jour en orphan-close manuel (CHRT.LSE 2x, IQE.LSE).
@@ -453,15 +504,22 @@ export class LiveTraderAgentService {
 
       // 4. Build system prompt (memory + cross-lessons + MIDDLE ref + self-reflection)
       const systemPrompt = this.buildSystemPrompt(memory, crossScannerLessons, middleReference, selfReflection);
+      // LISA refonte A.4 — Capital composé : utilise state.currentCapitalUsd
+      // (= initial + Σ pnl si compound activé) au lieu du constant TRADER_AGENT_CAPITAL_USD.
+      // max_concentration calculée à 45% du capital actuel (dynamic ratio).
+      const dynamicMaxConcentration = Math.round(state.currentCapitalUsd * 0.45);
       const userPrompt = JSON.stringify({
         current_time_utc: cycleStartedAt.toISOString(),
-        portfolio_capital_usd: TRADER_AGENT_CAPITAL_USD,
+        portfolio_capital_usd: state.currentCapitalUsd,
+        portfolio_capital_initial_usd: state.initialCapitalUsd,
+        portfolio_cumulative_pnl_usd: state.cumulativePnlUsd,
+        portfolio_drawdown_pct: state.drawdownFromInitialPct,
         state,
         candidates,
         macro,
         news_recent: news,
         constraints: {
-          max_concentration_usd: MAX_CONCENTRATION_USD,
+          max_concentration_usd: dynamicMaxConcentration,
           max_open_positions: 5,
           min_notional_usd: MIN_NOTIONAL_USD,
           daily_loss_limit_usd: MAX_DAILY_LOSS_USD,
@@ -583,6 +641,22 @@ export class LiveTraderAgentService {
         });
       } catch (e) {
         this.logger.error(`[trader-agent] logDecision failed (cycle ran but trace lost): ${String(e).slice(0, 200)}`);
+      }
+
+      // LISA refonte B.1 — parse markers thèse + insert citations
+      // Best-effort : catch + log, ne fait jamais échouer le cycle.
+      try {
+        await this.insertLessonCitations({
+          thesis: decision.thesis ?? '',
+          cycleStartedAt,
+          actionKind: decision.action_kind,
+          actionApplied: applyResult.applied,
+          targetSymbol: decision.symbol ?? null,
+          confidence: decision.confidence ?? null,
+          positionId: applyResult.positionId ?? null,
+        });
+      } catch (e) {
+        this.logger.warn(`[trader-agent] insertLessonCitations err: ${String(e).slice(0, 120)}`);
       }
 
       const tag = applyResult.applied ? '✅' : (decision.action_kind === 'hold' ? '⏸️' : '⚠️');
@@ -1136,6 +1210,15 @@ Recommendation rules :
     dailyPnlUsd: number;
     closedTodayCount: number;
     winRateTodayPct: number | null;
+    // LISA refonte A.4 — Capital composé : initial + Σ realized_pnl (si compound activé)
+    // Lu depuis lisa_session_configs.lisa_{initial_capital_usd,compound_pnl_enabled}.
+    // Fallback constant TRADER_AGENT_CAPITAL_USD si DB indisponible.
+    initialCapitalUsd: number;
+    currentCapitalUsd: number;
+    compoundPnlEnabled: boolean;
+    cumulativePnlUsd: number;
+    drawdownFromInitialPct: number;
+    killSwitchActive: boolean;
     recentClosesLast60min: Array<{
       symbol: string;
       direction: string;
@@ -1148,10 +1231,24 @@ Recommendation rules :
   }> {
     const client = this.supabase.getClient();
     const todayStart = `${new Date().toISOString().slice(0, 10)}T00:00:00Z`;
-    // Fenêtre 60 min — couvre la lesson b4c48e13 ANTI_REENTRY_POST_INVALIDATION
-    // (30 min) avec marge contextuelle. Volume typique TRADER ≈ 1-2 closes/h
-    // donc liste typique de 1-2 entrées (~200-400 tokens prompt, négligeable).
     const sixtyMinAgoIso = new Date(Date.now() - 60 * 60_000).toISOString();
+
+    // LISA refonte A.4 — Lecture config capital composé
+    const { data: cfg } = await client
+      .from('lisa_session_configs')
+      .select('lisa_initial_capital_usd, lisa_compound_pnl_enabled, kill_switch_active')
+      .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+      .maybeSingle();
+    const initialCapital = Number(
+      (cfg as { lisa_initial_capital_usd?: unknown } | null)?.lisa_initial_capital_usd
+      ?? TRADER_AGENT_CAPITAL_USD
+    );
+    const compoundEnabled = Boolean(
+      (cfg as { lisa_compound_pnl_enabled?: unknown } | null)?.lisa_compound_pnl_enabled ?? true
+    );
+    const killSwitchActive = Boolean(
+      (cfg as { kill_switch_active?: unknown } | null)?.kill_switch_active ?? false
+    );
 
     const { data: open } = await client
       .from('lisa_positions')
@@ -1166,9 +1263,20 @@ Recommendation rules :
       .gte('exit_timestamp', todayStart)
       .neq('status', 'open');
 
-    // Closes des 60 dernières minutes — injecté dans le state pour que le LLM
-    // voie ses propres actions récentes (sans cela il est aveugle aux closes
-    // qu'il vient lui-même de décider, cas vérifié XRPUSDT 30/05 02:05 -$22).
+    // LISA refonte A.4 — Cumulative PnL depuis création (pour capital composé)
+    const { data: allClosed } = await client
+      .from('lisa_positions')
+      .select('realized_pnl_usd')
+      .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+      .neq('status', 'open');
+    const cumulativePnl = (allClosed ?? []).reduce(
+      (s, c) => s + Number((c as { realized_pnl_usd?: unknown }).realized_pnl_usd ?? 0),
+      0,
+    );
+    const currentCapital = compoundEnabled ? initialCapital + cumulativePnl : initialCapital;
+    const drawdownPct = initialCapital > 0 ? ((currentCapital - initialCapital) / initialCapital) * 100 : 0;
+
+    // Closes des 60 dernières minutes (cf. PR #494)
     const { data: recentClosed } = await client
       .from('lisa_positions')
       .select('symbol, direction, exit_timestamp, exit_reason, realized_pnl_usd, realized_pnl_pct')
@@ -1204,10 +1312,16 @@ Recommendation rules :
       openPositions,
       openCount: openPositions.length,
       deployedUsd: deployed,
-      capitalAvailableUsd: TRADER_AGENT_CAPITAL_USD - deployed,
+      capitalAvailableUsd: currentCapital - deployed,
       dailyPnlUsd: dailyPnl,
       closedTodayCount: closed?.length ?? 0,
       winRateTodayPct: winRate,
+      initialCapitalUsd: initialCapital,
+      currentCapitalUsd: currentCapital,
+      compoundPnlEnabled: compoundEnabled,
+      cumulativePnlUsd: cumulativePnl,
+      drawdownFromInitialPct: drawdownPct,
+      killSwitchActive,
       recentClosesLast60min,
     };
   }
@@ -1232,6 +1346,41 @@ Recommendation rules :
         || sym.endsWith('.AS') || sym.endsWith('.BR') || sym.endsWith('.MI')
         || sym.endsWith('.MC') || sym.endsWith('.SW')) return 'eu_equity';
     return 'unknown';
+  }
+
+  /**
+   * LISA refonte A.4 — lit le capital actuel (composé) pour le sizing Kelly.
+   * Cached null-safe : retourne TRADER_AGENT_CAPITAL_USD fallback si DB indispo.
+   */
+  private async fetchCurrentCapital(): Promise<number> {
+    try {
+      const { data: cfg } = await this.supabase.getClient()
+        .from('lisa_session_configs')
+        .select('lisa_initial_capital_usd, lisa_compound_pnl_enabled')
+        .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+        .maybeSingle();
+      const initial = Number(
+        (cfg as { lisa_initial_capital_usd?: unknown } | null)?.lisa_initial_capital_usd
+        ?? TRADER_AGENT_CAPITAL_USD
+      );
+      const compound = Boolean(
+        (cfg as { lisa_compound_pnl_enabled?: unknown } | null)?.lisa_compound_pnl_enabled ?? true
+      );
+      if (!compound) return initial;
+      const { data: closed } = await this.supabase.getClient()
+        .from('lisa_positions')
+        .select('realized_pnl_usd')
+        .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+        .neq('status', 'open');
+      const pnl = (closed ?? []).reduce(
+        (s, c) => s + Number((c as { realized_pnl_usd?: unknown }).realized_pnl_usd ?? 0),
+        0,
+      );
+      return initial + pnl;
+    } catch (e) {
+      this.logger.debug(`[trader-agent] fetchCurrentCapital failed, fallback: ${String(e).slice(0, 80)}`);
+      return TRADER_AGENT_CAPITAL_USD;
+    }
   }
 
   private async fetchTopCandidates(n: number): Promise<object[]> {
@@ -1260,6 +1409,8 @@ Recommendation rules :
     // PAS de gate hardcodé — décision reste autonome côté Gemini Pro.
     const feedMin = Number(this.config.get<string>('TRADER_FEED_MIN_PCT') ?? '2');
     const feedMax = Number(this.config.get<string>('TRADER_FEED_MAX_PCT') ?? '15');
+    // LISA refonte A.4 — Lit le capital actuel (composé) pour scaling Kelly
+    const currentCapital = await this.fetchCurrentCapital();
     try {
       const candidates = await this.topGainersScanner.fetchAllCandidates();
       if (candidates && candidates.length > 0) {
@@ -1276,12 +1427,12 @@ Recommendation rules :
         const sorted = [...pool].sort((a, b) => (b.changePct ?? 0) - (a.changePct ?? 0));
         if (sorted.length > 0) {
           this.logger.debug(
-            `[trader-agent] feed: ${candidates.length} scanned → ${sorted.length} in band [${feedMin},${feedMax}]% → top ${Math.min(n, sorted.length)}`,
+            `[trader-agent] feed: ${candidates.length} scanned → ${sorted.length} in band [${feedMin},${feedMax}]% → top ${Math.min(n, sorted.length)} (capital=$${currentCapital.toFixed(0)})`,
           );
           // P-KTOS — Compute pool-wide max for pumpScore
           const maxChangePctInPool = sorted.reduce((m, c) => Math.max(m, c.changePct ?? 0), 0);
           return sorted.slice(0, n).map((c) =>
-            this.enrichCandidateWithMath(c, maxChangePctInPool),
+            this.enrichCandidateWithMath(c, maxChangePctInPool, currentCapital),
           );
         }
       }
@@ -1337,6 +1488,7 @@ Recommendation rules :
   private enrichCandidateWithMath(
     c: TopGainerCandidate,
     maxChangePctInPool: number,
+    currentCapital: number = TRADER_AGENT_CAPITAL_USD,
   ): Record<string, unknown> {
     const changePct = c.changePct ?? 0;
     const high = c.high ?? c.close ?? 0;
@@ -1358,8 +1510,8 @@ Recommendation rules :
     // (sera affiné par P9 quand p_win_at_entry sera correctement persisté).
     // f* = (TP*p_win - SL*(1-p_win)) / TP avec TP=2.5, SL=1.5, p_win=0.5
     //    = (1.25 - 0.75) / 2.5 = 0.20
-    // Capital trader = $10000 → max $2000 = Kelly cap par défaut.
-    const kellyMaxNotional = Math.round(TRADER_AGENT_CAPITAL_USD * 0.20);
+    // LISA refonte A.4 — utilise currentCapital (composé) au lieu du constant.
+    const kellyMaxNotional = Math.round(currentCapital * 0.20);
 
     // Sweet spot bucket gagnant historique (lesson aa6eda5f) : [3,8]%
     const sweetSpotEntry = changePct >= 3 && changePct <= 8;
@@ -1600,7 +1752,9 @@ Recommendation rules :
           return { applied: false, error: `anti-revenge: ${sym} dernier close ${lastLoser.exit_timestamp} en perte (${Number(lastLoser.realized_pnl_usd).toFixed(2)}$) — cooldown 2h actif` };
         }
       }
-      const notional = Math.max(MIN_NOTIONAL_USD, Math.min(MAX_CONCENTRATION_USD, decision.notional_usd));
+      // LISA refonte A.4 — Cap dynamique 45% du capital actuel (composé).
+      const dynamicCap = Math.round((await this.fetchCurrentCapital()) * 0.45);
+      const notional = Math.max(MIN_NOTIONAL_USD, Math.min(dynamicCap, decision.notional_usd));
       // XETRA small-cap blacklist (28/05/2026) — 2 incidents : SNG.XETRA -$35
       // (gap SL slippage) + QH9.XETRA -$132 (gap -12% non capté par polling SL).
       // XETRA small-caps notionnel < $3000 = liquidité trop mince pour gérer
@@ -1769,7 +1923,9 @@ Recommendation rules :
         return { applied: false, error: `scale_in: no existing position on ${sym} (use open_directional)` };
       }
       if (state.openCount >= 5) return { applied: false, error: 'scale_in: max 5 open positions' };
-      const notional = Math.max(MIN_NOTIONAL_USD, Math.min(MAX_CONCENTRATION_USD * 1.5, decision.notional_usd));
+      // LISA refonte A.4 — Cap scale_in dynamique 45% × 1.5 = 67.5% du capital actuel.
+      const dynamicCapScaleIn = Math.round((await this.fetchCurrentCapital()) * 0.45 * 1.5);
+      const notional = Math.max(MIN_NOTIONAL_USD, Math.min(dynamicCapScaleIn, decision.notional_usd));
       // Autonomie cadrée : bornes resserrées post-MFE/MAE 27/05 (MAE/R 1.78,
       // capture rate -45.8% sur 7 trades). SL min 1.5% obligatoire (sinon
       // stop-out garanti avant retracement). TP max 8% (au-delà = capture rate
@@ -1914,6 +2070,151 @@ Recommendation rules :
       applied_position_id: p.appliedPositionId ?? null,
       apply_error: p.applyError ?? null,
     });
+  }
+
+  // ====================================================================
+  // LISA refonte B.1 — Lesson markers parsing + citations tracking
+  // ====================================================================
+  //
+  // Le LLM TRADER reçoit dans son system prompt les lessons actives au format
+  //   "lesson_kind: PULLBACK_WAIT_KTOS_LESSON · lesson_text: ..."
+  // et est encouragé à citer le marker en majuscules entre crochets dans sa
+  // thèse — ex: "Setup post-pump, attente confirmé [PULLBACK_WAIT_KTOS_LESSON]".
+  //
+  // À chaque décision, on parse la thèse, extrait les markers, résout chaque
+  // marker vers un lesson_id (par lesson_kind ILIKE) et insère une ligne dans
+  // scanner_lesson_citations. L'outcome (pnl, win) est résolu plus tard quand
+  // la position se ferme — backfill au début de chaque cycle.
+  //
+  // Cible UI Phase B.2 : "Quelle lesson a été citée combien de fois, avec
+  // quel win-rate, sur 30j ?"
+
+  /**
+   * Extrait les markers [XXX] d'une thèse LLM. Dédupliqué.
+   * Pattern : crochets, début majuscule, 3-40 chars [A-Z0-9_+-].
+   * Ignore les markers techniques bas-niveau (DIAGNOSTIC, SANITY_BOUND, etc.)
+   * qui ne sont pas des lessons — uniquement les markers > 6 chars.
+   */
+  private parseLessonMarkers(thesis: string): string[] {
+    if (!thesis || thesis.length === 0) return [];
+    const re = /\[([A-Z][A-Z0-9_+\-]{2,40})\]/g;
+    const set = new Set<string>();
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(thesis)) !== null) {
+      const marker = m[1];
+      // Filtre out les markers infra (pas des lessons)
+      if (['DIAGNOSTIC', 'SANITY_BOUND', 'KILL_SWITCH', 'HT_BYPASS', 'HT_EXCEPTION'].includes(marker)) continue;
+      set.add(marker);
+    }
+    return [...set];
+  }
+
+  /**
+   * Pour chaque marker, tente de matcher un lesson_id via lesson_kind ILIKE.
+   * Insère une ligne scanner_lesson_citations par marker (avec lesson_id=null
+   * si pas de match — utile pour audit "markers cités jamais mappés").
+   */
+  private async insertLessonCitations(args: {
+    thesis: string;
+    cycleStartedAt: Date;
+    actionKind: string;
+    actionApplied: boolean;
+    targetSymbol: string | null;
+    confidence: number | null;
+    positionId: string | null;
+  }): Promise<void> {
+    const markers = this.parseLessonMarkers(args.thesis);
+    if (markers.length === 0) return;
+
+    const client = this.supabase.getClient();
+    // Résolution lesson_id par marker (1 query par marker, OK pour volume faible)
+    const rows: Array<Record<string, unknown>> = [];
+    for (const marker of markers) {
+      const { data: lesson } = await client
+        .from('scanner_lessons')
+        .select('id')
+        .ilike('lesson_kind', `%${marker}%`)
+        .eq('is_active', true)
+        .order('confidence', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      rows.push({
+        lesson_id: (lesson as { id?: string } | null)?.id ?? null,
+        marker_text: `[${marker}]`,
+        portfolio_id: TRADER_AGENT_PORTFOLIO_ID,
+        decision_decided_at: args.cycleStartedAt.toISOString(),
+        action_kind: args.actionKind,
+        action_applied: args.actionApplied,
+        target_symbol: args.targetSymbol,
+        confidence: args.confidence,
+        position_id: args.positionId,
+        thesis_excerpt: args.thesis.slice(0, 300),
+      });
+    }
+    const { error } = await client.from('scanner_lesson_citations').insert(rows);
+    if (error) {
+      this.logger.warn(`[trader-agent] insertLessonCitations failed: ${error.message}`);
+    } else {
+      this.logger.debug(
+        `[trader-agent] inserted ${rows.length} citations (markers: ${markers.join(',')})`,
+      );
+    }
+  }
+
+  /**
+   * Backfill outcomes : pour chaque citation où outcome_resolved_at IS NULL
+   * ET position_id IS NOT NULL, lit la position et résout outcome si closed.
+   * Idempotent (filtre WHERE outcome_resolved_at IS NULL). Limité 50/cycle
+   * pour ne pas saturer.
+   */
+  private async resolveCitationOutcomes(): Promise<void> {
+    const client = this.supabase.getClient();
+    const { data: pending } = await client
+      .from('scanner_lesson_citations')
+      .select('id, position_id')
+      .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+      .is('outcome_resolved_at', null)
+      .not('position_id', 'is', null)
+      .limit(50);
+    if (!pending || pending.length === 0) return;
+
+    const positionIds = [...new Set(
+      pending.map((r) => (r as { position_id: string }).position_id).filter(Boolean),
+    )];
+    const { data: positions } = await client
+      .from('lisa_positions')
+      .select('id, status, realized_pnl_usd, exit_timestamp')
+      .in('id', positionIds)
+      .neq('status', 'open');
+    if (!positions || positions.length === 0) return;
+
+    const posById = new Map<string, { pnl: number; closedAt: string }>();
+    for (const p of positions) {
+      const row = p as { id: string; realized_pnl_usd?: unknown; exit_timestamp?: string };
+      posById.set(row.id, {
+        pnl: Number(row.realized_pnl_usd ?? 0),
+        closedAt: row.exit_timestamp ?? new Date().toISOString(),
+      });
+    }
+
+    let resolved = 0;
+    for (const c of pending) {
+      const row = c as { id: string; position_id: string };
+      const pos = posById.get(row.position_id);
+      if (!pos) continue;
+      await client
+        .from('scanner_lesson_citations')
+        .update({
+          outcome_resolved_at: pos.closedAt,
+          outcome_pnl_usd: pos.pnl,
+          outcome_win: pos.pnl > 0,
+        })
+        .eq('id', row.id);
+      resolved++;
+    }
+    if (resolved > 0) {
+      this.logger.log(`[trader-agent] resolved ${resolved} citation outcomes`);
+    }
   }
 
   // ====================================================================
