@@ -52,6 +52,7 @@ export type ShadowDecision =
   | 'reject_volatile_regime'    // Phase C — symbole structurellement volatile (ATR/close > seuil), SL cassé par bruit
   | 'reject_stagflation_hedge_guard'  // Audit 23/05 — ticker dans watchlist stagflation_hedge, -$3,463 historiques (env-gated)
   | 'reject_dead_zone'          // Analyse 27/05 — buckets changePct 4-8% (Σpnl -28%) + 15-20% (Σpnl -111%) structurellement perdants
+  | 'reject_eos_no_open'        // EOS-OPEN gate (30/05) — refuse new opens dans les N dernières min avant cloche (symétrique lesson END_OF_SESSION_WAIT)
   | 'reject_other';
 
 export interface RecordDecisionInput {

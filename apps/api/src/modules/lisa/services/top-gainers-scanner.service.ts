@@ -2885,6 +2885,43 @@ export class TopGainersScannerService implements OnModuleInit {
         }
       }
 
+      // EOS-OPEN gate (30/05/2026) — refuse new opens in last N minutes before
+      // session close. Symétrique à la lesson 'END_OF_SESSION_WAIT' (a1dfac77,
+      // scope trader_agent_only) qui guide le LLM TRADER. Ici on protège les
+      // scanners gainers déterministes (MIDDLE/HIGH/SMALL/MAIN).
+      //
+      // Justification : TP standard (2.5-3%) demande ~30min médiane à se développer
+      // (vol 1m intraday ≈ 0.15%/min). Ouvrir < 30min avant la cloche =
+      // force-close à prix aléatoire via gainers_force_close_offset_min.
+      //
+      // Default 0 = OFF (opt-in via env). Per-class override possible :
+      //   GAINERS_NO_OPEN_LAST_MIN_BEFORE_CLOSE=30 (global, toutes classes equity)
+      //   GAINERS_NO_OPEN_LAST_MIN_BEFORE_CLOSE_US_EQUITY_LARGE=20 (override US large)
+      //   GAINERS_NO_OPEN_LAST_MIN_BEFORE_CLOSE_EU_EQUITY=45 (override EU)
+      // Crypto exempt par défaut (24/7, pas de notion de cloche).
+      const eosCls = sessionClassFor(String(cand.assetClass));
+      if (eosCls) {  // null = crypto, skip
+        const classUpperEos = String(cand.assetClass ?? '').toUpperCase();
+        const perClassNoOpenRaw = classUpperEos.length > 0
+          ? this.config.get<string>(`GAINERS_NO_OPEN_LAST_MIN_BEFORE_CLOSE_${classUpperEos}`)
+          : undefined;
+        const perClassNoOpen = perClassNoOpenRaw !== undefined ? Number(perClassNoOpenRaw) : NaN;
+        const globalNoOpen = Number(this.config.get<string>('GAINERS_NO_OPEN_LAST_MIN_BEFORE_CLOSE') ?? '0');
+        const noOpenMin = Number.isFinite(perClassNoOpen) && perClassNoOpen >= 0
+          ? perClassNoOpen
+          : globalNoOpen;
+        if (noOpenMin > 0 && isApproachingClose(eosCls, noOpenMin, nowUtc)) {
+          const closeUtcMinEos = MARKET_SESSION_HOURS[eosCls].closeUtcMin;
+          const nowMinEos = nowUtc.getUTCHours() * 60 + nowUtc.getUTCMinutes();
+          const minutesToClose = closeUtcMinEos - nowMinEos;
+          this.logger.log(
+            `[top-gainers] ${cand.symbol} (${cand.assetClass}) EOS_NO_OPEN actif (minutesToClose=${minutesToClose} ≤ ${noOpenMin}min) → skip long`,
+          );
+          recordShadowDecision(cand, 'reject_eos_no_open', undefined);
+          continue;
+        }
+      }
+
       // PR A — Gate horaire LONG. Data mining 15j (23/05/2026, n=7000 signaux) :
       //   - LONG mean H8 (EU open) = -0.60%, H19 (US close) = -1.01%, H22 = -0.93%, H0-H5 = -0.5%
       //   - LONG mean H13-H17 (US active) = neutre à légèrement positif (+0.03 à +0.27%)
