@@ -1464,6 +1464,47 @@ export class LisaController {
     return this.lisa.triggerKillSwitch(extractUserId(headers), portfolioId, reason ?? 'Manual user kill');
   }
 
+  // LISA refonte B.3 — Désarme le kill-switch (anti-spirale ou manuel).
+  // Pas de force-close, juste UPDATE kill_switch_active=false.
+  @Post('kill-switch-reset/:portfolioId')
+  @HttpCode(200)
+  resetKillSwitch(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    return this.lisa.resetKillSwitch(extractUserId(headers), portfolioId);
+  }
+
+  // LISA refonte B.3 — Lessons management (CRUD partiel : list + toggle).
+  @Get('scanner-lessons')
+  listScannerLessons(
+    @Headers() headers: Record<string, string>,
+    @Query('active') active?: string,
+    @Query('search') search?: string,
+    @Query('scope') scope?: string,
+    @Query('limit') limit?: string,
+  ) {
+    extractUserId(headers);
+    const opts: { active?: boolean; search?: string; scope?: string; limit?: number } = {};
+    if (active === 'true') opts.active = true;
+    else if (active === 'false') opts.active = false;
+    if (search) opts.search = search;
+    if (scope) opts.scope = scope;
+    if (limit) opts.limit = parseInt(limit, 10);
+    return this.lisa.listScannerLessons(opts);
+  }
+
+  @Patch('scanner-lessons/:id')
+  @HttpCode(200)
+  toggleScannerLesson(
+    @Headers() headers: Record<string, string>,
+    @Param('id') id: string,
+    @Body('is_active') isActive: boolean,
+  ) {
+    extractUserId(headers);
+    return this.lisa.setScannerLessonActive(id, Boolean(isActive));
+  }
+
   @Post('portfolio/:portfolioId/reset-simulation')
   @HttpCode(200)
   resetSimulation(

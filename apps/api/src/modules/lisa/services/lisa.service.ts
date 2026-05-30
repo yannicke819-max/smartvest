@@ -2776,6 +2776,65 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     return { ok: true, portfolioId };
   }
 
+  /**
+   * LISA refonte B.3 — Désarme le kill-switch (anti-spirale ou manuel).
+   * Pas de force-close, juste UPDATE kill_switch_active=false.
+   * Audit dans lisa_decision_log pour traçabilité.
+   */
+  async resetKillSwitch(userId: string, portfolioId: string) {
+    await this.assertPortfolioOwner(userId, portfolioId);
+    const client = this.supabase.getClient();
+    await client
+      .from('lisa_session_configs')
+      .update({ kill_switch_active: false })
+      .eq('portfolio_id', portfolioId);
+    await client.from('lisa_decision_log').insert({
+      portfolio_id: portfolioId,
+      kind: 'kill_switch_reset',
+      payload: { reset_by: 'user_manual', timestamp: new Date().toISOString() },
+    });
+    return { ok: true };
+  }
+
+  /**
+   * LISA refonte B.3 — Liste les scanner_lessons avec filtres.
+   * Pas de scoping user (table partagée). Limite défaut 200.
+   */
+  async listScannerLessons(opts: {
+    active?: boolean;
+    search?: string;
+    scope?: string;
+    limit?: number;
+  }) {
+    const client = this.supabase.getClient();
+    let q = client
+      .from('scanner_lessons')
+      .select('id, lesson_kind, lesson_text, macro_condition, scope, confidence, sample_size, win_rate_observed, avg_pnl_usd, is_active, derived_from_date, created_at, applied, applied_by')
+      .order('created_at', { ascending: false })
+      .limit(Math.min(opts.limit ?? 200, 1000));
+    if (opts.active !== undefined) q = q.eq('is_active', opts.active);
+    if (opts.scope) q = q.eq('scope', opts.scope);
+    if (opts.search) {
+      const term = `%${opts.search}%`;
+      q = q.or(`lesson_kind.ilike.${term},lesson_text.ilike.${term}`);
+    }
+    const { data, error } = await q;
+    if (error) throw new BadRequestException(error.message);
+    return data ?? [];
+  }
+
+  /**
+   * LISA refonte B.3 — Toggle is_active d'une lesson.
+   */
+  async setScannerLessonActive(lessonId: string, active: boolean) {
+    const { error } = await this.supabase.getClient()
+      .from('scanner_lessons')
+      .update({ is_active: active })
+      .eq('id', lessonId);
+    if (error) throw new BadRequestException(error.message);
+    return { ok: true, lessonId, is_active: active };
+  }
+
   async triggerKillSwitch(userId: string, portfolioId: string, reason: string) {
     await this.assertPortfolioOwner(userId, portfolioId);
 
