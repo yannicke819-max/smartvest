@@ -120,14 +120,12 @@ describe('fetchAllCandidates — EU session gating', () => {
     await svc.fetchAllCandidates(new Date('2026-04-29T10:00:00Z'));
 
     const exchanges = exchangesQueried(capturedUrls);
-    // EU exchanges
     expect(exchanges.has('LSE')).toBe(true);
     expect(exchanges.has('XETRA')).toBe(true);
     expect(exchanges.has('PA')).toBe(true);
-    expect(exchanges.has('AMS')).toBe(true);
-    // Non-EU still scanned (P20a: T = Tokyo, corrected from TSE)
+    expect(exchanges.has('AS')).toBe(true);  // Amsterdam = AS dans EU_EXCHANGES
     expect(exchanges.has('US')).toBe(true);
-    expect(exchanges.has('T')).toBe(true);
+    expect(exchanges.has('T')).toBe(false);  // 'T' Tokyo banni (commit ed1dfe1)
   });
 
   it('skips EU exchanges when all 3 EU sessions closed (e.g. 22:00 UTC)', async () => {
@@ -304,9 +302,9 @@ describe('fetchAllCandidates — merge dedup', () => {
         data = [{ code: 'NVDA', last_price: 800, refund_1d_p: 6.0, volume: 50_000_000, avgvol_50d: 40_000_000, market_capitalization: 2e12 }];
       } else if (decoded.includes('"exchange","=","PA"')) {
         data = [{ code: 'AIR.PA', last_price: 150, refund_1d_p: 4.2, volume: 1_000_000, avgvol_50d: 800_000, market_capitalization: 1e11 }];
-      } else if (decoded.includes('"exchange","=","T"')) {
-        // P20a: Tokyo uses code 'T' (suffix .T), not 'TSE'
-        data = [{ code: '7203', last_price: 2500, refund_1d_p: 5.5, volume: 5_000_000, avgvol_50d: 4_000_000, market_capitalization: 3e11 }];
+      } else if (decoded.includes('"exchange","=","HK"')) {
+        // Asia ban 'T' (commit ed1dfe1) — fallback HK toujours dans NON_EU_EXCHANGES.
+        data = [{ code: '0700.HK', last_price: 320, refund_1d_p: 5.5, volume: 5_000_000, avgvol_50d: 4_000_000, market_capitalization: 3e11 }];
       }
       return { ok: true, status: 200, json: async () => ({ data }), text: async () => '' } as unknown as Response;
     });
@@ -315,18 +313,15 @@ describe('fetchAllCandidates — merge dedup', () => {
     const candidates = await svc.fetchAllCandidates(new Date('2026-04-29T10:00:00Z'));
 
     const symbols = candidates.map((c) => c.symbol);
-    // PR #234 (PR6.9) — ensureExchangeSuffix appended :
-    //   NVDA → NVDA.US, 7203 → 7203.TSE (T → TSE remap), AIR.PA déjà avec dot (idempotent)
     expect(symbols).toContain('NVDA.US');
     expect(symbols).toContain('AIR.PA');
-    expect(symbols).toContain('7203.TSE');
+    expect(symbols).toContain('0700.HK');
 
-    // Verify each candidate gets the correct asset class via detectAssetClass
     const nvda = candidates.find((c) => c.symbol === 'NVDA.US')!;
     const air = candidates.find((c) => c.symbol === 'AIR.PA')!;
-    const toyota = candidates.find((c) => c.symbol === '7203.TSE')!;
+    const tencent = candidates.find((c) => c.symbol === '0700.HK')!;
     expect(detectAssetClass(nvda.symbol, nvda.exchange, nvda.marketCap)).toBe('us_equity_large');
     expect(detectAssetClass(air.symbol, air.exchange)).toBe('eu_equity');
-    expect(detectAssetClass(toyota.symbol, toyota.exchange)).toBe('asia_equity');
+    expect(detectAssetClass(tencent.symbol, tencent.exchange)).toBe('asia_equity');
   });
 });

@@ -133,15 +133,14 @@ describe('fetchEodhdScreener — URL construction (P18c regression guard)', () =
     expect(decoded).not.toMatch(/[?&]order=/);
   });
 
-  it('P19s — bumps limit from 20 to 100 (max per spec) to compensate dropped sort', async () => {
+  it('bumps limit to 500 (max per spec) to compensate dropped sort', async () => {
     const svc = makeService();
     await (svc as any).fetchEodhdScreener('US', 'test-key');
     const decoded = decodeURIComponent(capturedUrl!);
-    // Limit 100 = doc max. Compensates dropped sort: even if EODHD's natural
-    // order isn't changePct desc, we capture 5x more candidates so the
-    // client-side sort still surfaces the real top gainers.
-    expect(decoded).toContain('limit=100');
+    // Update 28-29/05/2026 : limit 100 → 500 (5× more candidates).
+    expect(decoded).toContain('limit=500');
     expect(decoded).not.toContain('limit=20');
+    expect(decoded).not.toContain('limit=100');
   });
 
   it('P19s++ HOTFIX — non-US exchanges build URL with UPPERCASE + NO 1d return filter', async () => {
@@ -369,6 +368,7 @@ describe('P20a — NON_EU_EXCHANGES registry correctness', () => {
     expect(queried).not.toContain('TSE');
     expect(queried).toContain('SHG');
     expect(queried).toContain('SHE');
-    expect(queried).toContain('T');
+    // Asia opening suffix ban 00-02h UTC (commit ed1dfe1) → 'T' retiré.
+    expect(queried).not.toContain('T');
   });
 });
