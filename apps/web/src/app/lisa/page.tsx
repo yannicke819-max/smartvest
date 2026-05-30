@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { Sparkles, Target, ShieldAlert, TrendingUp, Activity, ChevronDown, ChevronUp, SlidersHorizontal } from 'lucide-react';
 import { usePortfolios } from '@/hooks/use-portfolio';
-import { deduplicateSimulationPortfolios } from '@/app/actions/paper-portfolio';
+// import { deduplicateSimulationPortfolios } from '@/app/actions/paper-portfolio'; // ⚠️ DÉSACTIVÉ (bug cascade delete)
 import { useQueryClient } from '@tanstack/react-query';
 import {
   useLisaConfig,
@@ -142,14 +142,13 @@ export default function LisaPage() {
     }
   }, [simulationPortfolios, selectedPortfolioId]);
 
-  // Déduplique silencieusement les portefeuilles de simulation au montage.
-  useEffect(() => {
-    if (simulationPortfolios.length > 1) {
-      deduplicateSimulationPortfolios()
-        .then((n) => { if (n > 0) qc.invalidateQueries({ queryKey: ['portfolios'] }); })
-        .catch(() => {});
-    }
-  }, [simulationPortfolios.length]); // eslint-disable-line
+  // 🚨 DÉSACTIVÉ — la fonction deduplicateSimulationPortfolios garde le
+  // portfolio le PLUS RÉCENT et SUPPRIME tous les autres. Sur /lisa où on
+  // a TRADER + 3 Shadows par design (et pas des doublons), elle DESTRUIT
+  // tous les portfolios sauf le dernier créé. Bug catastrophique observé
+  // 30/05/2026 : TRADER + Shadow Middle + Small supprimés en cascade.
+  // La logique reste dispo côté /actions/paper-portfolio.ts pour les pages
+  // qui en ont vraiment besoin (dashboard standard).
   const [userFocus, setUserFocus] = useState('');
   const [killReason, setKillReason] = useState('');
 
