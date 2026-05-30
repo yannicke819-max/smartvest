@@ -56,6 +56,7 @@ import { MainScannerPostMortemService } from './services/main-scanner-postmortem
 import { DailyDigestService } from './services/daily-digest.service';
 import { PushNotificationsService } from './services/push-notifications.service';
 import { StrategyCoachService } from './services/strategy-coach.service';
+import { TraderRetrospectiveService } from './services/trader-retrospective.service';
 import { LessonAutoApplyService } from './services/lesson-auto-apply.service';
 import { ScannerLessonsContextService } from './services/scanner-lessons-context.service';
 import { ConfigSanityValidatorService } from './services/config-sanity-validator.service';
@@ -213,6 +214,10 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     // StrategyCoachService (C.1) — cron hourly @ minute 17, Gemini Flash + Pro
     // escalations. Génère coach_proposals consommées par UI review (C.2).
     StrategyCoachService,
+    // TraderRetrospectiveService (C.4) — cron daily 02:00 UTC. Analyse trades
+    // TRADER veille via Gemini Pro, INSERT scanner_lessons scope='trader_agent_only'
+    // is_active=true (réinjectées dans system prompt trader cycle suivant).
+    TraderRetrospectiveService,
     // ScannerLessonsContextService — fournit le bloc Markdown des lessons actives
     // à injecter dans les system prompts (signal validation, ranking, risk manager, macro veto).
     // Cache TTL 5 min pour éviter requêtes DB répétées (scanner ~500 calls/cycle).
