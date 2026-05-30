@@ -92,9 +92,36 @@ const TRADER_PORTFOLIO_ID = 'b0000001-0000-0000-0000-000000000001';
 export default function LisaPage() {
   const portfoliosQuery = usePortfolios();
   const qc = useQueryClient();
-  const simulationPortfolios = (portfoliosQuery.data ?? []).filter(
+  // Filter sim portfolios par is_simulation. TRADER + 3 Shadows + le perso.
+  const rawSimPortfolios = (portfoliosQuery.data ?? []).filter(
     (p) => (p as { is_simulation?: boolean }).is_simulation,
   );
+
+  // Garantit que TRADER est TOUJOURS dans la liste (même si is_simulation
+  // est False côté DB suite à un reset par un service système). Évite que
+  // l'user se retrouve bloqué sur un Shadow sans pouvoir revenir.
+  const simulationPortfolios = useMemo(() => {
+    const list = [...rawSimPortfolios];
+    const allPortfolios = portfoliosQuery.data ?? [];
+    const traderInList = list.some((p) => p.id === TRADER_PORTFOLIO_ID);
+    if (!traderInList) {
+      // Cherche TRADER dans la liste complète (sans filtre is_simulation)
+      const traderRaw = allPortfolios.find(
+        (p) => (p as { id?: string }).id === TRADER_PORTFOLIO_ID,
+      );
+      if (traderRaw) {
+        list.unshift(traderRaw as typeof list[number]);
+      } else {
+        // Fallback : entry synthétique. Au moins l'option apparaît au dropdown.
+        list.unshift({
+          id: TRADER_PORTFOLIO_ID,
+          name: 'Trader Agent (Gemini Pro)',
+        } as typeof list[number]);
+      }
+    }
+    return list;
+  }, [rawSimPortfolios, portfoliosQuery.data]);
+
   // Find TRADER specifically (fallback first simulation portfolio si introuvable).
   const traderPortfolio = simulationPortfolios.find((p) => p.id === TRADER_PORTFOLIO_ID);
 
