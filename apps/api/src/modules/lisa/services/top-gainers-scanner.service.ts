@@ -230,6 +230,26 @@ const EU_WATCHLIST_NAMES = ['cac40', 'dax40', 'ftse100'];
 export const CRYPTO_PAIRS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT', 'DOTUSDT', 'LINKUSDT', 'POLUSDT'];
 
 /**
+ * Top altcoins Binance USDT élargis pour scan crypto weekend/24-7.
+ *
+ * Sélection : market cap > $1B au 30/05/2026, volume Binance > $50M/24h,
+ * pas déjà dans CRYPTO_PAIRS. Routés en `crypto_alt` (asset class distincte
+ * pour permettre TP/SL et seuils différenciés via AssetClassTpSlConfigService).
+ *
+ * Rationale : sur weekend US/EU/Asia equity fermés, l'univers crypto majors
+ * (10 noms) est souvent en consolidation. Aucun ne tombe dans la sweet spot
+ * [3%, 8%] simultanément → 0 trade. L'ajout de 20 alts triple l'effectif
+ * scannable (10 → 30) sans toucher aux gates qualité (KTOS, pump_score,
+ * persistence path_eff continuent à filtrer normalement).
+ */
+export const CRYPTO_ALTS = [
+  'DOGEUSDT', 'TRXUSDT',  'LTCUSDT',  'BCHUSDT',  'ETCUSDT',
+  'NEARUSDT', 'ATOMUSDT', 'UNIUSDT',  'ICPUSDT',  'APTUSDT',
+  'XLMUSDT',  'FILUSDT',  'ARBUSDT',  'OPUSDT',   'INJUSDT',
+  'AAVEUSDT', 'SUIUSDT',  'TIAUSDT',  'RNDRUSDT', 'IMXUSDT',
+];
+
+/**
  * Panier or/énergie fixe — toujours scanné (en sus des screeners EODHD dynamiques).
  *
  * Pourquoi : les screeners EODHD ne remontent un ticker que s'il fait déjà
@@ -376,6 +396,28 @@ const CRYPTO_MARKET_CAP_USD: Record<string, number> = {
   // pas de modif config / gates scanner). POL market cap réel ~$4-5B mais
   // gate sort-by-mcap reste cohérente avec le pool alt existant.
   POLUSDT:      8_000_000_000,
+  // Altcoins ajoutés 30/05/2026 — valeurs conservatrices au 30/05, tolère
+  // ×3 dérive avant fail gate MARKET_CAP_MIN $500M.
+  DOGEUSDT:    25_000_000_000,
+  TRXUSDT:     15_000_000_000,
+  LTCUSDT:      8_000_000_000,
+  BCHUSDT:      8_000_000_000,
+  ETCUSDT:      5_000_000_000,
+  NEARUSDT:     5_000_000_000,
+  ATOMUSDT:     5_000_000_000,
+  UNIUSDT:      8_000_000_000,
+  ICPUSDT:      5_000_000_000,
+  APTUSDT:      5_000_000_000,
+  XLMUSDT:      3_000_000_000,
+  FILUSDT:      3_000_000_000,
+  ARBUSDT:      3_000_000_000,
+  OPUSDT:       3_000_000_000,
+  INJUSDT:      3_000_000_000,
+  AAVEUSDT:     3_000_000_000,
+  SUIUSDT:      3_000_000_000,
+  TIAUSDT:      3_000_000_000,
+  RNDRUSDT:     5_000_000_000,
+  IMXUSDT:      2_000_000_000,
 };
 
 /**
@@ -1859,7 +1901,13 @@ export class TopGainersScannerService implements OnModuleInit {
    */
   private async fetchBinanceGainers(): Promise<TopGainerCandidate[]> {
     const out: TopGainerCandidate[] = [];
-    for (const pair of CRYPTO_PAIRS) {
+    // 30/05/2026 — élargissement univers crypto (10 majors + 20 alts) pour
+    // augmenter l'effectif scannable weekend, sans toucher aux gates qualité.
+    const pairs: Array<{ symbol: string; assetClass: 'crypto_major' | 'crypto_alt' }> = [
+      ...CRYPTO_PAIRS.map((s) => ({ symbol: s, assetClass: 'crypto_major' as const })),
+      ...CRYPTO_ALTS.map((s) => ({ symbol: s, assetClass: 'crypto_alt' as const })),
+    ];
+    for (const { symbol: pair, assetClass } of pairs) {
       try {
         const t = await this.binanceMarket.getTicker24h(pair);
         if (!t) continue;
@@ -1869,7 +1917,7 @@ export class TopGainersScannerService implements OnModuleInit {
           // PR6.6.2 — set assetClass upstream (whitelisted CRYPTO_PAIRS = majors).
           // Sans ça, persistShadowSignalsBatch tombait en fallback equity sur les
           // 10 paires Binance et fail LIQUIDITY_FLOOR à tort.
-          assetClass: 'crypto_major',
+          assetClass,
           close: t.lastPrice,
           high: t.high ?? t.lastPrice,
           changePct: t.priceChangePct,
