@@ -38,12 +38,20 @@ type TradeMarker = {
 // Tooltip défini hors du composant parent pour garantir que recharts appelle
 // bien le render à chaque déplacement du curseur (pas de closure capturée
 // sur une data point figée).
-function ChartTooltip(props: { active?: boolean; payload?: Array<{ payload: ChartPoint | TradeMarker; dataKey?: string }> }) {
+function ChartTooltip(props: { active?: boolean; payload?: Array<{ name?: string; payload: ChartPoint | TradeMarker; dataKey?: string }> }) {
   const { active, payload } = props;
   if (!active || !payload || payload.length === 0) return null;
 
-  // Cherche marker en priorité (hover sur scatter) sinon ChartPoint (hover sur ligne)
-  const markerEntry = payload.find((e) => (e.payload as TradeMarker).symbol !== undefined);
+  // LISA refonte A.5 fix — Identification robuste des markers via :
+  //   1. name='winMarker'|'lossMarker' set sur <Scatter name=...>
+  //   2. Fallback : payload.symbol présent (TradeMarker shape) absent (ChartPoint)
+  // Avant : check uniquement .symbol fonctionnait mal car recharts inclut
+  // souvent le ChartPoint en payload[0] même hover sur scatter → fallback
+  // line tooltip ($10k 26 mai sur tous les dots).
+  const markerEntry = payload.find((e) =>
+    e.name === 'winMarker' || e.name === 'lossMarker' ||
+    (e.payload as { symbol?: string }).symbol !== undefined
+  );
   if (markerEntry) {
     const m = markerEntry.payload as TradeMarker;
     return (
@@ -359,6 +367,8 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
                 cursor={{ stroke: 'currentColor', strokeWidth: 1, opacity: 0.2 }}
                 isAnimationActive={false}
                 content={<ChartTooltip />}
+                shared={false}
+                trigger="hover"
               />
               <ReferenceLine
                 y={baselineValue}
@@ -382,9 +392,11 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
                 dot={false}
                 activeDot={{ r: 4 }}
               />
-              {/* LISA refonte A.5 — Trade markers overlay. */}
+              {/* LISA refonte A.5 — Trade markers overlay. name=winMarker/lossMarker
+                  utilisé par ChartTooltip pour distinguer scatter vs line. */}
               {winMarkers.length > 0 && (
                 <Scatter
+                  name="winMarker"
                   data={winMarkers}
                   dataKey="value"
                   fill="#10b981"
@@ -392,10 +404,12 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
                   strokeWidth={1}
                   shape="circle"
                   legendType="none"
+                  r={6}
                 />
               )}
               {lossMarkers.length > 0 && (
                 <Scatter
+                  name="lossMarker"
                   data={lossMarkers}
                   dataKey="value"
                   fill="#ef4444"
@@ -403,6 +417,7 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
                   strokeWidth={1}
                   shape="circle"
                   legendType="none"
+                  r={6}
                 />
               )}
             </ComposedChart>
