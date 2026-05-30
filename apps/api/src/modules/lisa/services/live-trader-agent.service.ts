@@ -2145,6 +2145,7 @@ Recommendation rules :
         decision_decided_at: args.cycleStartedAt.toISOString(),
         action_kind: args.actionKind,
         action_applied: args.actionApplied,
+        lesson_intent: this.deriveLessonIntent(args.actionKind),
         target_symbol: args.targetSymbol,
         confidence: args.confidence,
         position_id: args.positionId,
@@ -2159,6 +2160,20 @@ Recommendation rules :
         `[trader-agent] inserted ${rows.length} citations (markers: ${markers.join(',')})`,
       );
     }
+  }
+
+  /**
+   * Dérive l'intent qualitatif d'une lesson depuis l'action_kind du cycle.
+   * Permet à StrategyCoachService de compter une citation hold/skip comme
+   * application correcte (la lesson a guidé la décision conformément).
+   * Cf. issue #502.
+   */
+  private deriveLessonIntent(actionKind: string): 'open' | 'hold' | 'skip' | 'exit' | 'other' {
+    if (actionKind === 'open_directional' || actionKind === 'open_pairs' || actionKind === 'scale_in') return 'open';
+    if (actionKind === 'hold') return 'hold';
+    if (actionKind.startsWith('skip')) return 'skip';
+    if (actionKind === 'close' || actionKind === 'trail_stop') return 'exit';
+    return 'other';
   }
 
   /**
