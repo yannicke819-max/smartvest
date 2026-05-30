@@ -1431,6 +1431,18 @@ export class LisaController {
     return this.lisa.getDecisionLog(extractUserId(headers), portfolioId, limit ? parseInt(limit, 10) : 50);
   }
 
+  // LISA refonte B.2 — Lessons Impact Tracker.
+  // Agrège les citations sur une fenêtre glissante (default 30j, max 365).
+  @Get('lessons-impact/:portfolioId')
+  getLessonsImpact(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+    @Query('days') days?: string,
+  ) {
+    const parsedDays = Math.min(Math.max(parseInt(days ?? '30', 10) || 30, 1), 365);
+    return this.lisa.getLessonsImpact(extractUserId(headers), portfolioId, parsedDays);
+  }
+
   // ── Risk monitoring + kill-switch ───────────────────────────────────────────
 
   @Post('risk-check/:portfolioId')

@@ -34,6 +34,7 @@ import { GainersStatusTile } from '@/components/lisa/gainers-status-tile';
 import { GainersConfigPanel } from '@/components/lisa/gainers-config-panel';
 import { LisaStickyHeader } from '@/components/lisa/lisa-sticky-header';
 import { GainsTracker } from '@/components/lisa/gains-tracker';
+import { LessonsImpactPanel } from '@/components/lisa/lessons-impact-panel';
 import { ScalingReadinessPanel } from '@/components/lisa/scaling-readiness-panel';
 import { LiveTradingStatusPanel } from '@/components/lisa/live-trading-status-panel';
 import { LiveTradingWizard } from '@/components/lisa/live-trading-wizard';
@@ -623,6 +624,9 @@ export default function LisaPage() {
 
       {/* LISA refonte A.3 — Section Gains (badges + reset display-only) */}
       {selectedPortfolioId && <GainsTracker portfolioId={selectedPortfolioId} />}
+
+      {/* LISA refonte B.2 — Lessons Impact Tracker (citations agrégées TRADER) */}
+      {selectedPortfolioId && <LessonsImpactPanel portfolioId={selectedPortfolioId} />}
 
       {/* LISA refonte A.2 — Mini-tile temps réel scanner LISA (ex-Gainers).
           Renommé côté composant interne, mais portfolio_id=TRADER force le scope. */}

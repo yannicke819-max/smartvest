@@ -2584,6 +2584,139 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     return data ?? [];
   }
 
+  /**
+   * LISA refonte B.2 — Lessons Impact Tracker.
+   *
+   * Agrège les citations de lessons par TRADER sur une fenêtre glissante.
+   * Pour chaque lesson (ou marker orphan non mappé), retourne :
+   *   - citations_count, applied_count, resolved_count, wins, losses
+   *   - sum_pnl_usd, avg_pnl_usd, win_rate_pct, last_cited_at
+   *   - métadonnées scanner_lessons (lesson_kind, lesson_text, confidence, etc.)
+   *
+   * Stratégie : fetch citations + lessons séparément, agrégation TS.
+   * Volumétrie raisonnable jusqu'à ~10k citations (limite hard).
+   */
+  async getLessonsImpact(userId: string, portfolioId: string, days = 30) {
+    await this.assertPortfolioOwner(userId, portfolioId);
+    const client = this.supabase.getClient();
+    const sinceIso = new Date(Date.now() - days * 86400_000).toISOString();
+
+    const { data: citations, error: cErr } = await client
+      .from('scanner_lesson_citations')
+      .select('lesson_id, marker_text, action_applied, outcome_resolved_at, outcome_win, outcome_pnl_usd, cited_at')
+      .eq('portfolio_id', portfolioId)
+      .gte('cited_at', sinceIso)
+      .limit(10000);
+    if (cErr) throw new BadRequestException(cErr.message);
+    const allCitations = citations ?? [];
+
+    type LessonRow = {
+      id: string;
+      lesson_kind: string;
+      lesson_text: string | null;
+      confidence: number | null;
+      is_active: boolean;
+      macro_condition: string | null;
+      sample_size: number | null;
+    };
+
+    const lessonIds = [
+      ...new Set(allCitations.map((c) => (c as { lesson_id?: string }).lesson_id).filter(Boolean)),
+    ] as string[];
+    const lessonMap = new Map<string, LessonRow>();
+    if (lessonIds.length > 0) {
+      const { data: lessons } = await client
+        .from('scanner_lessons')
+        .select('id, lesson_kind, lesson_text, confidence, is_active, macro_condition, sample_size')
+        .in('id', lessonIds);
+      for (const l of (lessons ?? []) as LessonRow[]) lessonMap.set(l.id, l);
+    }
+
+    type Bucket = {
+      lesson_id: string | null;
+      lesson_kind: string;
+      lesson_text: string | null;
+      marker_text: string;
+      confidence: number | null;
+      is_active: boolean | null;
+      macro_condition: string | null;
+      sample_size: number | null;
+      citations_count: number;
+      applied_count: number;
+      resolved_count: number;
+      wins: number;
+      losses: number;
+      sum_pnl_usd: number;
+      avg_pnl_usd: number;
+      win_rate_pct: number | null;
+      last_cited_at: string | null;
+    };
+    const buckets = new Map<string, Bucket>();
+    for (const c of allCitations) {
+      const row = c as {
+        lesson_id?: string | null;
+        marker_text: string;
+        action_applied: boolean;
+        outcome_resolved_at?: string | null;
+        outcome_win?: boolean | null;
+        outcome_pnl_usd?: unknown;
+        cited_at: string;
+      };
+      const key = row.lesson_id ? `id:${row.lesson_id}` : `marker:${row.marker_text}`;
+      let b = buckets.get(key);
+      if (!b) {
+        const lesson = row.lesson_id ? lessonMap.get(row.lesson_id) : null;
+        b = {
+          lesson_id: row.lesson_id ?? null,
+          lesson_kind: lesson?.lesson_kind ?? '(orphan marker)',
+          lesson_text: lesson?.lesson_text ?? null,
+          marker_text: row.marker_text,
+          confidence: lesson?.confidence ?? null,
+          is_active: lesson?.is_active ?? null,
+          macro_condition: lesson?.macro_condition ?? null,
+          sample_size: lesson?.sample_size ?? null,
+          citations_count: 0,
+          applied_count: 0,
+          resolved_count: 0,
+          wins: 0,
+          losses: 0,
+          sum_pnl_usd: 0,
+          avg_pnl_usd: 0,
+          win_rate_pct: null,
+          last_cited_at: null,
+        };
+        buckets.set(key, b);
+      }
+      b.citations_count += 1;
+      if (row.action_applied) b.applied_count += 1;
+      if (row.outcome_resolved_at) {
+        b.resolved_count += 1;
+        const pnl = Number(row.outcome_pnl_usd ?? 0);
+        b.sum_pnl_usd += pnl;
+        if (row.outcome_win === true) b.wins += 1;
+        if (row.outcome_win === false) b.losses += 1;
+      }
+      if (!b.last_cited_at || row.cited_at > b.last_cited_at) {
+        b.last_cited_at = row.cited_at;
+      }
+    }
+
+    const lessonsArr = [...buckets.values()].map((b) => ({
+      ...b,
+      avg_pnl_usd: b.resolved_count > 0 ? b.sum_pnl_usd / b.resolved_count : 0,
+      win_rate_pct: b.resolved_count > 0 ? (b.wins / b.resolved_count) * 100 : null,
+    })).sort((a, b) => b.citations_count - a.citations_count);
+
+    return {
+      windowDays: days,
+      totalCitations: allCitations.length,
+      resolvedCitations: allCitations.filter(
+        (c) => (c as { outcome_resolved_at?: string | null }).outcome_resolved_at,
+      ).length,
+      lessons: lessonsArr,
+    };
+  }
+
   async runRiskCheck(userId: string, portfolioId: string) {
     await this.assertPortfolioOwner(userId, portfolioId);
     const config = await this.getSessionConfig(userId, portfolioId);
