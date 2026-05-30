@@ -23,6 +23,7 @@ todayStart.setUTCHours(0, 0, 0, 0);
   const grand = { open: 0, closed: 0, wins: 0, losses: 0, realized: 0, deployed: 0 };
 
   for (const [pid, name] of Object.entries(PIDS)) {
+    // CLOSED today
     const { data: closed } = await sb
       .from('lisa_positions')
       .select('symbol, direction, entry_price, exit_price, realized_pnl_usd, realized_pnl_pct, exit_reason, exit_timestamp, entry_notional_usd')
@@ -31,6 +32,7 @@ todayStart.setUTCHours(0, 0, 0, 0);
       .gte('exit_timestamp', todayStart.toISOString())
       .order('exit_timestamp', { ascending: true });
 
+    // OPEN now
     const { data: open } = await sb
       .from('lisa_positions')
       .select('symbol, direction, entry_price, entry_notional_usd, entry_timestamp')
@@ -62,7 +64,7 @@ todayStart.setUTCHours(0, 0, 0, 0);
         const pct = p.realized_pnl_pct != null ? Number(p.realized_pnl_pct).toFixed(1) : '?';
         const ts = p.exit_timestamp ? String(p.exit_timestamp).slice(11, 16) : '??';
         const flag = pnl >= 0 ? '🟢' : '🔴';
-        console.log(`    ${flag} ${ts} ${String(p.symbol).padEnd(13)} ${String(p.direction).padEnd(5)} ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (${pct}%) [${String(p.exit_reason ?? '?').slice(0, 60)}]`);
+        console.log(`    ${flag} ${ts} ${String(p.symbol).padEnd(13)} ${String(p.direction).padEnd(5)} ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (${pct}%) [${p.exit_reason ?? '?'}]`);
       }
     }
     if (o.length > 0) {
@@ -78,18 +80,19 @@ todayStart.setUTCHours(0, 0, 0, 0);
   const gwr = grand.closed > 0 ? ((grand.wins / grand.closed) * 100).toFixed(0) : '—';
   console.log(`Σ TOTAL  —  réalisé ${grand.realized >= 0 ? '+' : ''}$${grand.realized.toFixed(2)} · ${grand.closed} closes (W${grand.wins}/L${grand.losses}, WR ${gwr}%) · ${grand.open} open ($${grand.deployed.toFixed(0)} déployé)`);
 
+  // TRADER decisions récentes (5 derniers non-sentinel)
   console.log(`\n${'═'.repeat(70)}`);
   console.log(`TRADER — dernières décisions (hors sentinels) :`);
   const { data: ta } = await sb
     .from('trader_agent_decisions')
     .select('decided_at, action_kind, target_symbol, confidence, action_applied, thesis')
     .order('decided_at', { ascending: false })
-    .limit(30);
+    .limit(20);
   let shown = 0;
   for (const d of ta ?? []) {
     if (String(d.thesis ?? '').includes('[CYCLE_TICK]') || String(d.thesis ?? '').includes('SENTINEL')) continue;
     const flag = d.action_applied ? '✅' : '⬜';
-    console.log(`  ${flag} ${String(d.decided_at).slice(11, 19)} ${String(d.action_kind).padEnd(16)} ${(d.target_symbol ?? '-').padEnd(12)} conf=${d.confidence} — ${String(d.thesis ?? '').slice(0, 75)}`);
-    if (++shown >= 8) break;
+    console.log(`  ${flag} ${String(d.decided_at).slice(11, 19)} ${String(d.action_kind).padEnd(16)} ${(d.target_symbol ?? '-').padEnd(12)} conf=${d.confidence} — ${String(d.thesis ?? '').slice(0, 70)}`);
+    if (++shown >= 6) break;
   }
 })();
