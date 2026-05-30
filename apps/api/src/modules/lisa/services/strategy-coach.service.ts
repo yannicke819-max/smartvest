@@ -28,10 +28,21 @@ const SYSTEM_PROMPT = `Tu es Strategy Coach de LISA, un trader algo autonome bas
 Ton rôle : analyser la performance récente de TRADER, comparer aux cibles de l'utilisateur, et proposer des règles (lessons) ou changements de paramètres pour améliorer l'atteinte des cibles SANS compromettre les garde-fous.
 
 Tu reçois en input un JSON contenant :
+- portfolio_age_days (âge du portfolio) + lookback_days_used (fenêtre stats réelle, clampée)
 - current_capital, initial_capital
 - targets effectifs (jour/mois/année)
-- stats 30j (trades, win-rate, sum_pnl)
-- top 10 lessons citées récemment (avec leur impact)
+- stats_lookback (trades, win-rate, sum_pnl sur lookback_days_used)
+- stats_short (trades, sum_pnl sur fenêtre courte clampée à l'âge)
+- top 10 lessons citées récemment (avec applied / applied_as_open / applied_as_hold_skip_exit)
+  → IMPORTANT : citations + lesson_intent='hold|skip|exit' = lesson APPLIQUÉE correctement
+  → Ne JAMAIS interpréter "applied < citations" comme "lesson cassée" si lesson_intent ≠ 'open'
+- active_entry_discipline_lessons : lessons conf ≥ 0.85 protégeant l'entry discipline
+  → Tout param qui assouplit cette discipline (seuil de confiance baissé, threshold baissé,
+    persistence baissée, max_change_pct relevé) est REFUSÉ par le post-filter coté serveur.
+    Ne propose pas ces changements quand la liste n'est pas vide.
+- autopilot_enabled : si TRUE, ne propose JAMAIS de lesson ACTIVATE_TRADING_BOT ni
+  de param trading_bot_enabled: false→true (le bot tourne déjà — proposition no-op refusée
+  par le post-filter).
 - dernières décisions LLM (action_kind, applied, thesis_excerpt)
 - dernières closes (symbol, pnl, exit_reason)
 
@@ -65,7 +76,10 @@ Ta sortie doit être un JSON strict :
 Règles :
 - Maximum 3 lessons par proposition (qualité > quantité)
 - Maximum 2 parameter changes par proposition
-- Si stats sample_size < 30 trades, verdict = "NEEDS_CHANGES" car insuffisant pour conclure
+- Si stats_lookback.trades < 30, verdict = "NEEDS_CHANGES" + rationale explicite mentionnant
+  le sample-size insuffisant ET le portfolio_age_days (si < 30, c'est NORMAL — le bot n'a pas
+  encore eu le temps d'accumuler. Ne propose AUCUN param change dans ce cas, seulement des
+  lessons descriptives ou "no-op" verdict + attendre.)
 - Si drawdown depuis initial < -25%, verdict = "UNREALISTIC" + warning explicite
 - Cite des markers existants dans risk_warnings si tu vois leur impact négatif
 - Ne propose JAMAIS de désarmer un kill-switch ni de bypass safety
@@ -77,12 +91,90 @@ interface PortfolioConfig {
   lisa_initial_capital_usd: number;
   lisa_compound_pnl_enabled: boolean;
   kill_switch_active: boolean;
+  autopilot_enabled: boolean;
   lisa_target_daily_usd: number;
   lisa_target_daily_pct: number;
   lisa_target_monthly_usd: number;
   lisa_target_monthly_pct: number;
   lisa_target_annual_usd: number;
   lisa_target_annual_pct: number;
+}
+
+// Issue #502 — garde-fou âge minimum. Portfolio jeune = stats 30j inutilisables,
+// le LLM coach conclut à tort "bot cassé / objectifs irréalistes". Skip propre.
+const MIN_PORTFOLIO_AGE_DAYS_FOR_COACH = 7;
+
+// Issue #502 — post-filter contradictions. Params qui assouplissent l'entry
+// discipline. Si un param est ici ET qu'au moins une lesson active
+// `entry_discipline` conf ≥ 0.85 existe → drop le param change avec audit.
+export const ENTRY_LOOSENING_PARAMS: Record<string, 'decrease' | 'increase'> = {
+  min_confidence_to_trade: 'decrease',
+  entry_threshold_factor: 'decrease',
+  gainers_min_persistence_score: 'decrease',
+  gainers_min_path_efficiency: 'decrease',
+  max_change_pct: 'increase',
+  max_change_pct_long: 'increase',
+  gainers_max_change_pct_long: 'increase',
+};
+
+/**
+ * Issue #502 — drop des propositions auto-contradictoires avant persistance.
+ * Pure function exportée pour les tests unitaires.
+ *
+ * Cas 1 : lesson "ACTIVATE_TRADING_BOT" / param `trading_bot_enabled: false→true`
+ *         alors qu'autopilot est déjà actif → drop.
+ * Cas 2 : param qui assouplit l'entry discipline (ENTRY_LOOSENING_PARAMS) alors
+ *         qu'au moins une lesson active `entry_discipline` conf ≥ 0.85 existe
+ *         → drop. La lesson haute confiance "gagne" sur la suggestion coach.
+ */
+export function applyCoachConflictPostFilter(args: {
+  lessons: unknown[];
+  params: unknown[];
+  autopilotEnabled: boolean;
+  hasHighConfEntryLessons: boolean;
+}): { lessons: unknown[]; params: unknown[]; dropped: Array<{ type: 'lesson' | 'param'; name: string; reason: string }> } {
+  const dropped: Array<{ type: 'lesson' | 'param'; name: string; reason: string }> = [];
+
+  const filteredLessons = args.lessons.filter((l) => {
+    const lesson = l as { lesson_kind?: string; lesson_text?: string };
+    const kind = String(lesson.lesson_kind ?? '').toUpperCase();
+    const text = String(lesson.lesson_text ?? '').toLowerCase();
+    if (args.autopilotEnabled && (kind.includes('ACTIVATE_TRADING') || /activer.*bot|activate.*trading.*bot/.test(text))) {
+      dropped.push({ type: 'lesson', name: kind || 'unknown', reason: 'autopilot_already_enabled' });
+      return false;
+    }
+    return true;
+  });
+
+  const filteredParams = args.params.filter((p) => {
+    const param = p as { param?: string; current?: unknown; proposed?: unknown };
+    const name = String(param.param ?? '').toLowerCase();
+
+    // Cas 1 : trading_bot_enabled false→true alors qu'autopilot déjà actif
+    if (args.autopilotEnabled && name === 'trading_bot_enabled' && param.proposed === true) {
+      dropped.push({ type: 'param', name, reason: 'autopilot_already_enabled' });
+      return false;
+    }
+
+    // Cas 2 : assouplissement entry discipline avec lesson conf ≥ 0.85 active
+    const looseningDir = ENTRY_LOOSENING_PARAMS[name];
+    if (looseningDir && args.hasHighConfEntryLessons) {
+      const current = Number(param.current);
+      const proposed = Number(param.proposed);
+      if (Number.isFinite(current) && Number.isFinite(proposed)) {
+        const isLoosening = (looseningDir === 'decrease' && proposed < current)
+          || (looseningDir === 'increase' && proposed > current);
+        if (isLoosening) {
+          dropped.push({ type: 'param', name, reason: 'conflicts_with_high_conf_entry_discipline_lesson' });
+          return false;
+        }
+      }
+    }
+
+    return true;
+  });
+
+  return { lessons: filteredLessons, params: filteredParams, dropped };
 }
 
 @Injectable()
@@ -133,7 +225,7 @@ export class StrategyCoachService {
     const client = this.supabase.getClient();
     const { data: configs, error } = await client
       .from('lisa_session_configs')
-      .select('portfolio_id, user_id, lisa_initial_capital_usd, lisa_compound_pnl_enabled, kill_switch_active, lisa_target_daily_usd, lisa_target_daily_pct, lisa_target_monthly_usd, lisa_target_monthly_pct, lisa_target_annual_usd, lisa_target_annual_pct')
+      .select('portfolio_id, user_id, lisa_initial_capital_usd, lisa_compound_pnl_enabled, kill_switch_active, autopilot_enabled, lisa_target_daily_usd, lisa_target_daily_pct, lisa_target_monthly_usd, lisa_target_monthly_pct, lisa_target_annual_usd, lisa_target_annual_pct')
       .eq('lisa_strategy_coach_enabled', true)
       .gt('lisa_initial_capital_usd', 0);
     if (error) {
@@ -160,7 +252,25 @@ export class StrategyCoachService {
 
   private async runForPortfolio(cfg: PortfolioConfig): Promise<string | null> {
     const client = this.supabase.getClient();
-    const ctx = await this.buildContext(cfg);
+
+    // Issue #502 — garde-fou âge portfolio. Sur un portfolio recréé il y a quelques
+    // heures, les stats 7j/30j sont du bruit (0 trade) et le LLM coach conclut
+    // à tort à un bot cassé. Skip propre avec audit.
+    const portfolioAgeDays = await this.getPortfolioAgeDays(cfg.portfolio_id);
+    if (portfolioAgeDays !== null && portfolioAgeDays < MIN_PORTFOLIO_AGE_DAYS_FOR_COACH) {
+      await client.from('lisa_decision_log').insert({
+        portfolio_id: cfg.portfolio_id,
+        kind: 'coach_proposal_skipped_portfolio_too_young',
+        payload: {
+          portfolio_age_days: portfolioAgeDays,
+          min_required_days: MIN_PORTFOLIO_AGE_DAYS_FOR_COACH,
+        },
+      });
+      this.logger.debug(`[strategy-coach] portfolio=${cfg.portfolio_id.slice(0, 8)} skip — age=${portfolioAgeDays.toFixed(1)}d < ${MIN_PORTFOLIO_AGE_DAYS_FOR_COACH}d`);
+      return null;
+    }
+
+    const ctx = await this.buildContext(cfg, portfolioAgeDays);
 
     // Décision Flash vs Pro
     const usePro = await this.shouldEscalateToPro(cfg, ctx);
@@ -186,10 +296,29 @@ export class StrategyCoachService {
       return null;
     }
 
+    // Issue #502 — post-filter contradictions auto-évidentes avant persistance.
+    const rawLessons = Array.isArray(parsed.proposed_lessons) ? parsed.proposed_lessons : [];
+    const rawParams = Array.isArray(parsed.proposed_parameter_changes) ? parsed.proposed_parameter_changes : [];
+    const activeEntryLessons = Array.isArray(ctx.active_entry_discipline_lessons) ? ctx.active_entry_discipline_lessons : [];
+    const { lessons, params, dropped } = this.applyConflictPostFilter({
+      lessons: rawLessons,
+      params: rawParams,
+      autopilotEnabled: cfg.autopilot_enabled,
+      hasHighConfEntryLessons: activeEntryLessons.length > 0,
+    });
+    if (dropped.length > 0) {
+      await client.from('lisa_decision_log').insert({
+        portfolio_id: cfg.portfolio_id,
+        kind: 'coach_proposal_post_filter_dropped',
+        payload: { dropped },
+      });
+      this.logger.log(`[strategy-coach] portfolio=${cfg.portfolio_id.slice(0, 8)} post-filter dropped ${dropped.length} (${dropped.map((d) => d.reason).join(',')})`);
+    }
+
     // Anti-redondance hash (basique, premier verdict + count lessons + first lesson_kind)
-    const lessons = Array.isArray(parsed.proposed_lessons) ? parsed.proposed_lessons : [];
-    const params = Array.isArray(parsed.proposed_parameter_changes) ? parsed.proposed_parameter_changes : [];
-    const patternHash = `${parsed.feasibility_verdict}:${lessons.length}:${lessons[0]?.lesson_kind ?? ''}:${params.length}:${params[0]?.param ?? ''}`;
+    const firstLessonKind = (lessons[0] as { lesson_kind?: string } | undefined)?.lesson_kind ?? '';
+    const firstParamName = (params[0] as { param?: string } | undefined)?.param ?? '';
+    const patternHash = `${parsed.feasibility_verdict}:${lessons.length}:${firstLessonKind}:${params.length}:${firstParamName}`;
 
     // Skip si déjà proposé dans les 6 dernières heures avec même hash
     const sixHoursAgoIso = new Date(Date.now() - 6 * 3600_000).toISOString();
@@ -257,13 +386,19 @@ export class StrategyCoachService {
     return proposalId;
   }
 
-  private async buildContext(cfg: PortfolioConfig): Promise<Record<string, unknown>> {
+  private async buildContext(cfg: PortfolioConfig, portfolioAgeDays: number | null): Promise<Record<string, unknown>> {
     const client = this.supabase.getClient();
     const nowMs = Date.now();
-    const thirtyDaysAgoIso = new Date(nowMs - 30 * 86400_000).toISOString();
-    const sevenDaysAgoIso = new Date(nowMs - 7 * 86400_000).toISOString();
 
-    const [allClosed, recentDecisions, citations] = await Promise.all([
+    // Issue #502 — fenêtre dynamique : sur un portfolio de 9 jours, regarder 30j
+    // c'est inclure 21 jours d'inexistence. On clamp à l'âge réel.
+    const ageClamp = portfolioAgeDays !== null ? Math.max(1, Math.floor(portfolioAgeDays)) : 30;
+    const lookbackDays = Math.min(30, ageClamp);
+    const shortLookbackDays = Math.min(7, ageClamp);
+    const lookbackIso = new Date(nowMs - lookbackDays * 86400_000).toISOString();
+    const shortLookbackIso = new Date(nowMs - shortLookbackDays * 86400_000).toISOString();
+
+    const [allClosed, recentDecisions, citations, highConfEntryLessons] = await Promise.all([
       client
         .from('lisa_positions')
         .select('realized_pnl_usd, exit_timestamp, symbol, exit_reason')
@@ -277,10 +412,17 @@ export class StrategyCoachService {
         .limit(20),
       client
         .from('scanner_lesson_citations')
-        .select('marker_text, outcome_pnl_usd, outcome_win, action_applied')
+        .select('marker_text, outcome_pnl_usd, outcome_win, action_applied, lesson_intent')
         .eq('portfolio_id', cfg.portfolio_id)
-        .gte('cited_at', thirtyDaysAgoIso)
+        .gte('cited_at', lookbackIso)
         .limit(2000),
+      // Issue #502 — chargé pour post-filter contradictions (cf. applyConflictPostFilter)
+      client
+        .from('scanner_lessons')
+        .select('id, lesson_kind, lesson_text, confidence')
+        .eq('is_active', true)
+        .eq('lesson_kind', 'entry_discipline')
+        .gte('confidence', 0.85),
     ]);
 
     const closed = (allClosed.data ?? []) as Array<{ realized_pnl_usd?: unknown; exit_timestamp?: string; symbol?: string; exit_reason?: string }>;
@@ -290,30 +432,45 @@ export class StrategyCoachService {
       ? ((currentCapital - cfg.lisa_initial_capital_usd) / cfg.lisa_initial_capital_usd) * 100
       : 0;
 
-    const closed30d = closed.filter((c) => String(c.exit_timestamp ?? '') >= thirtyDaysAgoIso);
-    const closed7d = closed.filter((c) => String(c.exit_timestamp ?? '') >= sevenDaysAgoIso);
-    const stats30d = {
-      trades: closed30d.length,
-      sum_pnl: closed30d.reduce((s, c) => s + Number(c.realized_pnl_usd ?? 0), 0),
-      wins: closed30d.filter((c) => Number(c.realized_pnl_usd ?? 0) > 0).length,
-      losses: closed30d.filter((c) => Number(c.realized_pnl_usd ?? 0) < 0).length,
+    const closedLookback = closed.filter((c) => String(c.exit_timestamp ?? '') >= lookbackIso);
+    const closedShort = closed.filter((c) => String(c.exit_timestamp ?? '') >= shortLookbackIso);
+    const statsLookback = {
+      lookback_days: lookbackDays,
+      trades: closedLookback.length,
+      sum_pnl: closedLookback.reduce((s, c) => s + Number(c.realized_pnl_usd ?? 0), 0),
+      wins: closedLookback.filter((c) => Number(c.realized_pnl_usd ?? 0) > 0).length,
+      losses: closedLookback.filter((c) => Number(c.realized_pnl_usd ?? 0) < 0).length,
     };
-    const stats7d = {
-      trades: closed7d.length,
-      sum_pnl: closed7d.reduce((s, c) => s + Number(c.realized_pnl_usd ?? 0), 0),
+    const statsShort = {
+      lookback_days: shortLookbackDays,
+      trades: closedShort.length,
+      sum_pnl: closedShort.reduce((s, c) => s + Number(c.realized_pnl_usd ?? 0), 0),
     };
 
-    // Top 10 lessons par citations + impact
-    const lessonAgg = new Map<string, { marker: string; citations: number; sum_pnl: number; wins: number; losses: number; applied: number }>();
-    for (const c of (citations.data ?? []) as Array<{ marker_text?: string; outcome_pnl_usd?: unknown; outcome_win?: boolean | null; action_applied?: boolean }>) {
+    // Top 10 lessons par citations + impact.
+    // Issue #502 — la notion de "applied" couvre désormais aussi les lessons
+    // d'intent hold/skip/exit : une citation hold-citée puis hold-décidé EST une
+    // application correcte de la lesson, pas un échec.
+    const lessonAgg = new Map<string, { marker: string; citations: number; sum_pnl: number; wins: number; losses: number; applied: number; applied_as_open: number; applied_as_hold_skip_exit: number }>();
+    for (const c of (citations.data ?? []) as Array<{ marker_text?: string; outcome_pnl_usd?: unknown; outcome_win?: boolean | null; action_applied?: boolean; lesson_intent?: string | null }>) {
       const key = String(c.marker_text ?? '?');
       let b = lessonAgg.get(key);
-      if (!b) { b = { marker: key, citations: 0, sum_pnl: 0, wins: 0, losses: 0, applied: 0 }; lessonAgg.set(key, b); }
+      if (!b) { b = { marker: key, citations: 0, sum_pnl: 0, wins: 0, losses: 0, applied: 0, applied_as_open: 0, applied_as_hold_skip_exit: 0 }; lessonAgg.set(key, b); }
       b.citations += 1;
       b.sum_pnl += Number(c.outcome_pnl_usd ?? 0);
       if (c.outcome_win === true) b.wins += 1;
       if (c.outcome_win === false) b.losses += 1;
-      if (c.action_applied) b.applied += 1;
+      const intent = c.lesson_intent ?? null;
+      if (intent === 'open' && c.action_applied) {
+        b.applied_as_open += 1;
+        b.applied += 1;
+      } else if (intent === 'hold' || intent === 'skip' || intent === 'exit') {
+        b.applied_as_hold_skip_exit += 1;
+        b.applied += 1;
+      } else if (c.action_applied) {
+        // Backfill / intent null / 'other' : retombe sur l'ancien compteur
+        b.applied += 1;
+      }
     }
     const topLessons = [...lessonAgg.values()].sort((a, b) => b.citations - a.citations).slice(0, 10);
 
@@ -324,6 +481,8 @@ export class StrategyCoachService {
 
     return {
       generated_at: new Date().toISOString(),
+      portfolio_age_days: portfolioAgeDays,
+      lookback_days_used: lookbackDays,
       capital: {
         initial_usd: cfg.lisa_initial_capital_usd,
         current_usd: currentCapital,
@@ -336,13 +495,40 @@ export class StrategyCoachService {
         monthly: effMonthly,
         annual: effAnnual,
       },
-      stats_7d: stats7d,
-      stats_30d: stats30d,
+      stats_short: statsShort,
+      stats_lookback: statsLookback,
       top_lessons: topLessons,
       recent_decisions: (recentDecisions.data ?? []).slice(0, 10),
       recent_closes: closed.slice(-10),
       kill_switch_active: cfg.kill_switch_active,
+      autopilot_enabled: cfg.autopilot_enabled,
+      // Issue #502 — exposé au LLM pour qu'il ne propose pas de baisser une
+      // garde qui a son origine dans une lesson conf ≥ 0.85 (KTOS-like).
+      active_entry_discipline_lessons: ((highConfEntryLessons.data ?? []) as Array<{ id: string; lesson_kind: string; lesson_text: string; confidence: number }>).map((l) => ({
+        id: l.id,
+        kind: l.lesson_kind,
+        confidence: l.confidence,
+        excerpt: l.lesson_text.slice(0, 200),
+      })),
     };
+  }
+
+  /**
+   * Issue #502 — âge du portfolio en jours (fraction acceptée).
+   * Retourne null si portfolio introuvable (échec silencieux → comportement
+   * pré-fix = pas de skip).
+   */
+  private async getPortfolioAgeDays(portfolioId: string): Promise<number | null> {
+    const client = this.supabase.getClient();
+    const { data, error } = await client
+      .from('portfolios')
+      .select('created_at')
+      .eq('id', portfolioId)
+      .maybeSingle();
+    if (error || !data) return null;
+    const createdAt = new Date((data as { created_at: string }).created_at).getTime();
+    if (!Number.isFinite(createdAt)) return null;
+    return (Date.now() - createdAt) / 86400_000;
   }
 
   private async shouldEscalateToPro(cfg: PortfolioConfig, ctx: Record<string, unknown>): Promise<boolean> {
@@ -360,6 +546,15 @@ export class StrategyCoachService {
       .maybeSingle();
     if ((last as { feasibility_verdict?: string } | null)?.feasibility_verdict === 'UNREALISTIC') return true;
     return false;
+  }
+
+  private applyConflictPostFilter(args: {
+    lessons: unknown[];
+    params: unknown[];
+    autopilotEnabled: boolean;
+    hasHighConfEntryLessons: boolean;
+  }): { lessons: unknown[]; params: unknown[]; dropped: Array<{ type: 'lesson' | 'param'; name: string; reason: string }> } {
+    return applyCoachConflictPostFilter(args);
   }
 
   private parseJsonStrict(raw: string): Record<string, unknown> | null {
