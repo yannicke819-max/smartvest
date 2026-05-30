@@ -453,15 +453,22 @@ export class LiveTraderAgentService {
 
       // 4. Build system prompt (memory + cross-lessons + MIDDLE ref + self-reflection)
       const systemPrompt = this.buildSystemPrompt(memory, crossScannerLessons, middleReference, selfReflection);
+      // LISA refonte A.4 — Capital composé : utilise state.currentCapitalUsd
+      // (= initial + Σ pnl si compound activé) au lieu du constant TRADER_AGENT_CAPITAL_USD.
+      // max_concentration calculée à 45% du capital actuel (dynamic ratio).
+      const dynamicMaxConcentration = Math.round(state.currentCapitalUsd * 0.45);
       const userPrompt = JSON.stringify({
         current_time_utc: cycleStartedAt.toISOString(),
-        portfolio_capital_usd: TRADER_AGENT_CAPITAL_USD,
+        portfolio_capital_usd: state.currentCapitalUsd,
+        portfolio_capital_initial_usd: state.initialCapitalUsd,
+        portfolio_cumulative_pnl_usd: state.cumulativePnlUsd,
+        portfolio_drawdown_pct: state.drawdownFromInitialPct,
         state,
         candidates,
         macro,
         news_recent: news,
         constraints: {
-          max_concentration_usd: MAX_CONCENTRATION_USD,
+          max_concentration_usd: dynamicMaxConcentration,
           max_open_positions: 5,
           min_notional_usd: MIN_NOTIONAL_USD,
           daily_loss_limit_usd: MAX_DAILY_LOSS_USD,
@@ -1136,6 +1143,14 @@ Recommendation rules :
     dailyPnlUsd: number;
     closedTodayCount: number;
     winRateTodayPct: number | null;
+    // LISA refonte A.4 — Capital composé : initial + Σ realized_pnl (si compound activé)
+    // Lu depuis lisa_session_configs.lisa_{initial_capital_usd,compound_pnl_enabled}.
+    // Fallback constant TRADER_AGENT_CAPITAL_USD si DB indisponible.
+    initialCapitalUsd: number;
+    currentCapitalUsd: number;
+    compoundPnlEnabled: boolean;
+    cumulativePnlUsd: number;
+    drawdownFromInitialPct: number;
     recentClosesLast60min: Array<{
       symbol: string;
       direction: string;
@@ -1148,10 +1163,21 @@ Recommendation rules :
   }> {
     const client = this.supabase.getClient();
     const todayStart = `${new Date().toISOString().slice(0, 10)}T00:00:00Z`;
-    // Fenêtre 60 min — couvre la lesson b4c48e13 ANTI_REENTRY_POST_INVALIDATION
-    // (30 min) avec marge contextuelle. Volume typique TRADER ≈ 1-2 closes/h
-    // donc liste typique de 1-2 entrées (~200-400 tokens prompt, négligeable).
     const sixtyMinAgoIso = new Date(Date.now() - 60 * 60_000).toISOString();
+
+    // LISA refonte A.4 — Lecture config capital composé
+    const { data: cfg } = await client
+      .from('lisa_session_configs')
+      .select('lisa_initial_capital_usd, lisa_compound_pnl_enabled')
+      .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+      .maybeSingle();
+    const initialCapital = Number(
+      (cfg as { lisa_initial_capital_usd?: unknown } | null)?.lisa_initial_capital_usd
+      ?? TRADER_AGENT_CAPITAL_USD
+    );
+    const compoundEnabled = Boolean(
+      (cfg as { lisa_compound_pnl_enabled?: unknown } | null)?.lisa_compound_pnl_enabled ?? true
+    );
 
     const { data: open } = await client
       .from('lisa_positions')
@@ -1166,9 +1192,20 @@ Recommendation rules :
       .gte('exit_timestamp', todayStart)
       .neq('status', 'open');
 
-    // Closes des 60 dernières minutes — injecté dans le state pour que le LLM
-    // voie ses propres actions récentes (sans cela il est aveugle aux closes
-    // qu'il vient lui-même de décider, cas vérifié XRPUSDT 30/05 02:05 -$22).
+    // LISA refonte A.4 — Cumulative PnL depuis création (pour capital composé)
+    const { data: allClosed } = await client
+      .from('lisa_positions')
+      .select('realized_pnl_usd')
+      .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+      .neq('status', 'open');
+    const cumulativePnl = (allClosed ?? []).reduce(
+      (s, c) => s + Number((c as { realized_pnl_usd?: unknown }).realized_pnl_usd ?? 0),
+      0,
+    );
+    const currentCapital = compoundEnabled ? initialCapital + cumulativePnl : initialCapital;
+    const drawdownPct = initialCapital > 0 ? ((currentCapital - initialCapital) / initialCapital) * 100 : 0;
+
+    // Closes des 60 dernières minutes (cf. PR #494)
     const { data: recentClosed } = await client
       .from('lisa_positions')
       .select('symbol, direction, exit_timestamp, exit_reason, realized_pnl_usd, realized_pnl_pct')
@@ -1204,10 +1241,15 @@ Recommendation rules :
       openPositions,
       openCount: openPositions.length,
       deployedUsd: deployed,
-      capitalAvailableUsd: TRADER_AGENT_CAPITAL_USD - deployed,
+      capitalAvailableUsd: currentCapital - deployed,
       dailyPnlUsd: dailyPnl,
       closedTodayCount: closed?.length ?? 0,
       winRateTodayPct: winRate,
+      initialCapitalUsd: initialCapital,
+      currentCapitalUsd: currentCapital,
+      compoundPnlEnabled: compoundEnabled,
+      cumulativePnlUsd: cumulativePnl,
+      drawdownFromInitialPct: drawdownPct,
       recentClosesLast60min,
     };
   }
@@ -1232,6 +1274,41 @@ Recommendation rules :
         || sym.endsWith('.AS') || sym.endsWith('.BR') || sym.endsWith('.MI')
         || sym.endsWith('.MC') || sym.endsWith('.SW')) return 'eu_equity';
     return 'unknown';
+  }
+
+  /**
+   * LISA refonte A.4 — lit le capital actuel (composé) pour le sizing Kelly.
+   * Cached null-safe : retourne TRADER_AGENT_CAPITAL_USD fallback si DB indispo.
+   */
+  private async fetchCurrentCapital(): Promise<number> {
+    try {
+      const { data: cfg } = await this.supabase.getClient()
+        .from('lisa_session_configs')
+        .select('lisa_initial_capital_usd, lisa_compound_pnl_enabled')
+        .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+        .maybeSingle();
+      const initial = Number(
+        (cfg as { lisa_initial_capital_usd?: unknown } | null)?.lisa_initial_capital_usd
+        ?? TRADER_AGENT_CAPITAL_USD
+      );
+      const compound = Boolean(
+        (cfg as { lisa_compound_pnl_enabled?: unknown } | null)?.lisa_compound_pnl_enabled ?? true
+      );
+      if (!compound) return initial;
+      const { data: closed } = await this.supabase.getClient()
+        .from('lisa_positions')
+        .select('realized_pnl_usd')
+        .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+        .neq('status', 'open');
+      const pnl = (closed ?? []).reduce(
+        (s, c) => s + Number((c as { realized_pnl_usd?: unknown }).realized_pnl_usd ?? 0),
+        0,
+      );
+      return initial + pnl;
+    } catch (e) {
+      this.logger.debug(`[trader-agent] fetchCurrentCapital failed, fallback: ${String(e).slice(0, 80)}`);
+      return TRADER_AGENT_CAPITAL_USD;
+    }
   }
 
   private async fetchTopCandidates(n: number): Promise<object[]> {
@@ -1260,6 +1337,8 @@ Recommendation rules :
     // PAS de gate hardcodé — décision reste autonome côté Gemini Pro.
     const feedMin = Number(this.config.get<string>('TRADER_FEED_MIN_PCT') ?? '2');
     const feedMax = Number(this.config.get<string>('TRADER_FEED_MAX_PCT') ?? '15');
+    // LISA refonte A.4 — Lit le capital actuel (composé) pour scaling Kelly
+    const currentCapital = await this.fetchCurrentCapital();
     try {
       const candidates = await this.topGainersScanner.fetchAllCandidates();
       if (candidates && candidates.length > 0) {
@@ -1276,12 +1355,12 @@ Recommendation rules :
         const sorted = [...pool].sort((a, b) => (b.changePct ?? 0) - (a.changePct ?? 0));
         if (sorted.length > 0) {
           this.logger.debug(
-            `[trader-agent] feed: ${candidates.length} scanned → ${sorted.length} in band [${feedMin},${feedMax}]% → top ${Math.min(n, sorted.length)}`,
+            `[trader-agent] feed: ${candidates.length} scanned → ${sorted.length} in band [${feedMin},${feedMax}]% → top ${Math.min(n, sorted.length)} (capital=$${currentCapital.toFixed(0)})`,
           );
           // P-KTOS — Compute pool-wide max for pumpScore
           const maxChangePctInPool = sorted.reduce((m, c) => Math.max(m, c.changePct ?? 0), 0);
           return sorted.slice(0, n).map((c) =>
-            this.enrichCandidateWithMath(c, maxChangePctInPool),
+            this.enrichCandidateWithMath(c, maxChangePctInPool, currentCapital),
           );
         }
       }
@@ -1337,6 +1416,7 @@ Recommendation rules :
   private enrichCandidateWithMath(
     c: TopGainerCandidate,
     maxChangePctInPool: number,
+    currentCapital: number = TRADER_AGENT_CAPITAL_USD,
   ): Record<string, unknown> {
     const changePct = c.changePct ?? 0;
     const high = c.high ?? c.close ?? 0;
@@ -1358,8 +1438,8 @@ Recommendation rules :
     // (sera affiné par P9 quand p_win_at_entry sera correctement persisté).
     // f* = (TP*p_win - SL*(1-p_win)) / TP avec TP=2.5, SL=1.5, p_win=0.5
     //    = (1.25 - 0.75) / 2.5 = 0.20
-    // Capital trader = $10000 → max $2000 = Kelly cap par défaut.
-    const kellyMaxNotional = Math.round(TRADER_AGENT_CAPITAL_USD * 0.20);
+    // LISA refonte A.4 — utilise currentCapital (composé) au lieu du constant.
+    const kellyMaxNotional = Math.round(currentCapital * 0.20);
 
     // Sweet spot bucket gagnant historique (lesson aa6eda5f) : [3,8]%
     const sweetSpotEntry = changePct >= 3 && changePct <= 8;
@@ -1600,7 +1680,9 @@ Recommendation rules :
           return { applied: false, error: `anti-revenge: ${sym} dernier close ${lastLoser.exit_timestamp} en perte (${Number(lastLoser.realized_pnl_usd).toFixed(2)}$) — cooldown 2h actif` };
         }
       }
-      const notional = Math.max(MIN_NOTIONAL_USD, Math.min(MAX_CONCENTRATION_USD, decision.notional_usd));
+      // LISA refonte A.4 — Cap dynamique 45% du capital actuel (composé).
+      const dynamicCap = Math.round((await this.fetchCurrentCapital()) * 0.45);
+      const notional = Math.max(MIN_NOTIONAL_USD, Math.min(dynamicCap, decision.notional_usd));
       // XETRA small-cap blacklist (28/05/2026) — 2 incidents : SNG.XETRA -$35
       // (gap SL slippage) + QH9.XETRA -$132 (gap -12% non capté par polling SL).
       // XETRA small-caps notionnel < $3000 = liquidité trop mince pour gérer
@@ -1769,7 +1851,9 @@ Recommendation rules :
         return { applied: false, error: `scale_in: no existing position on ${sym} (use open_directional)` };
       }
       if (state.openCount >= 5) return { applied: false, error: 'scale_in: max 5 open positions' };
-      const notional = Math.max(MIN_NOTIONAL_USD, Math.min(MAX_CONCENTRATION_USD * 1.5, decision.notional_usd));
+      // LISA refonte A.4 — Cap scale_in dynamique 45% × 1.5 = 67.5% du capital actuel.
+      const dynamicCapScaleIn = Math.round((await this.fetchCurrentCapital()) * 0.45 * 1.5);
+      const notional = Math.max(MIN_NOTIONAL_USD, Math.min(dynamicCapScaleIn, decision.notional_usd));
       // Autonomie cadrée : bornes resserrées post-MFE/MAE 27/05 (MAE/R 1.78,
       // capture rate -45.8% sur 7 trades). SL min 1.5% obligatoire (sinon
       // stop-out garanti avant retracement). TP max 8% (au-delà = capture rate

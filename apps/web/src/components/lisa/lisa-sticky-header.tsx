@@ -18,7 +18,7 @@ interface Props {
 }
 
 export function LisaStickyHeader({ portfolioId }: Props) {
-  const { targets, stats, isLoading } = useLisaTargetsAndStats(portfolioId);
+  const { targets, stats, currentCapital, isLoading } = useLisaTargetsAndStats(portfolioId);
 
   if (isLoading || !stats || !targets) {
     return (
@@ -49,10 +49,18 @@ export function LisaStickyHeader({ portfolioId }: Props) {
           </span>
         </div>
 
-        {/* Cible + PnL today */}
-        <div className="flex items-center gap-3 text-xs">
+        {/* Capital + Cible + PnL today */}
+        <div className="flex items-center gap-3 text-xs flex-wrap">
+          {/* LISA refonte A.4 — Capital actuel (composé) visible toujours */}
+          <div className="hidden md:flex items-center gap-1.5">
+            <span className="text-muted-foreground">💰</span>
+            <span className="font-medium tabular-nums">
+              ${currentCapital !== null ? currentCapital.toFixed(0) : '—'}
+            </span>
+          </div>
+
           <div className="hidden sm:flex items-center gap-1.5">
-            <span className="text-muted-foreground">🎯 Cible :</span>
+            <span className="text-muted-foreground">🎯</span>
             <span className="font-medium">${targets.daily.effective.toFixed(0)}</span>
           </div>
 
