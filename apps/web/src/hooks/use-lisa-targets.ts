@@ -101,17 +101,16 @@ export function useLisaTargetsAndStats(portfolioId: string | null) {
     const config = configQuery.data as Record<string, unknown> | null;
     const positions = (positionsQuery.data ?? []) as LisaPosition[];
 
-    if (!config) {
-      return {
-        targets: null, stats: null, currentCapital: null,
-        initialCapital: null, drawdownFromInitialPct: null, killSwitchActive: false,
-        isLoading: true,
-      };
-    }
+    // Robustesse : si pas de config (portfolio nouvellement créé sans
+    // lisa_session_configs row), on utilise un objet vide → tous les
+    // ?? défauts ci-dessous s'appliquent (capital $10k, target $200/j,
+    // etc.). Évite que GainsTracker et LisaStickyHeader restent en
+    // skeleton infini quand l'user switch sur un Shadow portfolio.
+    const safeCfg = config ?? ({} as Record<string, unknown>);
 
-    const initialCapital = Number(config.lisa_initial_capital_usd ?? 10000);
-    const compoundEnabled = Boolean(config.lisa_compound_pnl_enabled ?? true);
-    const killSwitchActive = Boolean(config.kill_switch_active ?? false);
+    const initialCapital = Number(safeCfg.lisa_initial_capital_usd ?? 10000);
+    const compoundEnabled = Boolean(safeCfg.lisa_compound_pnl_enabled ?? true);
+    const killSwitchActive = Boolean(safeCfg.kill_switch_active ?? false);
 
     // Compute current capital from closed positions
     const closedPositions = positions.filter((p) => p.status !== 'open');
@@ -122,29 +121,29 @@ export function useLisaTargetsAndStats(portfolioId: string | null) {
     // Build targets Mode C (MAX usd, pct × capital)
     const targets: LisaTargets = {
       daily: {
-        usd: Number(config.lisa_target_daily_usd ?? 200),
-        pct: Number(config.lisa_target_daily_pct ?? 2),
+        usd: Number(safeCfg.lisa_target_daily_usd ?? 200),
+        pct: Number(safeCfg.lisa_target_daily_pct ?? 2),
         effective: computeEffectiveTarget(
-          Number(config.lisa_target_daily_usd ?? 200),
-          Number(config.lisa_target_daily_pct ?? 2),
+          Number(safeCfg.lisa_target_daily_usd ?? 200),
+          Number(safeCfg.lisa_target_daily_pct ?? 2),
           currentCapital,
         ),
       },
       monthly: {
-        usd: Number(config.lisa_target_monthly_usd ?? 4000),
-        pct: Number(config.lisa_target_monthly_pct ?? 20),
+        usd: Number(safeCfg.lisa_target_monthly_usd ?? 4000),
+        pct: Number(safeCfg.lisa_target_monthly_pct ?? 20),
         effective: computeEffectiveTarget(
-          Number(config.lisa_target_monthly_usd ?? 4000),
-          Number(config.lisa_target_monthly_pct ?? 20),
+          Number(safeCfg.lisa_target_monthly_usd ?? 4000),
+          Number(safeCfg.lisa_target_monthly_pct ?? 20),
           currentCapital,
         ),
       },
       annual: {
-        usd: Number(config.lisa_target_annual_usd ?? 50000),
-        pct: Number(config.lisa_target_annual_pct ?? 100),
+        usd: Number(safeCfg.lisa_target_annual_usd ?? 50000),
+        pct: Number(safeCfg.lisa_target_annual_pct ?? 100),
         effective: computeEffectiveTarget(
-          Number(config.lisa_target_annual_usd ?? 50000),
-          Number(config.lisa_target_annual_pct ?? 100),
+          Number(safeCfg.lisa_target_annual_usd ?? 50000),
+          Number(safeCfg.lisa_target_annual_pct ?? 100),
           currentCapital,
         ),
       },
@@ -152,7 +151,7 @@ export function useLisaTargetsAndStats(portfolioId: string | null) {
 
     // Stats par scope avec reset markers
     const buildStats = (scope: LisaScope, target: number): LisaScopeStats => {
-      const resetMarker = (config[`lisa_reset_marker_${scope === 'weekly' ? 'daily' : scope}`] as string | null) ?? null;
+      const resetMarker = (safeCfg[`lisa_reset_marker_${scope === 'weekly' ? 'daily' : scope}`] as string | null) ?? null;
       const startIso = scopeStartIso(scope, resetMarker);
       const inScope = closedPositions.filter(
         (p) => p.exitTimestamp != null && p.exitTimestamp >= startIso,
