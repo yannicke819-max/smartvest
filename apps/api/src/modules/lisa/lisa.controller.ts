@@ -1495,6 +1495,36 @@ export class LisaController {
     return this.lisa.triggerKillSwitch(extractUserId(headers), portfolioId, reason ?? 'Manual user kill');
   }
 
+  // LISA refonte C.1 — Coach proposals : list / accept / reject.
+  @Get('coach-proposals/:portfolioId')
+  listCoachProposals(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+    @Query('status') status?: string,
+  ) {
+    return this.lisa.listCoachProposals(extractUserId(headers), portfolioId, status);
+  }
+
+  @Post('coach-proposals/:id/accept')
+  @HttpCode(200)
+  acceptCoachProposal(
+    @Headers() headers: Record<string, string>,
+    @Param('id') id: string,
+    @Body() body: { accepted_lessons?: number[]; accepted_params?: number[]; comment?: string },
+  ) {
+    return this.lisa.acceptCoachProposal(extractUserId(headers), id, body ?? {});
+  }
+
+  @Post('coach-proposals/:id/reject')
+  @HttpCode(200)
+  rejectCoachProposal(
+    @Headers() headers: Record<string, string>,
+    @Param('id') id: string,
+    @Body('comment') comment?: string,
+  ) {
+    return this.lisa.rejectCoachProposal(extractUserId(headers), id, comment);
+  }
+
   // LISA refonte B.4.a — In-app notifications (badge + dropdown).
   @Get('notifications/:portfolioId')
   getNotifications(

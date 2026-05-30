@@ -2777,6 +2777,104 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
   }
 
   /**
+   * LISA refonte C.1 — Coach proposals : list / accept / reject.
+   * Accept = applique les lessons (INSERT scanner_lessons) + (optional)
+   * applique les parameter_changes. Reject = juste UPDATE status='rejected'.
+   */
+  async listCoachProposals(userId: string, portfolioId: string, status?: string) {
+    await this.assertPortfolioOwner(userId, portfolioId);
+    let q = this.supabase.getClient()
+      .from('coach_proposals')
+      .select('id, created_at, source, llm_model, llm_cost_usd, feasibility_verdict, feasibility_probability_pct, feasibility_rationale, proposed_lessons, proposed_parameter_changes, risk_warnings, status, reviewed_at, resulted_lesson_ids')
+      .eq('portfolio_id', portfolioId)
+      .order('created_at', { ascending: false })
+      .limit(50);
+    if (status) q = q.eq('status', status);
+    const { data, error } = await q;
+    if (error) throw new BadRequestException(error.message);
+    return data ?? [];
+  }
+
+  async acceptCoachProposal(
+    userId: string,
+    proposalId: string,
+    body: {
+      accepted_lessons?: number[]; // index dans proposed_lessons
+      accepted_params?: number[]; // index dans proposed_parameter_changes
+      comment?: string;
+    },
+  ) {
+    const client = this.supabase.getClient();
+    const { data: proposal, error: pErr } = await client
+      .from('coach_proposals')
+      .select('id, portfolio_id, proposed_lessons, proposed_parameter_changes, status')
+      .eq('id', proposalId)
+      .maybeSingle();
+    if (pErr || !proposal) throw new NotFoundException('Proposal introuvable');
+    await this.assertPortfolioOwner(userId, String(proposal.portfolio_id));
+    if (proposal.status !== 'pending') {
+      throw new BadRequestException(`Proposal status=${proposal.status}, not pending`);
+    }
+
+    const acceptedLessonIdx = new Set(body.accepted_lessons ?? []);
+    const acceptedParamIdx = new Set(body.accepted_params ?? []);
+    const allLessons = Array.isArray(proposal.proposed_lessons) ? proposal.proposed_lessons : [];
+    const allParams = Array.isArray(proposal.proposed_parameter_changes) ? proposal.proposed_parameter_changes : [];
+
+    const lessonsToInsert = (allLessons as Array<Record<string, unknown>>).filter((_, i) => acceptedLessonIdx.has(i));
+    const resultedLessonIds: string[] = [];
+    if (lessonsToInsert.length > 0) {
+      const rows = lessonsToInsert.map((l) => ({
+        lesson_kind: String(l.lesson_kind ?? 'UNNAMED'),
+        lesson_text: String(l.lesson_text ?? ''),
+        confidence: typeof l.confidence === 'number' ? l.confidence : 0.7,
+        scope: String(l.scope ?? 'trader_agent_only'),
+        derived_from_date: new Date().toISOString().slice(0, 10),
+        is_active: true,
+        applied: true,
+        applied_by: `coach:${userId.slice(0, 8)}`,
+        applied_at: new Date().toISOString(),
+        payload: { from_coach_proposal: proposalId, rationale: l.rationale ?? null, expected_impact_usd: l.expected_impact_usd ?? null },
+      }));
+      const { data: ins, error: insErr } = await client.from('scanner_lessons').insert(rows).select('id');
+      if (insErr) throw new BadRequestException(insErr.message);
+      for (const r of (ins ?? []) as Array<{ id: string }>) resultedLessonIds.push(r.id);
+    }
+
+    const partial = acceptedLessonIdx.size < allLessons.length || acceptedParamIdx.size < allParams.length;
+    const newStatus = (acceptedLessonIdx.size === 0 && acceptedParamIdx.size === 0)
+      ? 'rejected'
+      : (partial ? 'partially_accepted' : 'fully_accepted');
+
+    await client
+      .from('coach_proposals')
+      .update({
+        status: newStatus,
+        reviewed_at: new Date().toISOString(),
+        reviewed_by: userId,
+        user_decision: {
+          accepted_lessons: [...acceptedLessonIdx],
+          rejected_lessons: allLessons.map((_, i) => i).filter((i) => !acceptedLessonIdx.has(i)),
+          applied_params: [...acceptedParamIdx],
+          comment: body.comment ?? null,
+        },
+        resulted_lesson_ids: resultedLessonIds,
+      })
+      .eq('id', proposalId);
+
+    return { ok: true, status: newStatus, resulted_lesson_ids: resultedLessonIds };
+  }
+
+  async rejectCoachProposal(userId: string, proposalId: string, comment?: string) {
+    const body: { accepted_lessons: number[]; accepted_params: number[]; comment?: string } = {
+      accepted_lessons: [],
+      accepted_params: [],
+    };
+    if (comment !== undefined) body.comment = comment;
+    return this.acceptCoachProposal(userId, proposalId, body);
+  }
+
+  /**
    * LISA refonte B.4.a — In-app notifications.
    *
    * Agrège des "items" virtuels depuis plusieurs sources :
