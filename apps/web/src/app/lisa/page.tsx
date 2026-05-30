@@ -32,6 +32,8 @@ import { DailyHarvestPanel } from '@/components/lisa/daily-harvest-panel';
 import { MacroModeSelector } from '@/components/lisa/macro-mode-selector';
 import { GainersStatusTile } from '@/components/lisa/gainers-status-tile';
 import { GainersConfigPanel } from '@/components/lisa/gainers-config-panel';
+import { LisaStickyHeader } from '@/components/lisa/lisa-sticky-header';
+import { GainsTracker } from '@/components/lisa/gains-tracker';
 import { ScalingReadinessPanel } from '@/components/lisa/scaling-readiness-panel';
 import { LiveTradingStatusPanel } from '@/components/lisa/live-trading-status-panel';
 import { LiveTradingWizard } from '@/components/lisa/live-trading-wizard';
@@ -538,18 +540,21 @@ export default function LisaPage() {
 
   // ── Main UI ─────────────────────────────────────────────────────────────────
   return (
-    <div className="mx-auto max-w-5xl space-y-6 p-6">
+    <>
+      {/* LISA refonte A.3 — sticky header avec cible jour + PnL today */}
+      {selectedPortfolioId && <LisaStickyHeader portfolioId={selectedPortfolioId} />}
+
+      <div className="mx-auto max-w-5xl space-y-6 p-4 md:p-6">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <BackButton />
           <div>
             <h1 className="flex items-center gap-2 text-xl font-semibold">
               <Sparkles className="h-5 w-5 text-primary" />
-              Mon assistant Lisa
+              🤖 LISA — Mon agent autonome
             </h1>
             <p className="text-sm text-muted-foreground">
-              Multi-actifs · approche anti-consensus · corpus de 25+ événements historiques ·
-              100 % simulation
+              Agent Gemini Pro 2.5 · lessons accumulées en continu · 100 % simulation
             </p>
           </div>
         </div>
@@ -615,6 +620,9 @@ export default function LisaPage() {
 
       {/* P7 — Mode opératoire 3-way (Investment / Harvest / Gainers) */}
       {selectedPortfolioId && <MacroModeSelector portfolioId={selectedPortfolioId} />}
+
+      {/* LISA refonte A.3 — Section Gains (badges + reset display-only) */}
+      {selectedPortfolioId && <GainsTracker portfolioId={selectedPortfolioId} />}
 
       {/* LISA refonte A.2 — Mini-tile temps réel scanner LISA (ex-Gainers).
           Renommé côté composant interne, mais portfolio_id=TRADER force le scope. */}
@@ -1475,7 +1483,8 @@ export default function LisaPage() {
           onCancel={() => setConfirmDialog(null)}
         />
       )}
-    </div>
+      </div>
+    </>
   );
 }
 
