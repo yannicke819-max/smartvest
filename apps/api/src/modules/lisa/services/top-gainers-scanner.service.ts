@@ -1999,13 +1999,18 @@ export class TopGainersScannerService implements OnModuleInit {
         errorSymbols.push(`${pair}:${String(e).slice(0, 60)}`);
       }
     }
-    if (nullSymbols.length > 0 || errorSymbols.length > 0) {
-      this.logger.warn(
-        `[top-gainers] binance fetch summary: ${out.length}/${pairs.length} ok` +
-          (nullSymbols.length > 0 ? ` · null(${nullSymbols.length}): ${nullSymbols.join(',')}` : '') +
-          (errorSymbols.length > 0 ? ` · error(${errorSymbols.length}): ${errorSymbols.join(' | ')}` : ''),
-      );
-    }
+    // 31/05/2026 — log toujours-on (anciennement conditionnel) après constat
+    // "0 crypto_alt persisté en 24h" alors que summary warn silencieux. Permet
+    // de différencier fetch-OK + downstream-gate-blocks vs fetch-KO en 1 cycle.
+    const majorsOk = out.filter((c) => c.assetClass === 'crypto_major').length;
+    const altsOk = out.filter((c) => c.assetClass === 'crypto_alt').length;
+    this.logger.log(
+      `[top-gainers] binance fetch: ${out.length}/${pairs.length} ok ` +
+        `(majors=${majorsOk}/${CRYPTO_PAIRS.length} alts=${altsOk}/${CRYPTO_ALTS.length}) ` +
+        `base=${process.env.BINANCE_BASE_URL ?? 'data-api.binance.vision[default]'}` +
+        (nullSymbols.length > 0 ? ` · null(${nullSymbols.length}): ${nullSymbols.join(',')}` : '') +
+        (errorSymbols.length > 0 ? ` · error(${errorSymbols.length}): ${errorSymbols.join(' | ')}` : ''),
+    );
     return out;
   }
 
