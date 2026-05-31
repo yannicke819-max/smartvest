@@ -57,8 +57,16 @@ export function isMarketOpenForClass(cls: MarketSessionClass, now: Date): boolea
 export function marketForSymbol(symbol: string): MarketSessionClass | null {
   if (!symbol) return null;
   const upper = symbol.toUpperCase();
-  // Crypto majors Binance : 10 paires whitelistées dans le scanner.
-  if (/^(BTC|ETH|BNB|SOL|XRP|ADA|AVAX|DOT|LINK|POL|MATIC|DOGE|TRX)(USDT|USDC|USD|BUSD)$/.test(upper)) {
+  // Binance pairs (USDT/USDC/BUSD suffix, no '.' separator) → crypto.
+  // 31/05/2026 — Avant : whitelist explicite 13 symbols (BTC/ETH/BNB/SOL/XRP/
+  // ADA/AVAX/DOT/LINK/POL/MATIC/DOGE/TRX). PR #504 a ajouté 20 alts CRYPTO_ALTS
+  // (LTC/BCH/ETC/NEAR/ATOM/UNI/ICP/APT/XLM/FIL/ARB/OP/INJ/AAVE/SUI/TIA/RNDR/IMX)
+  // qui matchaient pas la regex et retombaient sur `return 'us'` puis étaient
+  // droppées par session filter quand US closed (weekend + nuit = 65% du temps).
+  // Constat prod 24h : 0/18 alts persistés. Fix : regex large matching tout
+  // pair Binance sans `.`. Risk faux positif quasi-nul (aucun equity ne suit
+  // cette convention). USD suffix exclu pour éviter collision hypothétique.
+  if (/^[A-Z0-9]+(USDT|USDC|BUSD)$/.test(upper)) {
     return 'crypto';
   }
   if (upper.endsWith('-USD.CC') || upper.endsWith('.CC')) return 'crypto';

@@ -51,6 +51,13 @@ describe('session-filter helpers', () => {
       ['BTCUSDT', 'crypto'],
       ['ETHUSDT', 'crypto'],
       ['SOLUSDT', 'crypto'],
+      // PR fix 31/05/2026 — extension regex à tout pair USDT/USDC/BUSD sans `.`.
+      ['LTCUSDT', 'crypto'],
+      ['NEARUSDT', 'crypto'],
+      ['ATOMUSDT', 'crypto'],
+      ['ARBUSDT', 'crypto'],
+      ['SUIUSDT', 'crypto'],
+      ['ETHUSDC', 'crypto'],
       ['BTC-USD.CC', 'crypto'],
       ['EURUSD.FOREX', null],
     ])('maps %s → %s', (symbol, expected) => {
