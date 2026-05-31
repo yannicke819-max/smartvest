@@ -133,8 +133,17 @@ export default function LisaPage() {
   // Initialise la sélection : TRADER par défaut (refonte A.2), fallback 1er
   // simulation portfolio. Une fois sélectionné, on respecte le choix user
   // (le sélecteur dropdown permet de switch vers MAIN/HIGH/MIDDLE/SMALL).
+  //
+  // 31/05/2026 — Defensive : si l'ID sélectionné n'est plus dans la liste
+  // (portfolio supprimé / renommé / user_id mismatch), reset à TRADER puis
+  // fallback 1er dispo. Sinon l'UI poll en boucle une 404 (incident observé :
+  // 7 req/s × 4 hooks × stack trace = pollution Fly logs massive).
   useEffect(() => {
-    if (selectedPortfolioId) return;
+    if (simulationPortfolios.length === 0) return;
+    const exists = selectedPortfolioId
+      ? simulationPortfolios.some((p) => p.id === selectedPortfolioId)
+      : false;
+    if (exists) return;
     const traderId = simulationPortfolios.find((p) => p.id === TRADER_PORTFOLIO_ID)?.id;
     if (traderId) {
       setSelectedPortfolioId(traderId);

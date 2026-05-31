@@ -35,9 +35,17 @@ export class AllExceptionsFilter implements ExceptionFilter {
       ? body
       : ((body as Record<string, unknown>).message ?? JSON.stringify(body));
 
-    this.logger.error(
+    // 31/05/2026 — pollution Fly logs : un client qui poll un portfolio mort
+    // génère ~7 req/s × ~10 lignes stack trace × 4xx = pollution massive sans
+    // valeur (l'erreur est côté client, pas une vraie défaillance serveur).
+    // Stack trace + level=error réservés aux 5xx ; 4xx = warn sans stack.
+    const isServerError = status >= 500;
+    const log = isServerError
+      ? this.logger.error.bind(this.logger)
+      : this.logger.warn.bind(this.logger);
+    log(
       `${req.method} ${req.url} → ${status} — ${String(message)}`,
-      exception instanceof Error ? exception.stack : undefined,
+      isServerError && exception instanceof Error ? exception.stack : undefined,
     );
 
     res.status(status).json(
