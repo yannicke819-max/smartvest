@@ -35,6 +35,7 @@ import { ScannerLessonsContextService } from './scanner-lessons-context.service'
 import { TopGainersScannerService } from './top-gainers-scanner.service';
 import { PushNotificationsService } from './push-notifications.service';
 import { MistralShadowService } from './mistral-shadow.service';
+import { MistralLargeShadowService } from './mistral-large-shadow.service';
 import type { TopGainerCandidate } from '@smartvest/ai-analyst';
 
 const TRADER_AGENT_PORTFOLIO_ID = 'b0000001-0000-0000-0000-000000000001';
@@ -232,10 +233,14 @@ export class LiveTraderAgentService {
     private readonly topGainersScanner: TopGainersScannerService,
     @Optional() private readonly lessonsContext?: ScannerLessonsContextService,
     @Optional() private readonly pushNotifs?: PushNotificationsService,
-    // 31/05/2026 — A/B shadow 3-way avec Mistral Large 3.
+    // 31/05/2026 — A/B shadow 4-way (Pro/Flash/Medium/Large).
     // Optional : si MISTRAL_SHADOW_ENABLED=false ou MISTRAL_API_KEY absent,
     // les colonnes mistral_* restent NULL dans gemini_ab_decisions.
     @Optional() private readonly mistralShadow?: MistralShadowService,
+    // 31/05/2026 PR #521 — 2e instance Mistral dédiée au cheap tier (Large 3).
+    // Permet comparaison directe cheap tiers : Flash (Google) vs Large 3 (Mistral)
+    // sur les memes decisions Pro. Activation : MISTRAL_LARGE_SHADOW_ENABLED=true.
+    @Optional() private readonly mistralLargeShadow?: MistralLargeShadowService,
   ) {}
 
   onModuleInit(): void {
@@ -2262,7 +2267,23 @@ Recommendation rules :
         })
       : Promise.resolve(null);
 
-    const [flashSettled, mistralSettled] = await Promise.all([flashPromise, mistralPromise]);
+    // 31/05/2026 PR #521 — 4e shadow Mistral Large 3 (cheap tier).
+    // Comparaison directe cheap tiers Flash (Google) vs Large 3 (Mistral).
+    const mistralLargePromise = this.mistralLargeShadow
+      ? this.mistralLargeShadow.call({
+          system: args.systemPrompt,
+          user: args.userPrompt,
+          temperature: 0.3,
+          maxTokens: 1500,
+          timeoutMs: 30_000,
+        })
+      : Promise.resolve(null);
+
+    const [flashSettled, mistralSettled, mistralLargeSettled] = await Promise.all([
+      flashPromise,
+      mistralPromise,
+      mistralLargePromise,
+    ]);
 
     // 2. Parse Flash
     let flashContent: string | null = null;
@@ -2286,7 +2307,7 @@ Recommendation rules :
       flashCallError = flashSettled.error;
     }
 
-    // 2b. Parse Mistral (3-way shadow). NULL si service désactivé ou clé absente.
+    // 2b. Parse Mistral Medium (3-way shadow). NULL si service désactivé ou clé absente.
     let mistralProvider: string | null = null;
     let mistralCostUsd = 0;
     let mistralLatencyMs = 0;
@@ -2308,6 +2329,28 @@ Recommendation rules :
       }
     }
 
+    // 2c. Parse Mistral Large 3 (4-way shadow, PR #521). Même logique que Medium.
+    let mistralLargeProvider: string | null = null;
+    let mistralLargeCostUsd = 0;
+    let mistralLargeLatencyMs = 0;
+    let mistralLargeCallError: string | null = null;
+    let mistralLargeDecision: Partial<TraderDecision> | null = null;
+    if (mistralLargeSettled) {
+      mistralLargeProvider = mistralLargeSettled.providerId;
+      mistralLargeCostUsd = mistralLargeSettled.costUsd;
+      mistralLargeLatencyMs = mistralLargeSettled.latencyMs;
+      if (mistralLargeSettled.error) {
+        mistralLargeCallError = mistralLargeSettled.error;
+      } else if (mistralLargeSettled.content) {
+        try {
+          const cleaned = mistralLargeSettled.content.trim().replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
+          mistralLargeDecision = JSON.parse(cleaned);
+        } catch (e) {
+          mistralLargeCallError = `parse_fail: ${String(e).slice(0, 100)}`;
+        }
+      }
+    }
+
     // 3. Compute concordance metrics
     // Note : null === null est valide pour hold (symbol absent attendu des 2 côtés).
     // Quand flashDecision est null (parse fail), tous concordance flags sont null.
@@ -2325,13 +2368,21 @@ Recommendation rules :
       ? Math.round((proConf - flashConf) * 1000) / 1000
       : null;
 
-    // 3b. Concordance Pro vs Mistral
+    // 3b. Concordance Pro vs Mistral Medium
     const mistralAction = mistralDecision?.action_kind ?? null;
     const mistralTarget = mistralDecision?.symbol ?? null;
     const mistralParsed = mistralDecision !== null;
     const concordanceProMistralAction = mistralParsed ? mistralAction === proAction : null;
     const concordanceProMistralTarget = mistralParsed ? mistralTarget === proTarget : null;
     const concordanceProMistralFull = concordanceProMistralAction === true && concordanceProMistralTarget === true;
+
+    // 3c. Concordance Pro vs Mistral Large 3 (PR #521)
+    const mistralLargeAction = mistralLargeDecision?.action_kind ?? null;
+    const mistralLargeTarget = mistralLargeDecision?.symbol ?? null;
+    const mistralLargeParsed = mistralLargeDecision !== null;
+    const concordanceProMistralLargeAction = mistralLargeParsed ? mistralLargeAction === proAction : null;
+    const concordanceProMistralLargeTarget = mistralLargeParsed ? mistralLargeTarget === proTarget : null;
+    const concordanceProMistralLargeFull = concordanceProMistralLargeAction === true && concordanceProMistralLargeTarget === true;
 
     // 3. Compute context hash (sha256 trunc) pour valider que Pro et Flash ont vu le même context
     let contextHash: string | null = null;
@@ -2388,13 +2439,30 @@ Recommendation rules :
         concordance_pro_vs_mistral_action: concordanceProMistralAction,
         concordance_pro_vs_mistral_target: concordanceProMistralTarget,
         concordance_pro_vs_mistral_full: concordanceProMistralFull,
+        // Mistral Large 3 4-way shadow columns (PR #521 31/05/2026)
+        mistral_large_action_kind: mistralLargeAction,
+        mistral_large_target_symbol: mistralLargeTarget,
+        mistral_large_direction: mistralLargeDecision?.direction ?? null,
+        mistral_large_confidence: mistralLargeDecision?.confidence ?? null,
+        mistral_large_notional_usd: mistralLargeDecision?.notional_usd ?? null,
+        mistral_large_thesis: (mistralLargeDecision?.thesis ?? '').slice(0, 1000),
+        mistral_large_cost_usd: mistralLargeCostUsd,
+        mistral_large_latency_ms: mistralLargeLatencyMs,
+        mistral_large_provider: mistralLargeProvider,
+        mistral_large_call_error: mistralLargeCallError,
+        concordance_pro_vs_mistral_large_action: concordanceProMistralLargeAction,
+        concordance_pro_vs_mistral_large_target: concordanceProMistralLargeTarget,
+        concordance_pro_vs_mistral_large_full: concordanceProMistralLargeFull,
       });
       const mistralLog = mistralProvider
-        ? ` vs Mistral=${mistralAction ?? (mistralCallError ? 'fail' : 'off')}/${mistralTarget ?? '?'} mConc=${concordanceProMistralFull} mCost=$${mistralCostUsd.toFixed(4)}`
+        ? ` vs Medium=${mistralAction ?? (mistralCallError ? 'fail' : 'off')}/${mistralTarget ?? '?'} mConc=${concordanceProMistralFull} mCost=$${mistralCostUsd.toFixed(4)}`
+        : '';
+      const largeLog = mistralLargeProvider
+        ? ` vs Large=${mistralLargeAction ?? (mistralLargeCallError ? 'fail' : 'off')}/${mistralLargeTarget ?? '?'} lConc=${concordanceProMistralLargeFull} lCost=$${mistralLargeCostUsd.toFixed(4)}`
         : '';
       this.logger.debug(
         `[trader-agent:ab] Pro=${proAction}/${proTarget ?? '?'} vs Flash=${flashAction ?? 'fail'}/${flashTarget ?? '?'} ` +
-        `concordance=${concordanceFull} costDelta=${(args.proResponse.costUsd - flashCostUsd).toFixed(4)}${mistralLog}`,
+        `concordance=${concordanceFull} costDelta=${(args.proResponse.costUsd - flashCostUsd).toFixed(4)}${mistralLog}${largeLog}`,
       );
     } catch (e) {
       this.logger.debug(`[trader-agent:ab] insert failed: ${String(e).slice(0, 100)}`);
