@@ -46,7 +46,7 @@ describe('MistralShadowService', () => {
     expect(r.costUsd).toBe(0);
   });
 
-  it('call() HTTP 200 — calcul cost correct via pricing officiel Large 3 ($0.5 in / $1.5 out)', async () => {
+  it('call() HTTP 200 — cost via pricing Medium 3.5 default ($1.50 in / $7.50 out)', async () => {
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
       status: 200,
@@ -61,9 +61,47 @@ describe('MistralShadowService', () => {
     expect(r.content).toContain('hold');
     expect(r.inputTokens).toBe(2_000_000);
     expect(r.outputTokens).toBe(1_000_000);
-    // 2M × $0.5/M + 1M × $1.5/M = $1.00 + $1.50 = $2.50
+    // Default = mistral-medium-latest → 2M × $1.50/M + 1M × $7.50/M = $3 + $7.50 = $10.50
+    expect(r.costUsd).toBeCloseTo(10.5, 5);
+    expect(r.providerId).toBe('mistral-medium');
+    expect(r.model).toBe('mistral-medium-latest');
+  });
+
+  it('call() pricing model-aware — Large 3 override via MISTRAL_SHADOW_MODEL', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { content: '{}' } }],
+        usage: { prompt_tokens: 2_000_000, completion_tokens: 1_000_000 },
+      }),
+    });
+    const svc = new MistralShadowService(
+      mockConfig({ MISTRAL_API_KEY: 'sk-test', MISTRAL_SHADOW_ENABLED: 'true', MISTRAL_SHADOW_MODEL: 'mistral-large-latest' }),
+    );
+    const r = await svc.call({ system: 's', user: 'u' });
+    // Large 3 = $0.50 in + $1.50 out → 2M × $0.50 + 1M × $1.50 = $1.00 + $1.50 = $2.50
     expect(r.costUsd).toBeCloseTo(2.5, 5);
     expect(r.providerId).toBe('mistral-large');
+    expect(r.model).toBe('mistral-large-latest');
+  });
+
+  it('call() pricing model-aware — Magistral reasoning ($2 in / $5 out)', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { content: '{}' } }],
+        usage: { prompt_tokens: 1_000_000, completion_tokens: 1_000_000 },
+      }),
+    });
+    const svc = new MistralShadowService(
+      mockConfig({ MISTRAL_API_KEY: 'sk-test', MISTRAL_SHADOW_ENABLED: 'true', MISTRAL_SHADOW_MODEL: 'magistral-medium-latest' }),
+    );
+    const r = await svc.call({ system: 's', user: 'u' });
+    // Magistral Medium = $2 in + $5 out → 1M × $2 + 1M × $5 = $7
+    expect(r.costUsd).toBeCloseTo(7, 5);
+    expect(r.providerId).toBe('magistral-medium');
   });
 
   it('call() HTTP 429 → error capturé, pas de throw', async () => {
@@ -111,7 +149,7 @@ describe('MistralShadowService', () => {
     expect(url).toBe('https://api.mistral.ai/v1/chat/completions');
     expect((init as { headers: Record<string, string> }).headers.Authorization).toBe('Bearer sk-key-123');
     const body = JSON.parse((init as { body: string }).body);
-    expect(body.model).toBe('mistral-large-latest');
+    expect(body.model).toBe('mistral-medium-latest');  // default Medium 3.5 (equivalent qualite Gemini Pro)
     expect(body.messages).toEqual([
       { role: 'system', content: 'sys-prompt' },
       { role: 'user', content: 'user-prompt' },
