@@ -1966,10 +1966,19 @@ export class TopGainersScannerService implements OnModuleInit {
       ...CRYPTO_PAIRS.map((s) => ({ symbol: s, assetClass: 'crypto_major' as const })),
       ...CRYPTO_ALTS.map((s) => ({ symbol: s, assetClass: 'crypto_alt' as const })),
     ];
+    // 31/05/2026 — diagnostic : on observait ~12/30 cryptos retournés en prod sans
+    // moyen de savoir lesquelles échouaient (ancien log debug + silent continue).
+    // On remonte à warn niveau cycle pour identifier les pairs délistées/renommées
+    // sur Binance, puis on nettoiera CRYPTO_ALTS à partir des warnings.
+    const nullSymbols: string[] = [];
+    const errorSymbols: string[] = [];
     for (const { symbol: pair, assetClass } of pairs) {
       try {
         const t = await this.binanceMarket.getTicker24h(pair);
-        if (!t) continue;
+        if (!t) {
+          nullSymbols.push(pair);
+          continue;
+        }
         out.push({
           symbol: pair,
           exchange: 'BINANCE',
@@ -1987,8 +1996,15 @@ export class TopGainersScannerService implements OnModuleInit {
           marketCap: CRYPTO_MARKET_CAP_USD[pair] ?? 0,
         });
       } catch (e) {
-        this.logger.debug(`[top-gainers] binance ${pair} error: ${String(e).slice(0, 80)}`);
+        errorSymbols.push(`${pair}:${String(e).slice(0, 60)}`);
       }
+    }
+    if (nullSymbols.length > 0 || errorSymbols.length > 0) {
+      this.logger.warn(
+        `[top-gainers] binance fetch summary: ${out.length}/${pairs.length} ok` +
+          (nullSymbols.length > 0 ? ` · null(${nullSymbols.length}): ${nullSymbols.join(',')}` : '') +
+          (errorSymbols.length > 0 ? ` · error(${errorSymbols.length}): ${errorSymbols.join(' | ')}` : ''),
+      );
     }
     return out;
   }
