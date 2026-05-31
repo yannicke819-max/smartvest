@@ -31,6 +31,7 @@ import { MultiTimeframePersistenceService } from './services/multi-tf-persistenc
 import { PersistenceProbabilityService } from './services/persistence-probability.service';
 import { EodhdQuotaService } from './services/eodhd-quota.service';
 import { PushNotificationsService, type PushSubscriptionPayload } from './services/push-notifications.service';
+import { GeminiBudgetGuardService } from './services/gemini-budget-guard.service';
 import { summarizeByTf, type PersistenceResult } from '@smartvest/ai-analyst';
 import type { DailyHarvestConfig, CapitalDisciplineMode } from './types/capital-discipline.types';
 
@@ -63,6 +64,7 @@ export class LisaController {
     private readonly dailyCatalystBrief: DailyCatalystBriefService,
     private readonly eventEngine: EventEngineService,
     private readonly pushNotifs: PushNotificationsService,
+    private readonly geminiBudgetGuard: GeminiBudgetGuardService,
   ) {}
 
   // LISA refonte B.4.c — Web Push API VAPID endpoints.
@@ -1803,6 +1805,34 @@ export class LisaController {
   ) {
     const userId = extractUserId(headers);
     return this.lisa.getDailyPnl(userId, portfolioId);
+  }
+
+  // PR2 cost-cuts (H) — endpoints kill-switch quotidien Gemini.
+  //
+  // GET  /lisa/gemini-cost/status
+  // POST /lisa/gemini-cost/manual-override  body { reason?: string }
+  // POST /lisa/gemini-cost/clear-override
+
+  @Get('gemini-cost/status')
+  async getGeminiCostStatus(@Headers() headers: Record<string, string>) {
+    extractUserId(headers); // require authenticated user
+    return this.geminiBudgetGuard.getStatus(true);
+  }
+
+  @Post('gemini-cost/manual-override')
+  async overrideGeminiKillSwitch(
+    @Headers() headers: Record<string, string>,
+    @Body() body: { reason?: string } | null,
+  ) {
+    const userId = extractUserId(headers);
+    const reason = body?.reason;
+    return this.geminiBudgetGuard.manualOverride(reason ? { userId, reason } : { userId });
+  }
+
+  @Post('gemini-cost/clear-override')
+  async clearGeminiOverride(@Headers() headers: Record<string, string>) {
+    extractUserId(headers);
+    return this.geminiBudgetGuard.clearOverride();
   }
 }
 
