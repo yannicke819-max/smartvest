@@ -129,6 +129,136 @@ export class LisaController {
     return this.qwStats.recent(Number.isFinite(parsed) ? parsed : 50);
   }
 
+  /**
+   * PR #524 — Compteur LLM temps réel pour /lisa UI panel.
+   * Mêmes calculs que /admin/llm-cost-live mais user-auth scoped (pas d'admin token).
+   * Aggrège gemini_ab_decisions (TRADER) ET llm_ab_shadow_decisions (4 autres sites)
+   * → vue unifiée 4 providers × tous call sites.
+   */
+  @Get('llm-cost-live')
+  async getLlmCostLive(
+    @Headers() headers: Record<string, string>,
+    @Query('hours') hours?: string,
+  ): Promise<{
+    since: string;
+    until: string;
+    total_cost_usd: number;
+    total_cycles: number;
+    providers: Record<string, { calls: number; cost_usd: number; avg_latency_ms: number | null }>;
+    by_site: Array<{ call_site: string; cycles: number; cost_usd: number }>;
+  }> {
+    extractUserId(headers);
+
+    const now = new Date();
+    const since = hours
+      ? new Date(now.getTime() - Math.min(168, Math.max(1, Number(hours))) * 3600_000)
+      : new Date(now.toISOString().slice(0, 10) + 'T00:00:00Z');
+
+    const stats: Record<string, { sum_cost: number; sum_lat: number; n_lat: number; n_calls: number }> = {
+      'gemini-pro': { sum_cost: 0, sum_lat: 0, n_lat: 0, n_calls: 0 },
+      'gemini-flash': { sum_cost: 0, sum_lat: 0, n_lat: 0, n_calls: 0 },
+      'mistral-medium': { sum_cost: 0, sum_lat: 0, n_lat: 0, n_calls: 0 },
+      'mistral-large': { sum_cost: 0, sum_lat: 0, n_lat: 0, n_calls: 0 },
+    };
+    const bySite = new Map<string, { cycles: number; cost: number }>();
+
+    // 1. TRADER decisions (gemini_ab_decisions — colonnes typées)
+    const { data: trader } = await this.supabase
+      .getClient()
+      .from('gemini_ab_decisions')
+      .select('pro_cost_usd,flash_cost_usd,mistral_cost_usd,mistral_large_cost_usd,pro_latency_ms,flash_latency_ms,mistral_latency_ms,mistral_large_latency_ms')
+      .gte('decided_at', since.toISOString())
+      .limit(50_000);
+    const traderRows = (trader ?? []) as unknown as Array<Record<string, unknown>>;
+    let traderTotalCost = 0;
+    for (const r of traderRows) {
+      const accum = (key: string, cost: number, lat: number | null) => {
+        if (cost > 0 || (key === 'gemini-pro')) {
+          stats[key].n_calls += 1;
+          stats[key].sum_cost += cost;
+          traderTotalCost += cost;
+          if (lat !== null && lat > 0) { stats[key].sum_lat += lat; stats[key].n_lat += 1; }
+        }
+      };
+      accum('gemini-pro', Number(r.pro_cost_usd ?? 0), r.pro_latency_ms != null ? Number(r.pro_latency_ms) : null);
+      accum('gemini-flash', Number(r.flash_cost_usd ?? 0), r.flash_latency_ms != null ? Number(r.flash_latency_ms) : null);
+      accum('mistral-medium', Number(r.mistral_cost_usd ?? 0), r.mistral_latency_ms != null ? Number(r.mistral_latency_ms) : null);
+      accum('mistral-large', Number(r.mistral_large_cost_usd ?? 0), r.mistral_large_latency_ms != null ? Number(r.mistral_large_latency_ms) : null);
+    }
+    bySite.set('trader_decision', { cycles: traderRows.length, cost: traderTotalCost });
+
+    // 2. Other 4 sites (llm_ab_shadow_decisions — JSONB shadows array)
+    const { data: shadow } = await this.supabase
+      .getClient()
+      .from('llm_ab_shadow_decisions')
+      .select('call_site,applied_provider,applied_cost_usd,applied_latency_ms,shadows')
+      .gte('decided_at', since.toISOString())
+      .limit(50_000);
+    const shadowRows = (shadow ?? []) as unknown as Array<Record<string, unknown>>;
+    for (const r of shadowRows) {
+      const site = String(r.call_site);
+      const cost = Number(r.applied_cost_usd ?? 0);
+      const lat = r.applied_latency_ms != null ? Number(r.applied_latency_ms) : null;
+      const provider = String(r.applied_provider ?? '').includes('pro') ? 'gemini-pro' : 'gemini-flash';
+      stats[provider].n_calls += 1;
+      stats[provider].sum_cost += cost;
+      if (lat !== null && lat > 0) { stats[provider].sum_lat += lat; stats[provider].n_lat += 1; }
+
+      // Shadows array
+      let siteCost = cost;
+      for (const s of (r.shadows as Array<Record<string, unknown>>) ?? []) {
+        const sp = String(s.provider ?? '');
+        const sCost = Number(s.cost_usd ?? 0);
+        const sLat = s.latency_ms != null ? Number(s.latency_ms) : null;
+        if (sp.includes('flash')) {
+          stats['gemini-flash'].n_calls += 1;
+          stats['gemini-flash'].sum_cost += sCost;
+          if (sLat !== null && sLat > 0) { stats['gemini-flash'].sum_lat += sLat; stats['gemini-flash'].n_lat += 1; }
+        } else if (sp.includes('pro')) {
+          stats['gemini-pro'].n_calls += 1;
+          stats['gemini-pro'].sum_cost += sCost;
+          if (sLat !== null && sLat > 0) { stats['gemini-pro'].sum_lat += sLat; stats['gemini-pro'].n_lat += 1; }
+        } else if (sp === 'mistral-medium' || sp.startsWith('mistral-medium')) {
+          stats['mistral-medium'].n_calls += 1;
+          stats['mistral-medium'].sum_cost += sCost;
+          if (sLat !== null && sLat > 0) { stats['mistral-medium'].sum_lat += sLat; stats['mistral-medium'].n_lat += 1; }
+        } else if (sp === 'mistral-large' || sp.startsWith('mistral-large')) {
+          stats['mistral-large'].n_calls += 1;
+          stats['mistral-large'].sum_cost += sCost;
+          if (sLat !== null && sLat > 0) { stats['mistral-large'].sum_lat += sLat; stats['mistral-large'].n_lat += 1; }
+        }
+        siteCost += sCost;
+      }
+      const prev = bySite.get(site) ?? { cycles: 0, cost: 0 };
+      bySite.set(site, { cycles: prev.cycles + 1, cost: prev.cost + siteCost });
+    }
+
+    const providers: Record<string, { calls: number; cost_usd: number; avg_latency_ms: number | null }> = {};
+    let totalCost = 0;
+    for (const [k, s] of Object.entries(stats)) {
+      if (s.n_calls === 0) continue;
+      providers[k] = {
+        calls: s.n_calls,
+        cost_usd: Math.round(s.sum_cost * 10000) / 10000,
+        avg_latency_ms: s.n_lat > 0 ? Math.round(s.sum_lat / s.n_lat) : null,
+      };
+      totalCost += s.sum_cost;
+    }
+
+    return {
+      since: since.toISOString(),
+      until: now.toISOString(),
+      total_cost_usd: Math.round(totalCost * 10000) / 10000,
+      total_cycles: traderRows.length + shadowRows.length,
+      providers,
+      by_site: Array.from(bySite.entries()).map(([call_site, v]) => ({
+        call_site,
+        cycles: v.cycles,
+        cost_usd: Math.round(v.cost * 10000) / 10000,
+      })),
+    };
+  }
+
   @Get('risk-state/:portfolioId')
   getRiskState(
     @Headers() headers: Record<string, string>,
