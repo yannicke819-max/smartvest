@@ -24,12 +24,13 @@
  *   - TopGainersScanner signal_quality validation : idem
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { CronJob } from 'cron';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
+import { LlmABShadowService } from './llm-ab-shadow.service';
 import { LisaService } from './lisa.service';
 
 const SCANNER_PORTFOLIO_IDS = [
@@ -126,6 +127,9 @@ export class MainScannerPostMortemService {
     private readonly llmRouter: ScannerLlmRouterService,
     private readonly lisa: LisaService,
     private readonly schedulerRegistry: SchedulerRegistry,
+    // PR #523 — A/B shadow contre Flash + Mistral Medium/Large pour comparer
+    // la qualité des lessons générées (cron 02:30 UTC daily, ~1 call/jour).
+    @Optional() private readonly llmABShadow?: LlmABShadowService,
   ) {}
 
   onModuleInit(): void {
@@ -280,6 +284,22 @@ export class MainScannerPostMortemService {
     this.logger.log(
       `[scanner-postmortem] Gemini provider=${response.providerId} latency=${response.latencyMs}ms cost=$${response.costUsd.toFixed(4)}`,
     );
+
+    // PR #523 — A/B shadow fire-and-forget contre Flash + Mistral Medium/Large.
+    // Cron 02:30 UTC quotidien → 1 call/jour, coût additionnel shadows ~$0.05/jour.
+    // Comparator default (text normalize) suffisant pour lessons text.
+    void this.llmABShadow?.recordShadow({
+      callSite: 'scanner_postmortem',
+      systemPrompt: POST_MORTEM_SYSTEM_PROMPT,
+      userPrompt: JSON.stringify(payload, null, 2),
+      applied: {
+        providerId: response.providerId,
+        content: response.content,
+        costUsd: response.costUsd,
+        latencyMs: response.latencyMs,
+      },
+      maxTokens: 8000,
+    });
 
     if (!response.content || response.content.trim().length === 0) {
       const errMsg = 'Gemini returned empty content (thinking tokens exhausted?)';

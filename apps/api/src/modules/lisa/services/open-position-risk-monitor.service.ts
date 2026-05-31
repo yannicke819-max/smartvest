@@ -24,7 +24,7 @@
  * Audit best-effort dans lisa_decision_log (kind='risk_monitor_action').
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../supabase/supabase.service';
@@ -32,6 +32,7 @@ import { MultiTimeframePersistenceService } from './multi-tf-persistence.service
 import { LisaService } from './lisa.service';
 import { DecisionLogService } from './decision-log.service';
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
+import { LlmABShadowService } from './llm-ab-shadow.service';
 import {
   evaluateThesisHealth,
   type RiskVerdict,
@@ -81,6 +82,8 @@ export class OpenPositionRiskMonitorService {
     private readonly mtfPersistence: MultiTimeframePersistenceService,
     private readonly decisionLog: DecisionLogService,
     private readonly llmRouter: ScannerLlmRouterService,
+    // PR #523 — A/B shadow Pro/Flash/Mistral pour verdicts risk monitor
+    @Optional() private readonly llmABShadow?: LlmABShadowService,
   ) {}
 
   onModuleInit(): void {
@@ -280,6 +283,32 @@ export class OpenPositionRiskMonitorService {
         return null;
       }
       this.logger.debug(`[risk-monitor] Gemini ${pos.symbol} score=${parsed.score.toFixed(2)} (${parsed.rationale})`);
+
+      // PR #523 — A/B shadow fire-and-forget. Verdict = score numérique 0-1.
+      // Comparator score-based : concordant si delta < 0.15 (5 levels equivalents).
+      void this.llmABShadow?.recordShadow({
+        callSite: 'risk_monitor',
+        portfolioId: pos.portfolio_id,
+        systemPrompt: GEMINI_VERDICT_SYSTEM_PROMPT,
+        userPrompt,
+        applied: {
+          providerId: resp.providerId,
+          content: resp.content,
+          costUsd: resp.costUsd,
+          latencyMs: resp.latencyMs,
+          parseOk: parsed !== null,
+        },
+        maxTokens: 120,
+        temperature: 0.2,
+        // Verdict score-based : tolérance 0.15 (échelle 0-1)
+        comparator: (a, b) => {
+          const pa = parseGeminiVerdict(a);
+          const pb = parseGeminiVerdict(b);
+          if (!pa || !pb) return false;
+          return Math.abs(pa.score - pb.score) < 0.15;
+        },
+      });
+
       return parsed.score;
     } catch (e) {
       this.logger.debug(`[risk-monitor] Gemini ${pos.symbol} exception: ${String(e).slice(0, 150)}`);

@@ -22,11 +22,12 @@
  * SCANNER_LLM_ROUTER_ENABLED=true.
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
+import { LlmABShadowService } from './llm-ab-shadow.service';
 import { EodhdEconomicEventsService } from './eodhd-economic-events.service';
 
 export interface DailyCatalystBrief {
@@ -76,6 +77,8 @@ export class DailyCatalystBriefService {
     private readonly supabase: SupabaseService,
     private readonly llm: ScannerLlmRouterService,
     private readonly economicEvents: EodhdEconomicEventsService,
+    // PR #523 — A/B shadow Pro/Flash/Mistral pour brief news
+    @Optional() private readonly llmABShadow?: LlmABShadowService,
   ) {
     this.enabled = (this.config.get<string>('GEMINI_DAILY_BRIEF_ENABLED') ?? 'false').toLowerCase() === 'true';
     if (this.enabled) this.logger.log('[daily-brief] enabled — cron 04:00 UTC daily');
@@ -129,6 +132,23 @@ export class DailyCatalystBriefService {
       this.logger.warn(`[daily-brief] could not parse JSON from llm content (len=${llmResult.content.length})`);
       return null;
     }
+
+    // PR #523 — A/B shadow fire-and-forget. Brief output = text JSON narrative.
+    // Default comparator (text normalize, first 200 chars) suffisant.
+    void this.llmABShadow?.recordShadow({
+      callSite: 'daily_brief',
+      systemPrompt: SYSTEM_PROMPT,
+      userPrompt,
+      applied: {
+        providerId: llmResult.providerId,
+        content: llmResult.content,
+        costUsd: llmResult.costUsd,
+        latencyMs: llmResult.latencyMs,
+        parseOk: brief !== null,
+      },
+      maxTokens: 1200,
+      temperature: 0.2,
+    });
 
     if (!this.supabase.isReady()) {
       this.logger.warn('[daily-brief] supabase not ready, skipping persist');

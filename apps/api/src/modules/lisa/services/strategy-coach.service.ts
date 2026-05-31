@@ -21,6 +21,7 @@ import { SchedulerRegistry } from '@nestjs/schedule';
 import { CronJob } from 'cron';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
+import { LlmABShadowService } from './llm-ab-shadow.service';
 import { PushNotificationsService } from './push-notifications.service';
 
 const SYSTEM_PROMPT = `Tu es Strategy Coach de LISA, un trader algo autonome basé sur Gemini Pro.
@@ -189,6 +190,8 @@ export class StrategyCoachService {
     private readonly llmRouter: ScannerLlmRouterService,
     private readonly schedulerRegistry: SchedulerRegistry,
     @Optional() private readonly pushNotifs?: PushNotificationsService,
+    // PR #523 — A/B shadow Pro/Flash/Mistral pour comparer recommandations coach
+    @Optional() private readonly llmABShadow?: LlmABShadowService,
   ) {}
 
   onModuleInit(): void {
@@ -289,6 +292,34 @@ export class StrategyCoachService {
       ? await this.llmRouter.callWithPro(llmCallParams)
       : await this.llmRouter.call(llmCallParams);
     const latencyMs = Date.now() - start;
+
+    // PR #523 — A/B shadow fire-and-forget. Coach output = JSON config_change
+    // → comparator JSON-aware (action_kind + first config field equal).
+    void this.llmABShadow?.recordShadow({
+      callSite: 'strategy_coach',
+      portfolioId: cfg.portfolio_id,
+      systemPrompt: SYSTEM_PROMPT,
+      userPrompt,
+      applied: {
+        providerId: res.providerId,
+        content: res.content,
+        costUsd: res.costUsd,
+        latencyMs,
+      },
+      maxTokens: 2048,
+      temperature: 0.4,
+      comparator: (a, b) => {
+        try {
+          const pa = this.parseJsonStrict(a);
+          const pb = this.parseJsonStrict(b);
+          if (!pa || !pb) return false;
+          // Compare action_kind (le critère le plus impactant)
+          return (pa as { action_kind?: string }).action_kind === (pb as { action_kind?: string }).action_kind;
+        } catch {
+          return false;
+        }
+      },
+    });
 
     const parsed = this.parseJsonStrict(res.content);
     if (!parsed) {
