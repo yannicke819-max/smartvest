@@ -54,6 +54,7 @@ import { GainersUserShadowService } from './services/gainers-user-shadow.service
 import { ShadowSizingOrchestratorService } from './services/shadow-sizing-orchestrator.service';
 import { LiveTraderAgentService } from './services/live-trader-agent.service';
 import { MistralShadowService } from './services/mistral-shadow.service';
+import { MistralLargeShadowService } from './services/mistral-large-shadow.service';
 import { MainScannerPostMortemService } from './services/main-scanner-postmortem.service';
 import { DailyDigestService } from './services/daily-digest.service';
 import { PushNotificationsService } from './services/push-notifications.service';
@@ -210,6 +211,8 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     // concordance avant migration éventuelle TRADER vers Mistral Large 3 (74%
     // moins cher que Gemini Pro). Activation MISTRAL_API_KEY + MISTRAL_SHADOW_ENABLED.
     MistralShadowService,
+    // PR #521 — 2e instance dédiée Mistral Large 3 (cheap tier) pour 4-way A/B
+    MistralLargeShadowService,
     // MainScannerPostMortemService — apprentissage Gemini Pro sur le scanner gainers
     // (cron 02:30 UTC : analyse 24h × 4 portfolios → lessons macro-conditionnelles).
     MainScannerPostMortemService,
