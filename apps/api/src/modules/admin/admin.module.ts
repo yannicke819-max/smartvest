@@ -46,6 +46,7 @@ import { AdminScannerPostMortemController } from './admin-scanner-postmortem.con
 import { AdminScannerDebugController } from './admin-scanner-debug.controller';
 import { AdminMarketCloseReportsController } from './admin-market-close-reports.controller';
 import { AdminLessonAutoApplyController } from './admin-lesson-auto-apply.controller';
+import { AdminLlmCostLiveController } from './admin-llm-cost-live.controller';
 
 @Module({
   imports: [SupabaseModule, forwardRef(() => LisaModule), GainersModule],
@@ -87,6 +88,8 @@ import { AdminLessonAutoApplyController } from './admin-lesson-auto-apply.contro
     AdminMarketCloseReportsController,
     // Lesson Auto-Apply — pipeline d'amélioration continue (scanner_lessons → DB UPDATE).
     AdminLessonAutoApplyController,
+    // PR #522 — Compteur LLM TEMPS RÉEL (vs api_costs_daily qui flush EOD).
+    AdminLlmCostLiveController,
   ],
 })
 export class AdminModule {}
