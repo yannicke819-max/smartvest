@@ -2039,8 +2039,25 @@ Recommendation rules :
       const livePrice = Number(livePriceData.price);
       if (!Number.isFinite(livePrice) || livePrice <= 0) return { applied: false, error: 'trail_stop: invalid live price' };
 
-      // trail_stop = resserrer un SL existant — bornes large OK (0.1-5%), default aligné 1%
-      const slPct = Math.max(0.1, Math.min(5, decision.stop_loss_pct ?? 1.0));
+      // trail_stop = resserrer un SL existant.
+      // 31/05/2026 — Constat BNB TRADER 09:50 UTC : Gemini Pro a trail_stop avec
+      // slPct=0.15% → SL touché en 56min sur micro-pull, capture rate -481% sur
+      // un MFE de seulement +0.05%. Le seuil min 0.1% était trop laxiste pour
+      // crypto (volatilité naturelle 0.2-0.5% en 1m).
+      //
+      // Fix : bornes min per-asset-class. Gemini Pro peut toujours décider de
+      // resserrer mais pas en deçà du bruit naturel de la classe :
+      //   - crypto : min 0.5% (volatilité 0.2-0.5%/min normale)
+      //   - equity : min 0.3% (volatilité 0.1-0.3%/min normale)
+      const isCryptoSym = /^[A-Z0-9]+(USDT|USDC|BUSD)$/.test(match.symbol.toUpperCase());
+      const minSlPct = isCryptoSym ? 0.5 : 0.3;
+      const requestedSlPct = decision.stop_loss_pct ?? 1.0;
+      const slPct = Math.max(minSlPct, Math.min(5, requestedSlPct));
+      if (requestedSlPct < minSlPct) {
+        this.logger.warn(
+          `[trader-agent] trail_stop ${match.symbol} : Pro requested slPct=${requestedSlPct}% < min ${minSlPct}% (class=${isCryptoSym ? 'crypto' : 'equity'}) → clamped`,
+        );
+      }
       const isLong = String(row.direction) !== 'short';
       const sign = isLong ? -1 : 1;
       // Nouveau stop calculé depuis livePrice (trail = suit le marché)
