@@ -44,6 +44,7 @@ import { LiveTradingWizard } from '@/components/lisa/live-trading-wizard';
 import { useOperatingMode } from '@/hooks/use-operating-mode';
 import { AutopilotBudgetBadge } from '@/components/lisa/autopilot-budget-badge';
 import { GeminiCostPanel } from '@/components/lisa/gemini-cost-panel';
+import { LlmCostLivePanel } from '@/components/lisa/llm-cost-live-panel';
 import { RiskStateBanner } from '@/components/lisa/risk-state-banner';
 import { LisaDecisionLog } from '@/components/lisa/decision-log';
 import { MechanicalAgentCard } from '@/components/lisa/mechanical-agent-card';
@@ -686,6 +687,9 @@ export default function LisaPage() {
 
       {/* PR2 cost-cuts (H) — Panel coûts Gemini quotidien/mensuel + kill-switch */}
       <GeminiCostPanel />
+
+      {/* PR #524 — Compteur LLM temps réel 4 providers × 5 call sites */}
+      <LlmCostLivePanel />
 
       {/* LISA refonte A.3 — Section Gains (badges + reset display-only) */}
       {selectedPortfolioId && <GainsTracker portfolioId={selectedPortfolioId} />}
