@@ -2354,11 +2354,22 @@ Recommendation rules :
     // 3. Compute concordance metrics
     // Note : null === null est valide pour hold (symbol absent attendu des 2 côtés).
     // Quand flashDecision est null (parse fail), tous concordance flags sont null.
-    const proAction = args.proDecision.action_kind ?? null;
-    const proTarget = args.proDecision.symbol ?? null;
+    // proAction nullified après le helper ci-dessous (defined just below).
+    // 31/05/2026 — Helper coerce empty string "" → null. Necessaire car certains
+    // providers (Mistral Large 3 observe) retournent target_symbol="" au lieu de
+    // null quand action=hold, ce qui fail le check "" === null → 0% concordance
+    // artificielle. Apply preventif sur les 4 providers pour eviter futurs cas.
+    const nullify = (v: unknown): string | null => {
+      if (v === null || v === undefined) return null;
+      if (typeof v === 'string' && v.trim() === '') return null;
+      return v as string;
+    };
+
+    const proAction = nullify(args.proDecision.action_kind);
+    const proTarget = nullify(args.proDecision.symbol);
     const proConf = args.proDecision.confidence ?? null;
-    const flashAction = flashDecision?.action_kind ?? null;
-    const flashTarget = flashDecision?.symbol ?? null;
+    const flashAction = nullify(flashDecision?.action_kind);
+    const flashTarget = nullify(flashDecision?.symbol);
     const flashConf = flashDecision?.confidence ?? null;
     const flashParsed = flashDecision !== null;
     const concordanceAction = flashParsed ? flashAction === proAction : null;
@@ -2369,16 +2380,16 @@ Recommendation rules :
       : null;
 
     // 3b. Concordance Pro vs Mistral Medium
-    const mistralAction = mistralDecision?.action_kind ?? null;
-    const mistralTarget = mistralDecision?.symbol ?? null;
+    const mistralAction = nullify(mistralDecision?.action_kind);
+    const mistralTarget = nullify(mistralDecision?.symbol);
     const mistralParsed = mistralDecision !== null;
     const concordanceProMistralAction = mistralParsed ? mistralAction === proAction : null;
     const concordanceProMistralTarget = mistralParsed ? mistralTarget === proTarget : null;
     const concordanceProMistralFull = concordanceProMistralAction === true && concordanceProMistralTarget === true;
 
     // 3c. Concordance Pro vs Mistral Large 3 (PR #521)
-    const mistralLargeAction = mistralLargeDecision?.action_kind ?? null;
-    const mistralLargeTarget = mistralLargeDecision?.symbol ?? null;
+    const mistralLargeAction = nullify(mistralLargeDecision?.action_kind);
+    const mistralLargeTarget = nullify(mistralLargeDecision?.symbol);
     const mistralLargeParsed = mistralLargeDecision !== null;
     const concordanceProMistralLargeAction = mistralLargeParsed ? mistralLargeAction === proAction : null;
     const concordanceProMistralLargeTarget = mistralLargeParsed ? mistralLargeTarget === proTarget : null;
