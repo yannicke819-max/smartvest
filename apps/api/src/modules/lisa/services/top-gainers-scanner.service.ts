@@ -65,6 +65,8 @@ import {
 } from './lesson-driven-config.helper';
 import { SizingABTestService } from './research/sizing-ab-test.service';
 import { ScannerLessonsContextService } from './scanner-lessons-context.service';
+import { EodhdIntradayService } from './eodhd-intraday.service';
+import { evaluateVelocityGate, type PricePoint } from './velocity-gate.helper';
 import { EodhdQuotaService } from './eodhd-quota.service';
 import { EodhdCalendarService } from './eodhd-calendar.service';
 import { EodhdNewsService } from './eodhd-news.service';
@@ -258,6 +260,26 @@ const EU_WATCHLIST_NAMES = ['cac40', 'dax40', 'ftse100'];
 export const CRYPTO_PAIRS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT', 'DOTUSDT', 'LINKUSDT', 'POLUSDT'];
 
 /**
+ * Top altcoins Binance USDT élargis pour scan crypto weekend/24-7.
+ *
+ * Sélection : market cap > $1B au 30/05/2026, volume Binance > $50M/24h,
+ * pas déjà dans CRYPTO_PAIRS. Routés en `crypto_alt` (asset class distincte
+ * pour permettre TP/SL et seuils différenciés via AssetClassTpSlConfigService).
+ *
+ * Rationale : sur weekend US/EU/Asia equity fermés, l'univers crypto majors
+ * (10 noms) est souvent en consolidation. Aucun ne tombe dans la sweet spot
+ * [3%, 8%] simultanément → 0 trade. L'ajout de 20 alts triple l'effectif
+ * scannable (10 → 30) sans toucher aux gates qualité (KTOS, pump_score,
+ * persistence path_eff continuent à filtrer normalement).
+ */
+export const CRYPTO_ALTS = [
+  'DOGEUSDT', 'TRXUSDT',  'LTCUSDT',  'BCHUSDT',  'ETCUSDT',
+  'NEARUSDT', 'ATOMUSDT', 'UNIUSDT',  'ICPUSDT',  'APTUSDT',
+  'XLMUSDT',  'FILUSDT',  'ARBUSDT',  'OPUSDT',   'INJUSDT',
+  'AAVEUSDT', 'SUIUSDT',  'TIAUSDT',  'RNDRUSDT', 'IMXUSDT',
+];
+
+/**
  * Panier or/énergie fixe — toujours scanné (en sus des screeners EODHD dynamiques).
  *
  * Pourquoi : les screeners EODHD ne remontent un ticker que s'il fait déjà
@@ -404,6 +426,28 @@ const CRYPTO_MARKET_CAP_USD: Record<string, number> = {
   // pas de modif config / gates scanner). POL market cap réel ~$4-5B mais
   // gate sort-by-mcap reste cohérente avec le pool alt existant.
   POLUSDT:      8_000_000_000,
+  // Altcoins ajoutés 30/05/2026 — valeurs conservatrices au 30/05, tolère
+  // ×3 dérive avant fail gate MARKET_CAP_MIN $500M.
+  DOGEUSDT:    25_000_000_000,
+  TRXUSDT:     15_000_000_000,
+  LTCUSDT:      8_000_000_000,
+  BCHUSDT:      8_000_000_000,
+  ETCUSDT:      5_000_000_000,
+  NEARUSDT:     5_000_000_000,
+  ATOMUSDT:     5_000_000_000,
+  UNIUSDT:      8_000_000_000,
+  ICPUSDT:      5_000_000_000,
+  APTUSDT:      5_000_000_000,
+  XLMUSDT:      3_000_000_000,
+  FILUSDT:      3_000_000_000,
+  ARBUSDT:      3_000_000_000,
+  OPUSDT:       3_000_000_000,
+  INJUSDT:      3_000_000_000,
+  AAVEUSDT:     3_000_000_000,
+  SUIUSDT:      3_000_000_000,
+  TIAUSDT:      3_000_000_000,
+  RNDRUSDT:     5_000_000_000,
+  IMXUSDT:      2_000_000_000,
 };
 
 /**
@@ -805,6 +849,8 @@ export class TopGainersScannerService implements OnModuleInit {
     // Phase 3 — scanner_lessons injecté dans les system prompts Gemini.
     // Optional pour back-compat tests (le getter retourne '' si pas fourni).
     @Optional() private readonly lessonsContext?: ScannerLessonsContextService,
+    // 29/05/2026 — EODHD intraday pour velocity gate (option robuste falling-knife)
+    @Optional() private readonly eodhdIntraday?: EodhdIntradayService,
   ) {
     // Parse stagflation hedge guard config 1× au boot. ConfigService.get retourne
     // toujours string|undefined ; on convertit via le helper pur.
@@ -1914,17 +1960,32 @@ export class TopGainersScannerService implements OnModuleInit {
    */
   private async fetchBinanceGainers(): Promise<TopGainerCandidate[]> {
     const out: TopGainerCandidate[] = [];
-    for (const pair of CRYPTO_PAIRS) {
+    // 30/05/2026 — élargissement univers crypto (10 majors + 20 alts) pour
+    // augmenter l'effectif scannable weekend, sans toucher aux gates qualité.
+    const pairs: Array<{ symbol: string; assetClass: 'crypto_major' | 'crypto_alt' }> = [
+      ...CRYPTO_PAIRS.map((s) => ({ symbol: s, assetClass: 'crypto_major' as const })),
+      ...CRYPTO_ALTS.map((s) => ({ symbol: s, assetClass: 'crypto_alt' as const })),
+    ];
+    // 31/05/2026 — diagnostic : on observait ~12/30 cryptos retournés en prod sans
+    // moyen de savoir lesquelles échouaient (ancien log debug + silent continue).
+    // On remonte à warn niveau cycle pour identifier les pairs délistées/renommées
+    // sur Binance, puis on nettoiera CRYPTO_ALTS à partir des warnings.
+    const nullSymbols: string[] = [];
+    const errorSymbols: string[] = [];
+    for (const { symbol: pair, assetClass } of pairs) {
       try {
         const t = await this.binanceMarket.getTicker24h(pair);
-        if (!t) continue;
+        if (!t) {
+          nullSymbols.push(pair);
+          continue;
+        }
         out.push({
           symbol: pair,
           exchange: 'BINANCE',
           // PR6.6.2 — set assetClass upstream (whitelisted CRYPTO_PAIRS = majors).
           // Sans ça, persistShadowSignalsBatch tombait en fallback equity sur les
           // 10 paires Binance et fail LIQUIDITY_FLOOR à tort.
-          assetClass: 'crypto_major',
+          assetClass,
           close: t.lastPrice,
           high: t.high ?? t.lastPrice,
           changePct: t.priceChangePct,
@@ -1935,8 +1996,15 @@ export class TopGainersScannerService implements OnModuleInit {
           marketCap: CRYPTO_MARKET_CAP_USD[pair] ?? 0,
         });
       } catch (e) {
-        this.logger.debug(`[top-gainers] binance ${pair} error: ${String(e).slice(0, 80)}`);
+        errorSymbols.push(`${pair}:${String(e).slice(0, 60)}`);
       }
+    }
+    if (nullSymbols.length > 0 || errorSymbols.length > 0) {
+      this.logger.warn(
+        `[top-gainers] binance fetch summary: ${out.length}/${pairs.length} ok` +
+          (nullSymbols.length > 0 ? ` · null(${nullSymbols.length}): ${nullSymbols.join(',')}` : '') +
+          (errorSymbols.length > 0 ? ` · error(${errorSymbols.length}): ${errorSymbols.join(' | ')}` : ''),
+      );
     }
     return out;
   }
@@ -2651,13 +2719,17 @@ export class TopGainersScannerService implements OnModuleInit {
     }
     const postSlCooldownMs = postSlCooldownMin * 60_000;
 
-    // SL_CONTAGION_CROSS_PORTFOLIO (lesson 28/05/2026 conf 0.95) — opt-in strict.
-    // Active SI env GAINERS_CROSS_PORTFOLIO_SL_COOLDOWN_MIN > 0 (default 0 = off).
-    // Quand actif : bloque la ré-ouverture sur ce portfolio uniquement si le
-    // ticker a SL sur un autre portfolio dans la fenêtre ET asset_class identique.
+    // SL_CONTAGION_CROSS_PORTFOLIO (lesson 28/05 + extension 29/05) — ON par défaut.
+    // 29/05 09:30 : contagion ITM.LSE -$57 sur 3 portfolios (MAIN choppy -$26,
+    // MIDDLE +$12, HIGH SL -$42). HIGH a pris ITM APRÈS la perte MAIN. L'ancien
+    // gate ne catchait que closed_stop → ratait les closes choppy perdants.
+    //
+    // FIX : (1) default 90 min au lieu de 0 (ON par défaut). (2) catch TOUS les
+    // closes PERDANTS (realized_pnl < 0), pas juste closed_stop. (3) même
+    // asset_class requis. Désactivable via GAINERS_CROSS_PORTFOLIO_SL_COOLDOWN_MIN=0.
     const crossPortfolioSlCooldownMin = Math.max(
       0,
-      Math.min(1440, Number(this.config.get<string>('GAINERS_CROSS_PORTFOLIO_SL_COOLDOWN_MIN') ?? '0')),
+      Math.min(1440, Number(this.config.get<string>('GAINERS_CROSS_PORTFOLIO_SL_COOLDOWN_MIN') ?? '90')),
     );
     const crossPortfolioRecentSl = new Map<string, { ms: number; assetClass: string }>();
     if (crossPortfolioSlCooldownMin > 0) {
@@ -2666,9 +2738,10 @@ export class TopGainersScannerService implements OnModuleInit {
         const { data: crossClosesRaw } = await this.supabase
           .getClient()
           .from('lisa_positions')
-          .select('symbol, asset_class, exit_timestamp, portfolio_id')
-          .eq('status', 'closed_stop')
+          .select('symbol, asset_class, exit_timestamp, portfolio_id, realized_pnl_usd, status')
           .neq('portfolio_id', portfolioId)
+          .neq('status', 'open')
+          .lt('realized_pnl_usd', 0)
           .gte('exit_timestamp', sinceIso);
         for (const row of crossClosesRaw ?? []) {
           const sym = String(row.symbol).toUpperCase();
@@ -2680,7 +2753,7 @@ export class TopGainersScannerService implements OnModuleInit {
           }
         }
       } catch (e) {
-        this.logger.debug(`[top-gainers] cross-portfolio SL query skipped: ${String(e).slice(0, 100)}`);
+        this.logger.debug(`[top-gainers] cross-portfolio loss query skipped: ${String(e).slice(0, 100)}`);
       }
     }
 
@@ -2804,7 +2877,8 @@ export class TopGainersScannerService implements OnModuleInit {
       // ASIA OPENING SUFFIX BAN (28/05/2026 soirée, analyse MFE/MAE 3-week n=250
       // asia_equity) — opening auctions 00:00-02:00 UTC sont structurellement
       // toxiques sur :
-      //  - .T/.HK/.SS/.SZ/.SI : n=16, WR 12%, Σ -$527 (Nikkei + HSI + Shanghai/Shenzhen + SGX)
+      //  - .T/.HK/.SHG/.SHE/.SI : n=16, WR 12%, Σ -$527 (Nikkei + HSI + Shanghai/Shenzhen + SGX)
+      // .SS/.SZ inclus aussi pour back-compat (convention Yahoo Finance ; EODHD utilise .SHG/.SHE)
       //  - .KQ                : n=32, WR 31%, Σ -$407 (KOSDAQ opening)
       // En revanche .KQ rest 02-08h UTC = WR 57%, Σ +$96 sur n=63 — veine prouvée.
       // Le gate envisage donc une fenêtre stricte 00-02h UTC ban sur ces 6 suffixes.
@@ -2816,6 +2890,8 @@ export class TopGainersScannerService implements OnModuleInit {
           const symUpper = cand.symbol.toUpperCase();
           const isBanned = symUpper.endsWith('.T')
             || symUpper.endsWith('.HK')
+            || symUpper.endsWith('.SHG')
+            || symUpper.endsWith('.SHE')
             || symUpper.endsWith('.SS')
             || symUpper.endsWith('.SZ')
             || symUpper.endsWith('.SI')
@@ -2882,6 +2958,136 @@ export class TopGainersScannerService implements OnModuleInit {
           );
           recordShadowDecision(cand, 'reject_dead_zone', undefined);
           continue;
+        }
+      }
+
+      // OVERPUMP GATE (29/05/2026 03:30 UTC, extension du TRADER overpump à scanners) :
+      // refuse l'open si le candidat a déjà pumpé > X% sur la 1m. Cause root identifiée :
+      // entry au peak local d'un move déjà mature → drawdown ≥ 2% quasi-systématique.
+      // Cas vérifié 29/05 02:48 → 03:23 : MIDDLE re-entre 393890.KQ à $15950 (+4.5% au
+      // dessus du MAIN entry $15270) — exactement quand TRADER refusait l'entrée à
+      // changePct=14.15%. Threshold default 12% : entre le "8-15% winning bucket" et
+      // le ban dead-zone 15-20%. Configurable via GAINERS_OVERPUMP_THRESHOLD_PCT.
+      const overpumpThreshold = Number(this.config.get<string>('GAINERS_OVERPUMP_THRESHOLD_PCT') ?? '12');
+      if (Number.isFinite(overpumpThreshold) && overpumpThreshold > 0) {
+        const changePct = cand.changePct ?? 0;
+        if (changePct > overpumpThreshold) {
+          this.logger.log(
+            `[top-gainers] ${cand.symbol} OVERPUMP_GATE actif (changePct=${changePct.toFixed(1)}% > ${overpumpThreshold}% — entry au peak refusée, attendre pullback)`,
+          );
+          recordShadowDecision(cand, 'reject_overextended', undefined);
+          continue;
+        }
+      }
+
+      // FALLING KNIFE GATE multi-dimensionnel (29/05/2026 05:30 UTC, lesson MAIN 347850.KQ).
+      //
+      // Évolution depuis le simple "close vs high" : combine 3 dimensions intraday
+      // pour détecter falling knife / dead-cat-bounce. Reject si ≥ 2/3 conditions true.
+      //
+      // Cas vérifié 29/05 04:41 : MAIN ouvre 347850.KQ à $94700 (live $94200 30 min plus tard) :
+      //   - open $106000, high $106300, low $92600, close $94200
+      //   - C1 net_day = -11.13% (close vs open)    → TRUE (< -5%)
+      //   - C2 drop_high = -11.40% (close vs high)  → TRUE (< -8%)
+      //   - C3 pos_in_range = (94200-92600)/(106300-92600) = 11.7%  → TRUE (< 30%, near low)
+      //   → 3/3 → REJECT confirmé multi-axes
+      //
+      // Le changePct 1m positif (rebond technique) n'aurait pas suffi à passer le filtre.
+      //
+      // Configurable via :
+      //   GAINERS_FALLING_KNIFE_NET_DAY_PCT       (default -5)
+      //   GAINERS_FALLING_KNIFE_DROP_HIGH_PCT     (default -8)
+      //   GAINERS_FALLING_KNIFE_POS_IN_RANGE_PCT  (default 30)
+      // Disable global : GAINERS_FALLING_KNIFE_ENABLED=false
+      const fallingKnifeEnabled = (this.config.get<string>('GAINERS_FALLING_KNIFE_ENABLED') ?? 'true').toLowerCase() === 'true';
+      if (fallingKnifeEnabled) {
+        const netDayThreshold = Number(this.config.get<string>('GAINERS_FALLING_KNIFE_NET_DAY_PCT') ?? '-5');
+        const dropHighThreshold = Number(this.config.get<string>('GAINERS_FALLING_KNIFE_DROP_HIGH_PCT') ?? '-8');
+        const posInRangeThreshold = Number(this.config.get<string>('GAINERS_FALLING_KNIFE_POS_IN_RANGE_PCT') ?? '30');
+
+        const high = cand.high;
+        const close = cand.close;
+        // open n'est pas dans le TopGainerCandidate — on calcule sur high/low/close
+        // close vs high (drop from peak) + position in range (proximité du low).
+        if (Number.isFinite(high) && Number.isFinite(close) && high > 0 && (cand as { low?: number }).low !== undefined) {
+          const low = Number((cand as { low?: number }).low);
+          const c1NetDay = Number.isFinite(low) && low > 0 ? ((close - low) / low) * 100 : NaN;
+          const c2DropHigh = ((close - high) / high) * 100;
+          const c3PosInRange = Number.isFinite(low) && (high - low) > 0
+            ? ((close - low) / (high - low)) * 100
+            : NaN;
+
+          let trueCount = 0;
+          const reasons: string[] = [];
+          // C1 : proxy net jour via close vs low. Si très proche du low (peu de range),
+          // signal de chute. Threshold inversé : on regarde si net_day est faible.
+          // Note : en l'absence d'open, on substitue "close < low * 1.05" (~5% du low)
+          // comme proxy "trade dans la zone basse" → C1 TRUE.
+          if (Number.isFinite(c1NetDay) && c1NetDay < Math.abs(netDayThreshold)) {
+            trueCount++;
+            reasons.push(`C1 close-vs-low=+${c1NetDay.toFixed(1)}%<${Math.abs(netDayThreshold)}%`);
+          }
+          if (Number.isFinite(c2DropHigh) && c2DropHigh < dropHighThreshold) {
+            trueCount++;
+            reasons.push(`C2 close-vs-high=${c2DropHigh.toFixed(1)}%<${dropHighThreshold}%`);
+          }
+          if (Number.isFinite(c3PosInRange) && c3PosInRange < posInRangeThreshold) {
+            trueCount++;
+            reasons.push(`C3 pos-in-range=${c3PosInRange.toFixed(1)}%<${posInRangeThreshold}%`);
+          }
+
+          if (trueCount >= 2) {
+            this.logger.log(
+              `[top-gainers] ${cand.symbol} FALLING_KNIFE_MULTI actif (${trueCount}/3: ${reasons.join(', ')}) → skip (lesson MAIN 347850.KQ 29/05)`,
+            );
+            recordShadowDecision(cand, 'reject_other', undefined);
+            continue;
+          }
+        }
+      }
+
+      // VELOCITY GATE (29/05/2026 05:40 UTC, option robuste) — fetch candles 1m
+      // EODHD + régression linéaire pour calculer la vraie vélocité (%/min) et
+      // accélération (%/min²) du prix. Détecte les chutes brutales et accélérantes
+      // que les snapshots statiques (open/high/low/close) ne révèlent pas avec
+      // assez de granularité.
+      //
+      // Reject si :
+      //   A) velocity < minNegativeVelocity (default -2%/min) — chute rapide
+      //   B) velocity < 0 ET acceleration < minNegativeAccel (default -0.5%/min²) — chute qui accélère
+      //
+      // Désactivable via GAINERS_VELOCITY_GATE_ENABLED=false (default true mais
+      // skip silencieusement si EodhdIntradayService non injecté ou ticker .US,
+      // car les .US sont déjà filtrés par les autres gates et la latence EODHD
+      // intraday US est suffisante).
+      const velocityGateEnabled = (this.config.get<string>('GAINERS_VELOCITY_GATE_ENABLED') ?? 'true').toLowerCase() === 'true';
+      if (velocityGateEnabled && this.eodhdIntraday) {
+        const minNegVel = Number(this.config.get<string>('GAINERS_VELOCITY_MIN_NEG_PCT_PER_MIN') ?? '-2');
+        const minNegAccel = Number(this.config.get<string>('GAINERS_VELOCITY_MIN_NEG_ACCEL_PCT_PER_MIN2') ?? '-0.5');
+        const minCandles = Number(this.config.get<string>('GAINERS_VELOCITY_MIN_CANDLES') ?? '5');
+        try {
+          const series = await this.eodhdIntraday.getCandles(cand.symbol, '1m', 10);
+          if (series && series.candles.length >= minCandles) {
+            const points: PricePoint[] = series.candles.map((c) => ({
+              timestampSec: c.timestamp,
+              close: c.close,
+            }));
+            const decision = evaluateVelocityGate(points, {
+              minNegativeVelocityPctPerMin: minNegVel,
+              minNegativeAccelPctPerMin2: minNegAccel,
+              minCandlesRequired: minCandles,
+            });
+            if (decision.reject) {
+              this.logger.log(
+                `[top-gainers] ${cand.symbol} VELOCITY_GATE actif (${decision.reason}, n=${decision.features?.n} R²=${decision.features?.rSquared.toFixed(2)}) → skip`,
+              );
+              recordShadowDecision(cand, 'reject_other', undefined);
+              continue;
+            }
+          }
+        } catch (e) {
+          // Tolérant : si fetch EODHD échoue, on laisse passer (les autres gates couvrent).
+          this.logger.debug(`[top-gainers] ${cand.symbol} velocity gate skipped: ${String(e).slice(0, 80)}`);
         }
       }
 
@@ -3023,15 +3229,15 @@ export class TopGainersScannerService implements OnModuleInit {
         }
       }
 
-      // SL_CONTAGION cross-portfolio (opt-in via env > 0) — refuse la ré-ouverture
-      // uniquement si SL même ticker + même asset_class sur un autre portfolio
-      // dans la fenêtre. Scope strict pour éviter de généraliser.
+      // SL_CONTAGION cross-portfolio (ON default 90min) — refuse la ré-ouverture
+      // si le ticker a été fermé EN PERTE (SL OU choppy) sur un autre portfolio
+      // dans la fenêtre ET même asset_class. Évite la contagion ITM.LSE-like.
       if (crossPortfolioSlCooldownMin > 0) {
         const crossSl = crossPortfolioRecentSl.get(cand.symbol.toUpperCase());
         if (crossSl && crossSl.assetClass === String(cand.assetClass)) {
           const elapsedMin = Math.floor((Date.now() - crossSl.ms) / 60_000);
           this.logger.log(
-            `[top-gainers] ${cand.symbol} CROSS_PORTFOLIO_SL_COOLDOWN actif (SL autre portfolio ${crossSl.assetClass} il y a ${elapsedMin} min < ${crossPortfolioSlCooldownMin} min) → skip`,
+            `[top-gainers] ${cand.symbol} CROSS_PORTFOLIO_LOSS_COOLDOWN actif (perte autre portfolio ${crossSl.assetClass} il y a ${elapsedMin} min < ${crossPortfolioSlCooldownMin} min) → skip`,
           );
           recordShadowDecision(cand, 'reject_post_sl_cooldown', undefined);
           continue;
@@ -4758,11 +4964,20 @@ export class TopGainersScannerService implements OnModuleInit {
   /**
    * P18 — Re-ranking LLM : réordonne les top candidats par probabilité de continuation.
    * Fallback : ordre déterministe si router off ou échec LLM — comportement P17 préservé.
+   *
+   * 31/05/2026 — désactivé par défaut via SCANNER_LLM_RANKING_ENABLED (cost-cuts Tier 1).
+   * Le LLM ranking changeait rarement l'ordre déterministe (score-based) et coûtait
+   * 1 call Gemini par cycle scanner (~288/jour) pour un bénéfice marginal. Le scanner
+   * conserve son ordre score-based (changePct × volume × persistence) qui est déjà
+   * optimal pour un momentum scanner. Réactivable via env si A/B test souhaité.
    */
   private async rankCandidates(
     top: Array<TopGainerCandidate & { score: number; assetClass: TopGainerAssetClass }>,
   ): Promise<Array<TopGainerCandidate & { score: number; assetClass: TopGainerAssetClass }>> {
     if (!this.llmRouter.isEnabled() || top.length <= 1) return top;
+    // 31/05/2026 cost-cut : default OFF. Réactiver via SCANNER_LLM_RANKING_ENABLED=true.
+    const enabled = (this.config.get<string>('SCANNER_LLM_RANKING_ENABLED') ?? 'false').toLowerCase() === 'true';
+    if (!enabled) return top;
     try {
       const user = JSON.stringify(
         top.map((c) => ({ symbol: c.symbol, assetClass: c.assetClass, changePct: c.changePct, score: c.score, exchange: c.exchange })),

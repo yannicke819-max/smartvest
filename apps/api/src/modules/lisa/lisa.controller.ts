@@ -30,6 +30,8 @@ import { PostSlBackfillService } from './services/post-sl-backfill.service';
 import { MultiTimeframePersistenceService } from './services/multi-tf-persistence.service';
 import { PersistenceProbabilityService } from './services/persistence-probability.service';
 import { EodhdQuotaService } from './services/eodhd-quota.service';
+import { PushNotificationsService, type PushSubscriptionPayload } from './services/push-notifications.service';
+import { GeminiBudgetGuardService } from './services/gemini-budget-guard.service';
 import { summarizeByTf, type PersistenceResult } from '@smartvest/ai-analyst';
 import type { DailyHarvestConfig, CapitalDisciplineMode } from './types/capital-discipline.types';
 
@@ -61,7 +63,38 @@ export class LisaController {
     private readonly riskState: RiskStateService,
     private readonly dailyCatalystBrief: DailyCatalystBriefService,
     private readonly eventEngine: EventEngineService,
+    private readonly pushNotifs: PushNotificationsService,
+    private readonly geminiBudgetGuard: GeminiBudgetGuardService,
   ) {}
+
+  // LISA refonte B.4.c — Web Push API VAPID endpoints.
+  @Get('push/vapid-public-key')
+  getVapidPublicKey() {
+    return { publicKey: this.pushNotifs.getPublicKey() };
+  }
+
+  @Post('push/subscribe')
+  @HttpCode(200)
+  pushSubscribe(
+    @Headers() headers: Record<string, string>,
+    @Body() body: PushSubscriptionPayload,
+  ) {
+    return this.pushNotifs.subscribe(extractUserId(headers), body);
+  }
+
+  @Post('push/unsubscribe')
+  @HttpCode(200)
+  pushUnsubscribe(
+    @Headers() headers: Record<string, string>,
+    @Body('endpoint') endpoint: string,
+  ) {
+    return this.pushNotifs.unsubscribe(extractUserId(headers), endpoint);
+  }
+
+  @Get('push/subscriptions')
+  pushList(@Headers() headers: Record<string, string>) {
+    return this.pushNotifs.listSubscriptions(extractUserId(headers));
+  }
 
   // ─────────────────────────────────────────────────────────────────
   // PR #338 — UI Phase 5 N1+N2 endpoints
@@ -1431,6 +1464,18 @@ export class LisaController {
     return this.lisa.getDecisionLog(extractUserId(headers), portfolioId, limit ? parseInt(limit, 10) : 50);
   }
 
+  // LISA refonte B.2 — Lessons Impact Tracker.
+  // Agrège les citations sur une fenêtre glissante (default 30j, max 365).
+  @Get('lessons-impact/:portfolioId')
+  getLessonsImpact(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+    @Query('days') days?: string,
+  ) {
+    const parsedDays = Math.min(Math.max(parseInt(days ?? '30', 10) || 30, 1), 365);
+    return this.lisa.getLessonsImpact(extractUserId(headers), portfolioId, parsedDays);
+  }
+
   // ── Risk monitoring + kill-switch ───────────────────────────────────────────
 
   @Post('risk-check/:portfolioId')
@@ -1450,6 +1495,93 @@ export class LisaController {
     @Body('reason') reason: string,
   ) {
     return this.lisa.triggerKillSwitch(extractUserId(headers), portfolioId, reason ?? 'Manual user kill');
+  }
+
+  // LISA refonte C.1 — Coach proposals : list / accept / reject.
+  @Get('coach-proposals/:portfolioId')
+  listCoachProposals(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+    @Query('status') status?: string,
+  ) {
+    return this.lisa.listCoachProposals(extractUserId(headers), portfolioId, status);
+  }
+
+  @Post('coach-proposals/:id/accept')
+  @HttpCode(200)
+  acceptCoachProposal(
+    @Headers() headers: Record<string, string>,
+    @Param('id') id: string,
+    @Body() body: { accepted_lessons?: number[]; accepted_params?: number[]; comment?: string },
+  ) {
+    return this.lisa.acceptCoachProposal(extractUserId(headers), id, body ?? {});
+  }
+
+  @Post('coach-proposals/:id/reject')
+  @HttpCode(200)
+  rejectCoachProposal(
+    @Headers() headers: Record<string, string>,
+    @Param('id') id: string,
+    @Body('comment') comment?: string,
+  ) {
+    return this.lisa.rejectCoachProposal(extractUserId(headers), id, comment);
+  }
+
+  // LISA Shadows Summary read-only widget (compare TRADER vs HIGH/MIDDLE/SMALL).
+  @Get('shadows-summary')
+  getShadowsSummary(@Headers() headers: Record<string, string>) {
+    extractUserId(headers); // auth check anti-abuse, pas de filtre user_id
+    return this.lisa.getShadowsSummary();
+  }
+
+  // LISA refonte B.4.a — In-app notifications (badge + dropdown).
+  @Get('notifications/:portfolioId')
+  getNotifications(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    return this.lisa.getNotifications(extractUserId(headers), portfolioId);
+  }
+
+  // LISA refonte B.3 — Désarme le kill-switch (anti-spirale ou manuel).
+  // Pas de force-close, juste UPDATE kill_switch_active=false.
+  @Post('kill-switch-reset/:portfolioId')
+  @HttpCode(200)
+  resetKillSwitch(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    return this.lisa.resetKillSwitch(extractUserId(headers), portfolioId);
+  }
+
+  // LISA refonte B.3 — Lessons management (CRUD partiel : list + toggle).
+  @Get('scanner-lessons')
+  listScannerLessons(
+    @Headers() headers: Record<string, string>,
+    @Query('active') active?: string,
+    @Query('search') search?: string,
+    @Query('scope') scope?: string,
+    @Query('limit') limit?: string,
+  ) {
+    extractUserId(headers);
+    const opts: { active?: boolean; search?: string; scope?: string; limit?: number } = {};
+    if (active === 'true') opts.active = true;
+    else if (active === 'false') opts.active = false;
+    if (search) opts.search = search;
+    if (scope) opts.scope = scope;
+    if (limit) opts.limit = parseInt(limit, 10);
+    return this.lisa.listScannerLessons(opts);
+  }
+
+  @Patch('scanner-lessons/:id')
+  @HttpCode(200)
+  toggleScannerLesson(
+    @Headers() headers: Record<string, string>,
+    @Param('id') id: string,
+    @Body('is_active') isActive: boolean,
+  ) {
+    extractUserId(headers);
+    return this.lisa.setScannerLessonActive(id, Boolean(isActive));
   }
 
   @Post('portfolio/:portfolioId/reset-simulation')
@@ -1673,6 +1805,34 @@ export class LisaController {
   ) {
     const userId = extractUserId(headers);
     return this.lisa.getDailyPnl(userId, portfolioId);
+  }
+
+  // PR2 cost-cuts (H) — endpoints kill-switch quotidien Gemini.
+  //
+  // GET  /lisa/gemini-cost/status
+  // POST /lisa/gemini-cost/manual-override  body { reason?: string }
+  // POST /lisa/gemini-cost/clear-override
+
+  @Get('gemini-cost/status')
+  async getGeminiCostStatus(@Headers() headers: Record<string, string>) {
+    extractUserId(headers); // require authenticated user
+    return this.geminiBudgetGuard.getStatus(true);
+  }
+
+  @Post('gemini-cost/manual-override')
+  async overrideGeminiKillSwitch(
+    @Headers() headers: Record<string, string>,
+    @Body() body: { reason?: string } | null,
+  ) {
+    const userId = extractUserId(headers);
+    const reason = body?.reason;
+    return this.geminiBudgetGuard.manualOverride(reason ? { userId, reason } : { userId });
+  }
+
+  @Post('gemini-cost/clear-override')
+  async clearGeminiOverride(@Headers() headers: Record<string, string>) {
+    extractUserId(headers);
+    return this.geminiBudgetGuard.clearOverride();
   }
 }
 

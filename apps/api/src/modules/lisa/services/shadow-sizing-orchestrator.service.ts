@@ -179,9 +179,14 @@ export class ShadowSizingOrchestratorService {
   /**
    * Cron toutes les 5 minutes (cadence alignée avec Trader Agent).
    * Boucle complète : tracking → analyse IA → auto-correction → log.
-   * Coût LLM : ~$0.03/jour (288 calls × Gemini Flash Lite).
+   * Coût LLM : ~$0.03/jour (288 calls × Gemini Flash Lite) — chiffrage indicatif
+   * historique. La consommation Gemini Pro réelle est ~$6-9/jour (cf. étude 31/05).
+   *
+   * 31/05/2026 cost-cut : passé de cron 5 min à cron 15 min (3× moins d'appels Gemini
+   * Pro). Le WR shadow met plusieurs heures à converger, donc auto-tune toutes les
+   * 15 min reste très réactif. Snapshots PnL continuent à être calculés.
    */
-  @Cron('*/5 * * * *', { name: 'shadow-sizing-orchestrator', timeZone: 'UTC' })
+  @Cron('*/15 * * * *', { name: 'shadow-sizing-orchestrator', timeZone: 'UTC' })
   async runCycle(): Promise<void> {
     // Log inconditionnel chaque tick.
     this.logger.log(`[shadow-sizing] cron tick @ ${new Date().toISOString()} enabled=${this.enabled} supabase=${this.supabase.isReady()}`);

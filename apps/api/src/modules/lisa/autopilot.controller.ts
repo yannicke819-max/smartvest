@@ -40,7 +40,17 @@ export class AutopilotController {
       .maybeSingle();
 
     if (!cfg) {
-      throw new NotFoundException('Session config introuvable pour ce portfolio');
+      // Pas de config (ex: shadow portfolio nouvellement créé sans lisa_session_configs)
+      // → retourne défauts plutôt que 404 (évite console errors UI inutiles).
+      return {
+        daily_used_usd: 0,
+        daily_budget_usd: null,
+        pct: null,
+        paused_reason: null,
+        autopilot_enabled: false,
+        kill_switch_active: false,
+        next_reset_utc: nextMidnightUtc().toISOString(),
+      };
     }
 
     const dailyUsedUsd = await this.apiCostTracker.getTodayTotalUsd();

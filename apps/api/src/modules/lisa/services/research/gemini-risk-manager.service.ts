@@ -147,11 +147,34 @@ export class GeminiRiskManagerService {
     const rawConf = parseFloat(this.config.get<string>('GEMINI_RISK_MANAGER_AUTO_CLOSE_MIN_CONFIDENCE') ?? '0.8');
     this.autoCloseMinConfidence = Number.isFinite(rawConf) && rawConf >= 0 && rawConf <= 1.1 ? rawConf : 0.8;
     this.useMacroNews = (this.config.get<string>('GEMINI_RISK_MANAGER_USE_MACRO_NEWS') ?? 'false').toLowerCase() === 'true';
-    this.useGrounding = (this.config.get<string>('GEMINI_RISK_MANAGER_USE_GROUNDING') ?? 'false').toLowerCase() === 'true';
+
+    // PR3 cost-cut (31/05/2026) — kill-switch grounding hardcodé default ON.
+    // L'analyse coût-bénéfice 30/05 a montré :
+    //   - Coût grounding : ~$150-200/mois (Google facture $35/1000 queries au-delà
+    //     du quota gratuit 1500/jour ; observé 6920 queries/mois sur le 27/05)
+    //   - Bénéfice : 0 décision 'thesis_broken' déclenchée sur la période mesurable
+    //   - Verdict : pure perte sèche
+    //
+    // Le kill-switch force useGrounding=false même si le Fly secret
+    // GEMINI_RISK_MANAGER_USE_GROUNDING=true reste actif (économise une étape
+    // de manipulation Fly secrets). Pour réactiver volontairement après évaluation
+    // ROI, set GEMINI_RISK_MANAGER_GROUNDING_KILL_SWITCH=false ET garder
+    // GEMINI_RISK_MANAGER_USE_GROUNDING=true.
+    const groundingKillSwitch = (this.config.get<string>('GEMINI_RISK_MANAGER_GROUNDING_KILL_SWITCH') ?? 'true').toLowerCase() === 'true';
+    const rawGrounding = (this.config.get<string>('GEMINI_RISK_MANAGER_USE_GROUNDING') ?? 'false').toLowerCase() === 'true';
+    this.useGrounding = !groundingKillSwitch && rawGrounding;
+
     if (this.enabled) {
       this.logger.log(
         `[risk-manager] V2 ENABLED — auto-close conf>=${this.autoCloseMinConfidence} — macro=${this.useMacroNews} — grounding=${this.useGrounding} — cron */5min`,
       );
+      if (rawGrounding && groundingKillSwitch) {
+        this.logger.warn(
+          '[risk-manager] ⚠ GROUNDING_KILL_SWITCH active — env GEMINI_RISK_MANAGER_USE_GROUNDING=true ignoré ' +
+          '(PR3 cost-cut ~$150-200/mois sans bénéfice mesurable). Pour réactiver : set ' +
+          'GEMINI_RISK_MANAGER_GROUNDING_KILL_SWITCH=false',
+        );
+      }
     }
   }
 

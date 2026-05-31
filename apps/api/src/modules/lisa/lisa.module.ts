@@ -45,6 +45,7 @@ import { ProfitSweepService } from './services/profit-sweep.service';
 import { DailyProfitGovernor } from './services/daily-profit-governor.service';
 import { MacroModeService } from './services/macro-mode.service';
 import { ApiCostTrackerService } from './services/api-cost-tracker.service';
+import { GeminiBudgetGuardService } from './services/gemini-budget-guard.service';
 import { ReboundMonitorService } from './services/rebound-monitor.service';
 import { ReboundScannerService } from './services/rebound-scanner.service';
 import { OhlcvCacheService } from './services/ohlcv-cache.service';
@@ -53,6 +54,10 @@ import { GainersUserShadowService } from './services/gainers-user-shadow.service
 import { ShadowSizingOrchestratorService } from './services/shadow-sizing-orchestrator.service';
 import { LiveTraderAgentService } from './services/live-trader-agent.service';
 import { MainScannerPostMortemService } from './services/main-scanner-postmortem.service';
+import { DailyDigestService } from './services/daily-digest.service';
+import { PushNotificationsService } from './services/push-notifications.service';
+import { StrategyCoachService } from './services/strategy-coach.service';
+import { TraderRetrospectiveService } from './services/trader-retrospective.service';
 import { LessonAutoApplyService } from './services/lesson-auto-apply.service';
 import { ScannerLessonsContextService } from './services/scanner-lessons-context.service';
 import { ConfigSanityValidatorService } from './services/config-sanity-validator.service';
@@ -180,6 +185,8 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     MacroModeService,
     // PATCH 4 — running total + hard-stop budget API
     ApiCostTrackerService,
+    // PR2 cost-cuts (H) — kill-switch quotidien Gemini avec override manuel
+    GeminiBudgetGuardService,
     // P1 — classifier de régime tactique (BULL/BEAR/RANGE/VOL_SPIKE/NEWS_SHOCK)
     MarketRegimeService,
     // P3-A — cron monitor pour rebound_positions (TP/SL/timeout toutes les 5 min)
@@ -201,6 +208,19 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     // MainScannerPostMortemService — apprentissage Gemini Pro sur le scanner gainers
     // (cron 02:30 UTC : analyse 24h × 4 portfolios → lessons macro-conditionnelles).
     MainScannerPostMortemService,
+    // DailyDigestService (B.4.b) — email récap quotidien via Resend (09:00 UTC).
+    // Requires RESEND_API_KEY + DAILY_DIGEST_FROM_EMAIL Fly secrets, sinon DRY mode.
+    DailyDigestService,
+    // PushNotificationsService (B.4.c) — Web Push API trigger-only.
+    // Requires VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY / VAPID_SUBJECT (sinon subscribe OK, sends SKIP).
+    PushNotificationsService,
+    // StrategyCoachService (C.1) — cron hourly @ minute 17, Gemini Flash + Pro
+    // escalations. Génère coach_proposals consommées par UI review (C.2).
+    StrategyCoachService,
+    // TraderRetrospectiveService (C.4) — cron daily 02:00 UTC. Analyse trades
+    // TRADER veille via Gemini Pro, INSERT scanner_lessons scope='trader_agent_only'
+    // is_active=true (réinjectées dans system prompt trader cycle suivant).
+    TraderRetrospectiveService,
     // ScannerLessonsContextService — fournit le bloc Markdown des lessons actives
     // à injecter dans les system prompts (signal validation, ranking, risk manager, macro veto).
     // Cache TTL 5 min pour éviter requêtes DB répétées (scanner ~500 calls/cycle).
