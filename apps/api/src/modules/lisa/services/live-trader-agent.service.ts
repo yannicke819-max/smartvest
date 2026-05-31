@@ -630,6 +630,24 @@ export class LiveTraderAgentService {
         return;
       }
 
+      // PR4 (31/05/2026) — A/B shadow Pro vs Flash. Lance un appel Flash en
+      // arrière-plan avec exactement le même prompt que Pro, logge les 2
+      // décisions dans gemini_ab_decisions pour analyse comparative ultérieure.
+      // Best-effort : n'augmente pas la latence du cycle (fire-and-forget),
+      // catch toutes les erreurs (n'altère jamais le comportement TRADER).
+      const abEnabled = (this.config.get<string>('GEMINI_AB_PRO_VS_FLASH_ENABLED') ?? 'true').toLowerCase() === 'true';
+      if (abEnabled) {
+        void this.recordAbShadow({
+          cycleStartedAt,
+          portfolioId: TRADER_AGENT_PORTFOLIO_ID,
+          systemPrompt,
+          userPrompt,
+          candidatesCount: Array.isArray(candidates) ? candidates.length : 0,
+          proDecision: decision,
+          proResponse: response,
+        }).catch((e) => this.logger.debug(`[trader-agent] ab shadow err: ${String(e).slice(0, 120)}`));
+      }
+
       // 7. Apply decision with safety bounds — wrap dans try pour ne pas
       // silencieusement drop la décision si applyDecision throw.
       let applyResult: { applied: boolean; positionId?: string; error?: string };
@@ -2193,6 +2211,123 @@ Recommendation rules :
     if (actionKind.startsWith('skip')) return 'skip';
     if (actionKind === 'close' || actionKind === 'trail_stop') return 'exit';
     return 'other';
+  }
+
+  /**
+   * PR4 (31/05/2026) — A/B shadow Pro vs Flash.
+   * Lance un appel Gemini Flash en parallèle avec le même prompt que Pro,
+   * logge les 2 décisions dans gemini_ab_decisions pour analyse comparative.
+   *
+   * Best-effort : tous les errors sont catchés (n'altère JAMAIS le cycle TRADER).
+   * Coût estimé : ~$0.05/cycle × 288 cycles/j = ~$14/j (acceptable pour 7-14j de
+   * data collection avant décision data-driven Pro→Flash).
+   */
+  private async recordAbShadow(args: {
+    cycleStartedAt: Date;
+    portfolioId: string;
+    systemPrompt: string;
+    userPrompt: string;
+    candidatesCount: number;
+    proDecision: TraderDecision;
+    proResponse: { content: string; providerId: string; costUsd: number; latencyMs: number };
+  }): Promise<void> {
+    if (!this.supabase.isReady()) return;
+
+    // 1. Appel Gemini Flash (chain fast) avec exactement le même prompt que Pro.
+    let flashContent: string | null = null;
+    let flashProvider: string | null = null;
+    let flashCostUsd = 0;
+    let flashLatencyMs = 0;
+    let flashCallError: string | null = null;
+    let flashDecision: Partial<TraderDecision> | null = null;
+    try {
+      const flashRes = await this.llmRouter.call({
+        system: args.systemPrompt,
+        user: args.userPrompt,
+        temperature: 0.3,
+        maxTokens: 1500,
+        timeoutMs: 30_000,
+      });
+      flashContent = flashRes.content;
+      flashProvider = flashRes.providerId;
+      flashCostUsd = flashRes.costUsd;
+      flashLatencyMs = flashRes.latencyMs;
+      try {
+        const cleaned = flashContent.trim().replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
+        flashDecision = JSON.parse(cleaned);
+      } catch (e) {
+        flashCallError = `parse_fail: ${String(e).slice(0, 100)}`;
+      }
+    } catch (e) {
+      flashCallError = String(e).slice(0, 200);
+    }
+
+    // 2. Compute concordance metrics
+    // Note : null === null est valide pour hold (symbol absent attendu des 2 côtés).
+    // Quand flashDecision est null (parse fail), tous concordance flags sont null.
+    const proAction = args.proDecision.action_kind ?? null;
+    const proTarget = args.proDecision.symbol ?? null;
+    const proConf = args.proDecision.confidence ?? null;
+    const flashAction = flashDecision?.action_kind ?? null;
+    const flashTarget = flashDecision?.symbol ?? null;
+    const flashConf = flashDecision?.confidence ?? null;
+    const flashParsed = flashDecision !== null;
+    const concordanceAction = flashParsed ? flashAction === proAction : null;
+    const concordanceTarget = flashParsed ? flashTarget === proTarget : null;
+    const concordanceFull = concordanceAction === true && concordanceTarget === true;
+    const confDelta = proConf !== null && flashConf !== null && typeof flashConf === 'number'
+      ? Math.round((proConf - flashConf) * 1000) / 1000
+      : null;
+
+    // 3. Compute context hash (sha256 trunc) pour valider que Pro et Flash ont vu le même context
+    let contextHash: string | null = null;
+    try {
+      const crypto = await import('node:crypto');
+      contextHash = crypto.createHash('sha256').update(args.userPrompt).digest('hex').slice(0, 16);
+    } catch { /* noop */ }
+
+    // 4. INSERT
+    try {
+      await this.supabase.getClient().from('gemini_ab_decisions').insert({
+        decided_at: new Date().toISOString(),
+        portfolio_id: args.portfolioId,
+        cycle_started_at: args.cycleStartedAt.toISOString(),
+        pro_action_kind: proAction,
+        pro_target_symbol: proTarget,
+        pro_direction: args.proDecision.direction ?? null,
+        pro_confidence: proConf,
+        pro_notional_usd: args.proDecision.notional_usd ?? null,
+        pro_thesis: (args.proDecision.thesis ?? '').slice(0, 1000),
+        pro_cost_usd: args.proResponse.costUsd,
+        pro_latency_ms: args.proResponse.latencyMs,
+        pro_provider: args.proResponse.providerId,
+        // pro_applied / pro_apply_error : laissés NULL pour l'instant. Si besoin,
+        // backfill ultérieur via cron qui matche cycle_started_at avec
+        // trader_agent_decisions.cycle_started_at + action_applied.
+        flash_action_kind: flashAction,
+        flash_target_symbol: flashTarget,
+        flash_direction: flashDecision?.direction ?? null,
+        flash_confidence: flashConf,
+        flash_notional_usd: flashDecision?.notional_usd ?? null,
+        flash_thesis: (flashDecision?.thesis ?? '').slice(0, 1000),
+        flash_cost_usd: flashCostUsd,
+        flash_latency_ms: flashLatencyMs,
+        flash_provider: flashProvider,
+        flash_call_error: flashCallError,
+        concordance_action_kind: concordanceAction,
+        concordance_target_symbol: concordanceTarget,
+        concordance_full: concordanceFull,
+        confidence_delta: confDelta,
+        candidates_count: args.candidatesCount,
+        context_hash: contextHash,
+      });
+      this.logger.debug(
+        `[trader-agent:ab] Pro=${proAction}/${proTarget ?? '?'} vs Flash=${flashAction ?? 'fail'}/${flashTarget ?? '?'} ` +
+        `concordance=${concordanceFull} costDelta=${(args.proResponse.costUsd - flashCostUsd).toFixed(4)}`,
+      );
+    } catch (e) {
+      this.logger.debug(`[trader-agent:ab] insert failed: ${String(e).slice(0, 100)}`);
+    }
   }
 
   /**
