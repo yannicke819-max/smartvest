@@ -1,6 +1,14 @@
 # fly.toml — SmartVest API (NestJS)
 #
-# Last forced redeploy : 2026-05-27 — re-trigger Fly workflow after b4f6667
+# Last forced redeploy : 2026-05-31 — re-trigger Fly workflow after PR #504
+# (crypto univers 10→30) was cancelled by concurrency: cancel-in-progress
+# during the back-to-back merges of #503 + #504 on 30/05 ~20:42 UTC. The
+# Fly deploy completed for #503 (sha 588586a) but the #504 run was killed
+# in-flight; production stayed on #503 only. fly.toml is in fly.yml paths
+# filter so this no-op edit re-enqueues the deploy from main HEAD which
+# now includes both PRs (#503 + #504, sha c9477a4).
+#
+# Previous note 2026-05-27 — re-trigger Fly workflow after b4f6667
 # (dead-zone gate) hung on initial push 15:37 UTC. fly.toml is in trigger paths
 # so a no-op edit re-enqueues the deploy job. Previous note 2026-05-02 #197.
 # pre-hotfix build; #197 only touched supabase/migrations/* which doesn't
