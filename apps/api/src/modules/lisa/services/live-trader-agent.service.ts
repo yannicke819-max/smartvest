@@ -502,6 +502,25 @@ export class LiveTraderAgentService {
         this.logger.log(`[trader-agent] SELF-REFLECTION triggered : ${selfReflection.slice(0, 100)}...`);
       }
 
+      // 31/05/2026 cost-cut (G) — Skip Gemini Pro call when no actionable candidates.
+      // S'il y a 0 candidat à analyser ET 0 position ouverte (rien à fermer/trailer),
+      // appeler Gemini ne génère qu'un "hold" sans valeur. Économie sur weekend
+      // crypto-only où l'univers est souvent vide pendant plusieurs heures.
+      // Garde-fou : on log dans trader_agent_decisions pour traçabilité du skip.
+      const openPositionsCount = Array.isArray(state.openPositions) ? state.openPositions.length : 0;
+      const skipForEmptyContext = (this.config.get<string>('TRADER_SKIP_LLM_WHEN_EMPTY') ?? 'true').toLowerCase() === 'true';
+      if (skipForEmptyContext && candidates.length === 0 && openPositionsCount === 0) {
+        await this.logDecision({
+          cycleStartedAt, state, action: 'hold' as const,
+          notionalUsd: 0, confidence: 0,
+          thesis: '[SKIP_LLM_EMPTY_CONTEXT] 0 candidat in band + 0 position ouverte → skip Gemini call (cost optimization)',
+          applied: false,
+          actionKindOverride: 'hold',
+        }).catch((e) => this.logger.warn(`[trader-agent] log skip failed: ${String(e).slice(0, 120)}`));
+        this.logger.debug('[trader-agent] skip cycle — empty context (0 candidates, 0 open positions)');
+        return;
+      }
+
       // 4. Build system prompt (memory + cross-lessons + MIDDLE ref + self-reflection)
       const systemPrompt = this.buildSystemPrompt(memory, crossScannerLessons, middleReference, selfReflection);
       // LISA refonte A.4 — Capital composé : utilise state.currentCapitalUsd

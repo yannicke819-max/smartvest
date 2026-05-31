@@ -531,16 +531,27 @@ export class StrategyCoachService {
     return (Date.now() - createdAt) / 86400_000;
   }
 
-  private async shouldEscalateToPro(cfg: PortfolioConfig, ctx: Record<string, unknown>): Promise<boolean> {
-    const capital = ctx.capital as { drawdown_from_initial_pct?: number };
+  private async shouldEscalateToPro(_cfg: PortfolioConfig, _ctx: Record<string, unknown>): Promise<boolean> {
+    // 31/05/2026 cost-cut : escalation Pro désactivée par défaut.
+    // Réactivable via env STRATEGY_COACH_PRO_ESCALATION_ENABLED=true.
+    //
+    // Raison : observations 30/05 — les propositions Pro du coach étaient toutes à
+    // rejeter (faux positifs « bot inactif → relâcher discipline »). Le gain de
+    // qualité Pro ne justifiait pas le coût Pro (~8× Flash Lite).
+    //
+    // Logique précédente conservée pour réactivation :
+    //   - drawdown < -20% → Pro
+    //   - 1 cycle sur 6 (deep-dive 6h) → Pro
+    //   - dernière proposition UNREALISTIC → Pro
+    const proEnabled = (this.config.get<string>('STRATEGY_COACH_PRO_ESCALATION_ENABLED') ?? 'false').toLowerCase() === 'true';
+    if (!proEnabled) return false;
+    const capital = _ctx.capital as { drawdown_from_initial_pct?: number };
     if ((capital?.drawdown_from_initial_pct ?? 0) < -20) return true;
-    // Deep-dive : 1 sur 6 cycles horaires (≈ 1 par 6h)
     if (this.cycleCounter % 6 === 0) return true;
-    // Dernière proposition UNREALISTIC → escalade
     const { data: last } = await this.supabase.getClient()
       .from('coach_proposals')
       .select('feasibility_verdict')
-      .eq('portfolio_id', cfg.portfolio_id)
+      .eq('portfolio_id', _cfg.portfolio_id)
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle();

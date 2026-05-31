@@ -4948,11 +4948,20 @@ export class TopGainersScannerService implements OnModuleInit {
   /**
    * P18 — Re-ranking LLM : réordonne les top candidats par probabilité de continuation.
    * Fallback : ordre déterministe si router off ou échec LLM — comportement P17 préservé.
+   *
+   * 31/05/2026 — désactivé par défaut via SCANNER_LLM_RANKING_ENABLED (cost-cuts Tier 1).
+   * Le LLM ranking changeait rarement l'ordre déterministe (score-based) et coûtait
+   * 1 call Gemini par cycle scanner (~288/jour) pour un bénéfice marginal. Le scanner
+   * conserve son ordre score-based (changePct × volume × persistence) qui est déjà
+   * optimal pour un momentum scanner. Réactivable via env si A/B test souhaité.
    */
   private async rankCandidates(
     top: Array<TopGainerCandidate & { score: number; assetClass: TopGainerAssetClass }>,
   ): Promise<Array<TopGainerCandidate & { score: number; assetClass: TopGainerAssetClass }>> {
     if (!this.llmRouter.isEnabled() || top.length <= 1) return top;
+    // 31/05/2026 cost-cut : default OFF. Réactiver via SCANNER_LLM_RANKING_ENABLED=true.
+    const enabled = (this.config.get<string>('SCANNER_LLM_RANKING_ENABLED') ?? 'false').toLowerCase() === 'true';
+    if (!enabled) return top;
     try {
       const user = JSON.stringify(
         top.map((c) => ({ symbol: c.symbol, assetClass: c.assetClass, changePct: c.changePct, score: c.score, exchange: c.exchange })),

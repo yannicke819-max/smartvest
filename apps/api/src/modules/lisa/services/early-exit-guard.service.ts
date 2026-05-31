@@ -82,7 +82,11 @@ export class EarlyExitGuardService {
     }
   }
 
-  @Cron(CronExpression.EVERY_MINUTE, { name: 'early-exit-guard', timeZone: 'UTC' })
+  // 31/05/2026 cost-cut : passé de EVERY_MINUTE → EVERY_5_MINUTES.
+  // MechanicalTradingService (cron 60sec) reste actif pour SL/TP rapides ;
+  // EarlyExitGuard ne gère que les exits préventifs LLM sur momentum perdu,
+  // 5 min de latence est acceptable vs 1×/min × LLM call (~$2-3/jour économisés).
+  @Cron(CronExpression.EVERY_5_MINUTES, { name: 'early-exit-guard', timeZone: 'UTC' })
   async runCycle(): Promise<void> {
     if (!this.enabled) return;
     if (!this.supabase.isReady()) return;
