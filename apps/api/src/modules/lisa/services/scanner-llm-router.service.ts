@@ -16,7 +16,7 @@
  * Cf. docs/decision_records/ADR-001-llm-architecture.md
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   MultiVendorLlmRouter,
@@ -24,6 +24,7 @@ import {
   type LlmCallParams,
   type MultiVendorCallMetrics,
 } from '@smartvest/ai-analyst';
+import { GeminiBudgetGuardService } from './gemini-budget-guard.service';
 
 @Injectable()
 export class ScannerLlmRouterService {
@@ -35,7 +36,13 @@ export class ScannerLlmRouterService {
   // Coût ~×125 vs flash-lite mais qualité de raisonnement multi-facteurs supérieure.
   private readonly routerPro: MultiVendorLlmRouter | null;
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    // Optional injection : si le module ne wire pas le guard, le router fonctionne
+    // sans hard cap (comportement pré-PR2 préservé). En prod, le guard est toujours
+    // injecté.
+    @Optional() @Inject(GeminiBudgetGuardService) private readonly budgetGuard?: GeminiBudgetGuardService,
+  ) {
     this.enabled = (this.config.get<string>('SCANNER_LLM_ROUTER_ENABLED') ?? 'false').toLowerCase() === 'true';
 
     if (!this.enabled) {
@@ -99,6 +106,10 @@ export class ScannerLlmRouterService {
     if (!this.router) {
       throw new Error('ScannerLlmRouterService.call() — router disabled (check SCANNER_LLM_ROUTER_ENABLED + GEMINI_API_KEY)');
     }
+    // PR2 cost-cuts (H) — kill-switch hard cap quotidien Gemini avec override manuel.
+    if (this.budgetGuard) {
+      await this.budgetGuard.assertAllowed();
+    }
     const res = await this.router.call(params);
     return {
       content: res.content,
@@ -120,6 +131,10 @@ export class ScannerLlmRouterService {
    * silencieusement skipé à cause d'un quota/modèle Pro indisponible.
    */
   async callWithPro(params: LlmCallParams): Promise<{ content: string; providerId: string; costUsd: number; latencyMs: number; fallbackUsed: boolean }> {
+    // PR2 cost-cuts (H) — kill-switch hard cap quotidien Gemini avec override manuel.
+    if (this.budgetGuard) {
+      await this.budgetGuard.assertAllowed();
+    }
     if (this.routerPro) {
       try {
         const res = await this.routerPro.call(params);

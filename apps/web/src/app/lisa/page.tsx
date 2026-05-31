@@ -43,6 +43,7 @@ import { LiveTradingStatusPanel } from '@/components/lisa/live-trading-status-pa
 import { LiveTradingWizard } from '@/components/lisa/live-trading-wizard';
 import { useOperatingMode } from '@/hooks/use-operating-mode';
 import { AutopilotBudgetBadge } from '@/components/lisa/autopilot-budget-badge';
+import { GeminiCostPanel } from '@/components/lisa/gemini-cost-panel';
 import { RiskStateBanner } from '@/components/lisa/risk-state-banner';
 import { LisaDecisionLog } from '@/components/lisa/decision-log';
 import { MechanicalAgentCard } from '@/components/lisa/mechanical-agent-card';
@@ -673,6 +674,9 @@ export default function LisaPage() {
 
       {/* P7 — Mode opératoire 3-way (Investment / Harvest / Gainers) */}
       {selectedPortfolioId && <MacroModeSelector portfolioId={selectedPortfolioId} />}
+
+      {/* PR2 cost-cuts (H) — Panel coûts Gemini quotidien/mensuel + kill-switch */}
+      <GeminiCostPanel />
 
       {/* LISA refonte A.3 — Section Gains (badges + reset display-only) */}
       {selectedPortfolioId && <GainsTracker portfolioId={selectedPortfolioId} />}

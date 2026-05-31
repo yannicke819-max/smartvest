@@ -45,6 +45,7 @@ import { ProfitSweepService } from './services/profit-sweep.service';
 import { DailyProfitGovernor } from './services/daily-profit-governor.service';
 import { MacroModeService } from './services/macro-mode.service';
 import { ApiCostTrackerService } from './services/api-cost-tracker.service';
+import { GeminiBudgetGuardService } from './services/gemini-budget-guard.service';
 import { ReboundMonitorService } from './services/rebound-monitor.service';
 import { ReboundScannerService } from './services/rebound-scanner.service';
 import { OhlcvCacheService } from './services/ohlcv-cache.service';
@@ -184,6 +185,8 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     MacroModeService,
     // PATCH 4 — running total + hard-stop budget API
     ApiCostTrackerService,
+    // PR2 cost-cuts (H) — kill-switch quotidien Gemini avec override manuel
+    GeminiBudgetGuardService,
     // P1 — classifier de régime tactique (BULL/BEAR/RANGE/VOL_SPIKE/NEWS_SHOCK)
     MarketRegimeService,
     // P3-A — cron monitor pour rebound_positions (TP/SL/timeout toutes les 5 min)
