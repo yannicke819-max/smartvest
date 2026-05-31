@@ -33,6 +33,28 @@ const GAINERS_PORTFOLIO_IDS = [
   'a0000003-0000-0000-0000-000000000003', // SMALL
 ];
 
+/**
+ * Colonnes `lisa_session_configs` que l'auto-apply est autorisé à modifier.
+ * Whitelist explicite (sécurité défense en profondeur — empêche un Gemini
+ * malveillant ou bug de prompt d'écrire dans capital_usd, autopilot_enabled,
+ * kill_switch_active, etc.). Étendre uniquement après validation manuelle
+ * que la colonne est calibrable sans risque catastrophique.
+ */
+const LISA_SESSION_CONFIG_AUTO_APPLY_COLUMNS: ReadonlySet<string> = new Set<string>([
+  'gainers_default_sl_pct',
+  'gainers_default_tp_pct',
+  'gainers_min_persistence_score',
+  'gainers_min_path_efficiency',
+  'gainers_max_change_pct',
+  'gainers_min_change_pct',
+  'gainers_fees_aware_buffer',
+  'gainers_position_pct',
+  'gainers_cycle_minutes',
+  'gainers_persistence_top_n',
+  'news_shock_close_max_age_minutes_lse',
+  'news_shock_close_sentiment_threshold_lse',
+]);
+
 interface LessonRow {
   id: string;
   lesson_kind: string;
@@ -83,6 +105,14 @@ export class LessonAutoApplyService {
       } catch (e) {
         this.logger.error(`[lesson-auto-apply] cron register failed: ${String(e).slice(0, 200)}`);
       }
+    } else {
+      // 31/05/2026 — log explicite quand désactivé (constat prod : 0 entrée
+      // lesson_auto_applied OU lesson_needs_manual_review sur 7j alors que
+      // 14 lessons crypto conf ≥ 0.85 disponibles → soupçon flag false).
+      this.logger.warn(
+        '[lesson-auto-apply] DISABLED (env LESSON_AUTO_APPLY_ENABLED=false) — ' +
+        'aucun cycle ne tournera, les lessons high-conf restent applied=false indéfiniment',
+      );
     }
   }
 
@@ -115,18 +145,59 @@ export class LessonAutoApplyService {
           continue;
         }
 
-        // Inspection des cibles : DB column (`lisa_session_configs.<col>`) auto-applicable,
-        // env vars manual review.
+        // Inspection des cibles : DB column auto-applicable, env vars manual review.
+        //
+        // 31/05/2026 — Lessons générées par Gemini émettent souvent des keys nues
+        // (`gainers_default_sl_pct`, `gainers_min_persistence_score`) sans le
+        // préfixe `lisa_session_configs.`. Avant : le parser ne reconnaissait QUE
+        // le préfixe → 0% des lessons récentes auto-applicables (vérifié prod :
+        // 0 lesson_auto_applied / 0 needs_review sur 7j alors que 14 lessons crypto
+        // conf ≥ 0.85 existaient).
+        //
+        // Fix : whitelist explicite des colonnes auto-applicables (sécurité), accepte
+        // les 2 formats (`lisa_session_configs.<col>` et `<col>` nu). Tout ce qui
+        // n'est ni dans la whitelist ni env var explicite → noise/meta key (table,
+        // portfolio_id_only, note...) → ignoré silencieusement, pas un blocker.
+        //
+        // Les env vars (commence par majuscule + underscore, ex GAINERS_*) restent
+        // en needs_review avec commande fly secrets set prête à copier.
         const targets = Object.keys(change);
-        const dbColumnTargets = targets.filter((t) => t.startsWith('lisa_session_configs.'));
-        const envVarTargets = targets.filter((t) => !t.startsWith('lisa_session_configs.'));
+        const isMetaKey = (t: string) => ['table', 'portfolio_id_only', 'note', 'comment'].includes(t.toLowerCase());
+        const isEnvVar = (t: string) => /^[A-Z][A-Z0-9_]+$/.test(t);
+        const stripPrefix = (t: string) => t.startsWith('lisa_session_configs.') ? t.slice('lisa_session_configs.'.length) : t;
 
-        if (envVarTargets.length > 0) {
-          // Log pour review humaine, ne pas appliquer.
+        const dbColumnTargets: string[] = [];
+        const envVarTargets: string[] = [];
+        for (const t of targets) {
+          if (isMetaKey(t)) continue;
+          const col = stripPrefix(t);
+          if (LISA_SESSION_CONFIG_AUTO_APPLY_COLUMNS.has(col)) {
+            dbColumnTargets.push(t);
+          } else if (isEnvVar(t)) {
+            envVarTargets.push(t);
+          }
+          // Autres keys (snake_case non whitelisté) ignorées silencieusement
+          // pour éviter de bloquer toute la lesson sur 1 typo Gemini.
+        }
+
+        if (envVarTargets.length > 0 && dbColumnTargets.length === 0) {
+          // Lesson 100% env var → needs review humaine, payload contient les
+          // commandes fly directement utilisables.
+          const flyCommands = envVarTargets.map((t) => `fly secrets set ${t}=${JSON.stringify(change[t])} -a smartvest`);
           await this.logDecision(lesson, 'lesson_needs_manual_review', {
             reason: 'env_var_target_requires_fly_secret',
             env_targets: envVarTargets,
-            db_targets: dbColumnTargets,
+            fly_commands: flyCommands,
+          });
+          needsReviewCount++;
+          continue;
+        }
+
+        if (dbColumnTargets.length === 0) {
+          // Aucune cible exploitable (que des meta keys + clés non reconnues)
+          await this.logDecision(lesson, 'lesson_needs_manual_review', {
+            reason: 'no_applicable_target',
+            raw_targets: targets,
           });
           needsReviewCount++;
           continue;
