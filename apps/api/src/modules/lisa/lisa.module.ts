@@ -53,6 +53,7 @@ import { TopGainersScannerService } from './services/top-gainers-scanner.service
 import { GainersUserShadowService } from './services/gainers-user-shadow.service';
 import { ShadowSizingOrchestratorService } from './services/shadow-sizing-orchestrator.service';
 import { LiveTraderAgentService } from './services/live-trader-agent.service';
+import { MistralShadowService } from './services/mistral-shadow.service';
 import { MainScannerPostMortemService } from './services/main-scanner-postmortem.service';
 import { DailyDigestService } from './services/daily-digest.service';
 import { PushNotificationsService } from './services/push-notifications.service';
@@ -205,6 +206,10 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     // Live Trader Agent — portfolio dédié $10k piloté à 100% par Gemini Pro.
     // Cron 5min decision + cron 02:00 UTC post-mortem nightly + memory store.
     LiveTraderAgentService,
+    // MistralShadowService — A/B shadow 3-way (Pro/Flash/Mistral) pour mesurer
+    // concordance avant migration éventuelle TRADER vers Mistral Large 3 (74%
+    // moins cher que Gemini Pro). Activation MISTRAL_API_KEY + MISTRAL_SHADOW_ENABLED.
+    MistralShadowService,
     // MainScannerPostMortemService — apprentissage Gemini Pro sur le scanner gainers
     // (cron 02:30 UTC : analyse 24h × 4 portfolios → lessons macro-conditionnelles).
     MainScannerPostMortemService,
