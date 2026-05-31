@@ -41,9 +41,16 @@ function makeLlmRouter(isEnabled: boolean, callImpl?: jest.Mock): ScannerLlmRout
   } as unknown as ScannerLlmRouterService;
 }
 
-function makeService(llmRouter: ScannerLlmRouterService): TopGainersScannerService {
+function makeService(
+  llmRouter: ScannerLlmRouterService,
+  envOverrides: Record<string, string | undefined> = {},
+): TopGainersScannerService {
   mockConfig.get.mockImplementation((key: string) => {
+    if (envOverrides[key] !== undefined) return envOverrides[key];
     if (key === 'SCAN_INTERVAL_MINUTES') return '15';
+    // 31/05/2026 cost-cut : SCANNER_LLM_RANKING_ENABLED default OFF en prod.
+    // Les tests rankCandidates qui veulent la branche LLM doivent l'enable
+    // explicitement via envOverrides.
     return undefined;
   });
   return new TopGainersScannerService(
@@ -186,7 +193,8 @@ describe('rankCandidates', () => {
       latencyMs: 900,
       fallbackUsed: false,
     });
-    const svc = makeService(makeLlmRouter(true, callMock));
+    // 31/05/2026 — enable LLM ranking explicitly (default OFF en prod après cost-cuts).
+    const svc = makeService(makeLlmRouter(true, callMock), { SCANNER_LLM_RANKING_ENABLED: 'true' });
     const result = await (svc as any).rankCandidates([candA, candB, candC]);
     expect(result.map((c: typeof candA) => c.symbol)).toEqual(['SOLUSDT', 'BTCUSDT', 'ETHUSDT']);
   });
@@ -199,7 +207,7 @@ describe('rankCandidates', () => {
       latencyMs: 700,
       fallbackUsed: false,
     });
-    const svc = makeService(makeLlmRouter(true, callMock));
+    const svc = makeService(makeLlmRouter(true, callMock), { SCANNER_LLM_RANKING_ENABLED: 'true' });
     const result = await (svc as any).rankCandidates([candA, candB, candC]);
     expect(result[0].symbol).toBe('BTCUSDT');
     // Missing symbols are appended in original order
@@ -210,9 +218,25 @@ describe('rankCandidates', () => {
 
   it('C: returns deterministic order when LLM throws', async () => {
     const callMock = jest.fn().mockRejectedValue(new Error('timeout'));
+    const svc = makeService(makeLlmRouter(true, callMock), { SCANNER_LLM_RANKING_ENABLED: 'true' });
+    const result = await (svc as any).rankCandidates([candA, candB, candC]);
+    expect(result.map((c: typeof candA) => c.symbol)).toEqual(['BTCUSDT', 'ETHUSDT', 'SOLUSDT']);
+  });
+
+  // 31/05/2026 — cost-cut Tier 1 default behavior validation.
+  it('D: returns deterministic order when SCANNER_LLM_RANKING_ENABLED is false (default)', async () => {
+    const callMock = jest.fn().mockResolvedValue({
+      content: JSON.stringify(['SOLUSDT', 'ETHUSDT', 'BTCUSDT']),  // LLM would re-order
+      providerId: 'gemini-flash-lite',
+      costUsd: 0.00013,
+      latencyMs: 900,
+      fallbackUsed: false,
+    });
+    // Pas d'envOverrides → flag undefined → default OFF → LLM NON appelé.
     const svc = makeService(makeLlmRouter(true, callMock));
     const result = await (svc as any).rankCandidates([candA, candB, candC]);
     expect(result.map((c: typeof candA) => c.symbol)).toEqual(['BTCUSDT', 'ETHUSDT', 'SOLUSDT']);
+    expect(callMock).not.toHaveBeenCalled();
   });
 });
 
