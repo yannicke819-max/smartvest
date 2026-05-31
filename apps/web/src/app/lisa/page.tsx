@@ -92,8 +92,17 @@ export default function LisaPage() {
   // Bug fix critique : useState(...initial) ne réévalue PAS quand portfoliosQuery.data
   // arrive après le 1er render. Sans cet effet, selectedPortfolioId reste null,
   // handleSaveConfig fait return silencieux, et le bouton "Sauvegarder" semble inerte.
+  //
+  // 31/05/2026 — Defensive : si l'ID sélectionné n'est plus dans la liste (portfolio
+  // supprimé / renommé / user_id mismatch), reset au premier dispo. Sinon l'UI poll
+  // en boucle une 404 (incident observé : 7 req/s × 4 hooks × stack trace = pollution
+  // Fly logs massive).
   useEffect(() => {
-    if (!selectedPortfolioId && simulationPortfolios[0]?.id) {
+    if (simulationPortfolios.length === 0) return;
+    const exists = selectedPortfolioId
+      ? simulationPortfolios.some((p) => p.id === selectedPortfolioId)
+      : false;
+    if (!exists) {
       setSelectedPortfolioId(simulationPortfolios[0].id);
     }
   }, [simulationPortfolios, selectedPortfolioId]);
