@@ -69,8 +69,14 @@ export interface BinanceFlowStats {
 @Injectable()
 export class BinanceMarketService {
   private readonly logger = new Logger(BinanceMarketService.name);
-  private readonly BASE_URL = 'https://api.binance.com';
-  private readonly FAPI_URL = 'https://fapi.binance.com';
+  // 31/05/2026 — api.binance.com renvoie HTTP 451 (geo-block) depuis Fly Paris (cdg).
+  // data-api.binance.vision est le CDN public officiel pour le market data spot (mêmes
+  // routes /api/v3/{ticker,klines,price}, pas d'auth, pas geo-restreint). Constat
+  // 30-31/05 : 18/20 alts ajoutées par PR #504 (NEAR/ATOM/UNI/ICP/APT/XLM/FIL/...)
+  // skip silencieusement via api.binance.com → null → continue. Sur data-api elles
+  // répondent toutes. Override possible via env BINANCE_BASE_URL si besoin.
+  private readonly BASE_URL = process.env.BINANCE_BASE_URL ?? 'https://data-api.binance.vision';
+  private readonly FAPI_URL = process.env.BINANCE_FAPI_URL ?? 'https://fapi.binance.com';
   private klinesCache = new Map<string, { data: BinanceCandle[]; asOf: number }>();
   // Bug #A (13/05/2026) — Cache séparé pour getKlinesRange. TTL 1h car un range
   // historique fermé [startTime, endTime] est immutable, pas besoin de refresh
