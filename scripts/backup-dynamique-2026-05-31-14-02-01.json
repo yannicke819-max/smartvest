@@ -1,0 +1,53 @@
+{
+  "backed_up_at": "2026-05-31T14:02:01.583Z",
+  "portfolio_id": "4c7b284f-d51f-46a4-bcaa-ccd074195b53",
+  "portfolios_row": {
+    "id": "4c7b284f-d51f-46a4-bcaa-ccd074195b53",
+    "user_id": "5f164201-9736-4867-8756-a1653d65fd1c",
+    "name": "Dynamique ",
+    "base_currency": "EUR",
+    "description": "active_trading — profil dynamique",
+    "created_at": "2026-04-21T19:18:17.056817+00:00",
+    "updated_at": "2026-04-21T19:18:17.056817+00:00",
+    "benchmark_id": null,
+    "is_simulation": false,
+    "simulation_initial_capital": null
+  },
+  "autonomy_mandates_rows": [
+    {
+      "id": "8ecc7b59-7926-4ee0-baaf-670b83390104",
+      "portfolio_id": "4c7b284f-d51f-46a4-bcaa-ccd074195b53",
+      "user_id": "5f164201-9736-4867-8756-a1653d65fd1c",
+      "status": "active",
+      "label": "Mandat Dynamique",
+      "max_position_size_pct": 20,
+      "max_single_trade_pct": 10,
+      "max_daily_trade_pct": 15,
+      "max_single_trade_notional": null,
+      "max_single_trade_notional_currency": null,
+      "allowed_asset_classes": [
+        "equity",
+        "etf",
+        "crypto",
+        "commodity",
+        "cash",
+        "real_estate",
+        "fund",
+        "bond"
+      ],
+      "forbidden_tickers": [],
+      "requires_human_above_pct": 5,
+      "stop_loss_trigger_pct": 10,
+      "max_open_positions": null,
+      "activated_at": "2026-04-21T19:24:32.401+00:00",
+      "expires_at": "2026-10-21T17:23:00+00:00",
+      "suspended_at": null,
+      "revoked_at": null,
+      "kill_switch_active": false,
+      "total_actions_executed": 0,
+      "total_notional_traded": 0,
+      "created_at": "2026-04-21T19:24:23.478483+00:00",
+      "updated_at": "2026-05-01T03:50:25.355+00:00"
+    }
+  ]
+}
