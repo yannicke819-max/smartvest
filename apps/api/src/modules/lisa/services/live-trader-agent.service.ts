@@ -34,6 +34,7 @@ import { LisaService } from './lisa.service';
 import { ScannerLessonsContextService } from './scanner-lessons-context.service';
 import { TopGainersScannerService } from './top-gainers-scanner.service';
 import { PushNotificationsService } from './push-notifications.service';
+import { MistralShadowService } from './mistral-shadow.service';
 import type { TopGainerCandidate } from '@smartvest/ai-analyst';
 
 const TRADER_AGENT_PORTFOLIO_ID = 'b0000001-0000-0000-0000-000000000001';
@@ -231,6 +232,10 @@ export class LiveTraderAgentService {
     private readonly topGainersScanner: TopGainersScannerService,
     @Optional() private readonly lessonsContext?: ScannerLessonsContextService,
     @Optional() private readonly pushNotifs?: PushNotificationsService,
+    // 31/05/2026 — A/B shadow 3-way avec Mistral Large 3.
+    // Optional : si MISTRAL_SHADOW_ENABLED=false ou MISTRAL_API_KEY absent,
+    // les colonnes mistral_* restent NULL dans gemini_ab_decisions.
+    @Optional() private readonly mistralShadow?: MistralShadowService,
   ) {}
 
   onModuleInit(): void {
@@ -2233,36 +2238,77 @@ Recommendation rules :
   }): Promise<void> {
     if (!this.supabase.isReady()) return;
 
-    // 1. Appel Gemini Flash (chain fast) avec exactement le même prompt que Pro.
+    // 1. Lance Flash + Mistral en parallèle (best-effort, n'altèrent jamais le cycle).
+    const flashPromise = this.llmRouter
+      .call({
+        system: args.systemPrompt,
+        user: args.userPrompt,
+        temperature: 0.3,
+        maxTokens: 1500,
+        timeoutMs: 30_000,
+      })
+      .then(r => ({ ok: true as const, ...r }))
+      .catch(e => ({ ok: false as const, error: String(e).slice(0, 200) }));
+
+    // 31/05/2026 — Mistral shadow 3-way (best-effort, désactivé tant que
+    // MISTRAL_SHADOW_ENABLED=false ou MISTRAL_API_KEY absent).
+    const mistralPromise = this.mistralShadow
+      ? this.mistralShadow.call({
+          system: args.systemPrompt,
+          user: args.userPrompt,
+          temperature: 0.3,
+          maxTokens: 1500,
+          timeoutMs: 30_000,
+        })
+      : Promise.resolve(null);
+
+    const [flashSettled, mistralSettled] = await Promise.all([flashPromise, mistralPromise]);
+
+    // 2. Parse Flash
     let flashContent: string | null = null;
     let flashProvider: string | null = null;
     let flashCostUsd = 0;
     let flashLatencyMs = 0;
     let flashCallError: string | null = null;
     let flashDecision: Partial<TraderDecision> | null = null;
-    try {
-      const flashRes = await this.llmRouter.call({
-        system: args.systemPrompt,
-        user: args.userPrompt,
-        temperature: 0.3,
-        maxTokens: 1500,
-        timeoutMs: 30_000,
-      });
-      flashContent = flashRes.content;
-      flashProvider = flashRes.providerId;
-      flashCostUsd = flashRes.costUsd;
-      flashLatencyMs = flashRes.latencyMs;
+    if (flashSettled.ok) {
+      flashContent = flashSettled.content;
+      flashProvider = flashSettled.providerId;
+      flashCostUsd = flashSettled.costUsd;
+      flashLatencyMs = flashSettled.latencyMs;
       try {
         const cleaned = flashContent.trim().replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
         flashDecision = JSON.parse(cleaned);
       } catch (e) {
         flashCallError = `parse_fail: ${String(e).slice(0, 100)}`;
       }
-    } catch (e) {
-      flashCallError = String(e).slice(0, 200);
+    } else {
+      flashCallError = flashSettled.error;
     }
 
-    // 2. Compute concordance metrics
+    // 2b. Parse Mistral (3-way shadow). NULL si service désactivé ou clé absente.
+    let mistralProvider: string | null = null;
+    let mistralCostUsd = 0;
+    let mistralLatencyMs = 0;
+    let mistralCallError: string | null = null;
+    let mistralDecision: Partial<TraderDecision> | null = null;
+    if (mistralSettled) {
+      mistralProvider = mistralSettled.providerId;
+      mistralCostUsd = mistralSettled.costUsd;
+      mistralLatencyMs = mistralSettled.latencyMs;
+      if (mistralSettled.error) {
+        mistralCallError = mistralSettled.error;
+      } else if (mistralSettled.content) {
+        try {
+          const cleaned = mistralSettled.content.trim().replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
+          mistralDecision = JSON.parse(cleaned);
+        } catch (e) {
+          mistralCallError = `parse_fail: ${String(e).slice(0, 100)}`;
+        }
+      }
+    }
+
+    // 3. Compute concordance metrics
     // Note : null === null est valide pour hold (symbol absent attendu des 2 côtés).
     // Quand flashDecision est null (parse fail), tous concordance flags sont null.
     const proAction = args.proDecision.action_kind ?? null;
@@ -2278,6 +2324,14 @@ Recommendation rules :
     const confDelta = proConf !== null && flashConf !== null && typeof flashConf === 'number'
       ? Math.round((proConf - flashConf) * 1000) / 1000
       : null;
+
+    // 3b. Concordance Pro vs Mistral
+    const mistralAction = mistralDecision?.action_kind ?? null;
+    const mistralTarget = mistralDecision?.symbol ?? null;
+    const mistralParsed = mistralDecision !== null;
+    const concordanceProMistralAction = mistralParsed ? mistralAction === proAction : null;
+    const concordanceProMistralTarget = mistralParsed ? mistralTarget === proTarget : null;
+    const concordanceProMistralFull = concordanceProMistralAction === true && concordanceProMistralTarget === true;
 
     // 3. Compute context hash (sha256 trunc) pour valider que Pro et Flash ont vu le même context
     let contextHash: string | null = null;
@@ -2320,10 +2374,27 @@ Recommendation rules :
         confidence_delta: confDelta,
         candidates_count: args.candidatesCount,
         context_hash: contextHash,
+        // Mistral 3-way shadow columns (31/05/2026)
+        mistral_action_kind: mistralAction,
+        mistral_target_symbol: mistralTarget,
+        mistral_direction: mistralDecision?.direction ?? null,
+        mistral_confidence: mistralDecision?.confidence ?? null,
+        mistral_notional_usd: mistralDecision?.notional_usd ?? null,
+        mistral_thesis: (mistralDecision?.thesis ?? '').slice(0, 1000),
+        mistral_cost_usd: mistralCostUsd,
+        mistral_latency_ms: mistralLatencyMs,
+        mistral_provider: mistralProvider,
+        mistral_call_error: mistralCallError,
+        concordance_pro_vs_mistral_action: concordanceProMistralAction,
+        concordance_pro_vs_mistral_target: concordanceProMistralTarget,
+        concordance_pro_vs_mistral_full: concordanceProMistralFull,
       });
+      const mistralLog = mistralProvider
+        ? ` vs Mistral=${mistralAction ?? (mistralCallError ? 'fail' : 'off')}/${mistralTarget ?? '?'} mConc=${concordanceProMistralFull} mCost=$${mistralCostUsd.toFixed(4)}`
+        : '';
       this.logger.debug(
         `[trader-agent:ab] Pro=${proAction}/${proTarget ?? '?'} vs Flash=${flashAction ?? 'fail'}/${flashTarget ?? '?'} ` +
-        `concordance=${concordanceFull} costDelta=${(args.proResponse.costUsd - flashCostUsd).toFixed(4)}`,
+        `concordance=${concordanceFull} costDelta=${(args.proResponse.costUsd - flashCostUsd).toFixed(4)}${mistralLog}`,
       );
     } catch (e) {
       this.logger.debug(`[trader-agent:ab] insert failed: ${String(e).slice(0, 100)}`);
