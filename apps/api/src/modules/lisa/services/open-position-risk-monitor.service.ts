@@ -105,11 +105,13 @@ export class OpenPositionRiskMonitorService {
     }
   }
 
-  // PR #542 — Cadence augmentée 5→2 min pour cut losses plus rapidement.
-  // Mistral free tier supporte largement (~75k tokens/min limite, on est <5k/min).
-  // Impact P&L attendu : sur les setups perdants, exit ~3 min plus tôt = limite
-  // les drawdowns post-MFE (cf. capture rate négatif TRADER -45% sur sample).
-  @Cron('0 */2 * * * *', { name: 'open-position-risk-monitor', timeZone: 'UTC' })
+  // PR #542 — Cadence 5→2 min pour cut losses plus rapidement.
+  // 01/06 PR follow-up — 2→1 min : user veut suivi minute-par-minute des positions
+  // ouvertes pour décisions Mistral optimales (objectif : gain net positif).
+  // Limite : 60 calls/h × 4 portfolios × ~3-5k tok/call ≈ 12-20k TPM, OK sur
+  // mistral-medium-2505 (375k TPM, 0.42 rps) — passer à ce snapshot via
+  // MISTRAL_SHADOW_MODEL si on reste sur free tier 50k TPM. Cf. PR notes.
+  @Cron('0 */1 * * * *', { name: 'open-position-risk-monitor', timeZone: 'UTC' })
   async runCycle(): Promise<void> {
     if (!this.enabled) return;
     if (!this.supabase.isReady()) return;
