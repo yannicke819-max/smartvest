@@ -556,13 +556,14 @@ export class LiveTraderAgentService {
           this.logger.debug(`[trader-agent] read scanner_proposals failed: ${String(e).slice(0, 120)}`);
         }
         try {
+          // FIX 01/06 — colonne `timestamp` (pas `created_at`) cf migration 0043.
           const { data: advisories } = await this.supabase.getClient()
             .from('lisa_decision_log')
-            .select('id, payload, created_at')
+            .select('id, payload, timestamp')
             .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
             .eq('kind', 'risk_advisory')
-            .gte('created_at', new Date(Date.now() - 5 * 60_000).toISOString())
-            .order('created_at', { ascending: false })
+            .gte('timestamp', new Date(Date.now() - 5 * 60_000).toISOString())
+            .order('timestamp', { ascending: false })
             .limit(10);
           riskAdvisories = (advisories ?? []) as Array<Record<string, unknown>>;
         } catch (e) {
@@ -611,6 +612,15 @@ export class LiveTraderAgentService {
 
       // 4. Build system prompt (memory + cross-lessons + MIDDLE ref + self-reflection)
       const systemPrompt = this.buildSystemPrompt(memory, crossScannerLessons, middleReference, selfReflection);
+
+      // 4.1 (01/06) — Wiring objectifs → state TRADER. Calcul du progress vs
+      // cible jour + trajectory status. Le LLM était aveugle aux objectifs
+      // jusque-là (hold systématique alors qu'à -20% de la cible $200/j).
+      // Cf. section §6 quater CLAUDE.md "HORS_TRAJECTOIRE" pour la sémantique.
+      const traderObjectives = await this.computeTraderObjectives(state, cycleStartedAt).catch((e) => {
+        this.logger.debug(`[trader-agent] computeTraderObjectives failed: ${String(e).slice(0, 120)}`);
+        return null;
+      });
       // LISA refonte A.4 — Capital composé : utilise state.currentCapitalUsd
       // (= initial + Σ pnl si compound activé) au lieu du constant TRADER_AGENT_CAPITAL_USD.
       // max_concentration calculée à 45% du capital actuel (dynamic ratio).
@@ -635,6 +645,11 @@ export class LiveTraderAgentService {
         // appliquer (trail_stop avec le SL conseillé / close direct), ou ignorer
         // si tu juges que c'est du bruit.
         risk_advisories: riskAdvisories,
+        // 01/06 — Objectives & trajectory : indique au LLM s'il est en avance,
+        // dans le plan, en retard, ou hors trajectoire vs la cible jour.
+        // Permet d'ajuster la risk posture (conviction threshold, sizing,
+        // urgence) au lieu de hold systématique. Null si pas de cible saisie.
+        objectives_progress: traderObjectives,
         macro,
         news_recent: news,
         // PR #536 — Daily catalyst brief (cron 04:00 UTC) avec events macro + tickers focus.
@@ -1741,6 +1756,117 @@ Recommendation rules :
     return (data ?? []) as Array<{ lesson_kind: string; lesson_text: string; confidence: number }>;
   }
 
+  /**
+   * 01/06 — Calcule les objectifs et le progress vs cible jour pour TRADER.
+   * Lit lisa_session_configs.return_target_daily_pct (et fallbacks monthly/annual).
+   * Recompute realized_today_usd live depuis lisa_positions fermées today UTC.
+   * Retourne null si pas de cible configurée → le LLM ne sera pas contraint
+   * par un trajectory status non-fondé.
+   *
+   * Sémantique trajectory (alignée CLAUDE.md §6 quater) :
+   *   - EN_AVANCE     : progress ≥ 100% → posture normal, conviction threshold standard
+   *   - DANS_LE_PLAN  : 50% ≤ progress < 100% → momentum-based
+   *   - EN_RETARD     : 0% ≤ progress < 50% → aggressive (sizing×1.2, conviction↓0.10)
+   *   - HORS_TRAJECTOIRE : progress < 0% (drawdown jour) → defensive (sauf hyper-active)
+   */
+  private async computeTraderObjectives(
+    state: Awaited<ReturnType<typeof this.readState>>,
+    cycleStartedAt: Date,
+  ): Promise<{
+    target_daily_usd: number;
+    realized_today_usd: number;
+    progress_pct: number;
+    trajectory_status: 'EN_AVANCE' | 'DANS_LE_PLAN' | 'EN_RETARD' | 'HORS_TRAJECTOIRE';
+    hours_remaining_in_us_session: number | null;
+    suggested_risk_posture: 'aggressive' | 'normal' | 'defensive';
+    suggested_conviction_floor: number;
+    suggested_sizing_multiplier: number;
+  } | null> {
+    // 1. Lecture cible config
+    const { data: cfg } = await this.supabase.getClient()
+      .from('lisa_session_configs')
+      .select('return_target_daily_pct, return_target_monthly_pct, return_target_annual_pct')
+      .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+      .maybeSingle();
+    const c = cfg as { return_target_daily_pct?: number | null; return_target_monthly_pct?: number | null; return_target_annual_pct?: number | null } | null;
+    let dailyPctTarget: number | null = null;
+    if (c?.return_target_daily_pct != null) dailyPctTarget = Number(c.return_target_daily_pct);
+    else if (c?.return_target_monthly_pct != null) dailyPctTarget = Number(c.return_target_monthly_pct) / 30;
+    else if (c?.return_target_annual_pct != null) dailyPctTarget = Number(c.return_target_annual_pct) / 365;
+
+    // Cible USD effective : MAX($200 plancher, pct × capital actuel).
+    // $200 plancher = mandate $400/jour défini dans SYSTEM_PROMPT_BASE mais
+    // dégradé à $200 pendant calibration (suit gains-tracker.tsx logic).
+    const FLOOR_USD = 200;
+    const targetUsd = dailyPctTarget != null
+      ? Math.max(FLOOR_USD, (dailyPctTarget / 100) * state.currentCapitalUsd)
+      : FLOOR_USD;
+
+    // 2. Realized today live (positions fermées depuis 00:00 UTC)
+    const todayUtcStart = new Date(cycleStartedAt);
+    todayUtcStart.setUTCHours(0, 0, 0, 0);
+    const { data: closes } = await this.supabase.getClient()
+      .from('lisa_positions')
+      .select('realized_pnl_usd')
+      .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+      .neq('status', 'open')
+      .gte('exit_timestamp', todayUtcStart.toISOString());
+    const realizedToday = (closes ?? []).reduce(
+      (acc, r) => acc + Number((r as { realized_pnl_usd?: unknown }).realized_pnl_usd ?? 0),
+      0,
+    );
+
+    const progressPct = targetUsd > 0 ? Math.round((100 * realizedToday) / targetUsd) : 0;
+
+    // 3. Trajectory status simplifié (alignée riskPosture LisaService:1612+)
+    let trajectoryStatus: 'EN_AVANCE' | 'DANS_LE_PLAN' | 'EN_RETARD' | 'HORS_TRAJECTOIRE';
+    if (realizedToday < 0) trajectoryStatus = 'HORS_TRAJECTOIRE';
+    else if (progressPct >= 100) trajectoryStatus = 'EN_AVANCE';
+    else if (progressPct >= 50) trajectoryStatus = 'DANS_LE_PLAN';
+    else trajectoryStatus = 'EN_RETARD';
+
+    // 4. Heures restantes session US (NYSE close 21:00 UTC, hiver 22:00).
+    //    Approximation : utilise 21:00 UTC permanent (DST handling = future PR).
+    const usSessionCloseUtc = new Date(cycleStartedAt);
+    usSessionCloseUtc.setUTCHours(21, 0, 0, 0);
+    let hoursRemaining: number | null = null;
+    const msToClose = usSessionCloseUtc.getTime() - cycleStartedAt.getTime();
+    if (msToClose > 0 && msToClose < 12 * 3600_000) {
+      hoursRemaining = Math.round((msToClose / 3600_000) * 10) / 10;
+    }
+
+    // 5. Posture suggérée pour le LLM (il garde la liberté de l'override)
+    let posture: 'aggressive' | 'normal' | 'defensive';
+    let convictionFloor = 0.75;  // default
+    let sizingMult = 1.0;
+    if (trajectoryStatus === 'HORS_TRAJECTOIRE') {
+      posture = 'defensive';
+      convictionFloor = 0.85;  // exigence + haute pour éviter d'aggraver
+      sizingMult = 0.7;
+    } else if (trajectoryStatus === 'EN_RETARD') {
+      posture = 'aggressive';
+      convictionFloor = 0.65;  // baissé pour ouvrir plus
+      sizingMult = 1.2;
+    } else if (trajectoryStatus === 'EN_AVANCE') {
+      posture = 'normal';
+      convictionFloor = 0.75;
+      sizingMult = 0.9;  // léger profit-preserving
+    } else {
+      posture = 'normal';
+    }
+
+    return {
+      target_daily_usd: Math.round(targetUsd * 100) / 100,
+      realized_today_usd: Math.round(realizedToday * 100) / 100,
+      progress_pct: progressPct,
+      trajectory_status: trajectoryStatus,
+      hours_remaining_in_us_session: hoursRemaining,
+      suggested_risk_posture: posture,
+      suggested_conviction_floor: convictionFloor,
+      suggested_sizing_multiplier: sizingMult,
+    };
+  }
+
   private buildSystemPrompt(
     memory: Array<{ lesson_kind: string; lesson_text: string; confidence: number }>,
     crossScannerLessons: string,
@@ -1778,6 +1904,29 @@ Recommendation rules :
     if (memory.length > 0 || crossScannerLessons.length > 0 || middleReference.length > 0 || selfReflection.length > 0) {
       prompt += `\n\nGarde ces lessons en tête en priorité pour ta décision actuelle.`;
     }
+
+    // 01/06 — Bloc objectifs : explique comment lire userPrompt.objectives_progress
+    // pour ajuster ta posture risk. Tu gardes la liberté finale (override possible
+    // avec justification), mais ne devrais pas hold systématiquement quand tu es
+    // EN_RETARD avec heures restantes session.
+    prompt += `
+
+OBJECTIFS & TRAJECTOIRE (champ userPrompt.objectives_progress) :
+- trajectory_status = EN_AVANCE → posture normal, conviction floor 0.75, sizing×0.9 (préserve profits)
+- trajectory_status = DANS_LE_PLAN → posture normal, conviction 0.75, sizing×1.0
+- trajectory_status = EN_RETARD → posture aggressive, conviction floor 0.65 (abaissé), sizing×1.2 (rattrape)
+- trajectory_status = HORS_TRAJECTOIRE (drawdown jour) → posture defensive, conviction 0.85+ (exigeant), sizing×0.7 (préserve capital)
+
+Règle exécutive : si EN_RETARD avec hours_remaining_in_us_session ≥ 2, tu DOIS chercher activement
+des opens (descendre dans top-50 si top-10 sont parabolic) au lieu de hold global. Cite
+'[OBJ_AGGRESSIVE progress=X% remaining=Yh]' dans thesis pour traçabilité.
+
+Si HORS_TRAJECTOIRE : tu peux toujours close des positions perdantes (action_kind=close) mais
+NE PROPOSE PAS d'open spéculatif. Cite '[OBJ_DEFENSIVE_NO_OPEN]'. Exception : setup A++ confirmé
+(conf ≥ 0.90 ET sweetSpotEntry=true ET R/R ≥ 2.0) — sizing réduit ×0.7.
+
+Les suggested_* sont des suggestions, pas des ordres. Tu peux override avec justification
+explicite dans thesis (ex : 'OVERRIDE_SUGGESTED_POSTURE car news_shock détecté X').`;
 
     return prompt;
   }
