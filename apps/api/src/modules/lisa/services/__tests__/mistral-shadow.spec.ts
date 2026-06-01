@@ -55,7 +55,7 @@ describe('MistralShadowService', () => {
         usage: { prompt_tokens: 2_000_000, completion_tokens: 1_000_000 },
       }),
     });
-    const svc = new MistralShadowService(mockConfig({ MISTRAL_API_KEY: 'sk-test', MISTRAL_SHADOW_ENABLED: 'true' }));
+    const svc = new MistralShadowService(mockConfig({ MISTRAL_API_KEY: 'sk-test', MISTRAL_SHADOW_ENABLED: 'true', MISTRAL_FREE_TIER: 'false' }));
     const r = await svc.call({ system: 's', user: 'u' });
     expect(r.error).toBeNull();
     expect(r.content).toContain('hold');
@@ -77,7 +77,7 @@ describe('MistralShadowService', () => {
       }),
     });
     const svc = new MistralShadowService(
-      mockConfig({ MISTRAL_API_KEY: 'sk-test', MISTRAL_SHADOW_ENABLED: 'true', MISTRAL_SHADOW_MODEL: 'mistral-large-latest' }),
+      mockConfig({ MISTRAL_API_KEY: 'sk-test', MISTRAL_SHADOW_ENABLED: 'true', MISTRAL_SHADOW_MODEL: 'mistral-large-latest', MISTRAL_FREE_TIER: 'false' }),
     );
     const r = await svc.call({ system: 's', user: 'u' });
     // Large 3 = $0.50 in + $1.50 out → 2M × $0.50 + 1M × $1.50 = $1.00 + $1.50 = $2.50
@@ -96,12 +96,29 @@ describe('MistralShadowService', () => {
       }),
     });
     const svc = new MistralShadowService(
-      mockConfig({ MISTRAL_API_KEY: 'sk-test', MISTRAL_SHADOW_ENABLED: 'true', MISTRAL_SHADOW_MODEL: 'magistral-medium-latest' }),
+      mockConfig({ MISTRAL_API_KEY: 'sk-test', MISTRAL_SHADOW_ENABLED: 'true', MISTRAL_SHADOW_MODEL: 'magistral-medium-latest', MISTRAL_FREE_TIER: 'false' }),
     );
     const r = await svc.call({ system: 's', user: 'u' });
     // Magistral Medium = $2 in + $5 out → 1M × $2 + 1M × $5 = $7
     expect(r.costUsd).toBeCloseTo(7, 5);
     expect(r.providerId).toBe('magistral-medium');
+  });
+
+  it('call() free tier default — costUsd=0 même avec gros volume tokens', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { content: '{}' } }],
+        usage: { prompt_tokens: 2_000_000, completion_tokens: 1_000_000 },
+      }),
+    });
+    // Par défaut MISTRAL_FREE_TIER=true → coût zéro malgré tokens
+    const svc = new MistralShadowService(mockConfig({ MISTRAL_API_KEY: 'sk-test', MISTRAL_SHADOW_ENABLED: 'true' }));
+    const r = await svc.call({ system: 's', user: 'u' });
+    expect(r.costUsd).toBe(0);
+    expect(r.inputTokens).toBe(2_000_000);
+    expect(r.outputTokens).toBe(1_000_000);
   });
 
   it('call() HTTP 429 → error capturé, pas de throw', async () => {

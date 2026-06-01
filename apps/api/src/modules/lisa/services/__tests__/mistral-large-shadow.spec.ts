@@ -65,7 +65,7 @@ describe('MistralLargeShadowService (PR #521 cheap tier)', () => {
       }),
     });
     const svc = new MistralLargeShadowService(
-      mockConfig({ MISTRAL_API_KEY: 'sk-test', MISTRAL_LARGE_SHADOW_ENABLED: 'true' }),
+      mockConfig({ MISTRAL_API_KEY: 'sk-test', MISTRAL_LARGE_SHADOW_ENABLED: 'true', MISTRAL_FREE_TIER: 'false' }),
     );
     const r = await svc.call({ system: 's', user: 'u' });
     expect(r.error).toBeNull();

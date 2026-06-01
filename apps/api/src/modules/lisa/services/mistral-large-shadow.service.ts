@@ -44,14 +44,16 @@ export class MistralLargeShadowService {
   private readonly logger = new Logger(MistralLargeShadowService.name);
   private readonly apiKey: string | undefined;
   private readonly enabled: boolean;
+  private readonly freeTier: boolean;
 
   constructor(private readonly config: ConfigService) {
     this.apiKey = this.config.get<string>('MISTRAL_API_KEY');
     this.enabled = (this.config.get<string>('MISTRAL_LARGE_SHADOW_ENABLED') ?? 'false').toLowerCase() === 'true';
+    this.freeTier = (this.config.get<string>('MISTRAL_FREE_TIER') ?? 'true').toLowerCase() === 'true';
     if (this.enabled && !this.apiKey) {
       this.logger.warn('[mistral-large-shadow] ENABLED=true mais MISTRAL_API_KEY absent → service inerte');
     } else if (this.enabled) {
-      this.logger.log(`[mistral-large-shadow] ENABLED — model=${MODEL_LARGE_LATEST}`);
+      this.logger.log(`[mistral-large-shadow] ENABLED — model=${MODEL_LARGE_LATEST} freeTier=${this.freeTier}`);
     }
   }
 
@@ -119,9 +121,15 @@ export class MistralLargeShadowService {
       result.content = data.choices?.[0]?.message?.content ?? null;
       result.inputTokens = data.usage?.prompt_tokens ?? 0;
       result.outputTokens = data.usage?.completion_tokens ?? 0;
-      result.costUsd =
-        (result.inputTokens / 1_000_000) * PRICE_INPUT_PER_M +
-        (result.outputTokens / 1_000_000) * PRICE_OUTPUT_PER_M;
+      // En free tier (default), coût réel = 0 (Experiment plan Mistral 1B tok/mois).
+      // Cf. mistral-shadow.service.ts pour la rationale et MISTRAL_FREE_TIER env.
+      if (this.freeTier) {
+        result.costUsd = 0;
+      } else {
+        result.costUsd =
+          (result.inputTokens / 1_000_000) * PRICE_INPUT_PER_M +
+          (result.outputTokens / 1_000_000) * PRICE_OUTPUT_PER_M;
+      }
 
       if (!result.content) {
         result.error = 'empty_content';
