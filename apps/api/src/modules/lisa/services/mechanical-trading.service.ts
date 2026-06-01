@@ -15,6 +15,7 @@
 
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { LlmAccuracyService } from './llm-accuracy.service';
+import { ScannerLlmRouterService } from './scanner-llm-router.service';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import Decimal from 'decimal.js';
 import { randomUUID } from 'node:crypto';
@@ -221,6 +222,8 @@ export class MechanicalTradingService {
     private readonly qw3Warmup: Qw3WarmupExtendedService,
     private readonly assetClassKelly: AssetClassKellyConfigService,
     @Optional() private readonly llmAccuracy?: LlmAccuracyService,
+    // PR #545 — LLM gate sur close mécaniques (anti closed_choppy prématuré)
+    @Optional() private readonly llmRouter?: ScannerLlmRouterService,
   ) {}
 
   /**
@@ -2050,6 +2053,29 @@ export class MechanicalTradingService {
               : 0;
             const choppyAmplitudeOk = peakPnlPct < 1.2;
             if (mono !== null && mono < choppy.minMonotonicity && choppyAmplitudeOk) {
+              // PR #545 — LLM gate sur closed_choppy. Le close choppy est le plus
+              // discrétionnaire (lesson-driven, pas SL/TP touchés). On peut perdre
+              // de l'argent sur un close prématuré quand MFE était proche du TP.
+              // Mistral (primary) peut refuser → on garde la position et le check
+              // se ré-évalue au prochain cycle mécanique (60s).
+              //
+              // Default ENABLED par sécurité. Backward compat via env=false.
+              const closeLlmGateEnabled = (process.env.MECHANICAL_CLOSE_REQUIRES_LLM_APPROVAL ?? 'true').toLowerCase() === 'true';
+              if (closeLlmGateEnabled && this.llmRouter?.isEnabled()) {
+                const approval = await this.validateCloseWithLlm(pos as unknown as Record<string, unknown>, peakPnlPct, mono, ageMin).catch((e) => {
+                  // Fail-OPEN sur close (vs fail-CLOSED sur open) : si LLM gate
+                  // plante, on autorise le close. Plus conservateur sur les
+                  // positions ouvertes que sur les nouvelles ouvertures.
+                  this.logger.warn(`[choppy-exit-llm-gate] ${pos.symbol} validation threw — fail-OPEN, proceed close. err=${String(e).slice(0, 150)}`);
+                  return { approved: true, reason: 'llm_gate_exception_fail_open' };
+                });
+                if (!approval.approved) {
+                  this.logger.log(
+                    `[choppy-exit-llm-gate] ${pos.symbol} CLOSE BLOCKED by LLM — ${approval.reason} (re-eval next cycle 60s)`,
+                  );
+                  return;
+                }
+              }
               this.logger.warn(
                 `[choppy-exit] ${pos.symbol} age=${ageMin.toFixed(1)}min monotonicity=${mono.toFixed(2)} < ${choppy.minMonotonicity} peakPnl=${peakPnlPct.toFixed(2)}% → close (lesson-driven)`,
               );
@@ -2869,6 +2895,67 @@ export class MechanicalTradingService {
       case 'gte': return live >= threshold;
       case 'lt':  return live <  threshold;
       case 'lte': return live <= threshold;
+    }
+  }
+
+  /**
+   * PR #545 — LLM gate sur closed_choppy. Soumet le contexte du close
+   * mécanique au LLM décideur (Mistral primary). Retourne approved=true si
+   * le close est valide selon les lessons + contexte, false si on doit
+   * laisser respirer la position 1 cycle de plus.
+   *
+   * Fail-OPEN : exceptions → approved (sécurité = mieux exit que rester).
+   */
+  private async validateCloseWithLlm(
+    pos: Record<string, unknown>,
+    peakPnlPct: number,
+    monotonicity: number,
+    ageMin: number,
+  ): Promise<{ approved: boolean; reason: string }> {
+    if (!this.llmRouter?.isEnabled()) return { approved: true, reason: 'llm_router_disabled' };
+
+    const symbol = pos.symbol as string;
+    const assetClass = pos.asset_class as string;
+    const entryPrice = Number(pos.entry_price);
+    const stopLossPrice = Number(pos.stop_loss_price ?? 0);
+    const takeProfitPrice = Number(pos.take_profit_price ?? 0);
+    const slDistance = stopLossPrice ? Math.abs((stopLossPrice - entryPrice) / entryPrice) * 100 : 0;
+    const tpDistance = takeProfitPrice ? Math.abs((takeProfitPrice - entryPrice) / entryPrice) * 100 : 0;
+
+    const systemPrompt = `Tu es le gardien sécurité pour les CLOSES mécaniques de positions ouvertes. Le système mécanique veut fermer une position pour cause de "choppy-exit" (giveback détecté : retour vers entry après MFE positif). Ton rôle : VALIDER ou REJETER ce close.
+
+CRITÈRES :
+- APPROVE si : peakPnl < 0.3% (négligeable, garder probable perte) OU ageMin > 30 (vieux trade qui ne va plus bouger) OU monotonicity très négative < -0.7 (vrai retournement)
+- REJECT si : peakPnl > 0.8% (le profit était substantiel, laisse rebondir) ET ageMin < 15 (encore jeune, peut rebondir)
+
+Réponds JSON STRICT : {"decision": "approve" | "reject", "reason": "raison < 100 chars"}`;
+
+    const userPrompt = JSON.stringify({
+      symbol,
+      asset_class: assetClass,
+      age_min: Math.round(ageMin * 10) / 10,
+      peak_pnl_pct: Math.round(peakPnlPct * 100) / 100,
+      monotonicity: Math.round(monotonicity * 100) / 100,
+      sl_distance_pct: Math.round(slDistance * 100) / 100,
+      tp_distance_pct: Math.round(tpDistance * 100) / 100,
+      current_time_utc: new Date().toISOString(),
+    }, null, 2);
+
+    try {
+      const res = await this.llmRouter.callWithPro({
+        system: systemPrompt,
+        user: userPrompt,
+        temperature: 0.1,
+        maxTokens: 200,
+        timeoutMs: 8_000,
+      });
+      const match = res.content.match(/\{[\s\S]*\}/);
+      if (!match) return { approved: true, reason: 'llm_unparseable_fail_open' };
+      const parsed = JSON.parse(match[0]) as { decision?: string; reason?: string };
+      const approved = String(parsed.decision ?? '').toLowerCase() === 'approve';
+      return { approved, reason: (parsed.reason ?? 'no reason').slice(0, 200) };
+    } catch (e) {
+      throw new Error(`llm_gate_close_failed: ${String(e).slice(0, 150)}`);
     }
   }
 
