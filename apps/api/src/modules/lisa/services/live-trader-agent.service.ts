@@ -2266,23 +2266,45 @@ Recommendation rules :
     if (markers.length === 0) return;
 
     const client = this.supabase.getClient();
-    // Résolution lesson_id par marker (match exact case-insensitive sur lesson_kind).
-    // Skip l'insert si pas de match en DB — évite la pollution "Marker non mappé"
-    // qui dominait scanner_lesson_citations (audit 01/06: 287 cit / 0 mappées).
-    // Les markers cités sans match sont loggés pour identifier les lessons
-    // que TRADER invente mais qui ne sont pas registrées en DB.
+    // Résolution lesson_id par marker — match contre macro_condition + fallback
+    // sur lesson_text/lesson_kind (defense-in-depth).
+    //
+    // FIX 01/06 post-PR #549 : la première version matchait `lesson_kind` qui
+    // est la CATÉGORIE ('exit_rule', 'risk_observation', 'gate_calibration'),
+    // pas le marker. Le vrai marker citable est dans `macro_condition`
+    // ('KOSDAQ_SMALL_TP_CALIBRATION', 'TRADER_CAPTURE_NEGATIVE_VS_SHADOWS').
+    //
+    // Cascade :
+    //   1. exact case-insensitive sur macro_condition (cas dominant)
+    //   2. fallback : marker contenu dans lesson_text (couvre lessons sans
+    //      macro_condition setté qui mentionnent le marker dans le texte)
+    //   3. si rien : skip + log debug
     const rows: Array<Record<string, unknown>> = [];
     const skipped: string[] = [];
     for (const marker of markers) {
-      const { data: lesson } = await client
+      let lessonId: string | null = null;
+      // 1. macro_condition exact (le bon match)
+      const { data: l1 } = await client
         .from('scanner_lessons')
         .select('id')
-        .ilike('lesson_kind', marker)
+        .ilike('macro_condition', marker)
         .eq('is_active', true)
         .order('confidence', { ascending: false })
         .limit(1)
         .maybeSingle();
-      const lessonId = (lesson as { id?: string } | null)?.id ?? null;
+      lessonId = (l1 as { id?: string } | null)?.id ?? null;
+      // 2. fallback lesson_text contains marker
+      if (!lessonId) {
+        const { data: l2 } = await client
+          .from('scanner_lessons')
+          .select('id')
+          .ilike('lesson_text', `%${marker}%`)
+          .eq('is_active', true)
+          .order('confidence', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        lessonId = (l2 as { id?: string } | null)?.id ?? null;
+      }
       if (!lessonId) {
         skipped.push(marker);
         continue;
