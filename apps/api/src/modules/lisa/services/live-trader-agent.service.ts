@@ -205,6 +205,20 @@ CONTEXTE NEWS (input \`news_recent\` — eodhd dernières 2h) :
 - Évite d'ouvrir 5 minutes avant un événement \`macro.upcomingEvents\`
   (FOMC, CPI, NFP) : volatilité non-directionnelle
 
+DAILY CATALYST BRIEF (input \`daily_brief\` — généré 04:00 UTC, scope 24h, peut être null) :
+- \`macro_events[]\` : événements EU/US/Asia datés avec impact (high/medium/low)
+  → Si l'heure courante est dans la fenêtre ±15 min d'un event \`impact=high\`,
+    HOLD plutôt qu'open_directional (volatilité non-directionnelle, gap risk)
+- \`tickers_to_watch[]\` : tickers identifiés comme catalystes du jour
+  → Si un candidat scanner matche un ticker_to_watch → bonus conviction +0.05
+- \`tickers_to_avoid[]\` : tickers à éviter (post-event drift, regulatory risk)
+  → Si un candidat matche → conf max 0.60 (reject implicit)
+- \`sectors_in_focus[]\` : secteurs où chercher en priorité
+  → Si plusieurs candidats équivalents, privilégier celui dans un sector_in_focus
+- \`summary\` : 2-3 phrases résumé jour. Cite-le dans ton thesis si tu fais un trade
+  dirigé par un event listé (e.g. "Pre-CPI defensive positioning per daily brief").
+- Si \`daily_brief = null\` (brief non généré, < 24h après reset, etc.) : ignore ce bloc.
+
 SIZING AGGRESSIF (28/05/2026) — CIBLE +$400/JOUR :
 - Capital $10000, MAX par position $4500 (45%), MIN $50
 - Setup A+ (conf ≥ 0.85, persistence=1.0, lesson winning_pattern qui match, news favorable)
@@ -491,6 +505,10 @@ export class LiveTraderAgentService {
         this.fetchMiddleReference(),
         // AUTO-CORRECTION DYNAMIQUE (29/05) — self-reflection sur dernières 5 décisions
         this.computeSelfReflection(),
+        // PR #536 — daily catalyst brief (cron 04:00 UTC) : événements macro du jour
+        // + sectors in focus + tickers to watch/avoid. Permet à Pro/Mistral d'interpréter
+        // les news EU CPI / US ISM / Fed speeches en contexte vs réagir post-event.
+        this.fetchLatestDailyBrief(),
       ]);
       const candidates = settled[0].status === 'fulfilled' ? settled[0].value : [];
       const macro = settled[1].status === 'fulfilled' ? settled[1].value : { note: 'macro_fetch_failed' };
@@ -499,8 +517,9 @@ export class LiveTraderAgentService {
       const crossScannerLessons = settled[4].status === 'fulfilled' ? (settled[4].value as string) : '';
       const middleReference = settled[5].status === 'fulfilled' ? (settled[5].value as string) : '';
       const selfReflection = settled[6].status === 'fulfilled' ? (settled[6].value as string) : '';
+      const dailyBrief = settled[7].status === 'fulfilled' ? settled[7].value : null;
       const fetchFailures = settled
-        .map((s, i) => s.status === 'rejected' ? `${['candidates','macro','news','memory','lessons','middle_ref','self_reflect'][i]}=${String(s.reason).slice(0,80)}` : null)
+        .map((s, i) => s.status === 'rejected' ? `${['candidates','macro','news','memory','lessons','middle_ref','self_reflect','daily_brief'][i]}=${String(s.reason).slice(0,80)}` : null)
         .filter((x) => x !== null);
       if (fetchFailures.length > 0) {
         this.logger.warn(`[trader-agent] fetch partial failures: ${fetchFailures.join(' | ')}`);
@@ -547,6 +566,9 @@ export class LiveTraderAgentService {
         candidates,
         macro,
         news_recent: news,
+        // PR #536 — Daily catalyst brief (cron 04:00 UTC) avec events macro + tickers focus.
+        // Format JSON pour facilité du LLM à parser/citer. Null si pas de brief du jour.
+        daily_brief: dailyBrief,
         constraints: {
           max_concentration_usd: dynamicMaxConcentration,
           max_open_positions: 5,
@@ -1600,6 +1622,41 @@ Recommendation rules :
       .order('published_at', { ascending: false })
       .limit(n);
     return (data ?? []) as object[];
+  }
+
+  /**
+   * PR #536 — Récupère le daily_catalyst_brief le plus récent (cron 04:00 UTC).
+   * Retourne le payload brut (macro_events, tickers_to_watch/avoid, sectors)
+   * pour injection directe dans le user_prompt JSON du LLM décideur.
+   *
+   * Ne retourne null que si :
+   *   - brief absent dans lisa_decision_log
+   *   - brief > 24h (stale, on évite de polluer le prompt avec données obsolètes)
+   *
+   * Le brief existe en N copies (1 par portfolio gainers actif) mais le contenu
+   * est identique → on prend la première row trouvée.
+   */
+  private async fetchLatestDailyBrief(): Promise<object | null> {
+    const since24h = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
+    const { data, error } = await this.supabase.getClient()
+      .from('lisa_decision_log')
+      .select('payload, timestamp')
+      .eq('kind', 'daily_catalyst_brief')
+      .gte('timestamp', since24h)
+      .order('timestamp', { ascending: false })
+      .limit(1);
+    if (error || !data || data.length === 0) return null;
+    const p = data[0].payload as Record<string, unknown>;
+    // Strip llm metadata, garde uniquement la substance pour le décideur
+    return {
+      date: p.date,
+      macro_events: p.macro_events,
+      tickers_to_watch: p.tickers_to_watch,
+      tickers_to_avoid: p.tickers_to_avoid,
+      sectors_in_focus: p.sectors_in_focus,
+      summary: p.summary,
+      generated_at: data[0].timestamp,
+    };
   }
 
   private async fetchActiveMemory(n: number): Promise<Array<{ lesson_kind: string; lesson_text: string; confidence: number }>> {
