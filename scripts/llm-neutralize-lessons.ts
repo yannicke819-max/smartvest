@@ -64,10 +64,13 @@ function neutralizeLessonText(text: string, id: string): { newText: string; chan
     transforms.push('Gemini 2.5 Pro → LLM décideur');
   }
 
-  // Cas 7 : Résiduel "Gemini" (sans Pro) en tant que sujet/verbe
-  if (/Gemini\s+(ouvre|propose|fait|suit|applique|prend|décide|évalue|considère|teste)/i.test(out)) {
-    out = out.replace(/Gemini\s+(ouvre|propose|fait|suit|applique|prend|décide|évalue|considère|teste)/gi, 'le LLM décideur $1');
-    transforms.push('Gemini résiduel + verbe → LLM décideur');
+  // Cas 7 : Résiduel "Gemini" (sans Pro) en tant que sujet/verbe.
+  // ATTENTION : "FADE Gemini" et "Gemini Risk Manager" sont des noms de SERVICE
+  // (cf. GeminiRiskManagerService) et doivent être PRÉSERVÉS. On ne neutralise
+  // que les patterns où Gemini est clairement l'AGENT qui décide.
+  if (/Gemini\s+(ouvre|propose|fait|suit|applique|prend|décide|évalue|considère|teste|a\s+vu|coupe|réessaie|continue|a\s+continué)/i.test(out)) {
+    out = out.replace(/Gemini\s+(ouvre|propose|fait|suit|applique|prend|décide|évalue|considère|teste|a\s+vu|coupe|réessaie|continue|a\s+continué)/gi, 'le LLM décideur $1');
+    transforms.push('Gemini agent + verbe → LLM décideur (préserve "FADE Gemini" / "Gemini Risk Manager")');
   }
 
   // Cas 8 : Résiduel "Pro" comme raccourci de Gemini Pro (sans Mistral Pro etc.)
