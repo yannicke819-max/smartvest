@@ -18,6 +18,13 @@
 --
 -- Idempotent : DELETE WHERE lesson_id IS NULL → 0 rows si déjà appliquée
 -- (PR #549 garantit qu'aucune nouvelle ligne avec lesson_id=null ne sera créée).
+--
+-- Wrapping DO block obligatoire : la Management API Supabase rejette les
+-- DELETE-only statements (pas de SELECT result) avec exit code 1 sur le
+-- workflow apply-supabase-migrations. Run précédent failed avec ce SQL en
+-- DELETE direct — applied manuellement via service role + tracker upsert.
 
-DELETE FROM scanner_lesson_citations
-WHERE lesson_id IS NULL;
+DO $$
+BEGIN
+  DELETE FROM scanner_lesson_citations WHERE lesson_id IS NULL;
+END $$;
