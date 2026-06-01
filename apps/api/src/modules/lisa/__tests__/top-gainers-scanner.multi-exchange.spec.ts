@@ -69,22 +69,17 @@ describe('fetchEodhdScreener — multi-exchange UPPERCASE + changeField (P19s+ r
     global.fetch = realFetch;
   });
 
-  it('passes UPPERCASE exchange + change_p for non-US (LSE) to EODHD screener', async () => {
+  it('passes UPPERCASE exchange + refund_1d_p>3 filter + sort desc for non-US (LSE) (post-01/06 fix)', async () => {
     const svc = makeService();
     await (svc as any).fetchEodhdScreener('lse', 'test_key');
     expect(capturedUrl).toBeDefined();
     const decoded = decodeURIComponent(capturedUrl!);
-    // Exchange filter doit contenir "LSE" (UPPERCASE), pas "lse"
     expect(decoded).toContain('"LSE"');
     expect(decoded).not.toContain('"lse"');
-    // P19s++ HOTFIX : pas de filter 1d return pour non-US (rejected as
-    // invalid filter field by EODHD validator). Post-filter client-side.
-    // PR #557 — refund_1d_p en filter rejeté EODHD pour non-US (P19s+ regression).
-    // Sort param refund_1d_p activé UNIQUEMENT pour US (Laravel validator EODHD
-    // rejette sort sur non-US per test historique P19s).
-    expect(decoded).not.toContain('"refund_1d_p"');
+    // Audit 01/06 : refund_1d_p filtrable+sortable sur tous exchanges (test live).
+    expect(decoded).toContain('["refund_1d_p",">",3]');
     expect(decoded).not.toContain('"change_p"');
-    expect(decoded).not.toContain('sort=');
+    expect(decoded).toMatch(/[?&]sort=refund_1d_p\.desc/);
   });
 
   it('passes UPPERCASE exchange + refund_1d_p for US to EODHD screener', async () => {
@@ -100,18 +95,14 @@ describe('fetchEodhdScreener — multi-exchange UPPERCASE + changeField (P19s+ r
     expect(decoded).not.toContain('change_p');
   });
 
-  it('handles already-uppercase input (idempotent) — XETRA passes through', async () => {
+  it('handles already-uppercase input (idempotent) — XETRA passes through with new filter+sort', async () => {
     const svc = makeService();
     await (svc as any).fetchEodhdScreener('XETRA', 'test_key');
     const decoded = decodeURIComponent(capturedUrl!);
     expect(decoded).toContain('"XETRA"');
-    // P19s++ : pas de filter 1d return pour non-US
-    // PR #557 — refund_1d_p en filter rejeté EODHD pour non-US (P19s+ regression).
-    // Sort param refund_1d_p activé UNIQUEMENT pour US (Laravel validator EODHD
-    // rejette sort sur non-US per test historique P19s).
-    expect(decoded).not.toContain('"refund_1d_p"');
+    expect(decoded).toContain('["refund_1d_p",">",3]');
     expect(decoded).not.toContain('"change_p"');
-    expect(decoded).not.toContain('sort=');
+    expect(decoded).toMatch(/[?&]sort=refund_1d_p\.desc/);
   });
 
   it.each([
@@ -123,19 +114,19 @@ describe('fetchEodhdScreener — multi-exchange UPPERCASE + changeField (P19s+ r
     ['to', 'TO'],   // Toronto
     ['as', 'AS'],   // Amsterdam
     ['nse', 'NSE'], // India NSE
-  ])('non-US exchange "%s" sent as "%s" without 1d return filter (post-filter client-side)', async (input, expected) => {
+  ])('non-US exchange "%s" sent as "%s" with refund_1d_p>3 filter + sort desc (post-01/06 fix)', async (input, expected) => {
+    // Audit 01/06/2026 — `refund_1d_p` filtrable+sortable sur Asia exchanges
+    // confirmé live (KO/KQ/SHG/SHE/NSE/TW). Hypothèse historique P19s++ "non-US
+    // sans données refund_1d_p" était fausse. Sans sort+filter, le scanner
+    // ratait 82% des EODHD top gainers (4/22 hit rate observé).
+    // change_p reste interdit (filter field invalide, c'est le nom de la réponse).
     const svc = makeService();
     await (svc as any).fetchEodhdScreener(input, 'test_key');
     const decoded = decodeURIComponent(capturedUrl!);
     expect(decoded).toContain(`"${expected}"`);
-    // P19s++ : pas de filter 1d return (rejected by EODHD validator pour non-US)
-    // PR #557 — refund_1d_p en filter rejeté EODHD pour non-US (P19s+ regression).
-    // Sort param refund_1d_p activé UNIQUEMENT pour US (Laravel validator EODHD
-    // rejette sort sur non-US per test historique P19s).
-    expect(decoded).not.toContain('"refund_1d_p"');
+    expect(decoded).toContain('["refund_1d_p",">",3]');
     expect(decoded).not.toContain('"change_p"');
-    expect(decoded).not.toContain('sort=');
-    // market_capitalization filter conservé
+    expect(decoded).toMatch(/[?&]sort=refund_1d_p\.desc/);
     expect(decoded).toContain('market_capitalization');
   });
 });
