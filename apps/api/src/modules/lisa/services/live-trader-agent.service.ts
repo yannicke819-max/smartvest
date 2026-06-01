@@ -774,7 +774,7 @@ export class LiveTraderAgentService {
 
       // Compute daily comparative summary direct from positions (cross-portfolio)
       const PORTFOLIO_NAMES: Record<string, string> = {
-        '58439d86-3f20-4a60-82a4-307f3f252bc2': 'main',
+        // Note: ex-MAIN '58439d86' n'existe plus en DB (migré vers b0000001 le 30/05/2026)
         'a0000001-0000-0000-0000-000000000001': 'shadow_high',
         'a0000002-0000-0000-0000-000000000002': 'shadow_middle',
         'a0000003-0000-0000-0000-000000000003': 'shadow_small',

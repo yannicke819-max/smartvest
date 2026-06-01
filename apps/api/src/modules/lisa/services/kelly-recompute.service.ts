@@ -44,7 +44,7 @@ const LOW_WR_MIN_SAMPLE = 30; // PR #359 — sample minimal pour appliquer le re
 // TODO Phase 5 N3 : récupérer le capital réel via portfolios.equity_usd au lieu
 // de la constante. Pour MVP, baseline = notional_avg actuel × max positions.
 const CAPITAL_ESTIME_USD = 15_750;
-const DEFAULT_PORTFOLIO_ID = '58439d86-3f20-4a60-82a4-307f3f252bc2';
+const DEFAULT_PORTFOLIO_ID = 'b0000001-0000-0000-0000-000000000001'; // TRADER (ex-MAIN 58439d86 migré 30/05/2026)
 
 interface ClassStats {
   n_closed: number;
