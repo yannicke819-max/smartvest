@@ -2453,6 +2453,10 @@ explicite dans thesis (ex : 'OVERRIDE_SUGGESTED_POSTURE car news_shock détecté
     'MODE_DEFENSIF', 'MODE_DÉFENSIF',
     // Catégories rhétoriques génériques (pas des lessons identifiées)
     'ANTI-PATTERN', 'ANTI-REVENGE',
+    // 01/06 — markers liés au wiring objectives_progress (system prompt
+    // pas des lessons en DB) — évite "skipped unregistered markers" pollution.
+    'OBJ_AGGRESSIVE', 'OBJ_DEFENSIVE_NO_OPEN', 'OBJ_NORMAL', 'OBJ_EN_AVANCE',
+    'OVERRIDE_SUGGESTED_POSTURE', 'EOS_WAIT', 'END_OF_SESSION_WAIT',
   ]);
 
   /**

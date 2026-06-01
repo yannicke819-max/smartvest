@@ -48,6 +48,7 @@ import { AdminMarketCloseReportsController } from './admin-market-close-reports.
 import { AdminLessonAutoApplyController } from './admin-lesson-auto-apply.controller';
 import { AdminLlmCostLiveController } from './admin-llm-cost-live.controller';
 import { AdminLlmAccuracyController } from './admin-llm-accuracy.controller';
+import { AdminLearningLoopAuditController } from './admin-learning-loop-audit.controller';
 
 @Module({
   imports: [SupabaseModule, forwardRef(() => LisaModule), GainersModule],
@@ -93,6 +94,9 @@ import { AdminLlmAccuracyController } from './admin-llm-accuracy.controller';
     AdminLlmCostLiveController,
     // PR #535 — "Qui a raison ?" ranking par provider sur les shadows.
     AdminLlmAccuracyController,
+    // 01/06 — Audit boucle d'auto-apprentissage (réplique du script CLI
+    // verify-learning-loop, exposé en JSON pour UI panel).
+    AdminLearningLoopAuditController,
   ],
 })
 export class AdminModule {}

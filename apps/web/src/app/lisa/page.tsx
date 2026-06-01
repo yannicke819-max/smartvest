@@ -35,6 +35,7 @@ import { GainersConfigPanel } from '@/components/lisa/gainers-config-panel';
 import { LisaStickyHeader } from '@/components/lisa/lisa-sticky-header';
 import { GainsTracker } from '@/components/lisa/gains-tracker';
 import { LessonsImpactPanel } from '@/components/lisa/lessons-impact-panel';
+import { LearningLoopAuditPanel } from '@/components/lisa/learning-loop-audit-panel';
 import { LisaConfigPanel } from '@/components/lisa/lisa-config-panel';
 import { CoachProposalsPanel } from '@/components/lisa/coach-proposals-panel';
 import { ShadowsSummaryPanel } from '@/components/lisa/shadows-summary-panel';
@@ -702,6 +703,9 @@ export default function LisaPage() {
 
       {/* LISA refonte B.2 — Lessons Impact Tracker (citations agrégées TRADER) */}
       {selectedPortfolioId && <LessonsImpactPanel portfolioId={selectedPortfolioId} />}
+
+      {/* 01/06 — Audit boucle d'auto-apprentissage (bouton + 8 checks) */}
+      <LearningLoopAuditPanel />
 
       {/* LISA refonte B.3 — Config LISA simplifiée (kill-switch reset, capital, digest, lessons mgmt) */}
       {selectedPortfolioId && <LisaConfigPanel portfolioId={selectedPortfolioId} />}

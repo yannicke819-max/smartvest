@@ -63,6 +63,7 @@ import { PushNotificationsService } from './services/push-notifications.service'
 import { StrategyCoachService } from './services/strategy-coach.service';
 import { TraderRetrospectiveService } from './services/trader-retrospective.service';
 import { LessonAutoApplyService } from './services/lesson-auto-apply.service';
+import { LearningLoopAuditService } from './services/learning-loop-audit.service';
 import { ScannerLessonsContextService } from './services/scanner-lessons-context.service';
 import { ConfigSanityValidatorService } from './services/config-sanity-validator.service';
 import { RealTimeLessonDetectorService } from './services/realtime-lesson-detector.service';
@@ -245,6 +246,9 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     // proposed_config_change à haute confiance (≥0.85, sample ≥10) sur les 4 portfolios
     // gainers. Cron hourly. Cibles env vars → manual review (Fly secrets).
     LessonAutoApplyService,
+    // 01/06 — LearningLoopAuditService : exposé via admin/verify-learning-loop
+    // pour panel UI (8 checks Supabase) ET réutilisable depuis le script CLI.
+    LearningLoopAuditService,
     // ConfigSanityValidatorService — cron hourly :17, détecte anti-patterns (R/R inversé,
     // min_chg trop strict, max_open trop bas) et applique DIRECTEMENT les fixes en DB
     // au confidence ≥ 0.95. Insère aussi une lesson gate_calibration pour audit.
@@ -417,6 +421,8 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     MarketCloseReportService,
     // PR #536 hotfix — Export pour AdminLlmAccuracyController (cf. /admin/llm-accuracy).
     LlmAccuracyService,
+    // 01/06 — Export pour AdminLearningLoopAuditController.
+    LearningLoopAuditService,
   ],
 })
 export class LisaModule {}
