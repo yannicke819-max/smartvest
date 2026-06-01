@@ -1767,12 +1767,19 @@ export class TopGainersScannerService implements OnModuleInit {
     //   SCANNER_UNIVERSE_MAX_TICKERS (default 1500, max 3000) : cap global
     // Cap par exchange = ceil(MAX / nbExchanges). Stop précoce si page < pageSize.
     // Hard limit : 10 pages max par exchange (anti-runaway).
-    // Defaults bumpés 27/05/2026 — porte d'entrée investigation révèle 98 674
-    // tickers EODHD dispo sur 19 exchanges. Anciens defaults (100/1500) coupaient
-    // trop tôt. Nouveaux : 500/3000 (max code-side) pour maximiser le funnel.
+    // FIX 01/06 — pageSize cap 500 → 100 (limite officielle EODHD screener).
+    //
+    // Doc EODHD : https://eodhd.com/financial-apis/stock-market-screener-api
+    //   "limit | Number of results (default 50, MAX 100)"
+    //
+    // Bug d'origine : code demandait pageSize=500. EODHD ignore silencieusement
+    // et retourne 50-100 max. Notre offset progressait par 500 → on SAUTAIT
+    // 400+ tickers par page. Audit 01/06 : 2/20 top gainers US identifiés.
+    //
+    // Avec pageSize=100 + maxPages=10 = 1000 tickers/exchange = full coverage.
     const pageSize = Math.max(
       1,
-      Math.min(500, Number(this.config.get<string>('SCANNER_SCREENER_PAGE_SIZE') ?? '500')),
+      Math.min(100, Number(this.config.get<string>('SCANNER_SCREENER_PAGE_SIZE') ?? '100')),
     );
     const universeMax = Math.max(
       pageSize,
@@ -1797,7 +1804,12 @@ export class TopGainersScannerService implements OnModuleInit {
       for (let page = 0; page < maxPages; page++) {
         if (allMapped.length >= perExchangeCap) break;
         const offset = page * pageSize;
-        const url = `https://eodhd.com/api/screener?api_token=${encodeURIComponent(apiKey)}&filters=${filters}&limit=${pageSize}&offset=${offset}&fmt=json`;
+        // FIX 01/06 — Ajout sort=refund_1d_p&order=d pour récupérer les VRAIS
+        // top gainers (sort par %change journalier desc). Sans ce param,
+        // EODHD trie par défaut sur market_capitalization → on rate les
+        // small/mid-caps qui sont souvent les vrais top mouvements.
+        // Doc EODHD : https://eodhd.com/financial-apis/stock-market-screener-api
+        const url = `https://eodhd.com/api/screener?api_token=${encodeURIComponent(apiKey)}&filters=${filters}&sort=refund_1d_p&order=d&limit=${pageSize}&offset=${offset}&fmt=json`;
         const tStart = Date.now();
         const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
         lastLatencyMs = Date.now() - tStart;

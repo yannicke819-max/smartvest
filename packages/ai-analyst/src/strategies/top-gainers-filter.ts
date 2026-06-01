@@ -66,12 +66,16 @@ export function detectAssetClass(
     return 'commodity';
   }
 
-  // EU equity exchanges — 'F' (Frankfurt) ajouté 29/05 (cf. fix ci-dessus).
-  if (['LSE', 'XETRA', 'PA', 'AMS', 'BR', 'SW', 'BME', 'MI', 'STO', 'L', 'DE', 'F'].includes(ex)) {
+  // EU equity exchanges — 'F' (Frankfurt) ajouté 29/05.
+  // FIX 01/06 : ajout 'TA' (Tel Aviv) et 'WAR' (Warsaw GPW) qui tombaient
+  // dans le default fallthrough = us_equity_large. Bug observé : 57 .TA
+  // tagués us_equity_large dans top_gainers_log → stats par classe + filtres
+  // par classe + lessons par scope tous faussés.
+  if (['LSE', 'XETRA', 'PA', 'AMS', 'BR', 'SW', 'BME', 'MI', 'STO', 'L', 'DE', 'F', 'TA', 'WAR', 'AS', 'MC'].includes(ex)) {
     return 'eu_equity';
   }
   // EU equity par suffix (cas où exchange n'est pas fourni mais le ticker l'indique).
-  if (/\.(LSE|XETRA|PA|AS|BR|SW|MI|MC|L|DE|F)$/.test(s)) {
+  if (/\.(LSE|XETRA|PA|AS|BR|SW|MI|MC|L|DE|F|TA|WAR)$/.test(s)) {
     return 'eu_equity';
   }
   // Asia equity exchanges
