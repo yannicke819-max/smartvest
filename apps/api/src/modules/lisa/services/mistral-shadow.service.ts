@@ -89,15 +89,17 @@ export class MistralShadowService {
   private readonly apiKey: string | undefined;
   private readonly enabled: boolean;
   private readonly model: string;
+  private readonly freeTier: boolean;
 
   constructor(private readonly config: ConfigService) {
     this.apiKey = this.config.get<string>('MISTRAL_API_KEY');
     this.enabled = (this.config.get<string>('MISTRAL_SHADOW_ENABLED') ?? 'false').toLowerCase() === 'true';
     this.model = this.config.get<string>('MISTRAL_SHADOW_MODEL') ?? MODEL_MEDIUM_LATEST;
+    this.freeTier = (this.config.get<string>('MISTRAL_FREE_TIER') ?? 'true').toLowerCase() === 'true';
     if (this.enabled && !this.apiKey) {
       this.logger.warn('[mistral-shadow] MISTRAL_SHADOW_ENABLED=true mais MISTRAL_API_KEY absent → service inerte');
     } else if (this.enabled) {
-      this.logger.log(`[mistral-shadow] ENABLED — model=${this.model}`);
+      this.logger.log(`[mistral-shadow] ENABLED — model=${this.model} freeTier=${this.freeTier}`);
     }
   }
 
@@ -175,10 +177,18 @@ export class MistralShadowService {
       result.outputTokens = data.usage?.completion_tokens ?? 0;
       // Pricing model-aware : lookup par prefixe pour matcher la facturation
       // Mistral reelle (Medium != Large != Magistral != Ministral).
-      const pricing = lookupPricing(this.model);
-      result.costUsd =
-        (result.inputTokens / 1_000_000) * pricing.input +
-        (result.outputTokens / 1_000_000) * pricing.output;
+      // En free tier (default), coût réel = 0 — pas de facturation Mistral
+      // sur la "Experiment plan" (1B tokens/mois). On garde les token counts
+      // pour les stats d'usage mais on zéro-out le costUsd pour ne pas polluer
+      // le widget /lisa/llm-cost-live avec du théorique payant.
+      if (this.freeTier) {
+        result.costUsd = 0;
+      } else {
+        const pricing = lookupPricing(this.model);
+        result.costUsd =
+          (result.inputTokens / 1_000_000) * pricing.input +
+          (result.outputTokens / 1_000_000) * pricing.output;
+      }
 
       if (!result.content) {
         result.error = 'empty_content';
