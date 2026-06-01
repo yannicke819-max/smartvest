@@ -28,6 +28,7 @@ import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
 import { LlmABShadowService } from './llm-ab-shadow.service';
+import { dailyBriefComparator } from './llm-shadow-comparators';
 import { EodhdEconomicEventsService } from './eodhd-economic-events.service';
 
 export interface DailyCatalystBrief {
@@ -133,8 +134,9 @@ export class DailyCatalystBriefService {
       return null;
     }
 
-    // PR #523 — A/B shadow fire-and-forget. Brief output = text JSON narrative.
-    // Default comparator (text normalize, first 200 chars) suffisant.
+    // PR #523 — A/B shadow fire-and-forget. Brief output = JSON macro events.
+    // Comparator sémantique Jaccard sur events[].event (default text-match donnait
+    // 0% concordance malgré contenu substantiellement identique, cf. audit 01/06).
     void this.llmABShadow?.recordShadow({
       callSite: 'daily_brief',
       systemPrompt: SYSTEM_PROMPT,
@@ -148,6 +150,7 @@ export class DailyCatalystBriefService {
       },
       maxTokens: 1200,
       temperature: 0.2,
+      comparator: dailyBriefComparator,
     });
 
     if (!this.supabase.isReady()) {
