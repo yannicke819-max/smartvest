@@ -13,15 +13,23 @@
  *   - .XETRA / .DE                 → :XETR  ✓ validé live
  *   - .SW                          → :SIX   ✓ validé live
  *   - .TO                          → :TSX   (doc TD officielle)
- *   - .KO / .KQ                    → :KRX   ✓ validé live (KOSDAQ/KOSPI fusionnés)
- *   - .SHG                         → :SSE   ✓ validé live
- *   - .SHE                         → :SZSE  ✓ validé live
  *
- * Suffixes non supportés sur le plan TD Pro actuel (add-ons payants requis) :
+ * Suffixes COUVERTS sur Pro mais EOD-ONLY (pas d'intraday utile) :
+ *   - .KO / .KQ  (Korea KOSPI/KOSDAQ XKRX/XKOS)
+ *   - .SHG / .SHE (Shanghai/Shenzhen XSHG/XSHE)
+ *   - .TA  (Tel Aviv XTAE)
+ *   Doc TD pricing 01/06/2026 — ces exchanges affichent "EOD" en delay column
+ *   sur le plan Pro. Les calls /time_series interval=5min retournent la struct
+ *   mais avec ~93% close=null. Inutile + gaspille des credits.
+ *   → Traités comme UNSUPPORTED en intraday context. Pour daily/EOD calls,
+ *     utiliser EODHD (qui a EOD complet sur ces marchés).
+ *
+ * Suffixes non supportés (add-ons payants requis) :
  *   - .MI  (Milan)       → null → fallback EODHD
  *   - .T   (Tokyo JPX)   → null → fallback EODHD
  *   - .HK  (HKEX)        → null → fallback EODHD
  *   - .AU  (ASX)         → null → fallback EODHD
+ *   - .WAR (Warsaw GPW)  → NON COUVERT par Pro ni add-on identifié
  *
  * Suffixe inconnu → null (caller décide : fallback EODHD, skip filter, etc.).
  *
@@ -40,27 +48,34 @@ const SUFFIX_MAP: Record<string, string> = {
   DE: ':XETR',
   SW: ':SIX',
   TO: ':TSX',
-  KO: ':KRX',
-  KQ: ':KRX',
-  SHG: ':SSE',
-  SHE: ':SZSE',
 };
 
 /**
  * Suffixes EODHD pointant vers des exchanges non supportés sur le plan
- * TwelveData Pro actuel (add-ons payants non souscrits). Retournent null
- * explicitement pour signaler "fallback EODHD" sans tenter d'appel TD
- * voué à un 404/403.
+ * TwelveData Pro actuel (add-ons payants non souscrits OU plan-EOD-only sans
+ * data intraday utilisable). Retournent null explicitement pour signaler
+ * "fallback EODHD" sans tenter d'appel TD voué à un 404/403/data-vide.
  *
- * Validation live 19/05/2026 :
- *   - .MI  : ENEL:MIL / MTA / XMIL tous 404
- *   - .T   : 7203:JPX / TSE / Tokyo / bare tous 404
- *   - .HK  : 0700:HKEX 404 (add-on payant)
- *   - .AU  : BHP:XASX → "You are not authorized to access XASX data. Add-on required."
+ * Validation :
+ *   - .MI  : ENEL:MIL / MTA / XMIL tous 404 (19/05/2026)
+ *   - .T   : 7203:JPX / TSE / Tokyo / bare tous 404 (19/05/2026)
+ *   - .HK  : 0700:HKEX 404 (add-on payant) (19/05/2026)
+ *   - .AU  : BHP:XASX → "Not authorized to access XASX data" (19/05/2026)
+ *   - .KO/.KQ : XKRX/XKOS = EOD-only sur Pro (doc 01/06/2026), intraday
+ *               5min retourne 60 candles dont 56 nulls — inutile.
+ *   - .SHG/.SHE : XSHG/XSHE = EOD-only sur Pro (doc 01/06/2026), idem.
+ *   - .TA  : XTAE = EOD-only sur Pro (doc 01/06/2026), idem.
+ *   - .WAR : Warsaw GPW pas dans les 75 exchanges Pro (doc 01/06/2026).
  *
  * À retirer de ce Set si les add-ons TD correspondants sont souscrits.
  */
-const UNSUPPORTED_TD_SUFFIXES: ReadonlySet<string> = new Set(['MI', 'T', 'HK', 'AU']);
+const UNSUPPORTED_TD_SUFFIXES: ReadonlySet<string> = new Set([
+  'MI', 'T', 'HK', 'AU',
+  // EOD-only sur Pro — pas d'intraday utile
+  'KO', 'KQ', 'SHG', 'SHE', 'TA',
+  // Pas dans Pro
+  'WAR',
+]);
 
 export function eodhdToTdSymbol(eodhdTicker: string): string | null {
   if (!eodhdTicker) return null;

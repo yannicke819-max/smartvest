@@ -54,14 +54,16 @@ describe('eodhdToTdSymbol — PR #355', () => {
     });
   });
 
-  describe('Asia supportée — KRX / SSE / SZSE (validé live 19/05/2026)', () => {
+  describe('Asia EOD-only sur Pro — null en intraday (fallback EODHD)', () => {
+    // Doc TD pricing 01/06/2026 : KOSPI/KOSDAQ/SHG/SHE = EOD-only.
+    // Intraday 5min retournait 60 candles dont 56 nulls — inutile + gaspille credits.
     it.each([
-      ['005930.KO', '005930:KRX'],
-      ['086790.KQ', '086790:KRX'],
-      ['600519.SHG', '600519:SSE'],
-      ['300024.SHE', '300024:SZSE'],
-    ])('%s → %s', (input, expected) => {
-      expect(eodhdToTdSymbol(input)).toBe(expected);
+      ['005930.KO', 'KOSPI (XKRX) — EOD only sur Pro'],
+      ['086790.KQ', 'KOSDAQ (XKOS) — EOD only sur Pro'],
+      ['600519.SHG', 'Shanghai (XSHG) — EOD only sur Pro'],
+      ['300024.SHE', 'Shenzhen (XSHE) — EOD only sur Pro'],
+    ])('%s → null (%s)', (input) => {
+      expect(eodhdToTdSymbol(input)).toBeNull();
     });
   });
 
@@ -77,6 +79,8 @@ describe('eodhdToTdSymbol — PR #355', () => {
       ['9988.HK', 'HK — add-on payant'],
       ['CBA.AU', 'ASX (XASX) — add-on requis'],
       ['BHP.AU', 'ASX — add-on requis'],
+      ['TEVA.TA', 'Tel Aviv (XTAE) — EOD only sur Pro'],
+      ['LPP.WAR', 'Warsaw (GPW) — pas dans Pro'],
     ])('%s → null (%s)', (input) => {
       expect(eodhdToTdSymbol(input)).toBeNull();
     });
