@@ -4729,6 +4729,52 @@ export class TopGainersScannerService implements OnModuleInit {
           }
         }
 
+        // PR #540 — LLM GATE PRÉ-OUVERTURE (sécurité critique).
+        //
+        // Le scanner déterministe ne consomme PAS les scanner_lessons
+        // (END_OF_SESSION_WAIT, PULLBACK_WAIT, MFE_TRIGGER, KOSDAQ_SMALL_TP_*, etc.).
+        // Conséquence observée 01/06 06:30-07:00 UTC : 4 portfolios × -$74 sur
+        // KOSDAQ post-cloche + Shanghai late + Shenzhen choppy, alors que TRADER
+        // agent (Mistral) refusait en boucle avec [PULLBACK_WAIT_KTOS_LESSON]
+        // et [END_OF_SESSION_WAIT].
+        //
+        // Fix : avant chaque openPositionDirect, on soumet le candidat au LLM
+        // décideur (Mistral Medium primary via callWithPro + lessons block).
+        // Si LLM rejette → skip + log. Si approuve → procéder.
+        //
+        // Backward compat : env GAINERS_REQUIRES_LLM_APPROVAL=false désactive le gate.
+        // Default = true (sécurité par défaut, conformément au design CLAUDE.md
+        // mode délégation MANUAL/HYBRID : LLM seul peut valider une ouverture).
+        const llmGateEnabled = (this.config.get<string>('GAINERS_REQUIRES_LLM_APPROVAL') ?? 'true').toLowerCase() === 'true';
+        if (llmGateEnabled && this.llmRouter.isEnabled()) {
+          const llmDecision = await this.validateCandidateWithLlm(cand, item.direction, portfolioId, directionalNotional)
+            .catch((e) => {
+              // Fail-CLOSED : si le LLM gate plante, on N'OUVRE PAS. C'est volontaire
+              // — sécurité par défaut. Sinon un bug LLM = retour au comportement
+              // "scanner ouvre tout" qui est précisément ce qu'on veut éviter.
+              this.logger.warn(`[llm-gate] ${cand.symbol} validation threw — fail-CLOSED, skip. err=${String(e).slice(0, 200)}`);
+              return { approved: false, reason: 'llm_gate_exception' };
+            });
+          if (!llmDecision.approved) {
+            this.logger.log(
+              `[llm-gate] ${cand.symbol} ${item.direction.toUpperCase()} REJECTED by LLM — ${llmDecision.reason}`,
+            );
+            // Audit log best-effort
+            await this.decisionLog
+              .append({
+                portfolioId,
+                kind: 'scanner_proposal_rejected_by_llm',
+                summary: `[LLM_GATE] ${cand.symbol} ${item.direction} blocked — ${llmDecision.reason}`,
+                rationale: llmDecision.reason,
+                payload: { symbol: cand.symbol, direction: item.direction, score: cand.score, change_pct: cand.changePct, asset_class: cand.assetClass, notional: directionalNotional },
+                triggeredBy: 'autopilot_cron',
+              })
+              .catch(() => { /* non-bloquant */ });
+            continue;
+          }
+          this.logger.log(`[llm-gate] ${cand.symbol} ${item.direction.toUpperCase()} APPROVED by LLM — ${llmDecision.reason}`);
+        }
+
         const { stopLoss, takeProfit } = computeSlTpForDirection(livePriceNum, effectiveSl, effectiveTp, item.direction);
         const stopPriceStr = stopLoss.toFixed(8);
         const tpPriceStr = takeProfit.toFixed(8);
@@ -5125,6 +5171,81 @@ export class TopGainersScannerService implements OnModuleInit {
    * Persist log entries dans top_gainers_log.
    * Logge tous les top retenus (decision='passed') + sample de filtered (audit).
    */
+  /**
+   * PR #540 — LLM gate validation pre-openPositionDirect.
+   *
+   * Soumet le candidat scanner au LLM décideur (Mistral Medium primary +
+   * lessons block scope=all_scanner) pour validation finale. Fail-CLOSED.
+   *
+   * Latence : ~2-5s par candidat. Avec ~3 candidats par cycle × 4 portfolios
+   * = ~36-60s de latence par cycle 5min. Acceptable.
+   *
+   * Prompt court (focal) pour minimiser tokens : symbol, direction, score,
+   * change_pct, asset_class, current_time_utc, notional. Le LLM lit les
+   * lessons dans son system prompt + applique sa propre logique macro.
+   */
+  private async validateCandidateWithLlm(
+    cand: TopGainerCandidate & { score: number; assetClass: TopGainerAssetClass },
+    direction: 'long' | 'short',
+    portfolioId: string,
+    notionalUsd: number,
+  ): Promise<{ approved: boolean; reason: string }> {
+    const lessonsBlock = this.lessonsContext
+      ? await this.lessonsContext.getLessonsBlock('all_scanner', { assetClass: String(cand.assetClass) }).catch(() => '')
+      : '';
+
+    const systemPrompt = `Tu es le gardien sécurité d'un scanner momentum qui propose des ouvertures de positions. Ton rôle : VALIDER ou REJETER chaque proposition en t'appuyant sur les lessons accumulées et le contexte temporel.
+
+RÈGLES ABSOLUES (REJECT systématique si match) :
+- Marché du candidat fermé ou ferme dans < 30 min (vérifier asset_class vs current_time_utc)
+- changePct > 10% sur 1m = pump parabolique au peak → high risk reversal
+- Lesson active correspondante interdisant le pattern
+
+CRITÈRES D'APPROBATION :
+- Marché ouvert avec >= 30 min restantes
+- changePct dans la zone saine 3-9%
+- Pas de lesson active interdisant le setup
+
+Réponds en JSON STRICT :
+{"decision": "approve" | "reject", "reason": "raison courte (< 100 chars)"}
+
+${lessonsBlock ? '\n=== LESSONS ACTIVES ===\n' + lessonsBlock : ''}`;
+
+    const userPrompt = JSON.stringify({
+      symbol: cand.symbol,
+      direction,
+      score: cand.score,
+      change_pct_1m: cand.changePct,
+      asset_class: cand.assetClass,
+      exchange: cand.exchange,
+      notional_usd: notionalUsd,
+      current_time_utc: new Date().toISOString(),
+      portfolio_id: portfolioId.slice(0, 8),
+    }, null, 2);
+
+    try {
+      const res = await this.llmRouter.callWithPro({
+        system: systemPrompt,
+        user: userPrompt,
+        temperature: 0.1,
+        maxTokens: 200,
+        timeoutMs: 8_000,
+      });
+      // Parse JSON robust : extract first {...} block
+      const match = res.content.match(/\{[\s\S]*\}/);
+      if (!match) return { approved: false, reason: 'llm_unparseable_response' };
+      const parsed = JSON.parse(match[0]) as { decision?: string; reason?: string };
+      const approved = String(parsed.decision ?? '').toLowerCase() === 'approve';
+      return {
+        approved,
+        reason: (parsed.reason ?? (approved ? 'no reason' : 'no reason from llm')).slice(0, 200),
+      };
+    } catch (e) {
+      // Re-throw : laisse le caller décider (fail-CLOSED ou fail-OPEN selon contexte)
+      throw new Error(`llm_gate_call_failed: ${String(e).slice(0, 150)}`);
+    }
+  }
+
   private async persistLog(
     allCandidates: TopGainerCandidate[],
     top: Array<TopGainerCandidate & { score: number; assetClass: TopGainerAssetClass }>,
