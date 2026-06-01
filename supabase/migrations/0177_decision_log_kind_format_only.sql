@@ -32,6 +32,8 @@
 ALTER TABLE public.lisa_decision_log
   DROP CONSTRAINT IF EXISTS lisa_decision_log_kind_check;
 
+-- Audit Supabase au moment de l'écriture (01/06/2026) : 337 rows, 9 kinds
+-- distincts, tous passent le regex. Validation stricte safe.
 ALTER TABLE public.lisa_decision_log
   ADD CONSTRAINT lisa_decision_log_kind_check
   CHECK (kind ~ '^[a-z][a-z0-9_]{0,63}$');
