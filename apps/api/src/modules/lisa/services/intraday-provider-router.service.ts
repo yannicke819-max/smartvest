@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { TwelveDataService } from './twelve-data.service';
 import { EodhdIntradayService, type CandleSeries } from './eodhd-intraday.service';
 import { TickerBlacklistService } from './ticker-blacklist.service';
-import { eodhdToTdSymbol, eodhdToCboeEuropeSymbol } from './td-symbol-mapper';
+import { eodhdToTdSymbol, eodhdToCboeEuropeSymbol, isIntradayEodOnly } from './td-symbol-mapper';
 import { SupabaseService } from '../../supabase/supabase.service';
 
 /**
@@ -610,6 +610,10 @@ export class IntradayProviderRouter implements OnModuleInit {
     calledBy = 'shadow_td_direct',
   ): Promise<{ candles: Array<{ timestamp: number; open: number; high: number; low: number; close: number; volume: number }> } | null> {
     if (!this.td || !eodhdTicker) return null;
+    // Doc TD pricing 01/06/2026 : KO/KQ/SHG/SHE sont EOD-only sur Pro.
+    // L'endpoint /time_series 5min retourne ~93% nulls → gaspille credits.
+    // Le mapping reste valide pour /quote (last price), mais ici on bypass.
+    if (isIntradayEodOnly(eodhdTicker)) return null;
     const tdSymbol = this.convertToTdSymbol(eodhdTicker);
     if (!tdSymbol) return null;
     const tdInterval = interval === '1m' ? '1min' : '5min';

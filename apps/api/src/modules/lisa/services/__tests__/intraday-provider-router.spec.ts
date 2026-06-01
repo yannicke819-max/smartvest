@@ -922,7 +922,7 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
 
 describe('getCandlesTdDirect — backfill shadow asie (bypass blacklist)', () => {
   const TD_CANDLES = {
-    symbol: '005930:KRX', interval: '5min',
+    symbol: 'AAPL', interval: '5min',
     candles: [{ timestamp: 1747000000, open: 1, high: 2, low: 1, close: 1.5, volume: 100 }],
     asOf: 1747000000000,
   };
@@ -937,12 +937,19 @@ describe('getCandlesTdDirect — backfill shadow asie (bypass blacklist)', () =>
     );
   }
 
-  it('coréen blacklisté + flag scanner OFF → TD sert quand même (bypass)', async () => {
-    const router = makeRouter({ candles: TD_CANDLES }, ['005930.KO']);
-    const r = await router.getCandlesTdDirect('005930.KO', '5m', 60);
+  it('symbole TD valide (non EOD-only) blacklisté + flag scanner OFF → TD sert quand même (bypass)', async () => {
+    const router = makeRouter({ candles: TD_CANDLES }, ['AAPL.US']);
+    const r = await router.getCandlesTdDirect('AAPL.US', '5m', 60);
     expect(r).not.toBeNull();
     expect(r!.candles).toHaveLength(1);
     expect(r!.candles[0].close).toBe(1.5);
+  });
+
+  it('coréen EOD-only sur Pro (.KO) → null (intraday inutile, fallback EODHD)', async () => {
+    // Doc TD pricing 01/06/2026 : XKRX EOD-only sur Pro.
+    // L'intraday 5min retournait ~93% nulls → on bypass TD via isIntradayEodOnly.
+    const router = makeRouter({ candles: TD_CANDLES });
+    expect(await router.getCandlesTdDirect('005930.KO', '5m', 60)).toBeNull();
   });
 
   it('symbole non mappable TD (.HK non couvert) → null', async () => {
@@ -952,6 +959,6 @@ describe('getCandlesTdDirect — backfill shadow asie (bypass blacklist)', () =>
 
   it('TD renvoie vide → null', async () => {
     const router = makeRouter({ candles: null });
-    expect(await router.getCandlesTdDirect('005930.KO', '5m', 60)).toBeNull();
+    expect(await router.getCandlesTdDirect('AAPL.US', '5m', 60)).toBeNull();
   });
 });

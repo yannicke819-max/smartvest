@@ -22,6 +22,13 @@
  *   - .T   (Tokyo JPX)   → null → fallback EODHD
  *   - .HK  (HKEX)        → null → fallback EODHD
  *   - .AU  (ASX)         → null → fallback EODHD
+ *   - .WAR (Warsaw GPW)  → null → pas dans les 75 exchanges Pro (doc 01/06/2026)
+ *   - .TA  (Tel Aviv)    → null → couvert mais EOD-only, pas d'intraday utile
+ *
+ * Pour le contexte INTRADAY uniquement, voir `isIntradayEodOnly(suffix)` qui
+ * exclut en plus KO/KQ/SHG/SHE (EOD-only sur Pro, intraday 5min retourne ~93%
+ * nulls). Pour /quote endpoint (last price, stops), ces suffixes restent
+ * mappés via SUFFIX_MAP — TD sert le dernier close EOD comme prix valide.
  *
  * Suffixe inconnu → null (caller décide : fallback EODHD, skip filter, etc.).
  *
@@ -52,15 +59,44 @@ const SUFFIX_MAP: Record<string, string> = {
  * explicitement pour signaler "fallback EODHD" sans tenter d'appel TD
  * voué à un 404/403.
  *
- * Validation live 19/05/2026 :
- *   - .MI  : ENEL:MIL / MTA / XMIL tous 404
- *   - .T   : 7203:JPX / TSE / Tokyo / bare tous 404
- *   - .HK  : 0700:HKEX 404 (add-on payant)
- *   - .AU  : BHP:XASX → "You are not authorized to access XASX data. Add-on required."
+ * Validation :
+ *   - .MI  : ENEL:MIL / MTA / XMIL tous 404 (19/05/2026)
+ *   - .T   : 7203:JPX / TSE / Tokyo / bare tous 404 (19/05/2026)
+ *   - .HK  : 0700:HKEX 404 (add-on payant) (19/05/2026)
+ *   - .AU  : BHP:XASX → "Not authorized to access XASX data" (19/05/2026)
+ *   - .TA  : XTAE = EOD-only sur Pro, intraday inutile (doc 01/06/2026)
+ *   - .WAR : Warsaw GPW pas dans les 75 exchanges Pro (doc 01/06/2026)
  *
  * À retirer de ce Set si les add-ons TD correspondants sont souscrits.
  */
-const UNSUPPORTED_TD_SUFFIXES: ReadonlySet<string> = new Set(['MI', 'T', 'HK', 'AU']);
+const UNSUPPORTED_TD_SUFFIXES: ReadonlySet<string> = new Set([
+  'MI', 'T', 'HK', 'AU', 'TA', 'WAR',
+]);
+
+/**
+ * Suffixes COUVERTS sur Pro mais EOD-only sur l'endpoint /time_series intraday.
+ * Le mapping reste valide pour /quote (last price), mais les appels candles
+ * 5min/1m retournent ~93% nulls — gaspille credits + pollue les logs.
+ *
+ * Doc TD pricing 01/06/2026 : ces exchanges affichent "EOD" en delay column.
+ *
+ * Callers intraday (getCandlesTdDirect, scanner filters intraday) doivent
+ * vérifier `isIntradayEodOnly(suffix)` avant d'appeler TD. Callers /quote
+ * (getLiveQuote) ignorent ce filtre — TD sert un last close valide.
+ */
+const INTRADAY_EOD_ONLY_SUFFIXES: ReadonlySet<string> = new Set([
+  'KO', 'KQ', 'SHG', 'SHE',
+]);
+
+/**
+ * Helper pour callers intraday : retourne true si le suffix est mappé sur Pro
+ * mais ne retourne pas d'intraday utilisable (EOD-only).
+ */
+export function isIntradayEodOnly(eodhdTicker: string): boolean {
+  if (!eodhdTicker || !eodhdTicker.includes('.')) return false;
+  const suffix = eodhdTicker.split('.')[1];
+  return INTRADAY_EOD_ONLY_SUFFIXES.has(suffix);
+}
 
 export function eodhdToTdSymbol(eodhdTicker: string): string | null {
   if (!eodhdTicker) return null;
