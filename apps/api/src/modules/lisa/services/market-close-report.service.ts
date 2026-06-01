@@ -29,7 +29,7 @@ import { ScannerLlmRouterService } from './scanner-llm-router.service';
 type SessionKind = 'asia_close' | 'eu_close' | 'us_close' | 'daily_wrap';
 
 const PORTFOLIOS_TO_COMPARE = [
-  { id: '58439d86-3f20-4a60-82a4-307f3f252bc2', name: 'main' },
+  // Note: ex-MAIN '58439d86' n'existe plus en DB (migré vers b0000001 le 30/05/2026)
   { id: 'a0000001-0000-0000-0000-000000000001', name: 'shadow_high' },
   { id: 'a0000002-0000-0000-0000-000000000002', name: 'shadow_middle' },
   { id: 'a0000003-0000-0000-0000-000000000003', name: 'shadow_small' },

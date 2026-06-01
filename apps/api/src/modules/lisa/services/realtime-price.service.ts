@@ -442,7 +442,7 @@ export class RealtimePriceService implements OnModuleDestroy {
   async getOpenCryptoPositionsCount(): Promise<number | null> {
     if (!this.supabase.isReady()) return null;
     const portfolioId =
-      this.config.get<string>('PORTFOLIO_ID') ?? '58439d86-3f20-4a60-82a4-307f3f252bc2';
+      this.config.get<string>('PORTFOLIO_ID') ?? 'b0000001-0000-0000-0000-000000000001'; // ex-MAIN 58439d86 migré 30/05/2026
     try {
       const { count, error } = await this.supabase
         .getClient()

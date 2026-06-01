@@ -27,7 +27,7 @@ import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../supabase/supabase.service';
 
 const GAINERS_PORTFOLIO_IDS = [
-  '58439d86-3f20-4a60-82a4-307f3f252bc2', // MAIN
+  'b0000001-0000-0000-0000-000000000001', // TRADER (ex-MAIN 58439d86, migré 30/05/2026)
   'a0000001-0000-0000-0000-000000000001', // HIGH
   'a0000002-0000-0000-0000-000000000002', // MIDDLE
   'a0000003-0000-0000-0000-000000000003', // SMALL
