@@ -121,15 +121,16 @@ describe('fetchEodhdScreener — URL construction (P18c regression guard)', () =
     expect(decoded).toContain('["market_capitalization",">",50000000]');
   });
 
-  it('P19s — does NOT include sort or order param (Laravel validator rejects on non-US)', async () => {
+  it('US — sort=field.direction format (point séparateur, pas &order=d)', async () => {
     const svc = makeService();
     await (svc as any).fetchEodhdScreener('US', 'test-key');
     const decoded = decodeURIComponent(capturedUrl!);
-    // PR #557 — sort=refund_1d_p&order=d est OK pour US (test live + doc EODHD).
-    // Pour non-US, on garde l'ancien comportement (no sort) car Laravel validator
-    // EODHD rejette sort sur non-US (test historique P19s).
-    expect(decoded).toMatch(/[?&]sort=refund_1d_p/);
-    expect(decoded).toMatch(/[?&]order=d/);
+    // HOTFIX 01/06 — PR #557 utilisait `sort=refund_1d_p&order=d` qui retournait
+    // HTTP 422 "sort.0.direction field is required" (Laravel array validator).
+    // Le bon format EODHD est `sort=field.direction` (cf. comment historique
+    // ligne 1696 : "Le sort key doit aussi être refund_1d_p.desc").
+    expect(decoded).toMatch(/[?&]sort=refund_1d_p\.desc/);
+    expect(decoded).not.toMatch(/[?&]order=d/);
   });
 
   it('PR #557 — limit=100 (respect EODHD doc max=100, anciennement 500 erroné)', async () => {
