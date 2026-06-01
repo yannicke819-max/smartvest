@@ -272,9 +272,11 @@ export class LiveTraderAgentService {
     // Enregistrement MANUEL des crons via SchedulerRegistry (pattern exact
     // TopGainersScannerService.onModuleInit qui marche en prod depuis P5).
     // Les décorateurs @Cron sur cette classe ne tiraient pas (cause inconnue).
+    // PR #543 — Cadence augmentée 5min→2min. Catch les pumps 1m ~3 min plus
+    // rapidement. Mistral free tier supporte largement (2.5× = ~10% du quota).
     this.registerCron(
       'live-trader-agent-decision-manual',
-      '*/5 * * * *',
+      '*/2 * * * *',
       () => this.runDecisionCycle().catch((e) =>
         this.logger.error(`[trader-agent] runDecisionCycle error: ${String(e).slice(0, 200)}`),
       ),
