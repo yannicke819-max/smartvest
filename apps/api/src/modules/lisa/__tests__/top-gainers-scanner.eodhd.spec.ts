@@ -146,28 +146,29 @@ describe('fetchEodhdScreener — URL construction (P18c regression guard)', () =
     expect(decoded).not.toContain('limit=20');
   });
 
-  it('P19s++ HOTFIX — non-US exchanges build URL with UPPERCASE + NO 1d return filter', async () => {
-    // P19s++ (30/04/2026 08:10 UTC) — `change_p` n'est PAS un valid filter
-    // field per EODHD doc (c'est le nom dans la RÉPONSE seulement). Ça
-    // causait HTTP 422 sur LSE/MC/KO/HK :
-    //     {"errors":{"filters.1.field":["The selected filters.1.field is invalid."]}}
-    // Fix : DROP le filter 1d return pour non-US, post-filter client-side.
+  it('non-US exchanges build URL with UPPERCASE + refund_1d_p>3 filter + sort desc (post-01/06 fix)', async () => {
+    // Audit 01/06/2026 — Confirmation live EODHD : `refund_1d_p` est filtrable
+    // ET sortable sur TOUS les exchanges (KO/KQ/SHG/SHE/NSE/TW). L'hypothèse
+    // historique P19s++ "non-US n'a pas de données refund_1d_p" était fausse.
+    //
+    // Sans sort+filter, le scanner paginait dans un ordre arbitraire et ratait
+    // 82% des EODHD Asia top gainers (4/22 hit rate observé 01/06). Cf. commit
+    // de fix pour détails.
+    //
+    // change_p reste interdit (n'est PAS un filter field valide — c'est le nom
+    // de la RÉPONSE).
     const svc = makeService();
-    // P20a: corrected EODHD codes — T (Tokyo), SHG (Shanghai), SHE (Shenzhen)
-    const exchanges = ['T', 'HK', 'KO', 'SHG', 'SHE', 'TO', 'AS', 'NSE', 'BSE', 'AU'];
+    const exchanges = ['T', 'HK', 'KO', 'KQ', 'SHG', 'SHE', 'TO', 'AS', 'NSE', 'BSE', 'AU'];
     for (const ex of exchanges) {
       capturedUrl = undefined;
       await (svc as any).fetchEodhdScreener(ex, 'test-key');
       expect(capturedUrl).toBeDefined();
       const decoded = decodeURIComponent(capturedUrl!);
-      // Exchange UPPERCASE
       expect(decoded).toContain(`["exchange","=","${ex}"]`);
-      // P19s++ : pas de filter 1d return (ni change_p, ni refund_1d_p)
       expect(decoded).not.toMatch(/\["change_p","[<>=]"/);
-      expect(decoded).not.toMatch(/\["refund_1d_p","[<>=]"/);
-      // market_cap conservé (valid filter)
+      expect(decoded).toContain('["refund_1d_p",">",3]');
       expect(decoded).toContain('["market_capitalization",">",50000000]');
-      expect(decoded).not.toMatch(/[?&]sort=/);
+      expect(decoded).toMatch(/[?&]sort=refund_1d_p\.desc/);
       expect(decoded).not.toContain('avgvol_50d');
     }
   });
