@@ -275,9 +275,13 @@ export class StrategyCoachService {
 
     const ctx = await this.buildContext(cfg, portfolioAgeDays);
 
-    // Décision Flash vs Pro
+    // Décision Flash vs Pro (chain rapide vs raisonnement profond)
+    // Note 01/06 : si LLM_PRIMARY_PROVIDER=mistral-medium, les 2 chains routent
+    // d'abord Mistral en primary avant fallback Gemini. Le label `llmModel`
+    // ci-dessous est juste une intention initiale — `res.providerId` reflète
+    // le vrai provider qui a répondu (mistral-medium / gemini-pro / gemini-flash).
     const usePro = await this.shouldEscalateToPro(cfg, ctx);
-    const llmModel = usePro ? 'gemini-pro' : 'gemini-flash';
+    const llmModel = usePro ? 'pro-chain' : 'fast-chain';
 
     const userPrompt = JSON.stringify(ctx, null, 2);
     const llmCallParams = {

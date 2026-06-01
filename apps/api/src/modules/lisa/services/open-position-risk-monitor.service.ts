@@ -365,9 +365,22 @@ export class OpenPositionRiskMonitorService {
   /**
    * Applique l'action selon le verdict. Best-effort : log et audit même si échec.
    * Retourne true si une action a été effectivement appliquée (pour le compteur cycle).
+   *
+   * 01/06/2026 — Architecture "TRADER chef d'orchestre" : si RISK_MONITOR_MODE=advisory,
+   * on n'applique PLUS directement (pas d'UPDATE stop_loss_price ni de close). On INSERT
+   * une ligne risk_advisory dans lisa_decision_log et le TRADER LLM consommera ce signal
+   * à son prochain cycle (live-trader-agent.service.ts:runDecisionCycle). Il décide librement :
+   * apply (proposer trail_stop avec le SL conseillé), close (action_kind=close), ou ignore.
+   *
+   * Default mode 'direct' = comportement legacy pour back-compat (rollback safe via
+   * `fly secrets set RISK_MONITOR_MODE=direct`).
    */
   private async applyAction(pos: OpenPositionRow, result: ThesisHealthResult): Promise<boolean> {
     const { verdict, composite } = result;
+    const mode = (this.config.get<string>('RISK_MONITOR_MODE') ?? 'direct').toLowerCase();
+    if (mode === 'advisory') {
+      return await this.emitAdvisory(pos, result);
+    }
     try {
       switch (verdict) {
         case 'CLOSE_NOW':
@@ -383,6 +396,64 @@ export class OpenPositionRiskMonitorService {
       }
     } catch (e) {
       this.logger.warn(`[risk-monitor] applyAction ${verdict} ${pos.symbol} failed: ${String(e).slice(0, 200)}`);
+      return false;
+    }
+  }
+
+  /**
+   * Mode advisory : INSERT lisa_decision_log kind=risk_advisory au lieu de
+   * modifier directement lisa_positions. Le TRADER LLM lit ces advisories
+   * à son prochain cycle et décide quoi faire. Pas de side-effect sur la
+   * position (SL/TP/status restent intacts).
+   */
+  private async emitAdvisory(pos: OpenPositionRow, result: ThesisHealthResult): Promise<boolean> {
+    const { verdict, composite, subA, subB, subC } = result;
+    if (verdict === 'HOLD') {
+      // Pas d'advisory pour HOLD (signal neutre, polluerait le state TRADER).
+      return false;
+    }
+    let suggestedSlPrice: number | null = null;
+    let suggestedTpPrice: number | null = null;
+    const entry = Number(pos.entry_price);
+    if (verdict === 'TIGHTEN_SL') {
+      suggestedSlPrice = entry;  // breakeven
+    } else if (verdict === 'RAISE_TP') {
+      const currentTp = pos.take_profit_price != null ? Number(pos.take_profit_price) : null;
+      if (currentTp != null) suggestedTpPrice = currentTp * 1.5;
+    } else if (verdict === 'MOMENTUM_RIDE') {
+      const currentTp = pos.take_profit_price != null ? Number(pos.take_profit_price) : null;
+      if (currentTp != null) suggestedTpPrice = currentTp * 2.0;
+    }
+    try {
+      const { error } = await this.supabase.getClient()
+        .from('lisa_decision_log')
+        .insert({
+          portfolio_id: pos.portfolio_id,
+          kind: 'risk_advisory',
+          payload: {
+            position_id: pos.id,
+            symbol: pos.symbol,
+            asset_class: pos.asset_class,
+            composite_score: composite,
+            sub_a: subA,
+            sub_b: subB,
+            sub_c: subC,
+            verdict,
+            suggested_action: verdict,
+            suggested_sl_price: suggestedSlPrice,
+            suggested_tp_price: suggestedTpPrice,
+            rationale: `risk_monitor advisory composite=${composite.toFixed(3)} (sub_a=${subA?.toFixed(2) ?? 'n/a'} sub_b=${subB?.toFixed(2) ?? 'n/a'} sub_c=${subC?.toFixed(2) ?? 'n/a'})`,
+            expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+          },
+        });
+      if (error) {
+        this.logger.warn(`[risk-monitor] ${pos.symbol} advisory INSERT failed: ${error.message}`);
+        return false;
+      }
+      this.logger.log(`[risk-monitor] ${pos.symbol} ADVISORY ${verdict} composite=${composite.toFixed(3)} (TRADER décidera)`);
+      return true;
+    } catch (e) {
+      this.logger.warn(`[risk-monitor] ${pos.symbol} emitAdvisory exception: ${String(e).slice(0, 200)}`);
       return false;
     }
   }

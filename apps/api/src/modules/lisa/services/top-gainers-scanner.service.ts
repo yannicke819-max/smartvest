@@ -4794,6 +4794,55 @@ export class TopGainersScannerService implements OnModuleInit {
         const stopPriceStr = stopLoss.toFixed(8);
         const tpPriceStr = takeProfit.toFixed(8);
 
+        // ─────────────────────────────────────────────────────────────────
+        // Architecture "TRADER chef d'orchestre" — gated par env.
+        // Si TRADER_ARBITRATION_ENABLED=true ET portfolio = TRADER, le
+        // scanner NE crée plus de position directement : il INSERT une
+        // scanner_proposal que le TRADER LLM consommera au cycle suivant
+        // (live-trader-agent.service.ts:runDecisionCycle). Le TRADER
+        // décide accept/reject + exécute via paperBroker.openPositionDirect.
+        // Default OFF pour back-compat — les shadows + portfolios legacy
+        // gardent l'ancien comportement direct.
+        // ─────────────────────────────────────────────────────────────────
+        const arbitrationEnabled = (this.config.get<string>('TRADER_ARBITRATION_ENABLED') ?? 'false').toLowerCase() === 'true';
+        const isTraderPortfolio = portfolioId === MAIN_PORTFOLIO_ID_FOR_DEDUPE;
+        if (arbitrationEnabled && isTraderPortfolio) {
+          try {
+            await this.supabase.getClient().from('scanner_proposals').insert({
+              portfolio_id: portfolioId,
+              symbol: cand.symbol,
+              asset_class: cand.assetClass,
+              exchange: cand.exchange ?? null,
+              direction: item.direction,
+              notional_usd_suggested: directionalNotional,
+              stop_loss_pct_suggested: effectiveSl,
+              take_profit_pct_suggested: effectiveTp,
+              score: cand.score,
+              change_pct: cand.changePct,
+              live_price_at_proposal: livePriceNum,
+              candidate_metrics: {
+                persistence,
+                exchange: cand.exchange,
+                asset_class: cand.assetClass,
+                live_price_source: quote.source,
+                stop_loss_price_suggested: parseFloat(stopPriceStr),
+                take_profit_price_suggested: parseFloat(tpPriceStr),
+                rsi: (cand as { rsi?: number | null }).rsi ?? null,
+                volume: (cand as { volume?: number | null }).volume ?? null,
+              },
+              scanner_reasoning: `[GAINERS_DIRECT_PROPOSAL] ${cand.symbol} ${item.direction.toUpperCase()} score=${cand.score} change_1m=${cand.changePct?.toFixed(2)}% persistence=${persistence ?? 'n/a'} plan=${plan.map(p => p.direction).join('+')} ratio×${item.notionalMultiplier.toFixed(2)}`,
+              expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+            });
+            this.logger.log(
+              `[trader-arbitration] proposal inserted ${cand.symbol} ${item.direction} score=${cand.score} (TRADER décidera au prochain cycle)`,
+            );
+          } catch (e) {
+            this.logger.warn(`[trader-arbitration] proposal insert failed for ${cand.symbol}: ${String(e).slice(0, 120)}`);
+          }
+          // Skip openPositionDirect — TRADER décide
+          continue;
+        }
+        // Legacy direct path (shadows, ou TRADER si flag OFF) :
         const openedPos = await this.lisa.getPaperBroker().openPositionDirect({
           portfolioId,
           symbol: cand.symbol,

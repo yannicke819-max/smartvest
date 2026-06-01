@@ -114,8 +114,43 @@ export class ScannerLlmRouterService {
   /**
    * Appel LLM via la chain rapide (Flash Lite → Opus). Pour les tâches simples /
    * volumineuses (scanner, screening, classification).
+   *
+   * 01/06/2026 — Si LLM_PRIMARY_PROVIDER=mistral-medium, essaie Mistral en
+   * priorité (free tier, throttle client-side garantit pas de 429). Fallback
+   * automatique vers la chain Gemini Flash si Mistral fail (timeout, parse
+   * error, throttle_timeout). Aligne le comportement de call() avec
+   * callWithPro() pour que TOUT le système (scout, helpers scanner,
+   * post-mortem, Strategy Coach) passe par Mistral en primary quand activé.
    */
   async call(params: LlmCallParams): Promise<{ content: string; providerId: string; costUsd: number; latencyMs: number; fallbackUsed: boolean }> {
+    // Mistral primary path (gated par env)
+    if (this.primaryProvider === 'mistral-medium' && this.mistralShadow) {
+      try {
+        const res = await this.mistralShadow.call({
+          system: params.system,
+          user: params.user,
+          temperature: params.temperature ?? 0.3,
+          maxTokens: params.maxTokens ?? 1500,
+          timeoutMs: params.timeoutMs ?? 30_000,
+        });
+        if (!res.content) {
+          throw new Error(`Mistral primary (fast chain) returned empty content (error=${res.error ?? 'unknown'})`);
+        }
+        return {
+          content: res.content,
+          providerId: res.providerId,
+          costUsd: res.costUsd,
+          latencyMs: res.latencyMs,
+          fallbackUsed: false,
+        };
+      } catch (e) {
+        this.logger.debug(
+          `[scanner-llm] Mistral primary (fast) failed → fallback Gemini chain. err=${String(e).slice(0, 150)}`,
+        );
+        // tombe sur Gemini ci-dessous
+      }
+    }
+
     if (!this.router) {
       throw new Error('ScannerLlmRouterService.call() — router disabled (check SCANNER_LLM_ROUTER_ENABLED + GEMINI_API_KEY)');
     }

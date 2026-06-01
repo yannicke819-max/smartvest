@@ -520,6 +520,51 @@ export class LiveTraderAgentService {
       const middleReference = settled[5].status === 'fulfilled' ? (settled[5].value as string) : '';
       const selfReflection = settled[6].status === 'fulfilled' ? (settled[6].value as string) : '';
       const dailyBrief = settled[7].status === 'fulfilled' ? settled[7].value : null;
+
+      // ─────────────────────────────────────────────────────────────────
+      // Architecture "TRADER chef d'orchestre" (01/06/2026) — gated par
+      // TRADER_ARBITRATION_ENABLED. Le scanner ne crée plus de positions
+      // directement : il INSERT scanner_proposals. TRADER les lit ici, les
+      // injecte dans son state, et décide accept/reject (open_directional
+      // pour accept, hold/comment pour reject). Les risk advisories du
+      // RiskMonitor sont aussi consommées ici (advisory mode).
+      // ─────────────────────────────────────────────────────────────────
+      const arbitrationEnabled = (this.config.get<string>('TRADER_ARBITRATION_ENABLED') ?? 'false').toLowerCase() === 'true';
+      let scannerProposals: Array<Record<string, unknown>> = [];
+      let riskAdvisories: Array<Record<string, unknown>> = [];
+      if (arbitrationEnabled) {
+        try {
+          const { data: proposals } = await this.supabase.getClient()
+            .from('scanner_proposals')
+            .select('id, symbol, asset_class, exchange, direction, notional_usd_suggested, stop_loss_pct_suggested, take_profit_pct_suggested, score, change_pct, live_price_at_proposal, candidate_metrics, scanner_reasoning, created_at, expires_at')
+            .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+            .eq('status', 'pending')
+            .gt('expires_at', new Date().toISOString())
+            .order('score', { ascending: false })
+            .limit(20);
+          scannerProposals = (proposals ?? []) as Array<Record<string, unknown>>;
+        } catch (e) {
+          this.logger.debug(`[trader-agent] read scanner_proposals failed: ${String(e).slice(0, 120)}`);
+        }
+        try {
+          const { data: advisories } = await this.supabase.getClient()
+            .from('lisa_decision_log')
+            .select('id, payload, created_at')
+            .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+            .eq('kind', 'risk_advisory')
+            .gte('created_at', new Date(Date.now() - 5 * 60_000).toISOString())
+            .order('created_at', { ascending: false })
+            .limit(10);
+          riskAdvisories = (advisories ?? []) as Array<Record<string, unknown>>;
+        } catch (e) {
+          this.logger.debug(`[trader-agent] read risk_advisories failed: ${String(e).slice(0, 120)}`);
+        }
+        if (scannerProposals.length > 0 || riskAdvisories.length > 0) {
+          this.logger.log(
+            `[trader-agent] arbitration ON — ${scannerProposals.length} scanner proposals + ${riskAdvisories.length} risk advisories injectés dans le state`,
+          );
+        }
+      }
       const fetchFailures = settled
         .map((s, i) => s.status === 'rejected' ? `${['candidates','macro','news','memory','lessons','middle_ref','self_reflect','daily_brief'][i]}=${String(s.reason).slice(0,80)}` : null)
         .filter((x) => x !== null);
@@ -540,7 +585,10 @@ export class LiveTraderAgentService {
       // Garde-fou : on log dans trader_agent_decisions pour traçabilité du skip.
       const openPositionsCount = Array.isArray(state.openPositions) ? state.openPositions.length : 0;
       const skipForEmptyContext = (this.config.get<string>('TRADER_SKIP_LLM_WHEN_EMPTY') ?? 'true').toLowerCase() === 'true';
-      if (skipForEmptyContext && candidates.length === 0 && openPositionsCount === 0) {
+      // 01/06 — Ne pas skip si on a des scanner_proposals ou risk_advisories à arbitrer,
+      // même avec 0 candidats live + 0 positions ouvertes.
+      const hasArbitrationWork = scannerProposals.length > 0 || riskAdvisories.length > 0;
+      if (skipForEmptyContext && candidates.length === 0 && openPositionsCount === 0 && !hasArbitrationWork) {
         await this.logDecision({
           cycleStartedAt, state, action: 'hold' as const,
           notionalUsd: 0, confidence: 0,
@@ -566,6 +614,18 @@ export class LiveTraderAgentService {
         portfolio_drawdown_pct: state.drawdownFromInitialPct,
         state,
         candidates,
+        // 01/06 — TRADER chef d'orchestre : scanner_proposals = candidats que
+        // le scanner a pré-qualifié et qui attendent décision TRADER.
+        // Tu peux : (a) accept en émettant open_directional sur ce symbol avec
+        // notional / SL / TP cohérents avec le suggested, OU (b) reject en
+        // émettant hold + raison dans thesis. Une proposal non actée expire en 5min.
+        scanner_proposals: scannerProposals,
+        // 01/06 — RiskMonitor en mode advisory : il calcule un composite_score
+        // sur tes positions ouvertes et te conseille (TIGHTEN_SL / RAISE_TP /
+        // CLOSE_NOW / MOMENTUM_RIDE) avec un rationale. Tu décides : tu peux
+        // appliquer (trail_stop avec le SL conseillé / close direct), ou ignorer
+        // si tu juges que c'est du bruit.
+        risk_advisories: riskAdvisories,
         macro,
         news_recent: news,
         // PR #536 — Daily catalyst brief (cron 04:00 UTC) avec events macro + tickers focus.
