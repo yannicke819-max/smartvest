@@ -47,6 +47,7 @@ import { AdminScannerDebugController } from './admin-scanner-debug.controller';
 import { AdminMarketCloseReportsController } from './admin-market-close-reports.controller';
 import { AdminLessonAutoApplyController } from './admin-lesson-auto-apply.controller';
 import { AdminLlmCostLiveController } from './admin-llm-cost-live.controller';
+import { AdminLlmAccuracyController } from './admin-llm-accuracy.controller';
 
 @Module({
   imports: [SupabaseModule, forwardRef(() => LisaModule), GainersModule],
@@ -90,6 +91,8 @@ import { AdminLlmCostLiveController } from './admin-llm-cost-live.controller';
     AdminLessonAutoApplyController,
     // PR #522 — Compteur LLM TEMPS RÉEL (vs api_costs_daily qui flush EOD).
     AdminLlmCostLiveController,
+    // PR #535 — "Qui a raison ?" ranking par provider sur les shadows.
+    AdminLlmAccuracyController,
   ],
 })
 export class AdminModule {}

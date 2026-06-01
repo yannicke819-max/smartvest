@@ -13,7 +13,8 @@
  * passe en mode défensif (fermetures uniquement, plus d'ouvertures).
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { LlmAccuracyService } from './llm-accuracy.service';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import Decimal from 'decimal.js';
 import { randomUUID } from 'node:crypto';
@@ -219,6 +220,7 @@ export class MechanicalTradingService {
     private readonly sanityR5: SanityR5Service,
     private readonly qw3Warmup: Qw3WarmupExtendedService,
     private readonly assetClassKelly: AssetClassKellyConfigService,
+    @Optional() private readonly llmAccuracy?: LlmAccuracyService,
   ) {}
 
   /**
@@ -3107,6 +3109,14 @@ export class MechanicalTradingService {
       pos.direction as string,
       realizedPnl.toNumber(),
     ).catch((e) => this.logger.debug(`pattern feedback failed: ${String(e).slice(0, 100)}`));
+
+    // PR #535 — boucle feedback LLM accuracy : backfill outcome sur les
+    // shadow rows risk_monitor associées à cette position (target_id=id).
+    // Permet ensuite computeAccuracy() de mesurer Brier + correlation par
+    // provider. Fire-and-forget — ne bloque jamais le close.
+    this.llmAccuracy
+      ?.linkPositionOutcome(positionId, pnlPct)
+      .catch((e) => this.logger.debug(`[llm-accuracy] hook failed: ${String(e).slice(0, 100)}`));
 
     await this.decisionLog.append({
       portfolioId: pos.portfolio_id as string,

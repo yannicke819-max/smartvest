@@ -289,6 +289,7 @@ export class OpenPositionRiskMonitorService {
       void this.llmABShadow?.recordShadow({
         callSite: 'risk_monitor',
         portfolioId: pos.portfolio_id,
+        targetId: pos.id, // permet backfill outcome quand position ferme (LlmAccuracyService)
         systemPrompt: GEMINI_VERDICT_SYSTEM_PROMPT,
         userPrompt,
         applied: {

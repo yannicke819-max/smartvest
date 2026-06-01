@@ -69,6 +69,11 @@ export interface LlmABRecordParams {
   maxTokens?: number;
   /** Override temperature pour shadows (default 0.3). */
   temperature?: number;
+  /**
+   * Identifier optionnel de l'objet évalué (e.g. lisa_positions.id pour
+   * risk_monitor). Permet le backfill outcome ultérieur par LlmAccuracyService.
+   */
+  targetId?: string;
 }
 
 interface ShadowResult {
@@ -281,6 +286,7 @@ export class LlmABShadowService {
         decided_at: new Date().toISOString(),
         call_site: params.callSite,
         portfolio_id: params.portfolioId ?? null,
+        target_id: params.targetId ?? null,
         applied_provider: params.applied.providerId,
         applied_response_summary: this.truncate(params.applied.content),
         applied_cost_usd: params.applied.costUsd,
