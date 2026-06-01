@@ -31,6 +31,7 @@ import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
 import { LlmABShadowService } from './llm-ab-shadow.service';
+import { postmortemComparator } from './llm-shadow-comparators';
 import { LisaService } from './lisa.service';
 
 const SCANNER_PORTFOLIO_IDS = [
@@ -300,7 +301,8 @@ export class MainScannerPostMortemService {
 
     // PR #523 — A/B shadow fire-and-forget contre Flash + Mistral Medium/Large.
     // Cron 02:30 UTC quotidien → 1 call/jour, coût additionnel shadows ~$0.05/jour.
-    // Comparator default (text normalize) suffisant pour lessons text.
+    // Comparator sémantique Jaccard sur lessons[].macro_condition (fallback tokens
+    // si JSON parse fail). Default text-match donnait 0% concordance.
     void this.llmABShadow?.recordShadow({
       callSite: 'scanner_postmortem',
       systemPrompt: POST_MORTEM_SYSTEM_PROMPT,
@@ -312,6 +314,7 @@ export class MainScannerPostMortemService {
         latencyMs: response.latencyMs,
       },
       maxTokens: 8000,
+      comparator: postmortemComparator,
     });
 
     if (!response.content || response.content.trim().length === 0) {
