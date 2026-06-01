@@ -91,6 +91,170 @@ export class LlmAccuracyService {
   }
 
   /**
+   * PR #536 — Backfill outcome dans gemini_ab_decisions pour le TRADER applied trade.
+   * Lié par match (portfolio_id, pro_target_symbol, pro_action_kind=open_directional,
+   * decided_at ±90s de entry_timestamp).
+   *
+   * Permet ensuite computeTraderAccuracy() de classer les 4 providers (Pro, Flash,
+   * Mistral Medium, Large) par taux de win sur les cycles où ils étaient d'accord
+   * avec Pro applied (concordance perfect).
+   */
+  async linkTraderDecisionOutcome(args: {
+    positionId: string;
+    portfolioId: string;
+    symbol: string;
+    entryTimestamp: string;
+    pnlUsd: number;
+  }): Promise<void> {
+    if (!this.supabase?.isReady()) return;
+    const entryTs = new Date(args.entryTimestamp);
+    const before = new Date(entryTs.getTime() - 90_000).toISOString();
+    const after = new Date(entryTs.getTime() + 90_000).toISOString();
+    try {
+      const { error } = await this.supabase
+        .getClient()
+        .from('gemini_ab_decisions')
+        .update({
+          outcome_position_id: args.positionId,
+          outcome_pnl_usd: args.pnlUsd,
+          outcome_win: args.pnlUsd > 0,
+          outcome_resolved_at: new Date().toISOString(),
+        })
+        .eq('portfolio_id', args.portfolioId)
+        .eq('pro_target_symbol', args.symbol)
+        .eq('pro_action_kind', 'open_directional')
+        .gte('decided_at', before)
+        .lte('decided_at', after)
+        .is('outcome_resolved_at', null);
+      if (error) {
+        this.logger.debug(`[llm-accuracy-trader] backfill ${args.positionId.slice(0, 8)} failed: ${error.message}`);
+      }
+    } catch (e) {
+      this.logger.debug(`[llm-accuracy-trader] backfill ${args.positionId.slice(0, 8)} exception: ${String(e).slice(0, 100)}`);
+    }
+  }
+
+  /**
+   * Compute accuracy par provider sur gemini_ab_decisions (TRADER cycles).
+   * Pour chaque provider (Pro / Flash / Mistral Medium / Large), calcule :
+   *   - n_total : cycles où ce provider a été appelé
+   *   - n_resolved : cycles où l'outcome est connu (Pro applied → trade fermé)
+   *   - n_agreed_with_pro : cycles où ce provider matche Pro action+target
+   *   - agreed_win_rate : sur les agreed, % de wins (= aurait fait pareil que Pro et gagné)
+   *   - disagreed_n : cycles où le provider diffère de Pro (no hypothetical outcome yet, cf PR B)
+   *
+   * Verdict : ranking par agreed_win_rate (proxy : "ce provider est d'accord avec
+   * Pro quand Pro gagne, désaccord quand Pro perd" = bonne discrimination).
+   */
+  async computeTraderAccuracy(days: number): Promise<{
+    days: number;
+    total_cycles: number;
+    resolved_cycles: number;
+    by_provider: Array<{
+      provider: 'pro' | 'flash' | 'mistral-medium' | 'mistral-large';
+      n_calls: number;
+      n_resolved: number;
+      n_agreed_with_pro: number;
+      agreed_n_win: number;
+      agreed_win_rate_pct: number | null;
+      n_disagreed: number;
+    }>;
+    verdict: string;
+  }> {
+    if (!this.supabase?.isReady()) {
+      return { days, total_cycles: 0, resolved_cycles: 0, by_provider: [], verdict: 'supabase not ready' };
+    }
+    const since = new Date(Date.now() - days * 24 * 3600_000).toISOString();
+    interface TraderRow {
+      pro_action_kind: string | null;
+      pro_target_symbol: string | null;
+      flash_action_kind: string | null;
+      flash_target_symbol: string | null;
+      mistral_action_kind: string | null;
+      mistral_target_symbol: string | null;
+      mistral_large_action_kind: string | null;
+      mistral_large_target_symbol: string | null;
+      outcome_resolved_at: string | null;
+      outcome_win: boolean | null;
+    }
+    const { data: rowsRaw, error } = await this.supabase.getClient()
+      .from('gemini_ab_decisions')
+      .select(
+        'pro_action_kind, pro_target_symbol, flash_action_kind, flash_target_symbol, ' +
+        'mistral_action_kind, mistral_target_symbol, mistral_large_action_kind, mistral_large_target_symbol, ' +
+        'outcome_resolved_at, outcome_win',
+      )
+      .gte('decided_at', since);
+    if (error || !rowsRaw) {
+      return { days, total_cycles: 0, resolved_cycles: 0, by_provider: [], verdict: `query failed: ${error?.message}` };
+    }
+    const rows = rowsRaw as unknown as TraderRow[];
+    const total = rows.length;
+    const resolved = rows.filter(r => r.outcome_resolved_at !== null);
+
+    interface ProviderStats { n_calls: number; n_resolved: number; n_agreed: number; n_agreed_win: number; n_disagreed: number }
+    const stats: Record<string, ProviderStats> = {
+      pro: { n_calls: 0, n_resolved: 0, n_agreed: 0, n_agreed_win: 0, n_disagreed: 0 },
+      flash: { n_calls: 0, n_resolved: 0, n_agreed: 0, n_agreed_win: 0, n_disagreed: 0 },
+      'mistral-medium': { n_calls: 0, n_resolved: 0, n_agreed: 0, n_agreed_win: 0, n_disagreed: 0 },
+      'mistral-large': { n_calls: 0, n_resolved: 0, n_agreed: 0, n_agreed_win: 0, n_disagreed: 0 },
+    };
+
+    const nullify = (s: string | null | undefined) => (s === '' || s == null ? null : s);
+    for (const r of rows) {
+      const proKey = `${r.pro_action_kind}/${nullify(r.pro_target_symbol) ?? '-'}`;
+      const isResolved = r.outcome_resolved_at !== null;
+      const proWin = r.outcome_win === true;
+
+      stats.pro.n_calls++;
+      if (isResolved) {
+        stats.pro.n_resolved++;
+        stats.pro.n_agreed++;
+        if (proWin) stats.pro.n_agreed_win++;
+      }
+
+      const checks = [
+        { key: 'flash', action: r.flash_action_kind, target: r.flash_target_symbol },
+        { key: 'mistral-medium', action: r.mistral_action_kind, target: r.mistral_target_symbol },
+        { key: 'mistral-large', action: r.mistral_large_action_kind, target: r.mistral_large_target_symbol },
+      ];
+      for (const c of checks) {
+        if (c.action == null) continue;
+        stats[c.key].n_calls++;
+        if (!isResolved) continue;
+        stats[c.key].n_resolved++;
+        const providerKey = `${c.action}/${nullify(c.target) ?? '-'}`;
+        if (providerKey === proKey) {
+          stats[c.key].n_agreed++;
+          if (proWin) stats[c.key].n_agreed_win++;
+        } else {
+          stats[c.key].n_disagreed++;
+        }
+      }
+    }
+
+    const byProvider = Object.entries(stats).map(([provider, s]) => ({
+      provider: provider as 'pro' | 'flash' | 'mistral-medium' | 'mistral-large',
+      n_calls: s.n_calls,
+      n_resolved: s.n_resolved,
+      n_agreed_with_pro: s.n_agreed,
+      agreed_n_win: s.n_agreed_win,
+      agreed_win_rate_pct: s.n_agreed > 0 ? (s.n_agreed_win / s.n_agreed) * 100 : null,
+      n_disagreed: s.n_disagreed,
+    }));
+    byProvider.sort((a, b) => (b.agreed_win_rate_pct ?? -1) - (a.agreed_win_rate_pct ?? -1));
+
+    const best = byProvider[0];
+    const verdict =
+      best && best.agreed_win_rate_pct !== null
+        ? `${best.provider} agreed-with-Pro win rate ${best.agreed_win_rate_pct.toFixed(0)}% (n=${best.n_agreed_with_pro}/${best.n_resolved} ${days}d). ` +
+          `Note : les cycles divergents (n=${best.n_disagreed}) nécessitent un shadow execution simulator (PR B) pour mesurer l'outcome hypothétique.`
+        : `insufficient resolved samples (n=${resolved.length}) — patience requis`;
+
+    return { days, total_cycles: total, resolved_cycles: resolved.length, by_provider: byProvider, verdict };
+  }
+
+  /**
    * Compute accuracy metrics par provider pour un call_site donné sur les
    * N derniers jours. Ne prend que les rows avec outcome_resolved_at set.
    */
