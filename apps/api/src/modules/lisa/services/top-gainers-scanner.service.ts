@@ -1804,12 +1804,14 @@ export class TopGainersScannerService implements OnModuleInit {
       for (let page = 0; page < maxPages; page++) {
         if (allMapped.length >= perExchangeCap) break;
         const offset = page * pageSize;
-        // FIX 01/06 — sort=refund_1d_p&order=d UNIQUEMENT pour US (validé doc EODHD,
-        // mais les tests historiques montrent que le Laravel validator EODHD rejette
-        // sort sur non-US). Pour non-US, on garde l'ancien comportement (sort
-        // client-side dans le snapshot endpoint). Permet d'avoir les vrais top
-        // gainers US (sort par %change journalier desc) sans casser les autres.
-        const sortParam = isUs ? '&sort=refund_1d_p&order=d' : '';
+        // FIX 01/06 (hotfix) — format sort EODHD : `field.direction` (point séparateur),
+        // PAS `sort=field&order=d` (déprécié, rejeté par Laravel validator avec
+        // 422 "sort.0.direction field is required"). Audit prod 01/06 15:00 UTC :
+        // PR #557 avait utilisé le mauvais format → US screener 100 % cassé
+        // (ok=0/fail=2 sur 6h, 0 ticker US dans top_gainers_log depuis deploy).
+        // Format correct documenté inline ligne 1696 : `refund_1d_p.desc`.
+        // Restreint à US car non-US n'a pas le filter refund_1d_p (cf. P19s+ ligne 1710).
+        const sortParam = isUs ? '&sort=refund_1d_p.desc' : '';
         const url = `https://eodhd.com/api/screener?api_token=${encodeURIComponent(apiKey)}&filters=${filters}${sortParam}&limit=${pageSize}&offset=${offset}&fmt=json`;
         const tStart = Date.now();
         const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });

@@ -120,15 +120,30 @@ export class RealTimeLessonDetectorService {
     // Detect TP_DOUBLE_CYCLE en cross-trades (besoin de regrouper par symbol)
     detected.push(...this.detectTpDoubleCycle(trades));
 
+    // FIX 01/06 — Inject [ID:pattern_id] tag in lesson_text pour permettre
+    // au dedup ilike (ci-dessous) de matcher. Sans ça, le pattern_id (avec
+    // underscores) n'apparaît jamais dans le text humain → re-insert chaque cycle.
+    for (const lesson of detected) {
+      const existingText = String(lesson.payload?.lesson_text ?? '');
+      if (!existingText.includes(`[ID:${lesson.pattern_id}]`)) {
+        lesson.payload = { ...lesson.payload, lesson_text: `${existingText} [ID:${lesson.pattern_id}]` };
+      }
+    }
+
     let inserted = 0;
     for (const lesson of detected) {
       try {
-        // Anti-spam : skip si même pattern_id déjà inséré dans les 24h
+        // Anti-spam : skip si même pattern_id déjà inséré dans les 24h.
+        // FIX 01/06 — le tag `[ID:${pattern_id}]` est injecté par buildLessonText
+        // (cf. detectPatterns). Le matcher ilike précédent cherchait `%${pattern_id}%`
+        // directement dans lesson_text mais le pattern_id (ex: BIG_LOSS_SCT.LSE_2026-06-01)
+        // n'apparaissait pas littéralement dans le text humain — match=0 → re-insert
+        // à chaque cycle. Audit 01/06 : 26 lessons SCT.LSE/IES.LSE identiques en 1j.
         const { data: existing } = await sb
           .from(lesson.table)
           .select('id')
           .gte('created_at', new Date(Date.now() - 24 * 3600_000).toISOString())
-          .ilike('lesson_text', `%${lesson.pattern_id}%`)
+          .ilike('lesson_text', `%[ID:${lesson.pattern_id}]%`)
           .limit(1);
         if (existing && existing.length > 0) continue;
 
