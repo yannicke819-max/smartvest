@@ -57,16 +57,24 @@ Output STRICT JSON matching this schema (no markdown, no backticks):
 }
 
 Rules:
-- Use ONLY events from the VERIFIED EVENTS section provided in the user message.
-- If VERIFIED EVENTS is empty, still produce a brief but be explicit in summary
-  that no high-impact events are scheduled.
+- For "macro_events" : Use ONLY events from the VERIFIED EVENTS section.
+- For "tickers_to_watch" / "tickers_to_avoid" / "sectors_in_focus" :
+  Tu PEUX et DOIS proposer des sector_themes/tickers même si VERIFIED EVENTS
+  est vide, basés sur le contexte général de marché. Exemples valides :
+    * "Tech mega-caps (AAPL.US, NVDA.US) en focus si Fed dovish attendu"
+    * "Semis (SMH.US) à éviter si Asia chip news négatif"
+    * "Crypto majors (BTCUSDT, ETHUSDT) si ETF flows positifs"
+    * "Energy (XLE.US) si tension Moyen-Orient"
+  Le but : donner au TRADER 3-5 tickers actionnables par jour MÊME sans events
+  macro hard-scheduled. Sans cette liste, le TRADER manque de contexte directionnel.
 - Tickers MUST use EODHD suffix format: US (AAPL.US), LSE (BARC.LSE), PA (MC.PA),
   DE (SAP.DE), KO (005930.KO), SHG (600519.SHG), SHE (000001.SHE), HK (0700.HK),
   T (7203.T). Crypto: BTCUSDT, ETHUSDT.
-- Be concise. Max 5 entries per list. No fluff.
-- For "tickers_to_watch" / "tickers_to_avoid", use sector/macro reasoning only
-  (e.g. "PCE Wednesday → rate-sensitive techs in focus"). Never invent specific
-  earnings dates not in the verified context.`;
+- Minimum requis : tickers_to_watch.length ≥ 2, sectors_in_focus.length ≥ 1.
+- Maximum : 5 entries per list. No fluff.
+- Pour tickers_to_avoid : si rien à éviter (marché calme), retourne [] (vide OK).
+- Never invent specific earnings dates not in the verified context (mais tu PEUX
+  citer des sector themes/rotations sans events spécifiques).`;
 
 @Injectable()
 export class DailyCatalystBriefService {

@@ -4492,7 +4492,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     }
 
     // SPY ≈ SP500/10, QQQ ≈ NASDAQ/40
-    return {
+    const finalSnapshot: MarketSnapshot = {
       timestamp: new Date().toISOString(),
       vix: vix ?? fallback.vix,
       usdDxy: dxy ?? fallback.usdDxy,
@@ -4524,6 +4524,38 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
           }
         : {}),
     };
+
+    // Fix C (01/06) — Log persistant best-effort dans lisa_market_snapshot_log
+    // (migration 0186) pour traçabilité historique. Fire-and-forget : ne bloque
+    // pas le retour si l'insert échoue.
+    void this.persistMarketSnapshot(finalSnapshot).catch(() => undefined);
+
+    return finalSnapshot;
+  }
+
+  /**
+   * Fix C (01/06) — Persist le market snapshot dans lisa_market_snapshot_log.
+   * Best-effort fire-and-forget. Si la table n'existe pas (migration 0186 pas
+   * appliquée), l'insert échoue silencieusement (catch côté caller).
+   */
+  private async persistMarketSnapshot(snapshot: MarketSnapshot): Promise<void> {
+    const dq = (snapshot as unknown as { dataQuality?: { live?: unknown[]; proxy?: unknown[]; fallback?: unknown[] } }).dataQuality;
+    const fallbackCount = Array.isArray(dq?.fallback) ? dq!.fallback!.length : 0;
+    const proxyCount = Array.isArray(dq?.proxy) ? dq!.proxy!.length : 0;
+    const { error } = await this.supabase.getClient()
+      .from('lisa_market_snapshot_log')
+      .insert({
+        snapshot: snapshot as unknown as Record<string, unknown>,
+        vix: snapshot.vix ?? null,
+        dxy: snapshot.usdDxy ?? null,
+        us10y: snapshot.us10yYield ?? null,
+        brent: snapshot.brentUsd ?? null,
+        fallback_count: fallbackCount,
+        proxy_count: proxyCount,
+      });
+    if (error && !/relation .* does not exist/.test(error.message)) {
+      this.logger.debug(`[market-snapshot-log] insert failed: ${error.message.slice(0, 120)}`);
+    }
   }
 
   /**

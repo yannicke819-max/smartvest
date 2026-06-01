@@ -1778,9 +1778,10 @@ Recommendation rules :
     progress_pct: number;
     trajectory_status: 'EN_AVANCE' | 'DANS_LE_PLAN' | 'EN_RETARD' | 'HORS_TRAJECTOIRE';
     hours_remaining_in_us_session: number | null;
-    suggested_risk_posture: 'aggressive' | 'normal' | 'defensive';
+    suggested_risk_posture: 'aggressive' | 'normal' | 'cautious' | 'defensive';
     suggested_conviction_floor: number;
     suggested_sizing_multiplier: number;
+    suggested_max_opens_this_cycle: number;
   } | null> {
     // 1. Lecture cible config
     const { data: cfg } = await this.supabase.getClient()
@@ -1835,24 +1836,36 @@ Recommendation rules :
       hoursRemaining = Math.round((msToClose / 3600_000) * 10) / 10;
     }
 
-    // 5. Posture suggérée pour le LLM (il garde la liberté de l'override)
-    let posture: 'aggressive' | 'normal' | 'defensive';
-    let convictionFloor = 0.75;  // default
+    // 5. Posture suggérée pour le LLM (il garde la liberté de l'override).
+    // FIX 01/06 v2 — Relax HORS_TRAJECTOIRE : audit prod 17:50 montre TRADER
+    // paralysé (377 hold / 0 open en 6h) car la règle "defensive=NO_OPEN sauf
+    // A++" bloquait tout (top gainers actuels +15-85% parabolic, aucun A++
+    // disponible). Cercle vicieux : HORS_TRAJ → no_open → reste HORS_TRAJ.
+    // Nouveau : HORS_TRAJ → posture="cautious", 1 open/cycle si conviction
+    // ≥ 0.78 (relax 0.85), sizing × 0.7. Le LLM peut hold, mais n'est plus
+    // INTERDIT d'ouvrir.
+    let posture: 'aggressive' | 'normal' | 'cautious' | 'defensive';
+    let convictionFloor = 0.75;
     let sizingMult = 1.0;
+    let maxOpensThisCycle = 3;
     if (trajectoryStatus === 'HORS_TRAJECTOIRE') {
-      posture = 'defensive';
-      convictionFloor = 0.85;  // exigence + haute pour éviter d'aggraver
+      posture = 'cautious';
+      convictionFloor = 0.78;
       sizingMult = 0.7;
+      maxOpensThisCycle = 1;
     } else if (trajectoryStatus === 'EN_RETARD') {
       posture = 'aggressive';
-      convictionFloor = 0.65;  // baissé pour ouvrir plus
+      convictionFloor = 0.65;
       sizingMult = 1.2;
+      maxOpensThisCycle = 3;
     } else if (trajectoryStatus === 'EN_AVANCE') {
       posture = 'normal';
       convictionFloor = 0.75;
-      sizingMult = 0.9;  // léger profit-preserving
+      sizingMult = 0.9;
+      maxOpensThisCycle = 2;
     } else {
       posture = 'normal';
+      maxOpensThisCycle = 3;
     }
 
     return {
@@ -1864,6 +1877,7 @@ Recommendation rules :
       suggested_risk_posture: posture,
       suggested_conviction_floor: convictionFloor,
       suggested_sizing_multiplier: sizingMult,
+      suggested_max_opens_this_cycle: maxOpensThisCycle,
     };
   }
 
@@ -1912,18 +1926,25 @@ Recommendation rules :
     prompt += `
 
 OBJECTIFS & TRAJECTOIRE (champ userPrompt.objectives_progress) :
-- trajectory_status = EN_AVANCE → posture normal, conviction floor 0.75, sizing×0.9 (préserve profits)
-- trajectory_status = DANS_LE_PLAN → posture normal, conviction 0.75, sizing×1.0
-- trajectory_status = EN_RETARD → posture aggressive, conviction floor 0.65 (abaissé), sizing×1.2 (rattrape)
-- trajectory_status = HORS_TRAJECTOIRE (drawdown jour) → posture defensive, conviction 0.85+ (exigeant), sizing×0.7 (préserve capital)
+- trajectory_status = EN_AVANCE → posture normal, conviction floor 0.75, sizing×0.9, max 2 opens/cycle
+- trajectory_status = DANS_LE_PLAN → posture normal, conviction 0.75, sizing×1.0, max 3 opens/cycle
+- trajectory_status = EN_RETARD → posture aggressive, conviction floor 0.65 (abaissé), sizing×1.2, max 3 opens/cycle
+- trajectory_status = HORS_TRAJECTOIRE (drawdown jour) → posture cautious, conviction 0.78, sizing×0.7, **max 1 open/cycle**
 
-Règle exécutive : si EN_RETARD avec hours_remaining_in_us_session ≥ 2, tu DOIS chercher activement
-des opens (descendre dans top-50 si top-10 sont parabolic) au lieu de hold global. Cite
+RÈGLES OBJECTIVES (révisées 01/06 v2 — relax HORS_TRAJ pour briser cercle vicieux) :
+
+Si EN_RETARD avec hours_remaining_in_us_session ≥ 2 : tu DOIS chercher activement des opens
+(descendre dans top-50 si top-10 sont parabolic) au lieu de hold global. Cite
 '[OBJ_AGGRESSIVE progress=X% remaining=Yh]' dans thesis pour traçabilité.
 
-Si HORS_TRAJECTOIRE : tu peux toujours close des positions perdantes (action_kind=close) mais
-NE PROPOSE PAS d'open spéculatif. Cite '[OBJ_DEFENSIVE_NO_OPEN]'. Exception : setup A++ confirmé
-(conf ≥ 0.90 ET sweetSpotEntry=true ET R/R ≥ 2.0) — sizing réduit ×0.7.
+Si HORS_TRAJECTOIRE : tu peux ouvrir MAX 1 position/cycle avec conviction ≥ 0.78, sizing×0.7.
+Ne pas être agressif (sizing réduit + 1 max) mais NE PAS rester paralysé non plus. Si un candidat
+décent (pas A++ obligatoire) émerge — conviction ≥ 0.78, R/R ≥ 1.5, sweetSpot OU pullback récent —
+tu peux ouvrir 1 position. Cite '[OBJ_CAUTIOUS_TRY conv=X.XX size=Y]' dans thesis.
+Si AUCUN candidat décent : hold OK, cite '[OBJ_CAUTIOUS_NO_VALID]'. NE PAS forcer un trade médiocre.
+
+Si HORS_TRAJECTOIRE ET hours_remaining < 1 : skip opens (le trade n'aura pas le temps de jouer),
+ferme uniquement les positions cassées. Cite '[OBJ_LATE_NO_OPEN]'.
 
 Les suggested_* sont des suggestions, pas des ordres. Tu peux override avec justification
 explicite dans thesis (ex : 'OVERRIDE_SUGGESTED_POSTURE car news_shock détecté X').`;
@@ -2456,6 +2477,7 @@ explicite dans thesis (ex : 'OVERRIDE_SUGGESTED_POSTURE car news_shock détecté
     // 01/06 — markers liés au wiring objectives_progress (system prompt
     // pas des lessons en DB) — évite "skipped unregistered markers" pollution.
     'OBJ_AGGRESSIVE', 'OBJ_DEFENSIVE_NO_OPEN', 'OBJ_NORMAL', 'OBJ_EN_AVANCE',
+    'OBJ_CAUTIOUS_TRY', 'OBJ_CAUTIOUS_NO_VALID', 'OBJ_LATE_NO_OPEN',
     'OVERRIDE_SUGGESTED_POSTURE', 'EOS_WAIT', 'END_OF_SESSION_WAIT',
   ]);
 
