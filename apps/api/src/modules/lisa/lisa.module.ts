@@ -56,6 +56,7 @@ import { LiveTraderAgentService } from './services/live-trader-agent.service';
 import { MistralShadowService } from './services/mistral-shadow.service';
 import { MistralLargeShadowService } from './services/mistral-large-shadow.service';
 import { LlmABShadowService } from './services/llm-ab-shadow.service';
+import { LlmAccuracyService } from './services/llm-accuracy.service';
 import { MainScannerPostMortemService } from './services/main-scanner-postmortem.service';
 import { DailyDigestService } from './services/daily-digest.service';
 import { PushNotificationsService } from './services/push-notifications.service';
@@ -217,6 +218,9 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     // PR #523 — LlmABShadowService générique pour 4 call sites peripheriques
     // (scanner_postmortem, strategy_coach, daily_brief, risk_monitor)
     LlmABShadowService,
+    // PR #535 — boucle feedback "qui a raison ?" sur les shadows : backfill outcomes
+    // depuis lisa_positions closed → Brier + correlation par provider → /admin/llm-accuracy
+    LlmAccuracyService,
     // MainScannerPostMortemService — apprentissage Gemini Pro sur le scanner gainers
     // (cron 02:30 UTC : analyse 24h × 4 portfolios → lessons macro-conditionnelles).
     MainScannerPostMortemService,

@@ -69,6 +69,11 @@ export interface LlmABRecordParams {
   maxTokens?: number;
   /** Override temperature pour shadows (default 0.3). */
   temperature?: number;
+  /**
+   * Identifier optionnel de l'objet évalué (e.g. lisa_positions.id pour
+   * risk_monitor). Permet le backfill outcome ultérieur par LlmAccuracyService.
+   */
+  targetId?: string;
 }
 
 interface ShadowResult {
@@ -129,6 +134,13 @@ export class LlmABShadowService {
 
       // Si applied = Gemini Pro, on ne refait pas Pro en shadow (pas de doublon).
       // Mais si applied = Flash (chain fast), on appelle Pro en shadow.
+      //
+      // ⚠️ Gemini 2.5 Pro = modèle THINKING : consomme 1000-2000 tokens en
+      // reasoning AVANT de produire du content. Si maxTokens < 2000, tout
+      // passe en thinking → content vide. Floor 4000 pour Pro shadow
+      // (2000 thinking + 1500 content + buffer). Autres shadows (Flash,
+      // Mistral) gardent le maxTokens du caller car ils ne thinking pas.
+      const proMaxTokens = Math.max(params.maxTokens ?? 1500, 4000);
       const proPromise = !appliedIsFlashTier
         ? Promise.resolve(null)
         : this.llmRouter
@@ -136,7 +148,7 @@ export class LlmABShadowService {
               system: params.systemPrompt,
               user: params.userPrompt,
               temperature: params.temperature ?? 0.3,
-              maxTokens: params.maxTokens ?? 1500,
+              maxTokens: proMaxTokens,
               timeoutMs: 30_000,
             })
             .then(r => ({ ok: true as const, ...r }))
@@ -274,6 +286,7 @@ export class LlmABShadowService {
         decided_at: new Date().toISOString(),
         call_site: params.callSite,
         portfolio_id: params.portfolioId ?? null,
+        target_id: params.targetId ?? null,
         applied_provider: params.applied.providerId,
         applied_response_summary: this.truncate(params.applied.content),
         applied_cost_usd: params.applied.costUsd,
