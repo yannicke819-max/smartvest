@@ -91,6 +91,21 @@ export interface ApiUsage {
   planCategory: string;
 }
 
+/** Shape réponse `/market_movers/stocks` TwelveData (Pro plan, 100 credits/call). */
+export interface MarketMover {
+  symbol: string;
+  name: string;
+  exchange: string;
+  mic_code: string;
+  datetime: string;
+  last: number;
+  high: number;
+  low: number;
+  volume: number;
+  change: number;
+  percent_change: number;
+}
+
 const BASE_URL = 'https://api.twelvedata.com';
 const TIMEOUT_MS = 5000;
 const RETRY_429_DELAY_MS = 8000;
@@ -671,6 +686,113 @@ export class TwelveDataService {
       calledBy,
     });
     return null;
+  }
+
+  /**
+   * `/market_movers/stocks` — top gainers/losers par pays (Pro plan minimum).
+   * Coût : 100 credits/call. Output max 50 par appel.
+   *
+   * Utilisé pour Tokyo (.T) + Hong Kong (.HK) qui ne sont PAS dans le screener
+   * EODHD officiel. Cf. fix Asia coverage 01/06/2026.
+   *
+   * Retourne null si rate limit, erreur upstream, ou api key absente. Le caller
+   * peut traiter null comme "0 candidats" sans crasher.
+   */
+  async getMarketMovers(
+    country: string,
+    direction: 'gainers' | 'losers' = 'gainers',
+    outputsize = 50,
+    calledBy = 'scanner',
+  ): Promise<MarketMover[] | null> {
+    if (!this.apiKey) return null;
+    const CREDITS = 100;
+    if (!this.creditTracker.canConsume(CREDITS)) {
+      this.logger.warn(
+        `[twelvedata] rate limit hit for getMarketMovers(${country}, ${direction}) — daily=${this.creditTracker.getDailyUsage()}`,
+      );
+      void this.logCall({
+        endpoint: 'market_movers',
+        symbol: `${country}/${direction}`,
+        interval: null,
+        success: false,
+        statusCode: 0,
+        creditsUsed: 0,
+        latencyMs: 0,
+        errorMessage: 'rate_limit_internal',
+        calledBy,
+      });
+      return null;
+    }
+    const tStart = Date.now();
+    try {
+      const params = new URLSearchParams({
+        country,
+        direction,
+        outputsize: String(outputsize),
+        apikey: this.apiKey,
+      });
+      const url = `${BASE_URL}/market_movers/stocks?${params.toString()}`;
+      const res = await this.fetchWithTimeout(url);
+      const latencyMs = Date.now() - tStart;
+      this.creditTracker.consume(CREDITS);
+      if (!res.ok) {
+        void this.logCall({
+          endpoint: 'market_movers',
+          symbol: `${country}/${direction}`,
+          interval: null,
+          success: false,
+          statusCode: res.status,
+          creditsUsed: CREDITS,
+          latencyMs,
+          errorMessage: `HTTP_${res.status}`,
+          calledBy,
+        });
+        this.logger.warn(`[twelvedata] market_movers(${country}) HTTP ${res.status}`);
+        return null;
+      }
+      const data = (await res.json()) as Record<string, unknown>;
+      if (data?.status === 'error') {
+        void this.logCall({
+          endpoint: 'market_movers',
+          symbol: `${country}/${direction}`,
+          interval: null,
+          success: false,
+          statusCode: res.status,
+          creditsUsed: CREDITS,
+          latencyMs,
+          errorMessage: String(data?.message ?? 'api_error').slice(0, 200),
+          calledBy,
+        });
+        return null;
+      }
+      const values = Array.isArray(data.values) ? (data.values as MarketMover[]) : [];
+      void this.logCall({
+        endpoint: 'market_movers',
+        symbol: `${country}/${direction}`,
+        interval: null,
+        success: true,
+        statusCode: res.status,
+        creditsUsed: CREDITS,
+        latencyMs,
+        calledBy,
+      });
+      return values;
+    } catch (err) {
+      const msg = (err as Error).message;
+      void this.logCall({
+        endpoint: 'market_movers',
+        symbol: `${country}/${direction}`,
+        interval: null,
+        success: false,
+        statusCode: 0,
+        creditsUsed: 0,
+        latencyMs: Date.now() - tStart,
+        errorMessage: msg.slice(0, 200),
+        calledBy,
+      });
+      this.logger.warn(`[twelvedata] market_movers(${country}) exception: ${msg}`);
+      return null;
+    }
   }
 
   private async fetchWithTimeout(url: string): Promise<Response> {

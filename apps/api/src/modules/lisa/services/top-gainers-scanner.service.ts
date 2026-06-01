@@ -25,7 +25,7 @@ import { SchedulerRegistry } from '@nestjs/schedule';
 // PR #344 P1 — logger EODHD partagé pour instrumenter les screener calls
 import { EodhdLoggerService } from './eodhd-logger.service';
 // PR #345 — filtres TwelveData (Supertrend US + RSI crypto)
-import { TwelveDataService } from './twelve-data.service';
+import { TwelveDataService, type MarketMover } from './twelve-data.service';
 import { evaluateTwelveDataFilters } from './twelve-data-scanner-filters';
 import { QwDecisionLoggerService } from '../quick-wins/qw-decision-logger.service';
 import { CronJob } from 'cron';
@@ -1556,6 +1556,31 @@ export class TopGainersScannerService implements OnModuleInit {
         );
       }
 
+      // Tokyo + HK via TwelveData /market_movers (non-couverts par EODHD screener,
+      // cf. fetchTwelveDataMarketMovers comment). Gated env. Session-aware réutilise
+      // le classifier 'asia' (00-08 UTC Mon-Fri) — Tokyo open 00-06 UTC, HK 01:30-08
+      // UTC, intersection couvre les 2 sans config supplémentaire.
+      const asiaOpenForTd = !sessionAware || isMarketOpen('asia', now);
+      if (asiaOpenForTd) {
+        for (const ex of ['T', 'HK'] as const) {
+          tasks.push(
+            this.fetchTwelveDataMarketMovers(ex)
+              .then((rows) => {
+                this.recordExchangeResult(`TD_${ex}`, rows.length);
+                return rows;
+              })
+              .catch((e) => {
+                const msg = e?.message ?? String(e);
+                this.logger.warn(`[top-gainers] TD_${ex} failed: ${msg}`);
+                this.recordExchangeResult(`TD_${ex}`, 0, msg);
+                return [];
+              }),
+          );
+        }
+      } else {
+        this.logger.log('[top-gainers] session-aware fetch: Asia closed — skipped TwelveData market_movers (Tokyo+HK)');
+      }
+
       // EU exchanges gated on session windows.
       // PR follow-up #303 — Bug résiduel : `getActiveEuWatchlists` (via
       // `isWithinSession` helper) check uniquement open/close UTC, pas le
@@ -1969,6 +1994,79 @@ export class TopGainersScannerService implements OnModuleInit {
       volume,
       avgVol50d,
       marketCap,
+    };
+  }
+
+  /**
+   * Tokyo + HK gainers via TwelveData `/market_movers/stocks`.
+   *
+   * Pourquoi : Tokyo (.T) et Hong Kong (.HK) ne sont PAS dans EODHD exchanges-list
+   * officiel (testé live 01/06 : JPX/JP/TYO/TKS/T/TSE → tous 0 rows screener). Le
+   * plan TD Pro $229/mo couvre ces 2 markets via /market_movers (100 credits/call).
+   *
+   * Gating env :
+   *   - TWELVEDATA_GAINERS_TOKYO_ENABLED (default false)
+   *   - TWELVEDATA_GAINERS_HK_ENABLED   (default false)
+   * Permettent à l'utilisateur de flipper indépendamment Tokyo / HK post-deploy.
+   *
+   * Filtrage mic_code côté client : country=Japan remonte aussi JASDAQ/Sapporo
+   * → on garde uniquement mic_code=XJPX (Tokyo Section 1 main board). Idem HK
+   * → XHKG uniquement.
+   *
+   * Limites mcap : TD /market_movers ne retourne PAS market_capitalization.
+   * Hardcoded fallback 5B$ (entre mid-cap et large-cap) — suffisant pour passer
+   * les gates qui exigent mcap >= 50M$ ou >= 1B$. Pour une vraie mcap précise,
+   * un follow-up pourrait batcher /quote sur le top 10 (cost +10 credits/cycle).
+   */
+  private async fetchTwelveDataMarketMovers(exchange: 'T' | 'HK'): Promise<TopGainerCandidate[]> {
+    if (!this.twelveData) return [];
+    const flag = exchange === 'T' ? 'TWELVEDATA_GAINERS_TOKYO_ENABLED' : 'TWELVEDATA_GAINERS_HK_ENABLED';
+    const enabled = (this.config.get<string>(flag) ?? 'false').toLowerCase() === 'true';
+    if (!enabled) return [];
+    const country = exchange === 'T' ? 'Japan' : 'Hong Kong';
+    const micCode = exchange === 'T' ? 'XJPX' : 'XHKG';
+    const movers = await this.twelveData.getMarketMovers(country, 'gainers', 50, 'top-gainers-scanner');
+    if (!movers) return [];
+    const mapped = movers
+      .filter((m) => m.mic_code === micCode)
+      .map((m) => this.mapTwelveDataMover(m, exchange))
+      .filter((c): c is TopGainerCandidate => c !== null)
+      // Garde-fou identique au mapEodhdRow client-side filter : changePct > 3
+      .filter((c) => c.changePct > 3);
+    this.logger.log(
+      `[top-gainers] TD market_movers ${country} → ${movers.length} raw, ${mapped.length} after mic_code=${micCode} + changePct>3 filter`,
+    );
+    return mapped;
+  }
+
+  /** TD `/market_movers` row → TopGainerCandidate (suffix `.T` ou `.HK`). */
+  private mapTwelveDataMover(m: MarketMover, exchange: 'T' | 'HK'): TopGainerCandidate | null {
+    const rawCode = m.symbol;
+    if (!rawCode) return null;
+    const symbol = this.ensureExchangeSuffix(rawCode, exchange);
+    const close = Number(m.last);
+    if (!Number.isFinite(close) || close <= 0) return null;
+    // Penny stock guard cohérent avec mapEodhdRow ligne 1958 (≥ $2).
+    // Note : prix Tokyo en JPY, HK en HKD. $2 USD ≈ 300 JPY ≈ 16 HKD. Le seuil
+    // <2 reste actif mais filtre essentiellement les vrais penny stocks devises
+    // locales (rare sur mic_code = XJPX/XHKG main board, qui exigent prix mini).
+    if (close < 2) return null;
+    const high = Number(m.high) || close;
+    const volume = Number(m.volume) || 0;
+    return {
+      symbol,
+      exchange,
+      // detectAssetClass classifie selon mcap. TD ne fournit pas mcap dans
+      // /market_movers — fallback 5B$ (asia_equity entre small_mid et large).
+      assetClass: detectAssetClass(symbol, exchange, 5_000_000_000),
+      close,
+      high,
+      changePct: Number(m.percent_change),
+      volume,
+      // RVOL fallback : avgVol50d = volume du jour → RVOL=1.0 (neutre). Une
+      // intégration future pourrait fetch /quote pour récupérer average_volume.
+      avgVol50d: volume,
+      marketCap: 5_000_000_000,
     };
   }
 
