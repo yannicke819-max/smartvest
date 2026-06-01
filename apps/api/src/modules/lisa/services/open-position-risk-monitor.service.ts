@@ -105,7 +105,11 @@ export class OpenPositionRiskMonitorService {
     }
   }
 
-  @Cron(CronExpression.EVERY_5_MINUTES, { name: 'open-position-risk-monitor', timeZone: 'UTC' })
+  // PR #542 — Cadence augmentée 5→2 min pour cut losses plus rapidement.
+  // Mistral free tier supporte largement (~75k tokens/min limite, on est <5k/min).
+  // Impact P&L attendu : sur les setups perdants, exit ~3 min plus tôt = limite
+  // les drawdowns post-MFE (cf. capture rate négatif TRADER -45% sur sample).
+  @Cron('0 */2 * * * *', { name: 'open-position-risk-monitor', timeZone: 'UTC' })
   async runCycle(): Promise<void> {
     if (!this.enabled) return;
     if (!this.supabase.isReady()) return;
