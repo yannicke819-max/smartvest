@@ -79,13 +79,12 @@ describe('fetchEodhdScreener — multi-exchange UPPERCASE + changeField (P19s+ r
     expect(decoded).not.toContain('"lse"');
     // P19s++ HOTFIX : pas de filter 1d return pour non-US (rejected as
     // invalid filter field by EODHD validator). Post-filter client-side.
-    // PR #557 — refund_1d_p est utilisé comme sort param sur TOUS les exchanges
-    // (cf. doc EODHD : sort field accepte refund_1d_p sans restriction).
-    // Le test vérifie qu'il n'est PAS dans le filter array JSON (entre guillemets
-    // = string literal dans filters JSON), MAIS qu'il PEUT apparaître comme sort=...
+    // PR #557 — refund_1d_p en filter rejeté EODHD pour non-US (P19s+ regression).
+    // Sort param refund_1d_p activé UNIQUEMENT pour US (Laravel validator EODHD
+    // rejette sort sur non-US per test historique P19s).
     expect(decoded).not.toContain('"refund_1d_p"');
     expect(decoded).not.toContain('"change_p"');
-    expect(decoded).toContain('sort=refund_1d_p');
+    expect(decoded).not.toContain('sort=');
   });
 
   it('passes UPPERCASE exchange + refund_1d_p for US to EODHD screener', async () => {
@@ -107,13 +106,12 @@ describe('fetchEodhdScreener — multi-exchange UPPERCASE + changeField (P19s+ r
     const decoded = decodeURIComponent(capturedUrl!);
     expect(decoded).toContain('"XETRA"');
     // P19s++ : pas de filter 1d return pour non-US
-    // PR #557 — refund_1d_p est utilisé comme sort param sur TOUS les exchanges
-    // (cf. doc EODHD : sort field accepte refund_1d_p sans restriction).
-    // Le test vérifie qu'il n'est PAS dans le filter array JSON (entre guillemets
-    // = string literal dans filters JSON), MAIS qu'il PEUT apparaître comme sort=...
+    // PR #557 — refund_1d_p en filter rejeté EODHD pour non-US (P19s+ regression).
+    // Sort param refund_1d_p activé UNIQUEMENT pour US (Laravel validator EODHD
+    // rejette sort sur non-US per test historique P19s).
     expect(decoded).not.toContain('"refund_1d_p"');
     expect(decoded).not.toContain('"change_p"');
-    expect(decoded).toContain('sort=refund_1d_p');
+    expect(decoded).not.toContain('sort=');
   });
 
   it.each([
@@ -131,13 +129,12 @@ describe('fetchEodhdScreener — multi-exchange UPPERCASE + changeField (P19s+ r
     const decoded = decodeURIComponent(capturedUrl!);
     expect(decoded).toContain(`"${expected}"`);
     // P19s++ : pas de filter 1d return (rejected by EODHD validator pour non-US)
-    // PR #557 — refund_1d_p est utilisé comme sort param sur TOUS les exchanges
-    // (cf. doc EODHD : sort field accepte refund_1d_p sans restriction).
-    // Le test vérifie qu'il n'est PAS dans le filter array JSON (entre guillemets
-    // = string literal dans filters JSON), MAIS qu'il PEUT apparaître comme sort=...
+    // PR #557 — refund_1d_p en filter rejeté EODHD pour non-US (P19s+ regression).
+    // Sort param refund_1d_p activé UNIQUEMENT pour US (Laravel validator EODHD
+    // rejette sort sur non-US per test historique P19s).
     expect(decoded).not.toContain('"refund_1d_p"');
     expect(decoded).not.toContain('"change_p"');
-    expect(decoded).toContain('sort=refund_1d_p');
+    expect(decoded).not.toContain('sort=');
     // market_capitalization filter conservé
     expect(decoded).toContain('market_capitalization');
   });

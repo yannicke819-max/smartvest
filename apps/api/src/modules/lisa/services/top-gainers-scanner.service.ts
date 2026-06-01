@@ -1804,12 +1804,13 @@ export class TopGainersScannerService implements OnModuleInit {
       for (let page = 0; page < maxPages; page++) {
         if (allMapped.length >= perExchangeCap) break;
         const offset = page * pageSize;
-        // FIX 01/06 — Ajout sort=refund_1d_p&order=d pour récupérer les VRAIS
-        // top gainers (sort par %change journalier desc). Sans ce param,
-        // EODHD trie par défaut sur market_capitalization → on rate les
-        // small/mid-caps qui sont souvent les vrais top mouvements.
-        // Doc EODHD : https://eodhd.com/financial-apis/stock-market-screener-api
-        const url = `https://eodhd.com/api/screener?api_token=${encodeURIComponent(apiKey)}&filters=${filters}&sort=refund_1d_p&order=d&limit=${pageSize}&offset=${offset}&fmt=json`;
+        // FIX 01/06 — sort=refund_1d_p&order=d UNIQUEMENT pour US (validé doc EODHD,
+        // mais les tests historiques montrent que le Laravel validator EODHD rejette
+        // sort sur non-US). Pour non-US, on garde l'ancien comportement (sort
+        // client-side dans le snapshot endpoint). Permet d'avoir les vrais top
+        // gainers US (sort par %change journalier desc) sans casser les autres.
+        const sortParam = isUs ? '&sort=refund_1d_p&order=d' : '';
+        const url = `https://eodhd.com/api/screener?api_token=${encodeURIComponent(apiKey)}&filters=${filters}${sortParam}&limit=${pageSize}&offset=${offset}&fmt=json`;
         const tStart = Date.now();
         const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
         lastLatencyMs = Date.now() - tStart;
