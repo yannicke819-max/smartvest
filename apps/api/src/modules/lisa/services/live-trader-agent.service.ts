@@ -2213,10 +2213,27 @@ Recommendation rules :
   // quel win-rate, sur 30j ?"
 
   /**
+   * Markers techniques / section headers / labels du prompt — PAS des lessons.
+   * Cités fréquemment par Mistral en écho au system prompt, ils polluent
+   * scanner_lesson_citations s'ils ne sont pas filtrés (cf. audit 01/06 :
+   * 287 citations / 0 résolues, dont [OPEN_POSITIONS]=1, [KELLY_STANDARD]=1,
+   * [AUTO_CORRECTION_DYNAMIQUE]=1, [DATA_QUALITY_DEGRADED]=2, etc.).
+   */
+  private static readonly INFRA_MARKERS = new Set<string>([
+    // Markers infra bas-niveau
+    'DIAGNOSTIC', 'SANITY_BOUND', 'KILL_SWITCH', 'HT_BYPASS', 'HT_EXCEPTION',
+    // Section headers / labels du prompt
+    'OPEN_POSITIONS', 'POSITIONS_OUVERTES', 'DATA_QUALITY_DEGRADED',
+    'KELLY_STANDARD', 'PUMP_SCORE', 'AUTO_CORRECTION_DYNAMIQUE',
+    'MODE_DEFENSIF', 'MODE_DÉFENSIF',
+    // Catégories rhétoriques génériques (pas des lessons identifiées)
+    'ANTI-PATTERN', 'ANTI-REVENGE',
+  ]);
+
+  /**
    * Extrait les markers [XXX] d'une thèse LLM. Dédupliqué.
    * Pattern : crochets, début majuscule, 3-40 chars [A-Z0-9_+-].
-   * Ignore les markers techniques bas-niveau (DIAGNOSTIC, SANITY_BOUND, etc.)
-   * qui ne sont pas des lessons — uniquement les markers > 6 chars.
+   * Filtre les markers infra/headers (cf. INFRA_MARKERS).
    */
   private parseLessonMarkers(thesis: string): string[] {
     if (!thesis || thesis.length === 0) return [];
@@ -2225,8 +2242,7 @@ Recommendation rules :
     let m: RegExpExecArray | null;
     while ((m = re.exec(thesis)) !== null) {
       const marker = m[1];
-      // Filtre out les markers infra (pas des lessons)
-      if (['DIAGNOSTIC', 'SANITY_BOUND', 'KILL_SWITCH', 'HT_BYPASS', 'HT_EXCEPTION'].includes(marker)) continue;
+      if (LiveTraderAgentService.INFRA_MARKERS.has(marker)) continue;
       set.add(marker);
     }
     return [...set];
@@ -2250,19 +2266,29 @@ Recommendation rules :
     if (markers.length === 0) return;
 
     const client = this.supabase.getClient();
-    // Résolution lesson_id par marker (1 query par marker, OK pour volume faible)
+    // Résolution lesson_id par marker (match exact case-insensitive sur lesson_kind).
+    // Skip l'insert si pas de match en DB — évite la pollution "Marker non mappé"
+    // qui dominait scanner_lesson_citations (audit 01/06: 287 cit / 0 mappées).
+    // Les markers cités sans match sont loggés pour identifier les lessons
+    // que TRADER invente mais qui ne sont pas registrées en DB.
     const rows: Array<Record<string, unknown>> = [];
+    const skipped: string[] = [];
     for (const marker of markers) {
       const { data: lesson } = await client
         .from('scanner_lessons')
         .select('id')
-        .ilike('lesson_kind', `%${marker}%`)
+        .ilike('lesson_kind', marker)
         .eq('is_active', true)
         .order('confidence', { ascending: false })
         .limit(1)
         .maybeSingle();
+      const lessonId = (lesson as { id?: string } | null)?.id ?? null;
+      if (!lessonId) {
+        skipped.push(marker);
+        continue;
+      }
       rows.push({
-        lesson_id: (lesson as { id?: string } | null)?.id ?? null,
+        lesson_id: lessonId,
         marker_text: `[${marker}]`,
         portfolio_id: TRADER_AGENT_PORTFOLIO_ID,
         decision_decided_at: args.cycleStartedAt.toISOString(),
@@ -2275,12 +2301,18 @@ Recommendation rules :
         thesis_excerpt: args.thesis.slice(0, 300),
       });
     }
+    if (skipped.length > 0) {
+      this.logger.debug(
+        `[trader-agent] skipped ${skipped.length} unregistered markers: ${skipped.join(',')}`,
+      );
+    }
+    if (rows.length === 0) return;
     const { error } = await client.from('scanner_lesson_citations').insert(rows);
     if (error) {
       this.logger.warn(`[trader-agent] insertLessonCitations failed: ${error.message}`);
     } else {
       this.logger.debug(
-        `[trader-agent] inserted ${rows.length} citations (markers: ${markers.join(',')})`,
+        `[trader-agent] inserted ${rows.length} citations (mapped: ${rows.length}/${markers.length})`,
       );
     }
   }
