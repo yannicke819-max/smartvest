@@ -498,7 +498,7 @@ export class LiveTraderAgentService {
       // en allSettled pour qu'un échec individuel (DB query fail, API down) ne
       // stoppe pas le cycle entier. Fallback aux valeurs vides en cas de fail.
       const settled = await Promise.allSettled([
-        this.fetchTopCandidates(20),
+        this.fetchTopCandidates(50),  // PR #544 — élargi 20→50 pour catch pépites position #30+ (cf. commentaire L1462)
         this.fetchMacroContext(),
         this.fetchRecentNews(10),
         this.fetchActiveMemory(1000),
