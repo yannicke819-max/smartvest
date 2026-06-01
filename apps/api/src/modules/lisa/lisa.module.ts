@@ -415,6 +415,8 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     LessonAutoApplyService,
     // Export pour AdminMarketCloseReportsController.
     MarketCloseReportService,
+    // PR #536 hotfix — Export pour AdminLlmAccuracyController (cf. /admin/llm-accuracy).
+    LlmAccuracyService,
   ],
 })
 export class LisaModule {}
