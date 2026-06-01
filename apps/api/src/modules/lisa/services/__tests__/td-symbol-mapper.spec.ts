@@ -54,22 +54,21 @@ describe('eodhdToTdSymbol — PR #355', () => {
     });
   });
 
-  describe('Asia EOD-only sur Pro — null en intraday (fallback EODHD)', () => {
-    // Doc TD pricing 01/06/2026 : KOSPI/KOSDAQ/SHG/SHE = EOD-only.
-    // Intraday 5min retournait 60 candles dont 56 nulls — inutile + gaspille credits.
+  describe('Asia supportée — KRX / SSE / SZSE (validé live 19/05/2026)', () => {
+    // Mapping reste valide pour /quote (last price stops).
+    // Pour intraday voir isIntradayEodOnly() qui bypass ces suffixes.
     it.each([
-      ['005930.KO', 'KOSPI (XKRX) — EOD only sur Pro'],
-      ['086790.KQ', 'KOSDAQ (XKOS) — EOD only sur Pro'],
-      ['600519.SHG', 'Shanghai (XSHG) — EOD only sur Pro'],
-      ['300024.SHE', 'Shenzhen (XSHE) — EOD only sur Pro'],
-    ])('%s → null (%s)', (input) => {
-      expect(eodhdToTdSymbol(input)).toBeNull();
+      ['005930.KO', '005930:KRX'],
+      ['086790.KQ', '086790:KRX'],
+      ['600519.SHG', '600519:SSE'],
+      ['300024.SHE', '300024:SZSE'],
+    ])('%s → %s', (input, expected) => {
+      expect(eodhdToTdSymbol(input)).toBe(expected);
     });
   });
 
   describe('Exchanges NON supportés sur plan TD Pro actuel → null (fallback EODHD)', () => {
-    // Validé live 19/05/2026 : add-ons payants non souscrits (Milan, JPX, HKEX, XASX).
-    // À retirer du Set UNSUPPORTED_TD_SUFFIXES si les add-ons sont activés.
+    // Add-ons payants non souscrits (Milan, JPX, HKEX, XASX) + EOD-only Tel Aviv + Warsaw absent.
     it.each([
       ['STM.MI', 'Milan (Borsa Italiana) — add-on requis'],
       ['ENEL.MI', 'Milan — add-on requis'],
@@ -83,6 +82,24 @@ describe('eodhdToTdSymbol — PR #355', () => {
       ['LPP.WAR', 'Warsaw (GPW) — pas dans Pro'],
     ])('%s → null (%s)', (input) => {
       expect(eodhdToTdSymbol(input)).toBeNull();
+    });
+  });
+
+  describe('isIntradayEodOnly — KO/KQ/SHG/SHE bypass intraday (doc 01/06/2026)', () => {
+    // Mapping reste pour /quote, mais l'intraday 5min retourne ~93% nulls → skip.
+    it.each([
+      ['005930.KO', true],
+      ['086790.KQ', true],
+      ['600519.SHG', true],
+      ['300024.SHE', true],
+      ['AAPL.US', false],
+      ['BARC.LSE', false],
+      ['BNP.PA', false],
+      ['TEVA.TA', false],  // .TA déjà null via eodhdToTdSymbol, pas besoin de double-flag
+    ])('%s → isIntradayEodOnly=%s', (input, expected) => {
+      // import dynamique pour rester aligné avec eodhdToTdSymbol
+      const { isIntradayEodOnly } = require('../td-symbol-mapper');
+      expect(isIntradayEodOnly(input)).toBe(expected);
     });
   });
 
