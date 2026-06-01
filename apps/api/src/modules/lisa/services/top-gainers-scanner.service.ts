@@ -2502,14 +2502,18 @@ export class TopGainersScannerService implements OnModuleInit {
       .eq('status', 'open');
     const openSymbols = new Set((openPositions ?? []).map((p) => String(p.symbol).toUpperCase()));
 
-    // Shadow sizing × cross-portfolio dedupe — règle métier 26/05 :
-    // Quand on scanne un des 3 portfolios shadow, on étend openSymbols aux
-    // positions ouvertes dans les AUTRES shadows + main pour éviter que les
-    // 4 portfolios ouvrent le MÊME ticker (effet "convoy" sur EL/VUZI/etc.).
-    // slotsAvailable reste calculé sur les positions de CE portfolio uniquement
-    // (chaque shadow garde son capacity propre).
+    // Cross-portfolio dedupe — opt-in via env (default OFF depuis 01/06/2026)
+    // pour permettre vraie diversification : les 4 portfolios peuvent prendre
+    // les MÊMES setups indépendamment → multiplie les lessons via outcomes
+    // observés sur sample plus large (MFE/MAE/capture par classe × sizing).
+    //
+    // Si GAINERS_CROSS_PORTFOLIO_DEDUPE_ENABLED=true, on revient au comportement
+    // précédent (anti-doublon entre shadows + main pour éviter "convoy"
+    // sur EL/VUZI). Slots dispo restent calculés par-portfolio dans tous les cas.
+    const crossDedupeEnabled =
+      (this.config.get<string>('GAINERS_CROSS_PORTFOLIO_DEDUPE_ENABLED') ?? 'false').toLowerCase() === 'true';
     const isShadowPortfolio = SHADOW_PORTFOLIO_IDS.has(portfolioId);
-    if (isShadowPortfolio) {
+    if (crossDedupeEnabled && isShadowPortfolio) {
       const dedupeIds = [...SHADOW_PORTFOLIO_IDS, MAIN_PORTFOLIO_ID_FOR_DEDUPE]
         .filter((id) => id !== portfolioId);
       const { data: crossOpens } = await this.supabase
