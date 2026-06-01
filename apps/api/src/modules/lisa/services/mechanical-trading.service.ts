@@ -3118,6 +3118,21 @@ export class MechanicalTradingService {
       ?.linkPositionOutcome(positionId, pnlPct)
       .catch((e) => this.logger.debug(`[llm-accuracy] hook failed: ${String(e).slice(0, 100)}`));
 
+    // PR #536 — TRADER decision outcome backfill : update gemini_ab_decisions
+    // row qui correspond à ce close (match portfolio + symbol + decided_at ±90s).
+    // Permet computeTraderAccuracy() de ranker les 4 providers par win rate.
+    if (this.llmAccuracy) {
+      this.llmAccuracy
+        .linkTraderDecisionOutcome({
+          positionId,
+          portfolioId: pos.portfolio_id as string,
+          symbol: pos.symbol as string,
+          entryTimestamp: (pos as { entry_timestamp?: string }).entry_timestamp ?? new Date().toISOString(),
+          pnlUsd: realizedPnl.toNumber(),
+        })
+        .catch((e) => this.logger.debug(`[llm-accuracy-trader] hook failed: ${String(e).slice(0, 100)}`));
+    }
+
     await this.decisionLog.append({
       portfolioId: pos.portfolio_id as string,
       kind: reason === 'closed_target' ? 'mechanical_close_target' : 'mechanical_close_stop',

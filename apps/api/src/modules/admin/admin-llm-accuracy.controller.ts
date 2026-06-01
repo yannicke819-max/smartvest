@@ -45,4 +45,28 @@ export class AdminLlmAccuracyController {
       throw new HttpException(`Compute failed: ${String(e).slice(0, 200)}`, HttpStatus.INTERNAL_SERVER_ERROR);
     }
   }
+
+  /**
+   * PR #536 — Endpoint TRADER : ranking 4 providers sur gemini_ab_decisions.
+   * Compute agreement avec Pro applied + win rate sur trades fermés.
+   *
+   * GET /admin/llm-trader-accuracy?days=14
+   */
+  @Get('llm-trader-accuracy')
+  async getTraderAccuracy(
+    @Headers('x-admin-token') token: string | undefined,
+    @Query('days') daysRaw?: string,
+  ): Promise<unknown> {
+    const adminToken = this.config.get<string>('ADMIN_TOKEN');
+    if (adminToken && token !== adminToken) {
+      throw new HttpException('Unauthorized', HttpStatus.UNAUTHORIZED);
+    }
+    const days = Math.max(1, Math.min(90, parseInt(daysRaw ?? '14', 10) || 14));
+    try {
+      return await this.accuracy.computeTraderAccuracy(days);
+    } catch (e) {
+      this.logger.error(`[llm-trader-accuracy] compute failed: ${String(e).slice(0, 200)}`);
+      throw new HttpException(`Compute failed: ${String(e).slice(0, 200)}`, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
 }
