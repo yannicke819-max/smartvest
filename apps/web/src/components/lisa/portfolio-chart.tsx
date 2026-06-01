@@ -203,35 +203,51 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
     const positions = positionsQuery.data ?? [];
     const minT = chartData[0].t;
     const maxT = chartData[chartData.length - 1].t;
+    // PR #541 fix — Skip markers qui tombent dans un GAP de snapshots > 30 min.
+    // Sans ce guard, le fallback `chartData[last].value` faisait que tous les
+    // trades dans un gap (e.g. 32h sans snapshot entre 30/05 23:50 et 01/06 06:55
+    // suite à redémarrage Fly cette nuit) prenaient TOUS la même valeur Y, ce qui
+    // empilait visuellement les 6 dots au même point sur le graph "Évolution
+    // capital" (bug constaté 01/06 matin).
+    const MAX_INTERPOLATION_GAP_MS = 30 * 60 * 1000;
     const closed = positions.filter((p) => {
       if (p.status === 'open' || !p.exitTimestamp) return false;
       const t = new Date(p.exitTimestamp).getTime();
       return t >= minT && t <= maxT;
     });
-    return closed.map((p) => {
-      const t = new Date(p.exitTimestamp!).getTime();
-      // Interpolation linéaire entre les 2 points de chartData entourant t
-      let value = chartData[chartData.length - 1].value;
-      for (let i = 0; i < chartData.length - 1; i++) {
-        const a = chartData[i];
-        const b = chartData[i + 1];
-        if (t >= a.t && t <= b.t) {
-          const ratio = b.t === a.t ? 0 : (t - a.t) / (b.t - a.t);
-          value = a.value + (b.value - a.value) * ratio;
-          break;
+    return closed
+      .map((p) => {
+        const t = new Date(p.exitTimestamp!).getTime();
+        // Cherche les 2 chartData points qui encadrent t. Si gap > threshold,
+        // l'interpolation est non fiable → on skip le marker (retourne null).
+        let interpolatedValue: number | null = null;
+        for (let i = 0; i < chartData.length - 1; i++) {
+          const a = chartData[i];
+          const b = chartData[i + 1];
+          if (t >= a.t && t <= b.t) {
+            const gap = b.t - a.t;
+            if (gap > MAX_INTERPOLATION_GAP_MS) {
+              // t tombe dans un trou snapshots > 30 min — pas fiable
+              break;
+            }
+            const ratio = b.t === a.t ? 0 : (t - a.t) / (b.t - a.t);
+            interpolatedValue = a.value + (b.value - a.value) * ratio;
+            break;
+          }
         }
-      }
-      const pnlUsd = parseFloat(p.realizedPnlUsd ?? '0') || 0;
-      return {
-        t,
-        value,
-        symbol: p.symbol,
-        pnlUsd,
-        pnlPct: p.realizedPnlPct ?? 0,
-        win: pnlUsd > 0,
-        exitReason: (p.exitReason ?? p.status).slice(0, 40),
-      };
-    });
+        if (interpolatedValue === null) return null;
+        const pnlUsd = parseFloat(p.realizedPnlUsd ?? '0') || 0;
+        return {
+          t,
+          value: interpolatedValue,
+          symbol: p.symbol,
+          pnlUsd,
+          pnlPct: p.realizedPnlPct ?? 0,
+          win: pnlUsd > 0,
+          exitReason: (p.exitReason ?? p.status).slice(0, 40),
+        };
+      })
+      .filter((m): m is TradeMarker => m !== null);
   }, [chartData, positionsQuery.data]);
   const winMarkers = useMemo(() => tradeMarkers.filter((m) => m.win), [tradeMarkers]);
   const lossMarkers = useMemo(() => tradeMarkers.filter((m) => !m.win), [tradeMarkers]);
