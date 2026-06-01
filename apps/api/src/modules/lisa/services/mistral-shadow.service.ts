@@ -91,15 +91,61 @@ export class MistralShadowService {
   private readonly model: string;
   private readonly freeTier: boolean;
 
+  // Throttling — sérialise les appels Mistral pour respecter le RPS du modèle.
+  // mistral-medium-2505 = 0.42 RPS → minInterval théorique 2381ms.
+  // Default 2500ms (marge anti-jitter). Override via MISTRAL_MIN_INTERVAL_MS.
+  // Limite haute d'attente : si la queue accumule > MISTRAL_MAX_QUEUE_WAIT_MS,
+  // le caller reçoit error='throttle_timeout' et peut fallback (Gemini Pro).
+  private readonly minIntervalMs: number;
+  private readonly maxQueueWaitMs: number;
+  private throttleChain: Promise<void> = Promise.resolve();
+  private lastCallAt = 0;
+
   constructor(private readonly config: ConfigService) {
     this.apiKey = this.config.get<string>('MISTRAL_API_KEY');
     this.enabled = (this.config.get<string>('MISTRAL_SHADOW_ENABLED') ?? 'false').toLowerCase() === 'true';
     this.model = this.config.get<string>('MISTRAL_SHADOW_MODEL') ?? MODEL_MEDIUM_LATEST;
     this.freeTier = (this.config.get<string>('MISTRAL_FREE_TIER') ?? 'true').toLowerCase() === 'true';
+    this.minIntervalMs = Math.max(0, Number(this.config.get<string>('MISTRAL_MIN_INTERVAL_MS') ?? '2500'));
+    this.maxQueueWaitMs = Math.max(1000, Number(this.config.get<string>('MISTRAL_MAX_QUEUE_WAIT_MS') ?? '15000'));
     if (this.enabled && !this.apiKey) {
       this.logger.warn('[mistral-shadow] MISTRAL_SHADOW_ENABLED=true mais MISTRAL_API_KEY absent → service inerte');
     } else if (this.enabled) {
-      this.logger.log(`[mistral-shadow] ENABLED — model=${this.model} freeTier=${this.freeTier}`);
+      this.logger.log(
+        `[mistral-shadow] ENABLED — model=${this.model} freeTier=${this.freeTier} minInterval=${this.minIntervalMs}ms maxQueueWait=${this.maxQueueWaitMs}ms`,
+      );
+    }
+  }
+
+  /**
+   * Acquiert un slot dans la queue throttle. Sérialise les callers via une
+   * promise chain et garantit ≥ minIntervalMs entre 2 appels successifs.
+   * Retourne false si l'attente dans la queue dépasse maxQueueWaitMs
+   * (caller doit fallback plutôt que de bloquer le cycle).
+   */
+  private async acquireSlot(): Promise<boolean> {
+    const enqueuedAt = Date.now();
+    const prev = this.throttleChain;
+    let release: () => void = () => undefined;
+    this.throttleChain = new Promise((resolve) => {
+      release = resolve;
+    });
+    try {
+      await prev;
+      // Si on a déjà attendu trop longtemps en queue, abandonner.
+      if (Date.now() - enqueuedAt > this.maxQueueWaitMs) {
+        return false;
+      }
+      // Respect du min interval depuis le dernier call effectif.
+      const sinceLast = Date.now() - this.lastCallAt;
+      const waitMs = Math.max(0, this.minIntervalMs - sinceLast);
+      if (waitMs > 0) {
+        await new Promise<void>((r) => setTimeout(r, waitMs));
+      }
+      this.lastCallAt = Date.now();
+      return true;
+    } finally {
+      release();
     }
   }
 
@@ -136,6 +182,18 @@ export class MistralShadowService {
 
     if (!this.isConfigured()) {
       result.error = 'not_configured';
+      result.latencyMs = Date.now() - t0;
+      return result;
+    }
+
+    // Throttle : sérialise les appels pour respecter le RPS du modèle Mistral.
+    // Évite les 429 "rate_limit_exceeded" provoqués par les bursts (TRADER cron
+    // 2min + risk-monitor 1min + close-gate qui convergent dans la même seconde).
+    // Si la queue est trop pleine, abandonner pour laisser le caller fallback
+    // sur Gemini Pro plutôt que bloquer le cycle 30s+.
+    const gotSlot = await this.acquireSlot();
+    if (!gotSlot) {
+      result.error = 'throttle_timeout';
       result.latencyMs = Date.now() - t0;
       return result;
     }

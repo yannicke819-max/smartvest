@@ -174,4 +174,81 @@ describe('MistralShadowService', () => {
     expect(body.temperature).toBe(0.7);
     expect(body.max_tokens).toBe(800);
   });
+
+  describe('throttling (minIntervalMs)', () => {
+    it('sérialise 3 appels concurrents avec ≥ minIntervalMs entre chaque', async () => {
+      const callTimes: number[] = [];
+      global.fetch = jest.fn().mockImplementation(async () => {
+        callTimes.push(Date.now());
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ choices: [{ message: { content: 'ok' } }], usage: { prompt_tokens: 10, completion_tokens: 5 } }),
+          text: async () => '',
+        } as unknown as Response;
+      });
+      const svc = new MistralShadowService(
+        mockConfig({
+          MISTRAL_API_KEY: 'sk-test',
+          MISTRAL_SHADOW_ENABLED: 'true',
+          MISTRAL_MIN_INTERVAL_MS: '100', // court pour test rapide
+          MISTRAL_MAX_QUEUE_WAIT_MS: '60000',
+        }),
+      );
+      const t0 = Date.now();
+      await Promise.all([
+        svc.call({ system: 's', user: 'u1' }),
+        svc.call({ system: 's', user: 'u2' }),
+        svc.call({ system: 's', user: 'u3' }),
+      ]);
+      expect(callTimes).toHaveLength(3);
+      // Tolérance ±15ms pour le scheduler
+      expect(callTimes[1] - callTimes[0]).toBeGreaterThanOrEqual(85);
+      expect(callTimes[2] - callTimes[1]).toBeGreaterThanOrEqual(85);
+      // Total wall ≥ 2 × minInterval (avant le 1er call = 0, donc 2 intervalles entre 3 calls)
+      expect(Date.now() - t0).toBeGreaterThanOrEqual(170);
+    });
+
+    it('throttle_timeout si l’attente queue > maxQueueWaitMs', async () => {
+      global.fetch = jest.fn().mockImplementation(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ choices: [{ message: { content: 'ok' } }], usage: {} }),
+        text: async () => '',
+      } as unknown as Response));
+      const svc = new MistralShadowService(
+        mockConfig({
+          MISTRAL_API_KEY: 'sk-test',
+          MISTRAL_SHADOW_ENABLED: 'true',
+          MISTRAL_MIN_INTERVAL_MS: '200', // 200ms entre 2 calls
+          MISTRAL_MAX_QUEUE_WAIT_MS: '1000', // queue max 1000ms
+        }),
+      );
+      // 10 calls back-to-back = 200ms × 9 attentes ≈ 1.8s total → certains > 1s queue wait
+      const results = await Promise.all(
+        Array.from({ length: 10 }, (_, i) => svc.call({ system: 's', user: `u${i}` })),
+      );
+      const timeouts = results.filter((r) => r.error === 'throttle_timeout').length;
+      expect(timeouts).toBeGreaterThan(0);
+    });
+
+    it('aucun throttle si minIntervalMs=0 (override pour tests/perf)', async () => {
+      const callTimes: number[] = [];
+      global.fetch = jest.fn().mockImplementation(async () => {
+        callTimes.push(Date.now());
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ choices: [{ message: { content: 'ok' } }], usage: {} }),
+          text: async () => '',
+        } as unknown as Response;
+      });
+      const svc = new MistralShadowService(
+        mockConfig({ MISTRAL_API_KEY: 'sk-test', MISTRAL_SHADOW_ENABLED: 'true', MISTRAL_MIN_INTERVAL_MS: '0' }),
+      );
+      await Promise.all([svc.call({ system: 's', user: 'a' }), svc.call({ system: 's', user: 'b' })]);
+      // Pas de throttle = appels quasi-simultanés
+      expect(callTimes[1] - callTimes[0]).toBeLessThan(50);
+    });
+  });
 });
