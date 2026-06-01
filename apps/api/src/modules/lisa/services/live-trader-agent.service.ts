@@ -288,6 +288,15 @@ export class LiveTraderAgentService {
         this.logger.error(`[trader-agent] runNightlyPostMortem error: ${String(e).slice(0, 200)}`),
       ),
     );
+    // B.3 (01/06) — Cleanup proposals expirées toutes les 10 min.
+    // Léger (1 UPDATE indexé). Gated runtime par TRADER_ARBITRATION_ENABLED.
+    this.registerCron(
+      'scanner-proposals-cleanup-expired',
+      '*/10 * * * *',
+      () => this.cleanupExpiredProposals().catch((e) =>
+        this.logger.error(`[trader-arbitration] cleanup expired error: ${String(e).slice(0, 200)}`),
+      ),
+    );
   }
 
   private registerCron(name: string, expr: string, callback: () => void): void {
@@ -2013,6 +2022,11 @@ Recommendation rules :
           rationale: `[trader-agent] ${decision.thesis}`,
         });
         if (!opened) return { applied: false, error: 'openForOpportunityScout returned null (stale/fallback price ou skipped)' };
+        // B.1 — boucle proposal : si TRADER_ARBITRATION_ENABLED et qu'un
+        // scanner_proposals pending correspond au (symbol, direction), le
+        // marquer 'accepted' + applied_position_id pour audit.
+        await this.markProposalAccepted(decision.symbol, decision.direction, opened.id, decision.thesis)
+          .catch((e) => this.logger.debug(`[trader-agent] markProposalAccepted skip: ${String(e).slice(0, 120)}`));
         return { applied: true, positionId: opened.id };
       } catch (e) {
         return { applied: false, error: String(e).slice(0, 200) };
@@ -2126,6 +2140,8 @@ Recommendation rules :
           rationale: `[trader-agent SCALE_IN] ${decision.thesis}`,
         });
         if (!opened) return { applied: false, error: 'scale_in: open returned null' };
+        await this.markProposalAccepted(decision.symbol, decision.direction, opened.id, decision.thesis)
+          .catch((e) => this.logger.debug(`[trader-agent] markProposalAccepted (scale_in) skip: ${String(e).slice(0, 120)}`));
         return { applied: true, positionId: opened.id };
       } catch (e) {
         return { applied: false, error: String(e).slice(0, 200) };
@@ -2326,6 +2342,54 @@ Recommendation rules :
     if (markers.length === 0) return;
 
     const client = this.supabase.getClient();
+
+    // ─────────────────────────────────────────────────────────────────
+    // FIX 01/06 — Citations sans position_id étaient orphelines : le
+    // resolveCitationOutcomes les filtrait via .not('position_id','is',null)
+    // → 108 citations / 0 résolues en prod.
+    //
+    // Stratégie d'enrichissement position_id avant INSERT :
+    //   (a) Si decision.applied_position_id existe (open accepté) → utilise
+    //   (b) Sinon si action_kind hold/close/trail_stop/scale_in + target_symbol
+    //       → chercher la position ouverte de ce symbol (cas dominant : LLM
+    //         commente une position ouverte qu'il décide de hold/trail)
+    //   (c) Sinon si thesis mentionne explicitement un symbol parmi les
+    //       positions ouvertes → linker la 1ère trouvée (best-effort)
+    //   (d) Sinon position_id reste null → citation non-résoluble (cas
+    //       "hold du cycle entier sans cibler une position spécifique")
+    // ─────────────────────────────────────────────────────────────────
+    let enrichedPositionId: string | null = args.positionId;
+    if (enrichedPositionId === null
+        && ['hold', 'close', 'trail_stop', 'scale_in', 'open_directional'].includes(args.actionKind)) {
+      // (b) target_symbol → position ouverte
+      if (args.targetSymbol) {
+        const { data: openByTarget } = await client
+          .from('lisa_positions')
+          .select('id')
+          .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+          .eq('symbol', args.targetSymbol)
+          .eq('status', 'open')
+          .order('entry_timestamp', { ascending: false })
+          .limit(1);
+        if (openByTarget && openByTarget.length > 0) {
+          enrichedPositionId = (openByTarget[0] as { id: string }).id;
+        }
+      }
+      // (c) thesis mentionne un symbol parmi positions ouvertes
+      if (enrichedPositionId === null) {
+        const { data: openPos } = await client
+          .from('lisa_positions')
+          .select('id, symbol')
+          .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+          .eq('status', 'open');
+        for (const p of (openPos ?? []) as Array<{ id: string; symbol: string }>) {
+          if (args.thesis.includes(p.symbol)) {
+            enrichedPositionId = p.id;
+            break;
+          }
+        }
+      }
+    }
     // Résolution lesson_id par marker — match contre macro_condition + fallback
     // sur lesson_text/lesson_kind (defense-in-depth).
     //
@@ -2379,7 +2443,7 @@ Recommendation rules :
         lesson_intent: this.deriveLessonIntent(args.actionKind),
         target_symbol: args.targetSymbol,
         confidence: args.confidence,
-        position_id: args.positionId,
+        position_id: enrichedPositionId,
         thesis_excerpt: args.thesis.slice(0, 300),
       });
     }
@@ -2676,6 +2740,72 @@ Recommendation rules :
    * Idempotent (filtre WHERE outcome_resolved_at IS NULL). Limité 50/cycle
    * pour ne pas saturer.
    */
+  /**
+   * B.1 — Audit boucle scanner_proposals. Quand TRADER ouvre une position,
+   * marque le proposal correspondant comme 'accepted' avec applied_position_id.
+   * Permet de mesurer le taux d'acceptance par classe d'actif, par score, etc.
+   * Best-effort : ne throw pas (silencieux si pas de proposal pending).
+   */
+  private async markProposalAccepted(
+    symbol: string,
+    direction: string,
+    positionId: string,
+    thesis: string,
+  ): Promise<void> {
+    const arbitrationEnabled = (this.config.get<string>('TRADER_ARBITRATION_ENABLED') ?? 'false').toLowerCase() === 'true';
+    if (!arbitrationEnabled) return;
+    const { error, count } = await this.supabase.getClient()
+      .from('scanner_proposals')
+      .update({
+        status: 'accepted',
+        reviewed_by_trader_at: new Date().toISOString(),
+        trader_decision_reason: thesis.slice(0, 500),
+        applied_position_id: positionId,
+      }, { count: 'exact' })
+      .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+      .eq('symbol', symbol)
+      .eq('direction', direction)
+      .eq('status', 'pending')
+      .gt('expires_at', new Date().toISOString());
+    if (error) {
+      this.logger.debug(`[trader-arbitration] markProposalAccepted failed: ${error.message}`);
+      return;
+    }
+    if (count && count > 0) {
+      this.logger.log(`[trader-arbitration] ${count} proposal(s) ${symbol} ${direction} → accepted (position ${positionId.slice(0, 8)})`);
+    }
+  }
+
+  /**
+   * B.3 — Cron cleanup proposals expirées. Marque status='expired' les
+   * proposals que TRADER n'a pas consommées avant expires_at. Permet d'avoir
+   * un audit propre (pas de pending qui restent éternellement) et permet de
+   * mesurer le taux d'expiration (= candidats que le TRADER ignore).
+   *
+   * Enregistré manuellement via registerCron() (pattern existant trader-agent).
+   */
+  async cleanupExpiredProposals(): Promise<void> {
+    if (!this.enabled || !this.supabase.isReady()) return;
+    const arbitrationEnabled = (this.config.get<string>('TRADER_ARBITRATION_ENABLED') ?? 'false').toLowerCase() === 'true';
+    if (!arbitrationEnabled) return;
+    try {
+      const { count, error } = await this.supabase.getClient()
+        .from('scanner_proposals')
+        .update({ status: 'expired' }, { count: 'exact' })
+        .eq('status', 'pending')
+        .lt('expires_at', new Date().toISOString());
+      if (error) {
+        this.logger.debug(`[trader-arbitration] cleanup expired failed: ${error.message}`);
+        return;
+      }
+      if (count && count > 0) {
+        this.logger.log(`[trader-arbitration] ${count} proposals expirées marquées (cleanup cron)`);
+      }
+    } catch (e) {
+      this.logger.debug(`[trader-arbitration] cleanup expired exception: ${String(e).slice(0, 150)}`);
+    }
+  }
+
   private async resolveCitationOutcomes(): Promise<void> {
     const client = this.supabase.getClient();
     const { data: pending } = await client

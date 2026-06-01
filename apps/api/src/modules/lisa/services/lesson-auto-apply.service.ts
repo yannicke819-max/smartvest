@@ -102,6 +102,20 @@ export class LessonAutoApplyService {
         this.schedulerRegistry.addCronJob('lesson-auto-apply', job);
         job.start();
         this.logger.log('[lesson-auto-apply] ENABLED — cron hourly @ minute 7');
+
+        // Fix #3 (01/06) — Cron quotidien decay confidence : pour les lessons
+        // actives mais non-citées depuis 30j, décroître confidence × 0.95.
+        // Sous 0.50, marquer is_active=false (auto-archive). Évite que des
+        // lessons obsolètes polluent indéfiniment le score composite et
+        // saturent le cap 10k de ScannerLessonsContextService.
+        const decayJob = new CronJob('0 3 * * *', () => {
+          this.runConfidenceDecay().catch((e) =>
+            this.logger.error(`[lesson-auto-apply] decay cron failed: ${String(e).slice(0, 200)}`),
+          );
+        });
+        this.schedulerRegistry.addCronJob('lesson-confidence-decay', decayJob);
+        decayJob.start();
+        this.logger.log('[lesson-auto-apply] confidence decay cron registered — daily @ 03:00 UTC');
       } catch (e) {
         this.logger.error(`[lesson-auto-apply] cron register failed: ${String(e).slice(0, 200)}`);
       }
@@ -203,6 +217,25 @@ export class LessonAutoApplyService {
           continue;
         }
 
+        // Fix #2 (01/06) — ANTI-FLAP : avant chaque UPDATE, check si la même
+        // colonne a déjà été auto-modifiée par lesson dans les dernières 24h
+        // (cf. lisa_decision_log kind='lesson_auto_applied'). Si oui, skip
+        // pour éviter le flip-flop config (Gemini propose X jour 1 → applied,
+        // Y jour 2 → applied → X jour 3 → ...).
+        const sinceUtc = new Date(Date.now() - 24 * 3600_000).toISOString();
+        const { data: recentApplies } = await sb
+          .from('lisa_decision_log')
+          .select('payload')
+          .eq('kind', 'lesson_auto_applied')
+          .gte('created_at', sinceUtc)
+          .limit(200);
+        const recentCols = new Set<string>();
+        for (const row of (recentApplies ?? []) as Array<{ payload?: { targets?: string[] } }>) {
+          for (const t of row.payload?.targets ?? []) {
+            recentCols.add(t.replace('lisa_session_configs.', ''));
+          }
+        }
+
         // Apply chaque DB column change sur les 4 portfolios gainers
         // Bug fix 27/05/2026 : utiliser `.select()` pour récupérer les rows
         // affectées et marker `applied=true` uniquement si ≥ 1 UPDATE a
@@ -211,9 +244,19 @@ export class LessonAutoApplyService {
         // `error` seul ne suffit pas — il faut compter les rows retournées.
         let rowsChangedTotal = 0;
         const failedTargets: string[] = [];
+        const skippedAntiFlap: string[] = [];
         for (const target of dbColumnTargets) {
           const col = target.replace('lisa_session_configs.', '');
           const value = change[target];
+
+          // Anti-flap guard
+          if (recentCols.has(col)) {
+            this.logger.log(
+              `[lesson-auto-apply] anti-flap skip ${col} (déjà auto-applied dans les 24h)`,
+            );
+            skippedAntiFlap.push(col);
+            continue;
+          }
           const { data: updated, error: updErr } = await sb
             .from('lisa_session_configs')
             .update({ [col]: value })
@@ -248,12 +291,21 @@ export class LessonAutoApplyService {
         }
 
         // Guard : si AUCUN UPDATE n'a changé de row, ne pas marker applied=true
-        // → audit "needs_manual_review" pour visibilité.
+        // → audit "needs_manual_review" pour visibilité (sauf si tout a été
+        // skip par anti-flap — alors c'est un skip volontaire, pas un échec).
         if (rowsChangedTotal === 0) {
+          if (skippedAntiFlap.length === dbColumnTargets.length) {
+            this.logger.log(
+              `[lesson-auto-apply] lesson ${lesson.id.slice(0, 8)} entirely skipped (anti-flap on all targets: ${skippedAntiFlap.join(',')})`,
+            );
+            // Pas de lesson_needs_manual_review — c'est un skip propre.
+            continue;
+          }
           await this.logDecision(lesson, 'lesson_needs_manual_review', {
             reason: 'all_updates_zero_rows',
             db_targets: dbColumnTargets,
             failed_targets: failedTargets,
+            skipped_anti_flap: skippedAntiFlap,
           });
           needsReviewCount++;
           continue;
@@ -353,5 +405,80 @@ export class LessonAutoApplyService {
     if (error) {
       this.logger.warn(`[lesson-auto-apply] decision_log insert failed: ${error.message}`);
     }
+  }
+
+  /**
+   * Fix #3 — Decay quotidien de la confidence pour lessons stagnantes.
+   *
+   * Une lesson active mais non-citée depuis 30j (pas de scanner_lesson_citations
+   * dans cette fenêtre) voit sa confidence multipliée par 0.95 (decay 5%/jour).
+   * Sous le seuil 0.50, marquée is_active=false (auto-archive) — elle n'apparaît
+   * plus dans les prompts injectés mais reste auditable historique.
+   *
+   * Anti-pollution : sans ce decay, le cap 10k de ScannerLessonsContextService
+   * finit par saturer avec des lessons anciennes peu pertinentes qui faussent
+   * le score composite.
+   */
+  async runConfidenceDecay(): Promise<{ decayed: number; archived: number }> {
+    const sb = this.supabase.getClient();
+    const thresholdActive = 0.50;
+    const decayFactor = 0.95;
+    const inactivityCutoff = new Date(Date.now() - 30 * 24 * 3600_000).toISOString();
+
+    // 1. Lessons actives candidates au decay (non-citées depuis 30j)
+    const { data: lessonsRaw, error } = await sb
+      .from('scanner_lessons')
+      .select('id, confidence, derived_from_date')
+      .eq('is_active', true)
+      .lt('derived_from_date', inactivityCutoff.slice(0, 10));
+    if (error) {
+      this.logger.warn(`[lesson-decay] fetch failed: ${error.message}`);
+      return { decayed: 0, archived: 0 };
+    }
+    const lessons = (lessonsRaw ?? []) as Array<{ id: string; confidence: number }>;
+    if (lessons.length === 0) {
+      this.logger.debug('[lesson-decay] 0 lesson candidate au decay');
+      return { decayed: 0, archived: 0 };
+    }
+
+    // 2. Pour chaque lesson, vérifier si citée récemment (skip decay si oui)
+    const { data: recentCitations } = await sb
+      .from('scanner_lesson_citations')
+      .select('lesson_id')
+      .gte('decision_decided_at', inactivityCutoff)
+      .not('lesson_id', 'is', null)
+      .limit(5000);
+    const citedRecently = new Set<string>(
+      (recentCitations ?? []).map((r) => (r as { lesson_id: string }).lesson_id).filter(Boolean),
+    );
+
+    let decayed = 0;
+    let archived = 0;
+    for (const l of lessons) {
+      if (citedRecently.has(l.id)) continue;
+      const newConfidence = Math.round(l.confidence * decayFactor * 100) / 100;
+      const update: Record<string, unknown> = { confidence: newConfidence };
+      let willArchive = false;
+      if (newConfidence < thresholdActive) {
+        update.is_active = false;
+        willArchive = true;
+      }
+      const { error: upErr } = await sb
+        .from('scanner_lessons')
+        .update(update)
+        .eq('id', l.id);
+      if (upErr) {
+        this.logger.debug(`[lesson-decay] update ${l.id.slice(0, 8)} failed: ${upErr.message}`);
+        continue;
+      }
+      if (willArchive) archived++;
+      else decayed++;
+    }
+    if (decayed > 0 || archived > 0) {
+      this.logger.log(
+        `[lesson-decay] processed ${lessons.length} candidates → ${decayed} decayed, ${archived} archived (is_active=false)`,
+      );
+    }
+    return { decayed, archived };
   }
 }
