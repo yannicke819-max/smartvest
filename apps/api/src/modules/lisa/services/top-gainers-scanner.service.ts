@@ -1737,29 +1737,27 @@ export class TopGainersScannerService implements OnModuleInit {
   private async fetchEodhdScreener(exchange: string, apiKey: string): Promise<TopGainerCandidate[]> {
     const exUpper = exchange.toUpperCase();
     const isUs = exUpper === 'US';
-    // P19s++ (30/04/2026 08:10 UTC HOTFIX) — Revert `change_p` filter qui
-    // causait HTTP 422 sur LSE/MC/KO/HK :
-    //     {"errors":{"filters.1.field":["The selected filters.1.field is invalid."]}}
-    // EODHD doc officielle confirme : `change_p` n'est PAS un valid filter
-    // field — c'est le nom dans la RÉPONSE seulement. Les seuls valid filter
-    // fields pour 1d return sont `refund_1d_p`, `refund_5d_p`, `refund_ytd_p`.
-    // Mais `refund_1d_p` ne semble pas avoir de données pour la plupart des
-    // marchés non-US.
+    // Audit 01/06/2026 — Confirmation live EODHD : `refund_1d_p` est filtrable
+    // ET sortable sur TOUS les exchanges (US/KO/KQ/SHG/SHE/NSE/TW), pas juste US.
+    // L'hypothèse historique "non-US n'a pas de données refund_1d_p" était fausse
+    // (ou EODHD l'a fixée depuis P19s++).
     //
-    // Stratégie multi-exchange :
-    //   - US      : keep `refund_1d_p > 3` filter (validé prod)
-    //   - non-US  : DROP le filter 1d return entirely. Filtre seulement par
-    //               exchange + market_capitalization. Post-filter changePct
-    //               appliqué client-side via mapEodhdRow + filter ci-dessous
-    //               (la valeur change_p existe dans la RÉPONSE, juste pas
-    //               comme filter input).
+    // Symptôme observé 01/06 sur top_gainers_log + gainers_user_shadow_signals :
+    // sur 22 EODHD Asia top gainers (live screener via clé prod), le scanner
+    // n'en voyait que 4 (18% hit rate). Cause : sans `sort=` explicite, EODHD
+    // renvoie les rows dans un ordre arbitraire (premier hit Korea = 002170
+    // Samyang à -3.73%). Les vraies pépites (037560.KO LG HelloVision +30%) sont
+    // à offset 200-299 — le scanner cape à ~250 par exchange et les manquait.
+    //
+    // Fix : ajouter le filter `refund_1d_p > 3` + `sort=refund_1d_p.desc` pour
+    // TOUS les exchanges. Effet : page 1 = top gainers (037560.KO +30%, 066570.KO
+    // +29.9%, 454910.KO +29.95%, etc.), plus de gaspillage de pagination sur des
+    // small caps en perte.
     const filtersList: Array<[string, string, string | number]> = [
       ['exchange', '=', exUpper],
+      ['refund_1d_p', '>', 3],
+      ['market_capitalization', '>', 50_000_000],
     ];
-    if (isUs) {
-      filtersList.push(['refund_1d_p', '>', 3]);
-    }
-    filtersList.push(['market_capitalization', '>', 50_000_000]);
     const filters = encodeURIComponent(JSON.stringify(filtersList));
 
     // PR #352 — Pagination screener pour étendre l'univers à 3000 tickers.
@@ -1810,8 +1808,13 @@ export class TopGainersScannerService implements OnModuleInit {
         // PR #557 avait utilisé le mauvais format → US screener 100 % cassé
         // (ok=0/fail=2 sur 6h, 0 ticker US dans top_gainers_log depuis deploy).
         // Format correct documenté inline ligne 1696 : `refund_1d_p.desc`.
-        // Restreint à US car non-US n'a pas le filter refund_1d_p (cf. P19s+ ligne 1710).
-        const sortParam = isUs ? '&sort=refund_1d_p.desc' : '';
+        //
+        // Update 01/06 soir — étendu à TOUS les exchanges (US + non-US). Audit
+        // live confirme que refund_1d_p est filtrable+sortable sur Asia (KO/KQ/
+        // SHG/SHE/NSE/TW). Cf. filtre ligne 1758 (`refund_1d_p > 3`). Sans cette
+        // extension, Asia pagine en ordre arbitraire et rate les top movers
+        // (037560.KO LG HelloVision +30%, 454910.KO Doosan Robotics +30%).
+        const sortParam = '&sort=refund_1d_p.desc';
         const url = `https://eodhd.com/api/screener?api_token=${encodeURIComponent(apiKey)}&filters=${filters}${sortParam}&limit=${pageSize}&offset=${offset}&fmt=json`;
         const tStart = Date.now();
         const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
