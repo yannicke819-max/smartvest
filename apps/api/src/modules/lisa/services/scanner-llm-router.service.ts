@@ -25,6 +25,7 @@ import {
   type MultiVendorCallMetrics,
 } from '@smartvest/ai-analyst';
 import { GeminiBudgetGuardService } from './gemini-budget-guard.service';
+import { MistralShadowService } from './mistral-shadow.service';
 
 @Injectable()
 export class ScannerLlmRouterService {
@@ -35,6 +36,13 @@ export class ScannerLlmRouterService {
   // shadow sizing auto-correction). Chain : Gemini 2.5 Pro → Flash Lite → Claude Opus.
   // Coût ~×125 vs flash-lite mais qualité de raisonnement multi-facteurs supérieure.
   private readonly routerPro: MultiVendorLlmRouter | null;
+  /**
+   * PR #538 — Décideur principal switchable Gemini Pro → Mistral Medium 3.5.
+   * Env LLM_PRIMARY_PROVIDER : 'gemini-pro' (default) | 'mistral-medium'
+   * Free tier Mistral 1G tokens/mois + 97% concordance avec Pro déjà mesurée.
+   * Si Mistral fail (rate limit, API down), fallback automatique vers Gemini Pro.
+   */
+  private readonly primaryProvider: string;
 
   constructor(
     private readonly config: ConfigService,
@@ -42,8 +50,13 @@ export class ScannerLlmRouterService {
     // sans hard cap (comportement pré-PR2 préservé). En prod, le guard est toujours
     // injecté.
     @Optional() @Inject(GeminiBudgetGuardService) private readonly budgetGuard?: GeminiBudgetGuardService,
+    @Optional() private readonly mistralShadow?: MistralShadowService,
   ) {
     this.enabled = (this.config.get<string>('SCANNER_LLM_ROUTER_ENABLED') ?? 'false').toLowerCase() === 'true';
+    this.primaryProvider = (this.config.get<string>('LLM_PRIMARY_PROVIDER') ?? 'gemini-pro').toLowerCase();
+    if (this.primaryProvider === 'mistral-medium') {
+      this.logger.log('[scanner-llm] LLM_PRIMARY_PROVIDER=mistral-medium → Mistral Medium 3.5 décideur principal, Gemini Pro en fallback automatique');
+    }
 
     if (!this.enabled) {
       this.router = null;
@@ -135,6 +148,37 @@ export class ScannerLlmRouterService {
     if (this.budgetGuard) {
       await this.budgetGuard.assertAllowed();
     }
+
+    // PR #538 — Si LLM_PRIMARY_PROVIDER=mistral-medium, essaie Mistral Medium 3.5
+    // en priorité (free tier 1G tokens/mois + 97% concordance Pro confirmée).
+    // Fallback automatique vers Gemini Pro si Mistral fail (rate limit, API down).
+    if (this.primaryProvider === 'mistral-medium' && this.mistralShadow) {
+      try {
+        const res = await this.mistralShadow.call({
+          system: params.system,
+          user: params.user,
+          temperature: params.temperature ?? 0.3,
+          maxTokens: params.maxTokens ?? 4000,
+          timeoutMs: params.timeoutMs ?? 30_000,
+        });
+        if (!res.content) {
+          throw new Error(`Mistral primary returned empty content (error=${res.error ?? 'unknown'})`);
+        }
+        return {
+          content: res.content,
+          providerId: res.providerId,
+          costUsd: res.costUsd,
+          latencyMs: res.latencyMs,
+          fallbackUsed: false,
+        };
+      } catch (e) {
+        this.logger.warn(
+          `[scanner-llm] Mistral primary failed → fallback vers Gemini Pro. err=${String(e).slice(0, 200)}`,
+        );
+        // tombe sur Gemini Pro ci-dessous
+      }
+    }
+
     if (this.routerPro) {
       try {
         const res = await this.routerPro.call(params);
