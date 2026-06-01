@@ -73,7 +73,7 @@ export function LisaStickyHeader({ portfolioId }: Props) {
           <span className="text-base">🤖</span>
           <span className="font-semibold text-sm">LISA</span>
           <span className="hidden md:inline text-[10px] text-muted-foreground">
-            Agent autonome Gemini Pro 2.5
+            Agent autonome LISA
           </span>
           <NotificationsBell portfolioId={portfolioId} />
         </div>

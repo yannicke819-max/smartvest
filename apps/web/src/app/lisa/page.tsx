@@ -87,7 +87,7 @@ const profileLabelOf = (
 };
 
 // LISA refonte Phase A.2 — La page /lisa affiche uniquement le portefeuille TRADER
-// (= moteur LLM Gemini Pro autonome, futur scanner principal). MAIN/HIGH/MIDDLE/SMALL
+// (= moteur LLM autonome — Mistral primary + Gemini fallback). MAIN/HIGH/MIDDLE/SMALL
 // (= scanners Gainers déterministes) sont visibles séparément en bas (chunk A.2.5).
 const TRADER_PORTFOLIO_ID = 'b0000001-0000-0000-0000-000000000001';
 
@@ -117,7 +117,7 @@ export default function LisaPage() {
         // Fallback : entry synthétique. Au moins l'option apparaît au dropdown.
         list.unshift({
           id: TRADER_PORTFOLIO_ID,
-          name: 'Trader Agent (Gemini Pro)',
+          name: 'Trader Agent (LISA)',
         } as typeof list[number]);
       }
     }
@@ -598,7 +598,7 @@ export default function LisaPage() {
               🤖 LISA — Mon agent autonome
             </h1>
             <p className="text-sm text-muted-foreground">
-              Agent Gemini Pro 2.5 · lessons accumulées en continu · 100 % simulation
+              Agent LLM autonome · lessons accumulées en continu · 100 % simulation
             </p>
           </div>
         </div>
@@ -645,7 +645,7 @@ export default function LisaPage() {
               )}
           </div>
           <p className="text-[11px] text-muted-foreground">
-            TRADER = agent LLM autonome Gemini Pro 2.5. Shadow High/Middle/Small = scanners momentum A/B (read-only).
+            TRADER = agent LLM autonome (Mistral primary, Gemini fallback). Shadow High/Middle/Small = scanners momentum A/B (read-only).
           </p>
         </div>
       )}
@@ -886,7 +886,7 @@ export default function LisaPage() {
                 <span className="text-xs font-medium">Mode LISA actif</span>
               </div>
               <p className="text-[11px] text-muted-foreground">
-                L&apos;agent autonome LISA (Gemini Pro 2.5) tourne sur ton portefeuille
+                L&apos;agent autonome LISA tourne sur ton portefeuille
                 à chaque cycle. Les lessons accumulées dans{' '}
                 <span className="font-medium">scanner_lessons</span> guident ses
                 décisions. Le filet de garantie event-driven n&apos;est pas

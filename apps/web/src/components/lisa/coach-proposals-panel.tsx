@@ -62,7 +62,7 @@ export function CoachProposalsPanel({ portfolioId }: Props) {
             🧠 Strategy Coach
           </h3>
           <p className="text-[11px] text-muted-foreground">
-            Propositions Gemini Pro (hourly) — review et applique les lessons qui te conviennent.
+            Propositions LLM (hourly) — review et applique les lessons qui te conviennent.
           </p>
         </div>
         {proposals && proposals.length > 0 && (

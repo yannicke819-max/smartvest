@@ -413,6 +413,15 @@ export class LisaService {
       gainers_smart_close_enabled: pick('gainers_smart_close_enabled', 'gainersSmartCloseEnabled', existing?.gainers_smart_close_enabled ?? false),
       gainers_smart_close_window_min: pick('gainers_smart_close_window_min', 'gainersSmartCloseWindowMin', existing?.gainers_smart_close_window_min ?? 30),
       gainers_smart_close_min_profit_pct: pick('gainers_smart_close_min_profit_pct', 'gainersSmartCloseMinProfitPct', existing?.gainers_smart_close_min_profit_pct ?? 1.0),
+      // FIX 01/06 — Reset markers (migration 0174). L'UI gains-tracker poste
+      // ces 3 champs via useResetScopeMarker (use-lisa-targets.ts:202+) pour
+      // reset l'affichage par scope. Avant ce fix, ces clés étaient présentes
+      // dans `config` mais jamais incluses dans `merged` → silencieusement
+      // perdues (PostgREST ignore les colonnes inconnues sans erreur).
+      // Conséquence UI : bouton "🔄 Reset jour/mois/année" sans effet.
+      lisa_reset_marker_daily: pick('lisa_reset_marker_daily', 'lisaResetMarkerDaily', existing?.lisa_reset_marker_daily ?? null),
+      lisa_reset_marker_monthly: pick('lisa_reset_marker_monthly', 'lisaResetMarkerMonthly', existing?.lisa_reset_marker_monthly ?? null),
+      lisa_reset_marker_annual: pick('lisa_reset_marker_annual', 'lisaResetMarkerAnnual', existing?.lisa_reset_marker_annual ?? null),
     };
 
     // Validation des valeurs numériques pour renvoyer une 400 lisible plutôt
@@ -2907,7 +2916,14 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       if (!latestByPortfolio.has(pid)) latestByPortfolio.set(pid, row);
     }
 
-    const [configsRes, openSymbolsRes, cumPnlRes] = await Promise.all([
+    // FIX 01/06 — Ajout fetch des positions fermées du JOUR (UTC) pour
+    // fallback live si shadow_sizing_snapshot vide (cron pas actif ou en
+    // retard). Avant ce fix, l'UI affichait 0/0/0/0 sur les 3 cards du jour
+    // alors que les shadows tradaient bien (audit script v1.0 montrait 39
+    // trades closed non-TRADER en 24h).
+    const todayUtcStart = new Date();
+    todayUtcStart.setUTCHours(0, 0, 0, 0);
+    const [configsRes, openSymbolsRes, cumPnlRes, todayPnlRes] = await Promise.all([
       client
         .from('lisa_session_configs')
         .select('portfolio_id, capital_usd, kill_switch_active')
@@ -2922,6 +2938,12 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         .select('portfolio_id, realized_pnl_usd')
         .in('portfolio_id', SHADOW_IDS.map((s) => s.id))
         .neq('status', 'open'),
+      client
+        .from('lisa_positions')
+        .select('portfolio_id, realized_pnl_usd, exit_timestamp')
+        .in('portfolio_id', SHADOW_IDS.map((s) => s.id))
+        .neq('status', 'open')
+        .gte('exit_timestamp', todayUtcStart.toISOString()),
     ]);
 
     const configByPortfolio = new Map<string, { capital_usd?: string; kill_switch_active?: boolean }>();
@@ -2945,6 +2967,16 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       tradesByPortfolio.set(p.portfolio_id, (tradesByPortfolio.get(p.portfolio_id) ?? 0) + 1);
       if (pnl > 0) winsByPortfolio.set(p.portfolio_id, (winsByPortfolio.get(p.portfolio_id) ?? 0) + 1);
     }
+    // FIX 01/06 — Fallback live today stats (si snapshot vide ou absent).
+    const todayTradesByPortfolio = new Map<string, number>();
+    const todayPnlByPortfolio = new Map<string, number>();
+    const todayWinsByPortfolio = new Map<string, number>();
+    for (const p of (todayPnlRes.data ?? []) as Array<{ portfolio_id: string; realized_pnl_usd?: unknown }>) {
+      const pnl = Number(p.realized_pnl_usd ?? 0);
+      todayTradesByPortfolio.set(p.portfolio_id, (todayTradesByPortfolio.get(p.portfolio_id) ?? 0) + 1);
+      todayPnlByPortfolio.set(p.portfolio_id, (todayPnlByPortfolio.get(p.portfolio_id) ?? 0) + pnl);
+      if (pnl > 0) todayWinsByPortfolio.set(p.portfolio_id, (todayWinsByPortfolio.get(p.portfolio_id) ?? 0) + 1);
+    }
 
     const results = SHADOW_IDS.map((shadow) => {
       const snap = latestByPortfolio.get(shadow.id);
@@ -2954,18 +2986,22 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       const cumulativePnl = cumPnlByPortfolio.get(shadow.id) ?? 0;
 
       const openPositions = snap ? Number(snap.open_positions ?? 0) : openSyms.length;
-      const closedToday = snap ? Number(snap.closed_today ?? 0) : 0;
-      const realizedToday = snap ? Number(snap.realized_pnl_usd ?? 0) : 0;
-      const netToday = snap ? Number(snap.net_pnl_after_fees_usd ?? 0) : 0;
-      const winRateToday = snap?.win_rate_pct !== undefined && snap?.win_rate_pct !== null
-        ? Number(snap.win_rate_pct)
-        : null;
-      const winsToday = winRateToday !== null && closedToday > 0
-        ? Math.round((winRateToday / 100) * closedToday)
-        : 0;
-      const lossesToday = winRateToday !== null && closedToday > 0
-        ? closedToday - winsToday
-        : 0;
+      // FIX 01/06 — Fallback live : si snapshot vide ou stats jour à 0 alors
+      // que lisa_positions montre des closes today, utiliser le recompute live.
+      const liveTrades = todayTradesByPortfolio.get(shadow.id) ?? 0;
+      const livePnl = todayPnlByPortfolio.get(shadow.id) ?? 0;
+      const liveWins = todayWinsByPortfolio.get(shadow.id) ?? 0;
+      const snapTrades = snap ? Number(snap.closed_today ?? 0) : 0;
+      const snapPnl = snap ? Number(snap.realized_pnl_usd ?? 0) : 0;
+      const useLive = !snap || (snapTrades === 0 && liveTrades > 0);
+      const closedToday = useLive ? liveTrades : snapTrades;
+      const realizedToday = useLive ? livePnl : snapPnl;
+      const netToday = useLive ? livePnl : (snap ? Number(snap.net_pnl_after_fees_usd ?? 0) : 0);
+      const winRateToday: number | null = useLive
+        ? (liveTrades > 0 ? (liveWins / liveTrades) * 100 : null)
+        : (snap?.win_rate_pct !== undefined && snap?.win_rate_pct !== null ? Number(snap.win_rate_pct) : null);
+      const winsToday = useLive ? liveWins : (winRateToday !== null && closedToday > 0 ? Math.round((winRateToday / 100) * closedToday) : 0);
+      const lossesToday = closedToday - winsToday;
       const drawdownToday = snap ? Number(snap.drawdown_today_pct ?? 0) : 0;
       const targetProgress = snap ? Number(snap.target_progress_pct ?? 0) : 0;
       const feesToday = snap ? Number(snap.fees_paid_usd ?? 0) : 0;

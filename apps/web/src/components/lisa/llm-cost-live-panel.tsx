@@ -34,9 +34,17 @@ interface LlmCostLiveResponse {
 const PROVIDER_LABELS: Record<string, { label: string; color: string }> = {
   'gemini-pro': { label: 'Gemini 2.5 Pro', color: 'bg-blue-500' },
   'gemini-flash': { label: 'Gemini 2.5 Flash', color: 'bg-cyan-500' },
-  'mistral-medium': { label: 'Mistral Medium 3.5', color: 'bg-orange-500' },
+  'mistral-medium': { label: 'Mistral Medium 2505', color: 'bg-orange-500' },
   'mistral-large': { label: 'Mistral Large 3', color: 'bg-amber-500' },
+  'magistral-medium': { label: 'Magistral Medium 2509', color: 'bg-red-500' },
 };
+
+// MISTRAL_FREE_TIER=true par défaut côté backend → le coût Mistral réel est $0
+// (le service tracke les tokens pour stats mais zéro-out costUsd avant retour).
+// Sécurité front : si le backend renvoie quand même un cost > 0 sur un bucket
+// Mistral (bug théorique de config), on l'affiche comme "gratuit" pour ne pas
+// induire l'utilisateur en erreur. Le badge tooltip explique la free tier.
+const MISTRAL_FREE_TIER_BUCKETS = new Set(['mistral-medium', 'mistral-large', 'magistral-medium']);
 
 const SITE_LABELS: Record<string, string> = {
   trader_decision: 'TRADER decisions',
@@ -91,13 +99,26 @@ export function LlmCostLivePanel() {
       <div className="space-y-2">
         {Object.entries(data.providers).map(([key, p]) => {
           const meta = PROVIDER_LABELS[key] ?? { label: key, color: 'bg-gray-400' };
-          const pct = data.total_cost_usd > 0 ? (p.cost_usd / data.total_cost_usd) * 100 : 0;
+          // Mistral free tier : force display cost à 0. Évite confusion utilisateur
+          // si le backend renvoie un coût théorique malgré MISTRAL_FREE_TIER=true.
+          const isFreeTier = MISTRAL_FREE_TIER_BUCKETS.has(key);
+          const displayCost = isFreeTier ? 0 : p.cost_usd;
+          const pct = data.total_cost_usd > 0 ? (displayCost / data.total_cost_usd) * 100 : 0;
           return (
             <div key={key} className="flex items-center gap-3 text-xs">
               <div className={`h-2 w-2 rounded-full ${meta.color}`} aria-hidden />
-              <span className="flex-1 font-medium text-gray-700">{meta.label}</span>
+              <span className="flex-1 font-medium text-gray-700">
+                {meta.label}
+                {isFreeTier && (
+                  <span className="ml-1 text-[10px] text-green-600" title="Mistral en free tier (MISTRAL_FREE_TIER=true) — coût réel $0">
+                    (free)
+                  </span>
+                )}
+              </span>
               <span className="text-gray-500">{p.calls} calls</span>
-              <span className="w-16 text-right font-mono text-gray-900">${p.cost_usd.toFixed(3)}</span>
+              <span className="w-16 text-right font-mono text-gray-900">
+                {isFreeTier ? '$0.000' : `$${displayCost.toFixed(3)}`}
+              </span>
               {p.avg_latency_ms !== null && (
                 <span className="w-14 text-right text-gray-500">{(p.avg_latency_ms / 1000).toFixed(1)}s</span>
               )}

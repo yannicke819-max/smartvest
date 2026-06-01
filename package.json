@@ -14,7 +14,8 @@
     "format": "prettier --write \"**/*.{ts,tsx,js,json,md}\"",
     "typecheck": "tsc -b",
     "web:dev": "npm run dev -w @smartvest/web",
-    "api:dev": "npm run start:dev -w @smartvest/api"
+    "api:dev": "npm run start:dev -w @smartvest/api",
+    "verify:learning-loop": "tsx scripts/verify-learning-loop.ts"
   },
   "engines": {
     "node": ">=20.0.0"

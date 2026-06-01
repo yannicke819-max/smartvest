@@ -153,10 +153,20 @@ export function GainsTracker({ portfolioId }: Props) {
   const mobileScope = (['daily', 'weekly', 'monthly', 'annual'] as LisaScope[])[mobileScopeIdx];
 
   const handleReset = async (scope: 'daily' | 'monthly' | 'annual') => {
-    if (scope === 'daily') await reset.resetDaily();
-    else if (scope === 'monthly') await reset.resetMonthly();
-    else if (scope === 'annual') await reset.resetAnnual();
-    setResetScope(null);
+    try {
+      if (scope === 'daily') await reset.resetDaily();
+      else if (scope === 'monthly') await reset.resetMonthly();
+      else if (scope === 'annual') await reset.resetAnnual();
+    } catch (err) {
+      // FIX 01/06 — sans try/catch, mutation rejected silencieusement → bouton
+      // ne fait rien visible côté UI. Logger + alert pour visibilité minimale.
+      // eslint-disable-next-line no-console
+      console.error(`[gains-tracker] reset ${scope} failed:`, err);
+      // eslint-disable-next-line no-alert
+      alert(`Reset ${scope} a échoué : ${(err as Error)?.message ?? String(err)}`);
+    } finally {
+      setResetScope(null);
+    }
   };
 
   return (
