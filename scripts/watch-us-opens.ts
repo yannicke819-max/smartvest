@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import * as fs from 'fs';
 const env = fs.readFileSync('.env', 'utf8').split('\n').reduce((a:any,l)=>{const m=l.match(/^([A-Z_][A-Z0-9_]*)=(.+)$/);if(m)a[m[1]]=m[2];return a;},{});
 const sb = createClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
-const PID = '58439d86-3f20-4a60-82a4-307f3f252bc2';
+const PID = 'b0000001-0000-0000-0000-000000000001';
 const sinceDeploy = '2026-05-26T17:05:34Z';
 const seen = new Set<string>();
 (async () => {

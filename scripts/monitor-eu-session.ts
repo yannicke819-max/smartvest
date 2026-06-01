@@ -5,7 +5,7 @@ const env = fs.readFileSync('.env', 'utf8').split('\n').reduce((acc, l) => {
 }, {} as Record<string, string>);
 const sb = createClient(env.NEXT_PUBLIC_SUPABASE_URL!, env.SUPABASE_SERVICE_ROLE_KEY!);
 const TD = '1304e11cb4f648b196e9b6b2182705ab';
-const PID = '58439d86-3f20-4a60-82a4-307f3f252bc2';
+const PID = 'b0000001-0000-0000-0000-000000000001';
 const EU_PROBES = ['CAC:EURONEXT', 'DAX:XETR', 'UKX:LSE', 'BMW:XETR', 'AIR:EURONEXT', 'BARC:LSE', 'SIE:XETR'];
 
 async function snapshot() {

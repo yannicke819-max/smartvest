@@ -31,7 +31,7 @@ const TARGETS = ['NANO.PA', 'AMS.SW'];
   if (error) { console.error('UPDATE failed:', error); process.exit(1); }
 
   // Audit log
-  const portfolioId = '58439d86-3f20-4a60-82a4-307f3f252bc2';
+  const portfolioId = 'b0000001-0000-0000-0000-000000000001';
   for (const p of pos as any[]) {
     await sb.from('lisa_decision_log').insert({
       portfolio_id: portfolioId, kind: 'position_closed',

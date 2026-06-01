@@ -18,7 +18,7 @@ const SUPA_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPA_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
 const PORTFOLIOS: Record<string, string> = {
-  '58439d86-3f20-4a60-82a4-307f3f252bc2': 'MAIN',
+  'b0000001-0000-0000-0000-000000000001': 'MAIN',
   'a0000001-0000-0000-0000-000000000001': 'HIGH',
   'a0000002-0000-0000-0000-000000000002': 'MIDDLE',
   'a0000003-0000-0000-0000-000000000003': 'SMALL',
@@ -361,7 +361,7 @@ async function main() {
     lesson_text: `MAIN portfolio (n=${mainStats.n}, WR=${pct(mainStats.wr)}, PnL=$${fmt(mainStats.pnl)}) vs SHADOWS (HIGH ${highStats.n}/WR ${pct(highStats.wr)}/$${fmt(highStats.pnl)}, MIDDLE ${middleStats.n}/WR ${pct(middleStats.wr)}/$${fmt(middleStats.pnl)}, SMALL ${smallStats.n}/WR ${pct(smallStats.wr)}/$${fmt(smallStats.pnl)}). MAIN concentre la majorité des trades et toutes les pertes. ROOT CAUSE #1: config asymétrique — MAIN tourne en strategy_mode=gainers MAIS capital_discipline_mode=DAILY_HARVEST avec daily_harvest_config.takeProfitAbsolutePct=2.5, ce qui force des sorties early. Les shadows tournent avec capital_discipline_mode=NONE (gainers pur). Action: aligner MAIN sur capital_discipline_mode=NONE OU réduire takeProfitAbsolutePct à 1.5%.`,
     proposed_config_change: {
       table: 'lisa_session_configs',
-      portfolio_id_only: '58439d86-3f20-4a60-82a4-307f3f252bc2',
+      portfolio_id_only: 'b0000001-0000-0000-0000-000000000001',
       capital_discipline_mode: 'NONE',
       note: 'Réaligne MAIN sur mode gainers pur comme les shadows (à ne pas appliquer sans validation)',
     },
@@ -385,7 +385,7 @@ async function main() {
     lesson_text: `MAIN exit profile: SL_HIT=${slMainStats.n}/${mainStats.n} (${pct(slPctMain)}), TP_HIT=${tpMainStats.n}/${mainStats.n} (${pct(mainStats.n ? tpMainStats.n / mainStats.n : 0)}). MIDDLE SL ratio=${pct(slPctMiddle)}. MAIN SL pct vs MIDDLE: ${pct(slPctMain - slPctMiddle, 1)} excess. ROOT CAUSE #2: gainers_default_sl_pct=1.0 + gainers_fees_aware_buffer=1.3 (vs shadows buffer=2.0) → SL atteint après ~1.3% mouvement défavorable, classes EU/Asia avec spread+slippage typique 0.3-0.6% tape le stop quasi-immédiatement. Action: augmenter gainers_fees_aware_buffer à 1.8-2.0 sur MAIN ou élargir SL à 1.5%.`,
     proposed_config_change: {
       table: 'lisa_session_configs',
-      portfolio_id_only: '58439d86-3f20-4a60-82a4-307f3f252bc2',
+      portfolio_id_only: 'b0000001-0000-0000-0000-000000000001',
       gainers_fees_aware_buffer: 1.8,
       gainers_default_sl_pct: 1.5,
     },
@@ -434,7 +434,7 @@ async function main() {
     lesson_text: `MAIN tickers ANALYSIS: shared ${shared.length} symbols (MAIN trades WR=${pct(rSharedM.wr)}, PnL=$${fmt(rSharedM.pnl)}), exclusive MAIN ${mainOnly.length} symbols (n=${rExclM.n} trades, WR=${pct(rExclM.wr)}, PnL=$${fmt(rExclM.pnl)}). ${rExclM.pnl < 0 && rExclM.wr < rSharedM.wr ? 'ROOT CAUSE #4: les tickers que SEUL MAIN trade (filtres permissifs : persistence/path_eff=0.5 vs shadows=0.0) sont les pires PnL.' : 'Tickers exclusifs MAIN ne sont pas la cause dominante.'} MAIN gates plus stricts (persistence=0.5, path_eff=0.5) mais position_pct=7.5% + max_open=14 → sizing 5-7x supérieur aux shadows.`,
     proposed_config_change: {
       table: 'lisa_session_configs',
-      portfolio_id_only: '58439d86-3f20-4a60-82a4-307f3f252bc2',
+      portfolio_id_only: 'b0000001-0000-0000-0000-000000000001',
       gainers_position_pct: 3.0,
       gainers_max_open_positions: 10,
       note: 'Réduire sizing/concurrence pour limiter le drag des stops sur gros notionals',
@@ -467,7 +467,7 @@ async function main() {
     lesson_text: `MAIN sizing buckets WR: ${bucketStats.map((b) => `${b.name}=${b.n}/${pct(b.wr, 0)}/$${fmt(b.pnl, 0)}`).join(', ')}. ${bigSize.wr < smallSize.wr - 0.1 ? 'ROOT CAUSE #5: WR chute sur les gros notionals — slippage/liquidity drag sur sizing $700+. Réduire gainers_position_pct à 3-4%.' : 'WR ne dégrade pas linéairement avec sizing — pas de signal slippage net.'}`,
     proposed_config_change: bigSize.wr < smallSize.wr - 0.1 ? {
       table: 'lisa_session_configs',
-      portfolio_id_only: '58439d86-3f20-4a60-82a4-307f3f252bc2',
+      portfolio_id_only: 'b0000001-0000-0000-0000-000000000001',
       gainers_position_pct: 3.5,
     } : null,
     is_active: true,

@@ -45,7 +45,7 @@ type Trade = {
 type Candle = { ts: number; high: number; low: number };
 
 const PORTFOLIOS: Record<string, string> = {
-  '58439d86-3f20-4a60-82a4-307f3f252bc2': 'MAIN',
+  'b0000001-0000-0000-0000-000000000001': 'MAIN',
   'a0000001-0000-0000-0000-000000000001': 'HIGH',
   'a0000002-0000-0000-0000-000000000002': 'MIDDLE',
   'a0000003-0000-0000-0000-000000000003': 'SMALL',

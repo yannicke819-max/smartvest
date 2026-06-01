@@ -4,7 +4,7 @@ const env = fs.readFileSync('.env', 'utf8').split('\n').reduce((acc, l) => {
   const m = l.match(/^([A-Z_][A-Z0-9_]*)=(.+)$/); if (m) acc[m[1]] = m[2]; return acc;
 }, {} as Record<string, string>);
 const sb = createClient(env.NEXT_PUBLIC_SUPABASE_URL!, env.SUPABASE_SERVICE_ROLE_KEY!);
-const PID = '58439d86-3f20-4a60-82a4-307f3f252bc2';
+const PID = 'b0000001-0000-0000-0000-000000000001';
 
 (async () => {
   // 1. Activate kill_switch to prevent re-opens
