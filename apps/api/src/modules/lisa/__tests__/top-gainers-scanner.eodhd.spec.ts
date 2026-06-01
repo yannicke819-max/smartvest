@@ -125,22 +125,24 @@ describe('fetchEodhdScreener — URL construction (P18c regression guard)', () =
     const svc = makeService();
     await (svc as any).fetchEodhdScreener('US', 'test-key');
     const decoded = decodeURIComponent(capturedUrl!);
-    // P19s — Live Fly logs 18:53 UTC : 100% of non-US exchanges (TSE/HK/KO/SS
-    // /SZ/TO/AS/NSE/BSE) returned HTTP 422 with `sort.0.direction required`.
-    // EODHD validator expects nested array form. Drop sort entirely — we
-    // already sort client-side in the snapshot endpoint by changePct desc.
-    expect(decoded).not.toMatch(/[?&]sort=/);
-    expect(decoded).not.toMatch(/[?&]order=/);
+    // PR #557 — sort=refund_1d_p&order=d est OK pour US (test live + doc EODHD).
+    // Pour non-US, on garde l'ancien comportement (no sort) car Laravel validator
+    // EODHD rejette sort sur non-US (test historique P19s).
+    expect(decoded).toMatch(/[?&]sort=refund_1d_p/);
+    expect(decoded).toMatch(/[?&]order=d/);
   });
 
-  it('bumps limit to 500 (max per spec) to compensate dropped sort', async () => {
+  it('PR #557 — limit=100 (respect EODHD doc max=100, anciennement 500 erroné)', async () => {
     const svc = makeService();
     await (svc as any).fetchEodhdScreener('US', 'test-key');
     const decoded = decodeURIComponent(capturedUrl!);
-    // Update 28-29/05/2026 : limit 100 → 500 (5× more candidates per fetch).
-    expect(decoded).toContain('limit=500');
+    // PR #557 — limit 500 → 100 : doc EODHD officielle = "max 100". Notre code
+    // demandait 500, EODHD ignorait silencieusement et retournait ≤100. L'offset
+    // sautait par 500 → on ratait 400 tickers par page. Fix : pageSize=100,
+    // offset += 100 → coverage complète.
+    expect(decoded).toContain('limit=100');
+    expect(decoded).not.toContain('limit=500');
     expect(decoded).not.toContain('limit=20');
-    expect(decoded).not.toContain('limit=100');
   });
 
   it('P19s++ HOTFIX — non-US exchanges build URL with UPPERCASE + NO 1d return filter', async () => {
