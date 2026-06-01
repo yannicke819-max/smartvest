@@ -26,12 +26,13 @@
  * pas de crash. Cron tourne tous les 30 min sans dépendance.
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
 import { LisaService } from './lisa.service';
+import { DecisionLogService } from './decision-log.service';
 
 const SHADOW_PORTFOLIOS = [
   { id: 'a0000001-0000-0000-0000-000000000001', name: 'high'   as const, posCount: 3,  posUsd: 3500 },
@@ -142,6 +143,9 @@ export class ShadowSizingOrchestratorService {
     private readonly supabase: SupabaseService,
     private readonly llmRouter: ScannerLlmRouterService,
     private readonly lisa: LisaService,
+    // PR #547 — audit traçable des décisions LLM sur shadow sizing dans
+    // lisa_decision_log (visible côté UI). Optional pour back-compat tests.
+    @Optional() private readonly decisionLog?: DecisionLogService,
   ) {}
 
   onModuleInit(): void {
@@ -875,6 +879,26 @@ export class ShadowSizingOrchestratorService {
       }
     } catch (e) {
       applyError = String(e).slice(0, 200);
+    }
+
+    // PR #547 — Audit lisa_decision_log explicit pour kill/restart (les actions
+    // les plus impactantes). Visible côté UI. Le shadow_sizing_autotune_log
+    // garde l'audit complet structuré (tous decision_kind).
+    if (this.decisionLog && (decision.action_kind === 'kill' || decision.action_kind === 'restart')) {
+      await this.decisionLog
+        .append({
+          portfolioId: target.portfolioId,
+          kind: applied
+            ? `shadow_sizing_${decision.action_kind}_applied`
+            : `shadow_sizing_${decision.action_kind}_failed`,
+          summary: applied
+            ? `🤖 [SHADOW_SIZING] ${decision.action_kind.toUpperCase()} ${target.profileName} APPLIED (LLM conf=${decision.confidence?.toFixed(2)})`
+            : `🤖 [SHADOW_SIZING] ${decision.action_kind} ${target.profileName} FAILED: ${applyError ?? 'unknown'}`,
+          rationale: decision.rationale ?? '(no rationale from LLM)',
+          payload: { decision, applied, applyError, profile_name: target.profileName },
+          triggeredBy: 'autopilot_cron',
+        })
+        .catch((e) => this.logger.debug(`[shadow-sizing] decision_log append failed: ${String(e).slice(0, 100)}`));
     }
 
     await this.logAutoTune({
