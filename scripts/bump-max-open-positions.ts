@@ -6,7 +6,7 @@ const env = fs.readFileSync('.env', 'utf8').split('\n').reduce((acc, l) => {
 }, {} as Record<string, string>);
 const sb = createClient(env.NEXT_PUBLIC_SUPABASE_URL!, env.SUPABASE_SERVICE_ROLE_KEY!);
 
-const PORTFOLIO_ID = '58439d86-3f20-4a60-82a4-307f3f252bc2';
+const PORTFOLIO_ID = 'b0000001-0000-0000-0000-000000000001';
 const NEW_CAP = 14;
 
 (async () => {

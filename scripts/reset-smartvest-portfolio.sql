@@ -13,7 +13,7 @@
 --   `rebound_positions`     → `rebound_positions` (0076)
 --
 -- Vérification pré-reset : SELECT count(*) FROM lisa_positions
---   WHERE portfolio_id = '58439d86-3f20-4a60-82a4-307f3f252bc2';
+--   WHERE portfolio_id = 'b0000001-0000-0000-0000-000000000001';
 
 BEGIN;
 
@@ -23,7 +23,7 @@ SET
   status = 'closed_user',
   exit_timestamp = NOW(),
   realized_pnl_usd = '0'
-WHERE portfolio_id = '58439d86-3f20-4a60-82a4-307f3f252bc2'
+WHERE portfolio_id = 'b0000001-0000-0000-0000-000000000001'
   AND status = 'open';
 
 -- 2) Reset cash + valeur du portfolio.
@@ -36,34 +36,34 @@ INSERT INTO public.lisa_portfolio_snapshots (
   return_from_inception_pct, open_positions_count, drawdown_from_peak_pct
 )
 VALUES (
-  '58439d86-3f20-4a60-82a4-307f3f252bc2',
+  'b0000001-0000-0000-0000-000000000001',
   NOW(),
   '10000.00', '0.00', '10000.00', '0.00', '0.00', 0, 0, 0
 );
 
 -- 3) Purger sessions Daily Harvest (= équivalent de daily_harvest_state spec).
 DELETE FROM public.daily_trading_sessions
-WHERE portfolio_id = '58439d86-3f20-4a60-82a4-307f3f252bc2';
+WHERE portfolio_id = 'b0000001-0000-0000-0000-000000000001';
 
 -- 4) Reset secured_profit_balance (vault Daily Harvest).
 DELETE FROM public.secured_profit_balance
-WHERE portfolio_id = '58439d86-3f20-4a60-82a4-307f3f252bc2';
+WHERE portfolio_id = 'b0000001-0000-0000-0000-000000000001';
 
 -- 5) Reset rebound_positions (P3-A).
 DELETE FROM public.rebound_positions
-WHERE portfolio_id = '58439d86-3f20-4a60-82a4-307f3f252bc2';
+WHERE portfolio_id = 'b0000001-0000-0000-0000-000000000001';
 
 -- 6) Reset directives mécaniques + cycle summaries.
 DELETE FROM public.lisa_mechanical_directives
-WHERE portfolio_id = '58439d86-3f20-4a60-82a4-307f3f252bc2';
+WHERE portfolio_id = 'b0000001-0000-0000-0000-000000000001';
 
 DELETE FROM public.lisa_mechanical_cycle_summary
-WHERE portfolio_id = '58439d86-3f20-4a60-82a4-307f3f252bc2';
+WHERE portfolio_id = 'b0000001-0000-0000-0000-000000000001';
 
 -- 7) Lever kill_switch_active si actif.
 UPDATE public.lisa_session_configs
 SET kill_switch_active = false
-WHERE portfolio_id = '58439d86-3f20-4a60-82a4-307f3f252bc2';
+WHERE portfolio_id = 'b0000001-0000-0000-0000-000000000001';
 
 -- 8) Garder lisa_decision_log historique pour audit, mais ajouter marker.
 -- Note : decision-log.service.ts gère normalement le hash chain. Insertion
@@ -73,7 +73,7 @@ INSERT INTO public.lisa_decision_log (
   portfolio_id, timestamp, kind, summary, rationale, payload, triggered_by
 )
 VALUES (
-  '58439d86-3f20-4a60-82a4-307f3f252bc2',
+  'b0000001-0000-0000-0000-000000000001',
   NOW(),
   'portfolio_reset_clean_slate',
   'RESET post P3-D + P4-A + P4-B (manual SQL, hors hash chain)',
@@ -86,8 +86,8 @@ COMMIT;
 
 -- Vérification post-reset (à exécuter dans une transaction séparée) :
 -- SELECT
---   (SELECT count(*) FROM lisa_positions WHERE portfolio_id = '58439d86-3f20-4a60-82a4-307f3f252bc2' AND status = 'open') AS open_positions,
---   (SELECT count(*) FROM rebound_positions WHERE portfolio_id = '58439d86-3f20-4a60-82a4-307f3f252bc2' AND status = 'OPEN') AS open_rebounds,
---   (SELECT count(*) FROM daily_trading_sessions WHERE portfolio_id = '58439d86-3f20-4a60-82a4-307f3f252bc2') AS sessions,
---   (SELECT cash_usd FROM lisa_portfolio_snapshots WHERE portfolio_id = '58439d86-3f20-4a60-82a4-307f3f252bc2' ORDER BY timestamp DESC LIMIT 1) AS cash;
+--   (SELECT count(*) FROM lisa_positions WHERE portfolio_id = 'b0000001-0000-0000-0000-000000000001' AND status = 'open') AS open_positions,
+--   (SELECT count(*) FROM rebound_positions WHERE portfolio_id = 'b0000001-0000-0000-0000-000000000001' AND status = 'OPEN') AS open_rebounds,
+--   (SELECT count(*) FROM daily_trading_sessions WHERE portfolio_id = 'b0000001-0000-0000-0000-000000000001') AS sessions,
+--   (SELECT cash_usd FROM lisa_portfolio_snapshots WHERE portfolio_id = 'b0000001-0000-0000-0000-000000000001' ORDER BY timestamp DESC LIMIT 1) AS cash;
 -- → expected : open_positions=0, open_rebounds=0, sessions=0, cash='10000.00'

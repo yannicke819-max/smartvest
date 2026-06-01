@@ -4,7 +4,7 @@ const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL || '', process.env.
   // Sample 5 rows of status=closed_target
   const { data } = await sb.from('lisa_positions')
     .select('symbol, status, closed_at, entry_timestamp, realized_pnl_usd, exit_reason')
-    .eq('portfolio_id', '58439d86-3f20-4a60-82a4-307f3f252bc2')
+    .eq('portfolio_id', 'b0000001-0000-0000-0000-000000000001')
     .eq('status', 'closed_target')
     .order('entry_timestamp', { ascending: false })
     .limit(5);

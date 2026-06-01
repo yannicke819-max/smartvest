@@ -28,7 +28,7 @@ async function main() {
   }
 
   // Open positions on the active portfolio
-  const PID = '58439d86-3f20-4a60-82a4-307f3f252bc2';
+  const PID = 'b0000001-0000-0000-0000-000000000001';
   const { data: positions } = await sb
     .from('lisa_positions')
     .select('id, symbol, status, opened_at, closed_at, source, entry_price, exit_price, pnl_usd, pnl_pct')

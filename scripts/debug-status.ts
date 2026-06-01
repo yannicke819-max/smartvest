@@ -4,7 +4,7 @@ const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL || '', process.env.
   // Check all status values
   const { data } = await sb.from('lisa_positions')
     .select('status')
-    .eq('portfolio_id', '58439d86-3f20-4a60-82a4-307f3f252bc2');
+    .eq('portfolio_id', 'b0000001-0000-0000-0000-000000000001');
   const counts = new Map<string, number>();
   for (const p of (data ?? [])) {
     counts.set(p.status ?? 'null', (counts.get(p.status ?? 'null') ?? 0) + 1);
@@ -15,7 +15,7 @@ const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL || '', process.env.
   // Latest 10 entries (any status)
   const { data: latest } = await sb.from('lisa_positions')
     .select('symbol, direction, status, closed_at, realized_pnl_usd')
-    .eq('portfolio_id', '58439d86-3f20-4a60-82a4-307f3f252bc2')
+    .eq('portfolio_id', 'b0000001-0000-0000-0000-000000000001')
     .not('closed_at', 'is', null)
     .order('closed_at', { ascending: false })
     .limit(5);
