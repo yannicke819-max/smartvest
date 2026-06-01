@@ -143,16 +143,29 @@ export class MainScannerPostMortemService {
     );
     if (this.enabled) {
       // Registration manuelle via SchedulerRegistry (pattern TopGainersScanner / LiveTraderAgent).
-      // Cron 02:30 UTC : après Trader Agent post-mortem (02:00) pour pas saturer Gemini Pro.
+      // 2 crons :
+      //   - 02:30 UTC : full 24h post US close (baseline). Génère lessons pour le jour suivant.
+      //   - 14:00 UTC : delta 12h post Asia+EU close (pré-US open). Propage lessons Asia/EU
+      //     fraîches dans le prompt Gemini AVANT que les patterns ne contaminent la session US.
+      //     Cadence alignée tempo TRADER scalp 5min (vs feedback loop 24h trop lent).
       try {
-        const job = new CronJob('30 2 * * *', () => {
+        const jobNightly = new CronJob('30 2 * * *', () => {
           this.runPostMortem(24).catch((e) =>
-            this.logger.error(`[scanner-postmortem] cron failed: ${String(e).slice(0, 200)}`),
+            this.logger.error(`[scanner-postmortem] cron 02:30 failed: ${String(e).slice(0, 200)}`),
           );
         });
-        this.schedulerRegistry.addCronJob('main-scanner-postmortem', job);
-        job.start();
-        this.logger.log('[scanner-postmortem] ENABLED — cron 02:30 UTC daily');
+        this.schedulerRegistry.addCronJob('main-scanner-postmortem', jobNightly);
+        jobNightly.start();
+
+        const jobMidday = new CronJob('0 14 * * *', () => {
+          this.runPostMortem(12).catch((e) =>
+            this.logger.error(`[scanner-postmortem] cron 14:00 failed: ${String(e).slice(0, 200)}`),
+          );
+        });
+        this.schedulerRegistry.addCronJob('main-scanner-postmortem-midday', jobMidday);
+        jobMidday.start();
+
+        this.logger.log('[scanner-postmortem] ENABLED — crons 02:30 UTC (24h) + 14:00 UTC (12h)');
       } catch (e) {
         this.logger.error(`[scanner-postmortem] cron register failed: ${String(e).slice(0, 200)}`);
       }
