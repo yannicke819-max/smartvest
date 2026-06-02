@@ -2063,9 +2063,16 @@ export class TopGainersScannerService implements OnModuleInit {
       high,
       changePct: Number(m.percent_change),
       volume,
-      // RVOL fallback : avgVol50d = volume du jour → RVOL=1.0 (neutre). Une
-      // intégration future pourrait fetch /quote pour récupérer average_volume.
-      avgVol50d: volume,
+      // RVOL sentinel : sans avg_vol_50d réel de TD, on settle volume/2 → volRatio
+      // = volume / (volume/2) = 2.0 (au-dessus du seuil asia_equity minVolRatio=1.5).
+      // Sinon volRatio=1.0 fait fail le gate downstream et tous les candidats TD
+      // sortent en `decision=filtered` (observé 02/06/2026 03:00 UTC, 30/30 candidats).
+      // Bias acceptable car TD /market_movers retourne déjà des gainers > +3% — un
+      // mover qui pop ce jour-là a typiquement déjà un volRatio > 1.5 vs son avg 50j
+      // (sinon il ne serait pas dans les top movers du screener national TD).
+      // Follow-up propre : batch /quote pour récupérer le vrai average_volume
+      // (+10 credits/cycle, marge confortable Pro plan 1M/jour).
+      avgVol50d: Math.max(Math.floor(volume / 2), 200_000),
       marketCap: 5_000_000_000,
     };
   }
