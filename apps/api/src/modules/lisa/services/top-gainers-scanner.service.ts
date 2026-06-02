@@ -102,6 +102,10 @@ import {
   formatFilterLog,
   classifySetup,
   type SetupClassifierInput,
+  evaluateSkeptic,
+  DEFAULT_SKEPTIC_CONFIG,
+  type SkepticInput,
+  type AssetClassKey,
 } from '@smartvest/ai-analyst';
 import { TickerBlacklistService } from './ticker-blacklist.service';
 import { CorrelationGuardService } from './correlation-guard.service';
@@ -4972,6 +4976,91 @@ export class TopGainersScannerService implements OnModuleInit {
           } catch (e) {
             // Fail-open : on ne casse jamais le scanner même si le gate plante.
             this.logger.error(`[debate-gate] ${cand.symbol} eval threw (fail-open): ${String(e).slice(0, 120)}`);
+          }
+        }
+
+        // Step 1 chain (02/06/2026) — SkepticAgent wiring SHADOW mode.
+        // Pure helper @smartvest/ai-analyst/skeptic — 6 règles institutionnelles
+        // (microstructure, regime_macro, correlation, drawdown, liquidity, cooldown).
+        // Mode shadow par défaut — log-only, ne bloque rien. Active blocking règle
+        // par règle après calibration via decision_log (pattern path_eff 25/05).
+        //
+        // Activation par règle :
+        //   SKEPTIC_RULE_<NAME>_MODE=blocking
+        //   (NAME ∈ microstructure | regime_macro | correlation | drawdown | liquidity | cooldown)
+        // Master disable : SKEPTIC_ENABLED=false (default true)
+        const skepticEnabled = (this.config.get<string>('SKEPTIC_ENABLED') ?? 'true').toLowerCase() === 'true';
+        if (skepticEnabled) {
+          try {
+            // Fetch open positions snapshot (best-effort, soft-fail si erreur)
+            const { data: openSnap } = await this.supabase.getClient()
+              .from('lisa_positions')
+              .select('symbol, asset_class, entry_notional_usd')
+              .eq('portfolio_id', portfolioId)
+              .eq('status', 'open');
+            const openPositions = ((openSnap ?? []) as Array<{ symbol: string; asset_class: string; entry_notional_usd: number | string }>)
+              .filter((r) => r.symbol !== cand.symbol)
+              .map((r) => ({
+                symbol: r.symbol,
+                assetClass: r.asset_class as AssetClassKey,
+                notionalUsd: Number(r.entry_notional_usd ?? 0),
+              }));
+
+            // Build config avec mode per-règle override env
+            const cfg = structuredClone(DEFAULT_SKEPTIC_CONFIG);
+            for (const ruleName of ['microstructure', 'regime_macro', 'correlation', 'drawdown', 'liquidity', 'cooldown'] as const) {
+              const envKey = `SKEPTIC_RULE_${ruleName.toUpperCase()}_MODE`;
+              const envVal = (this.config.get<string>(envKey) ?? 'shadow').toLowerCase();
+              if (envVal === 'blocking') cfg[ruleName].mode = 'blocking';
+            }
+
+            const skepticInput: SkepticInput = {
+              candidate: {
+                symbol: cand.symbol,
+                assetClass: cand.assetClass as AssetClassKey,
+                close: cand.close,
+                notionalUsd: directionalNotional,
+                avgVol50d: cand.avgVol50d,
+              },
+              // v1 wiring — macro features défèrent (besoin MarketSnapshot service
+              // injection ; pour l'instant, regime_macro fera 'info' partout)
+              macro: {},
+              openPositions,
+              portfolioCapitalUsd: effectiveCapital,
+              sessionPnlUsd: 0, // v2 : fetch daily_trading_sessions.realized_pnl_today_usd
+              consecutiveLosses: 0, // v2 : fetch via recent paper_trades closed_stop
+            };
+            const verdict = evaluateSkeptic(skepticInput, cfg);
+
+            // Log verdict pour calibration funnel (shadow → blocking règle par règle)
+            await this.decisionLog.append({
+              portfolioId,
+              kind: 'skeptic_verdict',
+              summary: `[SKEPTIC] ${cand.symbol} ${item.direction} veto=${verdict.veto} score=${verdict.score} (${verdict.reasons.filter((r) => r.triggered).map((r) => r.rule).join(',') || 'none triggered'})`,
+              rationale: verdict.reasons.filter((r) => r.triggered).map((r) => `${r.rule}[${r.severity}/${r.mode}]: ${r.detail}`).join(' | ') || 'all rules OK',
+              payload: {
+                symbol: cand.symbol,
+                direction: item.direction,
+                asset_class: cand.assetClass,
+                verdict_veto: verdict.veto,
+                verdict_score: verdict.score,
+                model_version: verdict.modelVersion,
+                reasons: verdict.reasons,
+                features: verdict.features,
+              },
+              triggeredBy: 'autopilot_cron',
+            }).catch(() => { /* non-bloquant */ });
+
+            if (verdict.veto) {
+              // Au moins une règle 'blocking' + 'block' + triggered → veto réel
+              this.logger.log(
+                `[skeptic-agent] ${cand.symbol} ${item.direction.toUpperCase()} BLOCKED — ${verdict.reasons.filter((r) => r.triggered && r.severity === 'block' && r.mode === 'blocking').map((r) => r.rule).join(',')}`,
+              );
+              continue;
+            }
+          } catch (e) {
+            // Fail-open : un bug SkepticAgent ne doit pas bloquer le scanner.
+            this.logger.warn(`[skeptic-agent] ${cand.symbol} eval threw (fail-open): ${String(e).slice(0, 150)}`);
           }
         }
 
