@@ -1712,6 +1712,11 @@ Recommendation rules :
       close,
       high,
       exchange: c.exchange,
+      // Fix 02/06/2026 cycle 11:16 — forward marketCap pour permettre au gate
+      // XETRA notional (applyDecision) de distinguer mid/large cap (mcap≥$5B,
+      // min $1000) des small-caps (min $3000). Sans ce field, candidate.marketCap
+      // est undefined → traité small-cap → MSF.XETRA (€60B) bloqué à $1300.
+      marketCap: c.marketCap,
       // P-KTOS enrichment fields :
       pumpScore,
       closeToHighRatio,
