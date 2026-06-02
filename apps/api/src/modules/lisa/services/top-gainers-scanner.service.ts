@@ -100,6 +100,8 @@ import {
   computeVenueFeeDetail,
   filterTickersForFetch,
   formatFilterLog,
+  classifySetup,
+  type SetupClassifierInput,
 } from '@smartvest/ai-analyst';
 import { TickerBlacklistService } from './ticker-blacklist.service';
 import { CorrelationGuardService } from './correlation-guard.service';
@@ -5226,6 +5228,41 @@ export class TopGainersScannerService implements OnModuleInit {
       tf30m: persistence.tf30m,
       tf1h: persistence.tf1h,
     };
+
+    // Step 3 chain (02/06/2026) — Classification setup + régime au moment de l'open.
+    // Pure function, idempotente. Fallback graceful sur features disponibles
+    // (TopGainerCandidate + persistence Phase 8 + pathQuality P9-UX +
+    // momentum Phase 2 + bucket Phase 3). V2 ajoutera VWAP/EMA/ATR/ADX/RSI.
+    // Cast vers PersistenceWithPath (pathQuality est runtime-only, cf.
+    // multi-tf-persistence.service.ts:101 — type mismatch historique du
+    // codebase, fix typing graduel hors scope).
+    const persistenceWithPath = persistence as PersistenceResult & {
+      pathQuality?: { overallEfficiency?: number };
+    };
+    const classifierInput: SetupClassifierInput = {
+      changePct: cand.changePct,
+      close: cand.close,
+      high: cand.high,
+      volume: cand.volume,
+      avgVol50d: cand.avgVol50d,
+      persistenceScore: persistence.persistenceScore,
+      ...(persistenceWithPath.pathQuality?.overallEfficiency !== undefined
+        ? { pathEfficiency: persistenceWithPath.pathQuality.overallEfficiency }
+        : {}),
+      ...(cand.momentum
+        ? {
+            momentum: {
+              gradientPctPerMin: cand.momentum.gradientPctPerMin,
+              acceleration: cand.momentum.acceleration,
+              verticalityScore: cand.momentum.verticalityScore,
+              risingScore: cand.momentum.risingScore,
+            },
+          }
+        : {}),
+      ...(cand.bucket ? { bucket: cand.bucket } : {}),
+    };
+    const setupClassification = classifySetup(classifierInput);
+
     const insertRow: Record<string, unknown> = {
       user_id: userId,
       portfolio_id: portfolioId,
@@ -5242,6 +5279,10 @@ export class TopGainersScannerService implements OnModuleInit {
       persistence_score_at_entry: String(persistence.persistenceScore.toFixed(2)),
       persistence_count_at_entry: persistence.persistenceCount,
       tf_changes_at_entry: tfChanges,
+      // Step 3 chain — setup taxonomy (cf. migration 0187 + setup-classifier.ts)
+      setup_kind: setupClassification.setup_kind,
+      regime_at_entry: setupClassification.regime_at_entry,
+      classifier_version: setupClassification.classifier_version,
     };
     // PR #4 — features + p_win + model_version persistés pour boucle apprentissage
     if (pWinMeta) {
