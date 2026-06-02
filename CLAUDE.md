@@ -594,6 +594,113 @@ restent à mesurer via cross-check `lisa_decision_log`.
 
 ---
 
+## RÈGLE OPÉRATIONNELLE — COÛTS GEMINI API & COST-CUTS (31/05/2026)
+
+Source : Google Cloud Console pricing officiel (extrait par utilisateur 31/05).
+Tous les prix en **EUR** (devise du billing account `0106E9-FEDF38-88F43C`).
+
+### Pricing officiel Gemini 2.5 (€/1M tokens)
+
+| Modèle | Input | Output | Cached input | Note |
+|---|---:|---:|---:|---|
+| **Gemini 2.5 Pro** | 1,07 € | **8,55 €** | 0,107 € | Output 8× input |
+| **Gemini 2.5 Flash** | 0,257 € | 2,14 € | 0,026 € | |
+| **Gemini 2.5 Flash Lite** | 0,086 € | 0,342 € | — | Le plus économique |
+| **Search Grounding** | — | — | — | **29,93 € / 1000 queries** |
+
+Ratios clés :
+- **Pro vs Flash** : ~4× plus cher input, ~4× plus cher output
+- **Pro vs Flash Lite** : ~12× plus cher input, ~25× plus cher output
+- **Cache input** : 10× moins cher que prompt direct (Pro)
+- **Search Grounding** : très coûteux — 200€/mois pour 6920 queries observé en mai 2026
+
+### Tiers spend cap Google AI Studio
+
+| Tier | Cap mensuel | Conditions auto-upgrade |
+|---|---:|---|
+| Free | $0 (quota gratuit only) | Default |
+| **Tier 1** | **$250/mois** | Billing activé |
+| Tier 2 | $2 000/mois | >$250 dépensé sur 30 derniers jours (auto) |
+| Tier 3 | $20 000-100 000/mois | Formulaire + review humaine |
+
+Reset : **1er jour de chaque mois à minuit Pacific Time** = ~09-10h Paris.
+
+Sur Smartvest : Tier 3 demandé via formulaire 31/05/2026 (réponse Google sous 24-72h). 
+ID billing `0106E9-FEDF38-88F43C`, project `666030152021`.
+
+### Inventaire consommateurs Gemini (état 31/05/2026 post cost-cuts)
+
+| Service | Modèle | Cron | Coût estimé/jour |
+|---|---|---|---:|
+| `LiveTraderAgentService` | **Pro** | 5 min | $14 |
+| `ShadowSizingOrchestratorService` | **Pro** | **15 min** (était 5min) | $3 |
+| `GeminiRiskManagerService V2` | **Pro** (sans grounding) | 5 min | $5 |
+| `TopGainersScannerService` (signal) | Flash Lite | per candidate × 5min | $3 |
+| `EarlyExitGuardService` | Flash | **5 min** (était 1min) | $1 |
+| `DailyRetrospectiveService` | **Pro** | 1×/jour | $1 |
+| `TraderRetrospectiveService` | **Pro** | 1×/jour | $1 |
+| `MainScannerPostmortemService` | **Pro** | 1×/jour | $1 |
+| `StrategyCoachService` | Flash only (PR #505-F) | 1h | $0.5 |
+| `MacroVetoService` | Flash | 1h | $0.5 |
+| `OpenPositionRiskMonitorService` | Flash | 5 min | $3 |
+| `EventNarrativeInterpreterService` | Flash | 10 min | $1 |
+| **A/B shadow Pro vs Flash** (PR #508, temporaire) | Flash | per TRADER cycle | $3.6 |
+| **TOTAL post cost-cuts** | | | **~$30-35/jour** |
+
+Cible mensuelle : **~$900-1050** vs $1500-2000 avant cuts.
+
+### Cost-cuts déployés (31/05/2026)
+
+Cf. PRs #503-509, mergés 31/05/2026 ~04-06h UTC :
+
+1. **#505 Tier 1 cuts** (5 coupes, économie ~$15-30/j) :
+   - **A** : `SCANNER_LLM_RANKING_ENABLED=false` default → désactive `rankCandidates` LLM
+   - **B** : EarlyExitGuard 1min → 5min cron
+   - **D** : ShadowSizingOrch 5min → 15min cron
+   - **F** : StrategyCoach forcé Flash (no Pro escalation) via `STRATEGY_COACH_PRO_ESCALATION_ENABLED=false`
+   - **G** : TRADER skip LLM si 0 candidat in band + 0 position via `TRADER_SKIP_LLM_WHEN_EMPTY=true`
+
+2. **#506 Kill-switch quotidien** (visibilité + hard stop) :
+   - Cap env `GEMINI_DAILY_HARD_CAP_USD` default $30
+   - Table `gemini_cost_override` (override manuel UTC-scoped)
+   - Endpoints `/lisa/gemini-cost/status`, `/manual-override`, `/clear-override`
+   - UI panel `GeminiCostPanel` sur `/lisa` avec bouton "Relancer"
+
+3. **#507 Grounding off** (économie ~$150-200/mois) :
+   - Kill-switch hardcodé `GEMINI_RISK_MANAGER_GROUNDING_KILL_SWITCH=true` default
+   - Force `useGrounding=false` même si Fly secret `GEMINI_RISK_MANAGER_USE_GROUNDING=true`
+   - Mesuré : 0 décision `risk_manager_thesis_broken` en 30 jours malgré 6920 grounded queries → pure perte
+   - Pour réactiver : set `GEMINI_RISK_MANAGER_GROUNDING_KILL_SWITCH=false`
+
+4. **#508 A/B shadow Pro vs Flash** (collecte data 7 jours) :
+   - Table `gemini_ab_decisions` (migration 0178)
+   - LiveTraderAgent appelle Flash en parallèle de Pro (shadow only)
+   - Métrique principale : `concordance_full` % entre décisions Pro et Flash
+   - Décision data-driven dans 7 jours : si concordance ≥ 90% → migration Pro→Flash possible (+$10/j économie)
+   - Coût supplémentaire temporaire : ~$3.6/j Flash
+
+5. **#509 Script impact report** :
+   - `scripts/cost-cuts-impact-report.ts` — comparaison avant/après cutoff
+   - Usage : `SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... npx tsx scripts/cost-cuts-impact-report.ts`
+
+### Tracking interne sous-déclaré — caveat important
+
+La table `api_costs_daily` (`ApiCostTrackerService`) **sous-déclare la facturation Google réelle de 5-50×** selon les jours :
+- Causes : tokens mal comptés dans le router, pricing pas tenu à jour, appels Gemini hors router (rares), grounding facturé séparément
+- Source de vérité = **Google AI Studio billing dashboard** : https://aistudio.google.com/usage
+- Le kill-switch interne PR #506 est basé sur le tracking interne, donc le cap effectif réel est ~5-50× la valeur affichée ($30 interne ≈ $150-300 réel)
+
+### Règle opérationnelle Gemini
+
+1. **Avant tout nouveau service Gemini-consuming**, estimer coût quotidien attendu et l'ajouter au tableau ci-dessus.
+2. **Privilégier Flash Lite** sur les tâches simples / volumineuses (signal validation, classification). Pro UNIQUEMENT pour raisonnement multi-step (TRADER, retrospectives, sizing).
+3. **Cache prompt persistent obligatoire** pour les system prompts > 5K tokens (économie 10× sur input cached).
+4. **JAMAIS activer `grounding=true`** sans mesure prouvée du ROI sur 30 jours minimum.
+5. **Surveiller le panel UI `/lisa`** (composant `GeminiCostPanel`) pour le cap quotidien. Override manuel disponible.
+6. **Reset Google mensuel** = ~9-10h Paris le 1er du mois. Anticiper les pics d'usage.
+
+---
+
 ## RÈGLE OPÉRATIONNELLE — INVENTAIRE FLY SECRETS (état prod 25/05/2026)
 
 Source de vérité = `fly secrets list -a smartvest`. Cette section documente la
