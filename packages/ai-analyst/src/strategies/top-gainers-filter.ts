@@ -123,6 +123,17 @@ export interface TopGainerCandidate {
   volume: number;
   avgVol50d: number;
   marketCap: number;
+  /** Phase 2 refactor scanner — métriques momentum time-series (optionnelles). */
+  momentum?: {
+    gradientPctPerMin: number;
+    acceleration: number;
+    volumeMomentum: number;
+    verticalityScore: number;
+    risingScore: number;
+    sampleSize: number;
+  };
+  /** Phase 2/3 refactor — bucket classification ('sweet_spot_rising', 'peak_parabolic', etc.). */
+  bucket?: 'sweet_spot_rising' | 'peak_parabolic' | 'early_mover' | 'stalled' | 'reversing';
 }
 
 export interface TopGainerEvaluation {

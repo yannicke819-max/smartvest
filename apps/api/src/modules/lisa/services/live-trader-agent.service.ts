@@ -1684,6 +1684,10 @@ Recommendation rules :
       volumeRatio,
       kellyMaxNotional,
       sweetSpotEntry,
+      // Phase 2 refactor scanner — momentum + bucket (présents si
+      // SCANNER_MOMENTUM_ANALYSIS_ENABLED=true côté scanner, sinon undefined).
+      ...(c.momentum ? { momentum: c.momentum } : {}),
+      ...(c.bucket ? { bucket: c.bucket } : {}),
     };
   }
 

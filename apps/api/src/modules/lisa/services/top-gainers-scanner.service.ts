@@ -27,6 +27,7 @@ import { EodhdLoggerService } from './eodhd-logger.service';
 // PR #345 — filtres TwelveData (Supertrend US + RSI crypto)
 import { TwelveDataService, type MarketMover } from './twelve-data.service';
 import { rankByCompositeScore, parseCompositeWeights } from './composite-ranker.helper';
+import { computeMomentumMetrics, classifyBucket, type Candle as MomentumCandle } from './momentum-analyzer.helper';
 import { evaluateTwelveDataFilters } from './twelve-data-scanner-filters';
 import { QwDecisionLoggerService } from '../quick-wins/qw-decision-logger.service';
 import { CronJob } from 'cron';
@@ -1724,11 +1725,110 @@ export class TopGainersScannerService implements OnModuleInit {
       );
     }
 
+    // Phase 2 refactor scanner — Momentum Analysis (env-gated, default OFF).
+    // Pour les top-N candidats post-ranking, fetch les candles intraday récentes
+    // (5m × 12 = ~1h) et calcule {gradientPctPerMin, acceleration, volumeMomentum,
+    // verticalityScore, risingScore} + classifyBucket(). Permet à Mistral de
+    // distinguer "rising 5%" vs "stalled at 5%" vs "rolling over from 8%".
+    //
+    // Coût : N fetches intraday (EODHD ou Binance) par cycle. Cap top-N pour
+    // borner. Échecs silencieux → candidat sans `momentum`/`bucket` (back-compat).
+    const momentumEnabled = (this.config.get<string>('SCANNER_MOMENTUM_ANALYSIS_ENABLED') ?? 'false').toLowerCase() === 'true';
+    if (momentumEnabled) {
+      const topN = Number(this.config.get<string>('SCANNER_MOMENTUM_TOP_N') ?? '20');
+      finalCandidates = await this.enrichTopNWithMomentum(finalCandidates, topN);
+    }
+
     // P19s++ — Cache fill (TTL 15min). Permet aux UI polls et au cron scanner
     // de partager la même fetch sans re-frapper EODHD.
     this.allCandidatesCache = { candidates: finalCandidates, asOf: now.getTime() };
     this.recordFetchAllCandidates(finalCandidates.length, false);
     return finalCandidates;
+  }
+
+  /**
+   * Phase 2 refactor scanner — Enrichit les top-N candidats avec momentum
+   * time-series. Fetch les candles intraday récentes (5m × 12 ≈ 1h) puis
+   * calcule les métriques via computeMomentumMetrics() + classifyBucket().
+   *
+   * Concurrence : cap 5 fetches en parallèle pour éviter de saturer EODHD/Binance.
+   * Échecs silencieux : si le fetch ou le compute échoue, le candidat retourne
+   * sans `momentum`/`bucket` (back-compat, Mistral le verra comme avant).
+   *
+   * Crypto → BinanceMarketService.getKlines (openTime ms → timestamp sec normalisé).
+   * Equities → EodhdIntradayService.getCandles (timestamp déjà en secondes).
+   */
+  private async enrichTopNWithMomentum(
+    candidates: TopGainerCandidate[],
+    topN: number,
+  ): Promise<TopGainerCandidate[]> {
+    if (candidates.length === 0) return candidates;
+    const head = candidates.slice(0, topN);
+    const tail = candidates.slice(topN);
+
+    const enriched: TopGainerCandidate[] = [];
+    const CONCURRENCY = 5;
+    for (let i = 0; i < head.length; i += CONCURRENCY) {
+      const batch = head.slice(i, i + CONCURRENCY);
+      const results = await Promise.all(
+        batch.map(async (c) => {
+          try {
+            const candles = await this.fetchMomentumCandles(c);
+            if (!candles || candles.length < 3) return c;
+            const metrics = computeMomentumMetrics(candles);
+            const closeToHighRatio = c.high > 0 ? c.close / c.high : 0;
+            const bucket = classifyBucket(c.changePct ?? 0, closeToHighRatio, metrics);
+            return { ...c, momentum: metrics, bucket };
+          } catch (e) {
+            this.logger.debug(`[momentum] ${c.symbol} enrich failed: ${String(e).slice(0, 80)}`);
+            return c;
+          }
+        }),
+      );
+      enriched.push(...results);
+    }
+
+    const enrichedCount = enriched.filter((c) => c.momentum).length;
+    if (enrichedCount > 0) {
+      const sample = enriched.slice(0, 3).map((c) => {
+        if (!c.momentum) return `${c.symbol}:none`;
+        return `${c.symbol}:bucket=${c.bucket}/rising=${c.momentum.risingScore.toFixed(2)}`;
+      }).join(' ');
+      this.logger.log(`[top-gainers] momentum enriched ${enrichedCount}/${head.length} top-N — sample: ${sample}`);
+    }
+
+    return [...enriched, ...tail];
+  }
+
+  /**
+   * Fetch candles intraday pour un candidat. Crypto → Binance 5m × 12.
+   * Equity → EODHD intraday 5m × 12. Normalise le timestamp en secondes.
+   */
+  private async fetchMomentumCandles(c: TopGainerCandidate): Promise<MomentumCandle[] | null> {
+    const isCrypto = c.assetClass === 'crypto_major' || c.assetClass === 'crypto_alt';
+    if (isCrypto) {
+      const klines = await this.binanceMarket.getKlines(c.symbol, '5m', 12);
+      if (!klines || klines.length === 0) return null;
+      return klines.map((k) => ({
+        timestamp: Math.floor(k.openTime / 1000),
+        open: k.open,
+        high: k.high,
+        low: k.low,
+        close: k.close,
+        volume: k.volume,
+      }));
+    }
+    if (!this.eodhdIntraday) return null;
+    const series = await this.eodhdIntraday.getCandles(c.symbol, '5m', 12);
+    if (!series || series.candles.length === 0) return null;
+    return series.candles.map((cd) => ({
+      timestamp: cd.timestamp,
+      open: cd.open,
+      high: cd.high,
+      low: cd.low,
+      close: cd.close,
+      volume: cd.volume,
+    }));
   }
 
   /**
