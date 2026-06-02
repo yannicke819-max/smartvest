@@ -2170,12 +2170,32 @@ Si momentum/bucket absents (Phase 2 désactivée ou fetch échoué), ignore ces 
       // LISA refonte A.4 — Cap dynamique 45% du capital actuel (composé).
       const dynamicCap = Math.round((await this.fetchCurrentCapital()) * 0.45);
       const notional = Math.max(MIN_NOTIONAL_USD, Math.min(dynamicCap, decision.notional_usd));
-      // XETRA small-cap blacklist (28/05/2026) — 2 incidents : SNG.XETRA -$35
-      // (gap SL slippage) + QH9.XETRA -$132 (gap -12% non capté par polling SL).
-      // XETRA small-caps notionnel < $3000 = liquidité trop mince pour gérer
-      // les gaps intra-session. Bloque pour Trader Agent.
-      if (decision.symbol.endsWith('.XETRA') && notional < 3000) {
-        return { applied: false, error: 'XETRA small-cap blacklist (notional <$3000) — anti-gap risk' };
+      // XETRA notional gate (28/05/2026, recalibré 02/06/2026 logs cycle 10:26-10:28).
+      //
+      // Origine : 2 incidents SNG.XETRA -$35 + QH9.XETRA -$132 sur small-caps
+      // peu liquides. Gate initial $3000 min anti-gap.
+      //
+      // Bug observé 02/06 : MSF.XETRA (Münchener Rück, mid-cap €60B) bloqué
+      // 2 cycles d'affilée avec notional=$1300 (= Kelly cap HORS_TRAJ sizing×0.7).
+      // Le LLM décide open conf=0.80 mais apply rejected → trade perdu.
+      //
+      // Fix : bypass le gate pour les mid/large caps XETRA (marketCap >= $5B).
+      // Le gap-and-fade qui motivait le gate n'affecte que les small-caps peu
+      // liquides. Mid/large caps comme MSF (Munich Re), SAP, SIEMENS, ALV, BMW
+      // ont un orderbook suffisant pour absorber un notional $1000-3000.
+      // Le min absolu reste $1000 pour éviter dust trades.
+      if (decision.symbol.endsWith('.XETRA')) {
+        const sym = decision.symbol.toUpperCase();
+        const candidate = candidates.find((c) => String(c.symbol ?? '').toUpperCase() === sym);
+        const mcap = Number(candidate?.marketCap ?? 0);
+        const isMidLargeCap = mcap >= 5_000_000_000; // $5B
+        const minNotional = isMidLargeCap ? 1000 : 3000;
+        if (notional < minNotional) {
+          return {
+            applied: false,
+            error: `XETRA notional gate (mcap=${(mcap / 1e9).toFixed(1)}B, ${isMidLargeCap ? 'mid/large' : 'small'}-cap min=$${minNotional})`,
+          };
+        }
       }
 
       // ASIA OPENING SUFFIX BAN (28/05/2026 soirée, MFE/MAE 3w n=250 asia_equity).

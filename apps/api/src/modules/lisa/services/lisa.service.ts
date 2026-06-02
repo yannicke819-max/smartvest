@@ -3783,10 +3783,41 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
   private getFallbackPrice(symbol: string): string | null {
     const s = symbol.toUpperCase().replace('-', '');
     const prices: Record<string, string> = {
-      // Crypto
+      // Crypto majors (CRYPTO_PAIRS)
       'BTC': '79000', 'BTCUSDT': '79000', 'BTCSPOT': '79000', 'BTCUSD': '79000',
       'ETH': '1800', 'ETHUSDT': '1800', 'ETHSPOT': '1800',
-      'SOL': '130', 'BNB': '550', 'XRP': '2.1', 'ADA': '0.7',
+      'SOL': '130', 'SOLUSDT': '130',
+      'BNB': '550', 'BNBUSDT': '550',
+      'XRP': '2.1', 'XRPUSDT': '2.1',
+      'ADA': '0.7', 'ADAUSDT': '0.7',
+      // Crypto alts (CRYPTO_ALTS) — Bug observé 02/06 : ICPUSDT pump 4/6
+      // persistence score=0.67 mais skip cause `fallback_unknown`. Ces
+      // fallbacks débloquent les opens crypto quand Binance temporairement
+      // indispo. Prix indicatifs juin 2026, à recalibrer trimestriellement.
+      'DOT': '7', 'DOTUSDT': '7',
+      'POL': '0.30', 'POLUSDT': '0.30', 'MATIC': '0.30', 'MATICUSDT': '0.30',
+      'AVAX': '40', 'AVAXUSDT': '40',
+      'LINK': '18', 'LINKUSDT': '18',
+      'DOGE': '0.15', 'DOGEUSDT': '0.15',
+      'SHIB': '0.000020', 'SHIBUSDT': '0.000020',
+      'TRX': '0.15', 'TRXUSDT': '0.15',
+      'ATOM': '7', 'ATOMUSDT': '7',
+      'LTC': '90', 'LTCUSDT': '90',
+      'UNI': '7', 'UNIUSDT': '7',
+      'AAVE': '115', 'AAVEUSDT': '115',
+      'ARB': '0.70', 'ARBUSDT': '0.70',
+      'OP': '1.5', 'OPUSDT': '1.5',
+      'SUI': '1.3', 'SUIUSDT': '1.3',
+      'APT': '7', 'APTUSDT': '7',
+      'SEI': '0.45', 'SEIUSDT': '0.45',
+      'TIA': '5', 'TIAUSDT': '5',
+      'BCH': '400', 'BCHUSDT': '400',
+      'INJ': '14', 'INJUSDT': '14',
+      'NEAR': '5', 'NEARUSDT': '5',
+      'ICP': '7', 'ICPUSDT': '7',
+      'STX': '1.5', 'STXUSDT': '1.5',
+      'FIL': '4', 'FILUSDT': '4',
+      'IMX': '1', 'IMXUSDT': '1',
       // Métaux & matières premières
       'GOLD': '3300', 'GC': '3300', 'GLD': '310', 'IAU': '50',
       'SILVER': '33', 'SLV': '31', 'SI': '33',
