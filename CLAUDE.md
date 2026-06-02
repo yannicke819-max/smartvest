@@ -9,6 +9,39 @@ Guide de travail pour Claude Code sur ce repo.
 
 **Contexte** : session du 02/06 a livré 7 PR (#575-#581). État au coucher : système discipliné mais **possiblement sur-filtré**. L'utilisateur a exprimé sa peur que les 8 couches de filtrage étranglent l'edge — peur légitime, fondée sur son intuition de calibration 25/05 qui avait recovered +23 TP_HIT en 2j.
 
+### 🔥 MISSION CRITIQUE — IDENTIFIER LE GATE QUI FAIT RATER LES PÉPITES (à partir de 00:00 UTC 03/06)
+
+**Énoncé textuel de l'utilisateur, 02/06 23:55** :
+> "Notre mission demain à partir de minuit, identifier le gate qui fait que l'on passe systématiquement à côté des pépites !!!! Enregistre le !!!"
+
+**Mission** : trouver QUEL gate (parmi les 8 couches inventoriées plus bas) rejette de façon répétitive des candidats qui auraient été des **vrais winners** (pépites = TP_HIT ou +5% en <60min). C'est LE sujet #1 au réveil.
+
+**Méthode chirurgicale** :
+1. Pour chaque rejet logué dans `lisa_decision_log` ou `gainers_user_shadow_signals` (kinds : `scanner_proposal_rejected_by_llm`, `position_open_failed`, ainsi que les rejets per-gate persistance / path_eff / debate / micro_momentum / correlation / overpump / hour blacklist), capturer le symbole + timestamp + raison de rejet.
+2. Pour chaque rejet, simuler walk-forward 60min via candles 5m EODHD / 1m Binance.
+3. Compter, **par gate** : combien de rejets sont des **pépites** (TP +3% touché) vs noise.
+4. Le gate avec le **plus haut taux de regret** (% pépites rejetées) = LE COUPABLE.
+
+**Suspects principaux** (à explorer en priorité) :
+- `persistence_score >= 0.67` (TRADER) — strict — déjà identifié 25/05 comme bloquant des KOSDAQ pépites
+- `path_efficiency >= 0.70` (TRADER) — strict — déjà identifié 25/05 (relaxé à 0.30 sur US)
+- `LLM gate Mistral PR #540` — refuse systématiquement `changePct > 10% pump parabolique` — vérifier si ce label rejette des vrais runners (10-20% intraday peuvent être de vrais momentum, pas que des pumps fade)
+- Hour blacklists par classe (peut bloquer la "happy hour" où les pépites sortent)
+- Overpump gate (changePct > 15%)
+- Earnings filter — peut rejeter les meilleurs catalyseurs
+
+**Scripts existants à réutiliser/inspirer** :
+- `scripts/backtest-thu-fri-funnel.ts` — funnel complet par gate + outcomes simulés (référence 25/05)
+- `scripts/persistence-distrib.ts` — distribution par score bucket
+- `scripts/unset-persistence-and-analyze-patheff.ts` — UPDATE persistence + scénarios path_eff
+
+**Verdict attendu** :
+- Si 1 gate rejette > 30% des pépites → re-calibrer (relâcher seuil OU passer en SHADOW)
+- Si plusieurs gates intersectent → traiter du plus restrictif au moins restrictif
+- Si aucun gate ne ressort → le problème est ailleurs (univers de candidats trop pauvre, filtres upstream)
+
+**Garde-fou** : ne pas relâcher tous les gates simultanément (overcorrection). Une gate à la fois, mesurer 24-72h post-relâchement, valider.
+
 ### Ordre d'attaque au réveil
 
 1. **Morning brief Asia D'ABORD**
