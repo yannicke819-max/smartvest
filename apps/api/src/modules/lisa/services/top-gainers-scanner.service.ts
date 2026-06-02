@@ -5517,7 +5517,22 @@ ${lessonsBlock ? '\n=== LESSONS ACTIVES ===\n' + lessonsBlock : ''}`;
     }, null, 2);
 
     try {
-      const res = await this.llmRouter.callWithPro({
+      // Fix 02/06/2026 (Trou B logs cycle 10:08) — switch callWithPro → call (fast chain).
+      //
+      // Pourquoi : callWithPro route Mistral primary → Gemini Pro fallback. Mais
+      // Gemini Pro a un mode "thinking" qui consomme des tokens internes AVANT de
+      // générer la réponse JSON (cf. CLAUDE.md §"OBJECTIFS & TRAJECTOIRE"). Avec
+      // maxTokens=200, thinking consomme tout, content=vide → regex no match →
+      // llm_unparseable_response → rejet candidat à tort.
+      //
+      // Observé : APN.LSE/ALKAL.PA/EZJ.LSE rejetés à 0.013$/call × ~5 cycles/h
+      // = $40-100/jour gaspillés sur rejets vides depuis Mistral 401.
+      //
+      // Solution : ce gate = simple yes/no (approve/reject). Pas besoin de Pro.
+      // Flash-Lite gère 200 tokens parfaitement, 700ms vs 3s, $0.001 vs $0.013.
+      // Aligne avec matrice routing Perplexity ("analyse standard du téléscripteur
+      // = Mistral Medium ou Gemini Flash-Lite").
+      const res = await this.llmRouter.call({
         system: systemPrompt,
         user: userPrompt,
         temperature: 0.1,
