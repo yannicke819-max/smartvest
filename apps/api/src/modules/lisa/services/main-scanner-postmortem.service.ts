@@ -41,6 +41,68 @@ const SCANNER_PORTFOLIO_IDS = [
   { id: 'a0000003-0000-0000-0000-000000000003', name: 'shadow_small' },
 ];
 
+/**
+ * 02/06/2026 — Step 4 lessons-generator-mandatory-action.
+ *
+ * Lessons kinds qui DOIVENT produire un `proposed_config_change` actionnable
+ * (avec target_path appartenant au whitelist VALID_TARGET_PATHS). Sinon
+ * rejected par le parser (Gate 3).
+ *
+ * Pourquoi : audit 02/06 — 162 lessons unapplied dans scanner_lessons.
+ * Sur les 7 candidates strictes (n≥30, conf≥0.85), 100% avaient
+ * `proposed_config_change.target = no_target` → impossibles à auto-apply.
+ * Le LLM générateur produit des observations narratives faute de contrainte.
+ *
+ * Lessons OBSERVATIONNELLES (risk_observation, trade_metrics,
+ * portfolio_diagnostic, shape_pattern) peuvent rester sans proposed_config_change
+ * — elles enrichissent le contexte LLM mais ne sont pas auto-appliquables.
+ */
+const ACTIONABLE_LESSON_KINDS: ReadonlySet<string> = new Set<string>([
+  'gate_calibration',
+  'session_filter',
+  'sizing_rule',
+  'exit_rule',
+  'losing_pattern',
+  'winning_pattern',
+  'entry_discipline',
+]);
+
+/**
+ * Whitelist des target_path acceptés par le parser (Gate 3) + par
+ * LessonAutoApplyService. Synced avec LISA_SESSION_CONFIG_AUTO_APPLY_COLUMNS
+ * + env vars listées dans le system prompt POST_MORTEM_SYSTEM_PROMPT.
+ */
+const VALID_TARGET_PATHS: ReadonlySet<string> = new Set<string>([
+  // DB columns lisa_session_configs (synced avec LessonAutoApplyService)
+  'gainers_default_sl_pct',
+  'gainers_default_tp_pct',
+  'gainers_min_persistence_score',
+  'gainers_min_path_efficiency',
+  'gainers_max_change_pct',
+  'gainers_min_change_pct',
+  'gainers_fees_aware_buffer',
+  'gainers_position_pct',
+  'gainers_cycle_minutes',
+  'gainers_persistence_top_n',
+  'news_shock_close_max_age_minutes_lse',
+  'news_shock_close_sentiment_threshold_lse',
+  // Env vars (auto-apply va skip avec manual_review_needed, mais on accepte
+  // pour que la lesson soit créée propre avec target_path)
+  'GAINERS_TRAILING_STOP_BREAKEVEN_ENABLED',
+  'GAINERS_MIN_PATH_EFFICIENCY_US',
+  'GAINERS_MIN_PATH_EFFICIENCY_EU',
+  'GAINERS_MIN_PATH_EFFICIENCY_ASIA',
+  'GAINERS_HOUR_BLACKLIST_US_UTC',
+  'GAINERS_HOUR_BLACKLIST_EU_UTC',
+  'GAINERS_HOUR_BLACKLIST_ASIA_UTC',
+  'GAINERS_POST_SL_COOLDOWN_MIN',
+  'GAINERS_EARNINGS_FILTER_DAYS',
+  'GAINERS_MAX_CHANGE_PCT_LONG',
+  'GAINERS_MAX_CHANGE_PCT_LONG_US_LARGE',
+  'GAINERS_MAX_CHANGE_PCT_LONG_EU',
+  'GAINERS_MAX_CHANGE_PCT_LONG_ASIA',
+]);
+
 const POST_MORTEM_SYSTEM_PROMPT = `Tu es un coach trader senior chargé d'analyser les trades du scanner momentum gainers de SmartVest. Le scanner est déterministe (calibrage via gates : persistence multi-TF, path efficiency, hour blacklist, ATR, anti-chase, etc.) — il ne s'auto-corrige pas. Ton job est d'identifier les patterns gagnants/perdants ET de proposer des AJUSTEMENTS CONCRETS de config.
 
 OBJECTIF : générer 5-10 lessons actionnables qui éviteront que les mêmes pertes se reproduisent.
@@ -62,14 +124,41 @@ CONFIG AJUSTABLES (env vars ou DB column lisa_session_configs):
 - GAINERS_POST_SL_COOLDOWN_MIN (cooldown après SL)
 - GAINERS_EARNINGS_FILTER_DAYS
 
-CATEGORIES (lesson_kind):
-- losing_pattern : pattern qui produit ≥80% pertes sur N≥5
-- winning_pattern : pattern qui produit ≥70% gains sur N≥5
+CATEGORIES (lesson_kind) — 2 GROUPES :
+
+ACTIONABLES (proposed_config_change OBLIGATOIRE avec target_path valide) :
+- losing_pattern : pattern qui produit ≥80% pertes sur N≥5 → action préventive (e.g. raise gate, ban hour)
+- winning_pattern : pattern qui produit ≥70% gains sur N≥5 → action favorisante (e.g. lower gate)
 - gate_calibration : ajustement seuil d'un gate existant
-- risk_observation : observation risque sans action immédiate
-- sizing_rule : règle sizing par classe
-- exit_rule : règle sortie (stop, trail, TP)
-- session_filter : filtre temporel (heure/session)
+- session_filter : filtre temporel (heure/session) → hour blacklist
+- sizing_rule : règle sizing par classe → cycle/notional/persistence_top_n
+- exit_rule : règle sortie (stop, trail, TP) → sl_pct/tp_pct/trailing_breakeven
+- entry_discipline : règle entry → min_change_pct/max_change_pct/persistence_score/path_efficiency
+
+OBSERVATIONNELLES (proposed_config_change peut être null) :
+- risk_observation : observation risque sans action immédiate (descriptif, alimente contexte LLM)
+
+WHITELIST target_path (pour proposed_config_change) — Si tu ne peux pas mapper sur un de ces target_path concrets, n'émets PAS de lesson actionnable (mets risk_observation à la place) :
+
+DB columns (lisa_session_configs):
+- gainers_default_sl_pct (0.5..3.0)
+- gainers_default_tp_pct (1.0..8.0)
+- gainers_min_persistence_score (0..1)
+- gainers_min_path_efficiency (0..1)
+- gainers_max_change_pct, gainers_min_change_pct (par classe via suffixe non supporté ici)
+- gainers_fees_aware_buffer (1.5..5.0)
+- gainers_position_pct (0.01..0.10)
+- gainers_cycle_minutes (1..60)
+- gainers_persistence_top_n (5..100)
+- news_shock_close_max_age_minutes_lse, news_shock_close_sentiment_threshold_lse
+
+Env vars (acceptés mais nécessitent Fly Management API + redéploiement) :
+- GAINERS_TRAILING_STOP_BREAKEVEN_ENABLED ("true"/"false")
+- GAINERS_MIN_PATH_EFFICIENCY_US / _EU / _ASIA (0..1)
+- GAINERS_HOUR_BLACKLIST_US_UTC / _EU_UTC / _ASIA_UTC (CSV "0,1,17")
+- GAINERS_POST_SL_COOLDOWN_MIN (int)
+- GAINERS_EARNINGS_FILTER_DAYS (int)
+- GAINERS_MAX_CHANGE_PCT_LONG / _LONG_US_LARGE / _LONG_EU / _LONG_ASIA (number)
 
 RÉPONSE JSON OBLIGATOIRE :
 {
@@ -82,7 +171,7 @@ RÉPONSE JSON OBLIGATOIRE :
   "losing_patterns": ["pattern + chiffres + macro condition"],
   "new_lessons": [
     {
-      "lesson_kind": "losing_pattern|winning_pattern|gate_calibration|risk_observation|sizing_rule|exit_rule|session_filter",
+      "lesson_kind": "losing_pattern|winning_pattern|gate_calibration|risk_observation|sizing_rule|exit_rule|session_filter|entry_discipline",
       "lesson_text": "Quand <CONDITION MACRO>, <ACTION CONCRÈTE> (référence: N trades, WR %, avg pnl)",
       "macro_condition": "VIX>25|US10Y>4.5|DXY>103|REGIME_CALME|ASIA_LATE_SESSION|EU_OPEN_FIRST_HOUR|KOREA_KOSDAQ|...",
       "scope": "all_scanner|main_only|shadows_only|asia_only|eu_only|us_only|crypto_only",
@@ -90,10 +179,25 @@ RÉPONSE JSON OBLIGATOIRE :
       "sample_size": N,
       "win_rate_observed": 0.0-100.0,
       "avg_pnl_usd": <num>,
-      "proposed_config_change": { "<env_var_or_db_col>": "<value>" } | null
+      "proposed_config_change": { "<target_path_from_whitelist>": "<new_value>", "note": "<1 phrase pourquoi>" }
     }
   ]
-}`;
+}
+
+FORMAT proposed_config_change — IMPORTANT :
+La clé principale DOIT être un target_path EXACT du whitelist (ex: "gainers_min_persistence_score", "GAINERS_HOUR_BLACKLIST_US_UTC"). La valeur associée est la nouvelle valeur. Tu peux optionnellement ajouter "note" pour expliquer pourquoi.
+
+Exemples valides :
+  { "gainers_min_persistence_score": 0.75, "note": "+3 lessons consécutives WR<25% sur KOSDAQ" }
+  { "GAINERS_HOUR_BLACKLIST_US_UTC": "17,18,19", "note": "post-lunch US chop n=22 WR 18%" }
+  { "gainers_default_sl_pct": 1.8, "note": "MAE P85 1.99% — SL 1.5% prématuré" }
+
+Exemples INVALIDES (parser rejette) :
+  { "target": "x", "value": "y" }         ← clé "target" littérale au lieu du target_path
+  { "min_score": 0.75 }                    ← target_path "min_score" pas dans whitelist
+  { "gainers_max_change_pct_us_large": 8 } ← suffixe par classe non supporté ici
+
+RÈGLE STRICTE : si tu choisis un lesson_kind ACTIONABLE mais ne peux pas mapper sur un target_path précis du whitelist, EMETS LA LESSON EN risk_observation à la place (avec proposed_config_change: null). Une lesson actionable sans target_path valide est REJETÉE par le parser server-side et perdue.`;
 
 interface PostMortemPayload {
   date: string;
@@ -182,14 +286,15 @@ export class MainScannerPostMortemService {
     lessonsPersisted: number;
     rejectedNoMacro: number;
     rejectedSmallSample: number;
+    rejectedNoActionableTarget: number;
     geminiCostUsd: number;
     error?: string;
   }> {
     if (!this.supabase.isReady()) {
-      return { success: false, lessonsPersisted: 0, rejectedNoMacro: 0, rejectedSmallSample: 0, geminiCostUsd: 0, error: 'supabase not ready' };
+      return { success: false, lessonsPersisted: 0, rejectedNoMacro: 0, rejectedSmallSample: 0, rejectedNoActionableTarget: 0, geminiCostUsd: 0, error: 'supabase not ready' };
     }
     if (!this.llmRouter.isEnabled()) {
-      return { success: false, lessonsPersisted: 0, rejectedNoMacro: 0, rejectedSmallSample: 0, geminiCostUsd: 0, error: 'llm router disabled' };
+      return { success: false, lessonsPersisted: 0, rejectedNoMacro: 0, rejectedSmallSample: 0, rejectedNoActionableTarget: 0, geminiCostUsd: 0, error: 'llm router disabled' };
     }
 
     const since = new Date(Date.now() - windowHours * 60 * 60_000);
@@ -240,7 +345,7 @@ export class MainScannerPostMortemService {
 
     if (totalTrades === 0) {
       this.logger.log('[scanner-postmortem] no trades in window, skip');
-      return { success: true, lessonsPersisted: 0, rejectedNoMacro: 0, rejectedSmallSample: 0, geminiCostUsd: 0 };
+      return { success: true, lessonsPersisted: 0, rejectedNoMacro: 0, rejectedSmallSample: 0, rejectedNoActionableTarget: 0, geminiCostUsd: 0 };
     }
 
     // 2. Macro snapshot
@@ -292,7 +397,7 @@ export class MainScannerPostMortemService {
     } catch (e) {
       const errMsg = `LLM call failed: ${String(e).slice(0, 200)}`;
       this.logger.error(`[scanner-postmortem] ${errMsg}`);
-      return { success: false, lessonsPersisted: 0, rejectedNoMacro: 0, rejectedSmallSample: 0, geminiCostUsd: 0, error: errMsg };
+      return { success: false, lessonsPersisted: 0, rejectedNoMacro: 0, rejectedSmallSample: 0, rejectedNoActionableTarget: 0, geminiCostUsd: 0, error: errMsg };
     }
 
     this.logger.log(
@@ -320,7 +425,7 @@ export class MainScannerPostMortemService {
     if (!response.content || response.content.trim().length === 0) {
       const errMsg = 'Gemini returned empty content (thinking tokens exhausted?)';
       this.logger.error(`[scanner-postmortem] ${errMsg}`);
-      return { success: false, lessonsPersisted: 0, rejectedNoMacro: 0, rejectedSmallSample: 0, geminiCostUsd: response.costUsd, error: errMsg };
+      return { success: false, lessonsPersisted: 0, rejectedNoMacro: 0, rejectedSmallSample: 0, rejectedNoActionableTarget: 0, geminiCostUsd: response.costUsd, error: errMsg };
     }
 
     // 6. Parse JSON
@@ -350,13 +455,13 @@ export class MainScannerPostMortemService {
     } catch (e) {
       const errMsg = `parse JSON failed: ${String(e).slice(0, 150)}`;
       this.logger.error(`[scanner-postmortem] ${errMsg} — raw start: ${response.content.slice(0, 300)}`);
-      return { success: false, lessonsPersisted: 0, rejectedNoMacro: 0, rejectedSmallSample: 0, geminiCostUsd: response.costUsd, error: errMsg };
+      return { success: false, lessonsPersisted: 0, rejectedNoMacro: 0, rejectedSmallSample: 0, rejectedNoActionableTarget: 0, geminiCostUsd: response.costUsd, error: errMsg };
     }
 
     const newLessons = parsed.new_lessons ?? [];
     if (!Array.isArray(newLessons) || newLessons.length === 0) {
       this.logger.warn('[scanner-postmortem] no lessons returned by Gemini');
-      return { success: true, lessonsPersisted: 0, rejectedNoMacro: 0, rejectedSmallSample: 0, geminiCostUsd: response.costUsd };
+      return { success: true, lessonsPersisted: 0, rejectedNoMacro: 0, rejectedSmallSample: 0, rejectedNoActionableTarget: 0, geminiCostUsd: response.costUsd };
     }
 
     // 7. Validation + persistance
@@ -364,6 +469,7 @@ export class MainScannerPostMortemService {
     let persisted = 0;
     let rejectedNoMacro = 0;
     let rejectedSmallSample = 0;
+    let rejectedNoActionableTarget = 0;
     for (const l of newLessons) {
       // Gate 1 : macro_condition obligatoire
       const hasMacro = !!l.macro_condition && l.macro_condition.length > 0;
@@ -379,6 +485,32 @@ export class MainScannerPostMortemService {
         this.logger.warn(`[scanner-postmortem] reject small-sample n=${sampleSize}: ${l.lesson_text.slice(0, 100)}`);
         rejectedSmallSample++;
         continue;
+      }
+      // Gate 3 (02/06/2026) : si lesson_kind ∈ ACTIONABLE, proposed_config_change
+      // doit contenir au moins une clé qui est un target_path du whitelist VALID_TARGET_PATHS.
+      // Sans cette gate, le LLM générateur produit des observations narratives taggées
+      // 'gate_calibration' qui ne sont jamais auto-appliquées (162 lessons orphelines
+      // observées 02/06). Risk_observation et autres OBSERVATIONNELLES restent libres
+      // (proposed_config_change null OK).
+      //
+      // Format attendu (synced avec LessonAutoApplyService) :
+      //   { "<target_path>": "<value>", "note": "<optional>" }
+      // La clé EST le target. Méta-clés ('note', 'comment', 'table',
+      // 'portfolio_id_only') sont ignorées pour la détection.
+      if (ACTIONABLE_LESSON_KINDS.has(l.lesson_kind)) {
+        const cc = l.proposed_config_change as Record<string, unknown> | null | undefined;
+        const META_KEYS = new Set(['note', 'comment', 'reason', 'table', 'portfolio_id_only']);
+        const validTargets = cc && typeof cc === 'object'
+          ? Object.keys(cc).filter((k) => !META_KEYS.has(k.toLowerCase()) && VALID_TARGET_PATHS.has(k))
+          : [];
+        if (validTargets.length === 0) {
+          const rawKeys = cc && typeof cc === 'object' ? Object.keys(cc).join(',') : 'null';
+          this.logger.warn(
+            `[scanner-postmortem] reject actionable lesson without valid target_path: kind=${l.lesson_kind} raw_keys='${rawKeys}' text="${l.lesson_text.slice(0, 100)}"`,
+          );
+          rejectedNoActionableTarget++;
+          continue;
+        }
       }
       try {
         await this.supabase.getClient().from('scanner_lessons').insert({
@@ -410,13 +542,14 @@ export class MainScannerPostMortemService {
     }
 
     this.logger.log(
-      `[scanner-postmortem] done — persisted=${persisted} rejected_macro=${rejectedNoMacro} rejected_sample=${rejectedSmallSample}`,
+      `[scanner-postmortem] done — persisted=${persisted} rejected_macro=${rejectedNoMacro} rejected_sample=${rejectedSmallSample} rejected_no_action_target=${rejectedNoActionableTarget}`,
     );
     return {
       success: true,
       lessonsPersisted: persisted,
       rejectedNoMacro,
       rejectedSmallSample,
+      rejectedNoActionableTarget,
       geminiCostUsd: response.costUsd,
     };
   }
