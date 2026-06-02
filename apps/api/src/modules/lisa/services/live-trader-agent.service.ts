@@ -778,6 +778,25 @@ export class LiveTraderAgentService {
         applyResult = { applied: false, error: errMsg };
       }
 
+      // B1 + B2 (02/06/2026) — Audit scanner_proposals post-decision.
+      // Sans ce wiring, les proposals visibles ce cycle restent 'pending' jusqu'à
+      // expiry (5 min) — le LLM rebouclerait dessus aux cycles 2/4/6 min suivants.
+      //
+      // Règles :
+      //   - decision = open_directional + apply success → accepted (handled by
+      //     markProposalAccepted déjà appelé dans applyDecision)
+      //   - decision = open_directional + apply échec  → rejected (B1)
+      //   - autres proposals visibles ce cycle non choisies → superseded (B2)
+      const isOpenAction = decision.action_kind === 'open_directional' || decision.action_kind === 'open_pairs';
+      if (isOpenAction && !applyResult.applied && decision.symbol && decision.direction) {
+        await this.markProposalRejected(decision.symbol, decision.direction, applyResult.error ?? 'apply_failed')
+          .catch((e) => this.logger.debug(`[trader-agent] markProposalRejected skip: ${String(e).slice(0, 120)}`));
+      }
+      const chosenSymbol = isOpenAction && decision.symbol ? decision.symbol : null;
+      const chosenDirection = isOpenAction && decision.direction ? decision.direction : null;
+      await this.markNonChosenSuperseded(scannerProposals, chosenSymbol, chosenDirection)
+        .catch((e) => this.logger.debug(`[trader-agent] markNonChosenSuperseded skip: ${String(e).slice(0, 120)}`));
+
       // 8. Log everything — try/catch pour ne jamais dropper silencieusement
       try {
         await this.logDecision({
@@ -2136,6 +2155,33 @@ Si momentum/bucket absents (Phase 2 désactivée ou fetch échoué), ignore ces 
         return { applied: false, error: 'missing symbol/direction/notional' };
       }
 
+      // B3 (02/06/2026) — Hard guard scanner_proposals.
+      // Quand TRADER_ARBITRATION_ENABLED=true, refuse l'open si le symbole+direction
+      // n'est pas dans une scanner_proposal pending non-expirée. Code-enforced version
+      // de la règle métier : "l'agent trader ne sélectionne QUE parmi ce que lui
+      // propose le scanner gainers, jamais autrement". Sans ce guard, le LLM pourrait
+      // hallucinerait un symbole (depuis news_recent, daily_brief.focus_symbols,
+      // memory lessons) qui n'a pas passé les gates scanner.
+      const arbitrationEnabledForOpen = (this.config.get<string>('TRADER_ARBITRATION_ENABLED') ?? 'false').toLowerCase() === 'true';
+      if (arbitrationEnabledForOpen) {
+        const { data: validProposal } = await this.supabase.getClient()
+          .from('scanner_proposals')
+          .select('id')
+          .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+          .eq('symbol', decision.symbol)
+          .eq('direction', decision.direction)
+          .eq('status', 'pending')
+          .gt('expires_at', new Date().toISOString())
+          .limit(1)
+          .maybeSingle();
+        if (!validProposal) {
+          return {
+            applied: false,
+            error: `symbol_not_in_proposals: ${decision.symbol} ${decision.direction} non trouvé dans scanner_proposals pending non-expirées (arbitration ON — l'agent décide UNIQUEMENT sur sortie scanner post-gates)`,
+          };
+        }
+      }
+
       // COMMIT 3 (29/05) — Zone horaire toxique US opening 13:00-15:30 UTC.
       // Audit TRADER 2 jours : 46% des trades dans cette fenêtre, WR 37%, capture
       // rate -56.5%. Data 3 semaines confirme : us_equity_large 14h UTC = WR 25%,
@@ -3059,6 +3105,96 @@ Si momentum/bucket absents (Phase 2 désactivée ou fetch échoué), ignore ces 
     }
     if (count && count > 0) {
       this.logger.log(`[trader-arbitration] ${count} proposal(s) ${symbol} ${direction} → accepted (position ${positionId.slice(0, 8)})`);
+    }
+  }
+
+  /**
+   * B1 (02/06/2026) — Marque les proposals rejetées par le TRADER.
+   * Cas 1 : LLM décide open mais apply échoue (live price invalide, cap atteint,
+   *         anti-revenge cooldown, XETRA gate, US opening block, etc.)
+   * Cas 2 : LLM décide hold ou close — la proposal était visible mais non choisie
+   *         (cf. markNonChosenSuperseded pour ce cas, qui utilise status='superseded').
+   *
+   * Sans ce marquage, la proposal reste pending → LLM la revoit cycle suivant →
+   * boucle (observé 02/06 : TEST_TRUE.LSE 4 cycles consécutifs identiques).
+   */
+  private async markProposalRejected(
+    symbol: string,
+    direction: string,
+    reason: string,
+  ): Promise<void> {
+    const arbitrationEnabled = (this.config.get<string>('TRADER_ARBITRATION_ENABLED') ?? 'false').toLowerCase() === 'true';
+    if (!arbitrationEnabled) return;
+    const { error, count } = await this.supabase.getClient()
+      .from('scanner_proposals')
+      .update({
+        status: 'rejected',
+        reviewed_by_trader_at: new Date().toISOString(),
+        trader_decision_reason: reason.slice(0, 500),
+      }, { count: 'exact' })
+      .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+      .eq('symbol', symbol)
+      .eq('direction', direction)
+      .eq('status', 'pending')
+      .gt('expires_at', new Date().toISOString());
+    if (error) {
+      this.logger.debug(`[trader-arbitration] markProposalRejected failed: ${error.message}`);
+      return;
+    }
+    if (count && count > 0) {
+      this.logger.log(`[trader-arbitration] ${count} proposal(s) ${symbol} ${direction} → rejected (${reason.slice(0, 100)})`);
+    }
+  }
+
+  /**
+   * B2 (02/06/2026) — Marque les proposals visibles mais non-choisies par le LLM
+   * dans ce cycle comme superseded. Évite que le LLM revoit les mêmes proposals
+   * au cycle suivant et change d'avis (instabilité). Scanner re-produit les
+   * proposals fraîches au cycle suivant (toutes les 5 min sur TRADER) si les
+   * conditions du marché sont toujours réunies.
+   *
+   * `chosenSymbol` + `chosenDirection` : la proposal effectivement choisie
+   * (handled par markProposalAccepted ou markProposalRejected). Sera exclue
+   * du marquage superseded.
+   */
+  private async markNonChosenSuperseded(
+    visibleProposals: Array<Record<string, unknown>>,
+    chosenSymbol: string | null,
+    chosenDirection: string | null,
+  ): Promise<void> {
+    const arbitrationEnabled = (this.config.get<string>('TRADER_ARBITRATION_ENABLED') ?? 'false').toLowerCase() === 'true';
+    if (!arbitrationEnabled || visibleProposals.length === 0) return;
+
+    const otherIds: string[] = [];
+    for (const p of visibleProposals) {
+      const sym = String(p['symbol'] ?? '');
+      const dir = String(p['direction'] ?? '');
+      const id = String(p['id'] ?? '');
+      if (!id) continue;
+      if (chosenSymbol && chosenDirection && sym === chosenSymbol && dir === chosenDirection) continue;
+      otherIds.push(id);
+    }
+    if (otherIds.length === 0) return;
+
+    const reason = chosenSymbol
+      ? `not_selected_by_llm_this_cycle (chose ${chosenSymbol} ${chosenDirection ?? '?'})`
+      : 'not_selected_by_llm_this_cycle (llm held or non-open action)';
+
+    const { error, count } = await this.supabase.getClient()
+      .from('scanner_proposals')
+      .update({
+        status: 'superseded',
+        reviewed_by_trader_at: new Date().toISOString(),
+        trader_decision_reason: reason.slice(0, 500),
+      }, { count: 'exact' })
+      .in('id', otherIds)
+      .eq('status', 'pending');
+    if (error) {
+      this.logger.debug(`[trader-arbitration] markNonChosenSuperseded failed: ${error.message}`);
+      return;
+    }
+    if (count && count > 0) {
+      this.logger.log(`[trader-arbitration] ${count} non-chosen proposal(s) → superseded (chose=${chosenSymbol ?? 'none'})`);
     }
   }
 
