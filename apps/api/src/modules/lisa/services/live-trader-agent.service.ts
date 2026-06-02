@@ -36,6 +36,7 @@ import { TopGainersScannerService } from './top-gainers-scanner.service';
 import { PushNotificationsService } from './push-notifications.service';
 import { MistralShadowService } from './mistral-shadow.service';
 import { MistralLargeShadowService } from './mistral-large-shadow.service';
+import { summarizeMomentumDecisions } from './scanner-momentum-shadow.helper';
 import type { TopGainerCandidate } from '@smartvest/ai-analyst';
 
 const TRADER_AGENT_PORTFOLIO_ID = 'b0000001-0000-0000-0000-000000000001';
@@ -796,6 +797,28 @@ export class LiveTraderAgentService {
         });
       } catch (e) {
         this.logger.error(`[trader-agent] logDecision failed (cycle ran but trace lost): ${String(e).slice(0, 200)}`);
+      }
+
+      // Phase 4 refactor scanner — Momentum Shadow Comparator (env-gated, default OFF).
+      // Capture bucket distribution + chosen bucket dans lisa_decision_log pour analyse
+      // offline : winRate par bucket, A/B Phase 2 ON vs OFF. Aucun effet sur la décision.
+      const shadowEnabled = (this.config.get<string>('SCANNER_AB_SHADOW_ENABLED') ?? 'false').toLowerCase() === 'true';
+      if (shadowEnabled) {
+        try {
+          const chosenSymbol = decision.action_kind === 'open_directional' ? (decision.symbol ?? null) : null;
+          const summary = summarizeMomentumDecisions(candidates as Array<Record<string, unknown>>, chosenSymbol);
+          await this.supabase.getClient().from('lisa_decision_log').insert({
+            portfolio_id: TRADER_AGENT_PORTFOLIO_ID,
+            kind: 'scanner_momentum_shadow',
+            payload: {
+              cycle_started_at: cycleStartedAt.toISOString(),
+              action_kind: decision.action_kind,
+              ...summary,
+            },
+          });
+        } catch (e) {
+          this.logger.debug(`[trader-agent] momentum shadow log failed: ${String(e).slice(0, 120)}`);
+        }
       }
 
       // LISA refonte B.1 — parse markers thèse + insert citations
