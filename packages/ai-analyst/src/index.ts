@@ -25,6 +25,7 @@ export * from './strategies/multi-tf-persistence';
 export * from './strategies/logistic-regression';
 export * from './strategies/empirical-law';
 export * from './strategies/setup-classifier';
+export * from './skeptic/skeptic-agent';
 export * from './strategies/path-quality';
 export * from './strategies/bootstrap-ci';
 export * from './backtest/engine';
