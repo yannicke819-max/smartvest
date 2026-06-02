@@ -111,6 +111,16 @@ export class ScannerLlmRouterService {
     return this.router !== null;
   }
 
+  /** Expose la valeur runtime de LLM_PRIMARY_PROVIDER (debug admin). */
+  getPrimaryProvider(): string {
+    return this.primaryProvider;
+  }
+
+  /** True si MistralShadowService a été injecté (DI optional). */
+  hasMistralShadow(): boolean {
+    return this.mistralShadow != null;
+  }
+
   /**
    * Appel LLM via la chain rapide (Flash Lite → Opus). Pour les tâches simples /
    * volumineuses (scanner, screening, classification).
