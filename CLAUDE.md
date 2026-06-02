@@ -5,6 +5,78 @@ Guide de travail pour Claude Code sur ce repo.
 
 ---
 
+## 🎯 PLANNING PROCHAINE SESSION (02/06/2026 23:30 — à attaquer en priorité)
+
+**Contexte** : session du 02/06 a livré 7 PR (#575-#581). État au coucher : système discipliné mais **possiblement sur-filtré**. L'utilisateur a exprimé sa peur que les 8 couches de filtrage étranglent l'edge — peur légitime, fondée sur son intuition de calibration 25/05 qui avait recovered +23 TP_HIT en 2j.
+
+### Ordre d'attaque au réveil
+
+1. **Morning brief Asia D'ABORD**
+   ```bash
+   npx tsx scripts/asia-morning-brief.ts
+   ```
+   - Résume nuit Asia 00-08h UTC
+   - Alertes auto (PnL < -$100, ≥3 SL consec, .SHE trades, big losers)
+   - Doit guider la première action (kill Asia si désastre, sinon continue)
+
+2. **Funnel analysis 7 derniers jours** — le SUJET CRITIQUE
+   - Compter par stage : candidats bruts → après chaque gate → ouvertures réelles
+   - Stages à mesurer (pour chaque portfolio TRADER+HIGH+MIDDLE+SMALL) :
+     - Total candidats scannés
+     - Après persistence ≥ seuil DB
+     - Après path_efficiency ≥ seuil DB
+     - Après DebateGate consensus
+     - Après LLM gate Mistral (PR #540)
+     - Après SkepticAgent shadow (mesurer les `skeptic_verdict` blocks théoriques)
+     - Après garde-fous TRADER (anti-revenge, US opening block, XETRA notional, overpump)
+     - Ouvertures réelles
+   - Sources : `lisa_decision_log` (kinds : `scanner_proposal_rejected_by_llm`, `position_opened`, `position_open_failed`), `trader_agent_decisions`, `paper_trades`, `lisa_positions`
+   - Verdict attendu : si 200 bruts → 0-1 ouvert, ÉTRANGLÉ. Si 200 → 5-10 → 1-2, sain.
+
+3. **Counterfactual regrets** — trades manqués qui auraient gagné
+   - Pour chaque rejet de chaque gate, simuler outcome 60min via candles
+   - Identifier : "% des rejets path_eff étaient des winners ?", "% des rejets debate_gate ?", etc.
+   - Pattern attendu : si une gate rejette > 30% de winners → trop strict
+   - Cf. méthode appliquée 25/05 : `scripts/backtest-thu-fri-funnel.ts`, `unset-persistence-and-analyze-patheff.ts`
+
+4. **Re-calibration sélective** (pas tout à la fois — chirurgicale)
+   - Identifier la gate qui rejette le plus de winners
+   - Mettre en SHADOW d'abord (PR + env flag), mesurer 48-72h
+   - Si confirmation → ajuster seuil OU désactiver gate
+   - PRIORISER les gates JEUNES (SkepticAgent → activer en blocking règle par règle SI calibration sample suffisant)
+   - GARDER les filets de sécurité catastrophe (kill switch, autonomy mandate, drawdown cap FTMO 3%)
+
+### Risques à éviter
+
+- **Ne PAS désactiver toutes les gates d'un coup** (overcorrection inverse)
+- **Ne PAS toucher au SL mécanique** (filet de dernière instance — backtest 02/06 a montré 73% rebound à entry < 60min MAIS médiane PnL -0.24% si held = pas un edge clair)
+- **Ne PAS reset paper_trades** (perd l'historique nécessaire au funnel analysis)
+- **Conserver SkepticAgent en shadow** jusqu'à mesure ratio veto/total stable
+
+### Mesures de succès
+
+- Pré-fix : 56 trades/30j (sample insuffisant pour Wilson CI robuste)
+- Cible post-recalibration : **>200 trades/30j** sur les setups validés (permet ±9% CI à n=100/cellule)
+- Préserver le ratio winning portfolios (KQ KOSDAQ +75% WR, AS, SW, crypto)
+- Maintenir/améliorer winRate global (45.8% baseline → cible 50%+)
+
+### Lien aux PR livrés ce soir
+
+- PR #575 — bridge fix (assure que agent ne contourne pas les gates)
+- PR #576 — proposals hardening (rend les rejets traçables → essentiels au funnel analysis)
+- PR #577 — lessons actionables (les futures calibrations seront auto-applied)
+- PR #578 — setup taxonomy (permettra cellules par config quand n ≥ 100)
+- PR #579 + #580 — SkepticAgent shadow (mesure veto count par règle pour calibration)
+- PR #581 — Asia morning brief (étape 1 du plan)
+
+### Fix DB déjà appliqué ce soir (réversible)
+
+- `lisa_session_configs.gainers_hour_blacklist_eu_utc = '10,11,12'` sur les 4 portfolios
+- Vise -$854/30j pattern LSE+PA 10-12h UTC
+- Si funnel analysis montre que le fix est trop strict (rejets > regrets), reverter à `""`
+
+---
+
 ## Contexte utilisateur
 
 - **Langue de travail** : français (toujours répondre en français).
