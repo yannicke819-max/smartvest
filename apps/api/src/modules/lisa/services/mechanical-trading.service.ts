@@ -2069,6 +2069,24 @@ export class MechanicalTradingService {
                   this.logger.warn(`[choppy-exit-llm-gate] ${pos.symbol} validation threw — fail-OPEN, proceed close. err=${String(e).slice(0, 150)}`);
                   return { approved: true, reason: 'llm_gate_exception_fail_open' };
                 });
+                // 02/06/2026 — Audit trace approve+reject (avant : silencieux côté approve,
+                // impossible de tracer après coup pourquoi closed_choppy a tiré sur NESF.LSE).
+                await this.decisionLog.append({
+                  portfolioId: portfolioIdChoppy,
+                  kind: approval.approved ? 'choppy_exit_llm_approved' : 'choppy_exit_llm_blocked',
+                  summary: `[CHOPPY_LLM_GATE] ${pos.symbol} ${approval.approved ? 'APPROVED' : 'BLOCKED'} — ${approval.reason}`,
+                  rationale: approval.reason,
+                  payload: {
+                    symbol: pos.symbol,
+                    position_id: pos.id,
+                    age_min: Math.round(ageMin * 10) / 10,
+                    peak_pnl_pct: Math.round(peakPnlPct * 100) / 100,
+                    monotonicity: Math.round(mono * 100) / 100,
+                    approved: approval.approved,
+                    llm_reason: approval.reason,
+                  },
+                  triggeredBy: 'mechanical_cron',
+                }).catch(() => { /* non-bloquant */ });
                 if (!approval.approved) {
                   this.logger.log(
                     `[choppy-exit-llm-gate] ${pos.symbol} CLOSE BLOCKED by LLM — ${approval.reason} (re-eval next cycle 60s)`,
