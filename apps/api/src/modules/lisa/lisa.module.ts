@@ -361,6 +361,7 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     LisaService,
     DecisionLogService,
     DebateGateMetricsStore,
+    ScannerLlmRouterService,
     RealtimePriceService,
     EodhdTechnicalService,
     EodhdIntradayService,
