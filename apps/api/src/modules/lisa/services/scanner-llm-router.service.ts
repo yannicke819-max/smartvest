@@ -220,7 +220,24 @@ export class ScannerLlmRouterService {
         this.logger.warn(
           `[scanner-llm] Mistral primary failed → fallback vers Gemini Pro. err=${String(e).slice(0, 200)}`,
         );
-        // tombe sur Gemini Pro ci-dessous
+        // 02/06/2026 — Si SCANNER_MISTRAL_FALLBACK_USE_FAST=true, on saute la chain
+        // Pro et on tombe directement sur le fast chain (Gemini Flash-Lite). Économie
+        // ~46× vs Pro ($0.001 vs $0.046 par cycle). Cas d'usage : pendant un incident
+        // Mistral prolongé (clé révoquée, support en cours) pour minimiser le coût
+        // sans dégrader l'UX trader. Flash-Lite reste capable des décisions standard.
+        const useFastFallback = (this.config.get<string>('SCANNER_MISTRAL_FALLBACK_USE_FAST') ?? 'false').toLowerCase() === 'true';
+        if (useFastFallback && this.router) {
+          this.logger.log('[scanner-llm] SCANNER_MISTRAL_FALLBACK_USE_FAST=true → skip Gemini Pro, use fast chain');
+          const res = await this.router.call(params);
+          return {
+            content: res.content,
+            providerId: `${res.providerId}-mistral-fallback-fast`,
+            costUsd: res.costUsd,
+            latencyMs: res.latencyMs,
+            fallbackUsed: true,
+          };
+        }
+        // tombe sur Gemini Pro ci-dessous (comportement legacy)
       }
     }
 
