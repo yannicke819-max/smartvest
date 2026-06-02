@@ -24,7 +24,6 @@ import { AdminMigrationsController } from './admin-migrations.controller';
 import { AdminSupabaseQueryController } from './admin-supabase-query.controller';
 import { AdminLogsController } from './admin-logs.controller';
 import { AdminEodhdStatusController } from './admin-eodhd-status.controller';
-import { AdminLlmRouterProbeController } from './admin-llm-router-probe.controller';
 import { AdminTdProbeController } from './admin-td-probe.controller';
 import { AdminGainersStatusController } from './admin-gainers-status.controller';
 import { AdminGainersBaselineController } from './admin-gainers-baseline.controller';
@@ -58,7 +57,6 @@ import { AdminLearningLoopAuditController } from './admin-learning-loop-audit.co
     AdminSupabaseQueryController,
     AdminLogsController,
     AdminEodhdStatusController,
-    AdminLlmRouterProbeController,
     AdminTdProbeController,
     AdminGainersStatusController,
     AdminGainersBaselineController,
