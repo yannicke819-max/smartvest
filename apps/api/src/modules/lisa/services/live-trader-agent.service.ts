@@ -1562,6 +1562,22 @@ Recommendation rules :
   }
 
   private async fetchTopCandidates(n: number): Promise<object[]> {
+    // 02/06/2026 — Scanner-bridge enforcement.
+    // Quand TRADER_ARBITRATION_ENABLED=true, le scanner Gainers INSERT ses candidats
+    // approuvés (post-gates persistence + path_eff + debate + Mistral LLM gate)
+    // dans `scanner_proposals`. Le TRADER LLM doit décider UNIQUEMENT parmi ceux-là —
+    // pas de bypass via fetchAllCandidates() (qui retourne la pool brute pré-gates,
+    // d'où LIN.PA/SBMO/MSF.XETRA ouverts sans validation gate observés 02/06).
+    // Règle métier user : "l'agent trader ne doit sélectionner que parmi ce que lui
+    // propose le scanner gainers, jamais autrement".
+    const arbitrationEnabled = (this.config.get<string>('TRADER_ARBITRATION_ENABLED') ?? 'false').toLowerCase() === 'true';
+    if (arbitrationEnabled) {
+      this.logger.debug(
+        '[trader-agent] TRADER_ARBITRATION_ENABLED=true → fetchTopCandidates returns [] (LLM uses scanner_proposals only)',
+      );
+      return [];
+    }
+
     // COMMIT 1 (29/05) — Lecture directe du cache scanner pour avoir des candidats
     // FRAIS (le snapshot table gainers_persistence_log était peuplé uniquement par
     // l'UI dashboard → jusqu'à 7h de retard). Avec topGainersScanner injecté, on
