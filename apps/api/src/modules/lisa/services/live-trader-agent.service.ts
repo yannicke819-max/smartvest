@@ -1953,6 +1953,38 @@ ferme uniquement les positions cassées. Cite '[OBJ_LATE_NO_OPEN]'.
 Les suggested_* sont des suggestions, pas des ordres. Tu peux override avec justification
 explicite dans thesis (ex : 'OVERRIDE_SUGGESTED_POSTURE car news_shock détecté X').`;
 
+    // Phase 3 refactor scanner — Momentum & bucket interpretation block.
+    // Inject ce bloc UNIQUEMENT si SCANNER_MOMENTUM_ANALYSIS_ENABLED=true (= Phase 2 activée).
+    // Sans la Phase 2, les champs momentum/bucket sont absents du userPrompt → bloc inutile.
+    const momentumEnabled = (this.config.get<string>('SCANNER_MOMENTUM_ANALYSIS_ENABLED') ?? 'false').toLowerCase() === 'true';
+    if (momentumEnabled) {
+      prompt += `
+
+MOMENTUM TIME-SERIES (champ candidate.momentum + candidate.bucket — Phase 2 scanner) :
+
+Tu vois maintenant 5 métriques par candidat, computées sur les 12 dernières candles 5m :
+- gradientPctPerMin : vitesse moyenne %/min. >+0.1 monte, <-0.1 retrace.
+- acceleration : récent vs ancien. >0 en accélération, <0 en décélération.
+- volumeMomentum : volume récent / volume ancien. >1.5 surge, <0.7 essoufflement.
+- verticalityScore : 0-1. Proche de 1 = pump vertical (P&D risk).
+- risingScore : 0-1 composite. >0.65 strong momentum, 0.4-0.65 neutre, <0.35 reversing.
+
+bucket classification (déterministe côté scanner, à utiliser comme HEURISTIQUE prioritaire) :
+- sweet_spot_rising : changePct ∈ [3,12]% + momentum positif → SETUP A à A+ pour entry long.
+- early_mover : changePct ∈ [0.5,3]% + accel positive → SETUP B, premier signal, plus risqué mais R/R supérieur.
+- peak_parabolic : changePct > 12 + closeToHigh > 0.95 → PASS, late entry, P&D risk élevé.
+- stalled : sweet-spot zone MAIS momentum faible (risingScore < 0.55) → WAIT pullback, ne pas chase.
+- reversing : gradient < -0.1 → SKIP long, peut être short si setup confirme.
+
+PRIORITÉS DÉCISION (utilise ces buckets en COMPLÉMENT — pas en remplacement — de tes lessons existantes) :
+1. Privilégie sweet_spot_rising > early_mover > tout autre.
+2. peak_parabolic = signal d'attente pullback, jamais d'open_directional long.
+3. reversing sur position ouverte longue = signal de close_now / trail_stop serré.
+4. Cite le bucket dans ta thesis : '[BUCKET=sweet_spot_rising rising=0.72]' pour traçabilité.
+
+Si momentum/bucket absents (Phase 2 désactivée ou fetch échoué), ignore ces règles et reviens au comportement legacy (pumpScore + closeToHighRatio + lessons KTOS).`;
+    }
+
     return prompt;
   }
 
