@@ -26,6 +26,7 @@ import { SchedulerRegistry } from '@nestjs/schedule';
 import { EodhdLoggerService } from './eodhd-logger.service';
 // PR #345 — filtres TwelveData (Supertrend US + RSI crypto)
 import { TwelveDataService, type MarketMover } from './twelve-data.service';
+import { rankByCompositeScore, parseCompositeWeights } from './composite-ranker.helper';
 import { evaluateTwelveDataFilters } from './twelve-data-scanner-filters';
 import { QwDecisionLoggerService } from '../quick-wins/qw-decision-logger.service';
 import { CronJob } from 'cron';
@@ -1701,6 +1702,26 @@ export class TopGainersScannerService implements OnModuleInit {
         // candidat dans le shadow batch). Conservateur — le coût réel est >=1.
         this.logger.log(`[top-gainers] ${formatFilterLog(filter, 1)}`);
       }
+    }
+
+    // Phase 1 refactor scanner — Composite Ranking (env-gated, default OFF).
+    // Re-trie les candidats par score composite au lieu du tri brut
+    // refund_1d_p.desc (qui ne ramène que les paraboliques). Architecture
+    // additive : aucun candidat supprimé, juste re-ordre. Cf. composite-
+    // ranker.helper.ts pour la formule.
+    //
+    // Si flag OFF : ordre inchangé (tri exchange-level refund_1d_p.desc).
+    // Si flag ON  : sweet-spot (3-8% changePct) rankent au-dessus des
+    // paraboliques (>12%) → Mistral voit les bons candidats en premier.
+    const rankingEnabled = (this.config.get<string>('SCANNER_COMPOSITE_RANKING_ENABLED') ?? 'false').toLowerCase() === 'true';
+    if (rankingEnabled) {
+      const weights = parseCompositeWeights(this.config.get<string>('SCANNER_COMPOSITE_WEIGHTS'));
+      const before = finalCandidates.length > 0 ? `${finalCandidates[0].symbol}(${finalCandidates[0].changePct?.toFixed(1)}%)` : 'empty';
+      finalCandidates = rankByCompositeScore(finalCandidates, weights);
+      const after = finalCandidates.length > 0 ? `${finalCandidates[0].symbol}(${finalCandidates[0].changePct?.toFixed(1)}%)` : 'empty';
+      this.logger.log(
+        `[top-gainers] composite ranking applied — top1 before=${before} after=${after} weights=${JSON.stringify(weights)}`,
+      );
     }
 
     // P19s++ — Cache fill (TTL 15min). Permet aux UI polls et au cron scanner
