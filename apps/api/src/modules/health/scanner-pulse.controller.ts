@@ -90,7 +90,35 @@ export class ScannerPulseController {
       return { status: 'idle', last_cycle_at: null, age_sec: null, max_age_sec: maxAgeSec };
     }
 
-    const lastTs = rows && rows.length > 0 ? rows[0].timestamp : null;
+    let lastTs: string | null = rows && rows.length > 0 ? rows[0].timestamp : null;
+
+    // Fix 02/06/2026 — En mode strategy_mode='gainers', l'autopilot Lisa LLM skip
+    // ("Lisa LLM cycle skipped") et n'écrit donc plus `autopilot_cycle_completed`.
+    // Le pulse devenait stale même si le TRADER cron tournait normalement toutes
+    // les 2min via `trader_agent_decisions`. Bug observé 02/06 09:25 UTC : pulse
+    // stale 21h alors que les logs montraient des cycles scanner à 07:21/07:22.
+    // Fallback : si pas de marker autopilot récent, prendre le plus récent
+    // `trader_agent_decisions.cycle_started_at` comme preuve d'activité.
+    const lastAutopilotAgeSec = lastTs
+      ? Math.floor((Date.now() - new Date(lastTs).getTime()) / 1000)
+      : Number.MAX_SAFE_INTEGER;
+    if (lastAutopilotAgeSec > maxAgeSec) {
+      const { data: traderRows, error: traderErr } = await client
+        .from('trader_agent_decisions')
+        .select('cycle_started_at')
+        .order('cycle_started_at', { ascending: false })
+        .limit(1);
+      if (!traderErr && traderRows && traderRows.length > 0) {
+        const traderTs = (traderRows[0] as { cycle_started_at?: string }).cycle_started_at ?? null;
+        if (traderTs) {
+          const traderAgeSec = Math.floor((Date.now() - new Date(traderTs).getTime()) / 1000);
+          // Prend le plus récent des deux signaux (autopilot OU trader-agent).
+          if (lastTs == null || traderAgeSec < lastAutopilotAgeSec) {
+            lastTs = traderTs;
+          }
+        }
+      }
+    }
     if (!lastTs) {
       // Jamais cyclé (premier boot prod) — on tolère, le 1er cycle va venir.
       return { status: 'healthy', last_cycle_at: null, age_sec: null, max_age_sec: maxAgeSec };
