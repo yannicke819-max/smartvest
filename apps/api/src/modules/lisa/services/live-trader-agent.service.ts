@@ -1602,7 +1602,18 @@ Recommendation rules :
         const pool = tradeable.length > 0
           ? tradeable
           : candidates.filter((c) => (c.changePct ?? 0) <= feedMax);
-        const sorted = [...pool].sort((a, b) => (b.changePct ?? 0) - (a.changePct ?? 0));
+        // Phase 1-bis refactor scanner — Si composite ranking actif côté scanner,
+        // PRÉSERVER l'ordre du pool (déjà rangé par composite score décroissant
+        // dans fetchAllCandidates). Sans ce check, le sort changePct DESC ci-dessous
+        // écrase tout le travail Phase 1 et Mistral voit à nouveau les paraboliques
+        // en premier. Bug observé 02/06 09:21 UTC après deploy Phase 1-4 :
+        //   "composite ranking applied — top1=M44.XETRA(5.5%)"
+        //   "trader-agent hold — all candidates parabolic >13%"
+        // Cause : sort DESC re-mettait SDR.AU(10.9%) avant M44.XETRA(5.5%).
+        const rankingEnabled = (this.config.get<string>('SCANNER_COMPOSITE_RANKING_ENABLED') ?? 'false').toLowerCase() === 'true';
+        const sorted = rankingEnabled
+          ? pool
+          : [...pool].sort((a, b) => (b.changePct ?? 0) - (a.changePct ?? 0));
         if (sorted.length > 0) {
           this.logger.debug(
             `[trader-agent] feed: ${candidates.length} scanned → ${sorted.length} in band [${feedMin},${feedMax}]% → top ${Math.min(n, sorted.length)} (capital=$${currentCapital.toFixed(0)})`,
