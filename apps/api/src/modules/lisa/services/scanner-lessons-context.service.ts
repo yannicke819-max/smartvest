@@ -26,6 +26,16 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 // ordonne mais n'élimine plus de lesson.
 const MAX_LESSONS_PER_BLOCK = 1000;
 
+// Filter 03/06/2026 — anti-pollution Mistral sur lessons à faible sample.
+// Constat : RealtimeLessonDetectorService génère des lessons avec sample_size=1
+// (SL_GAP_FAILURE, BIG_LOSS, BIG_WIN, etc.) souvent avec conf 0.85+. Mistral
+// lit ces lessons (texte Gemini verbeux avec "8%", "10%", "30 min" arbitraires)
+// et applique strictement. Cas vérifié : PUMP_SCORE n=1 conf=0.90 a bloqué
+// IFX.XETRA +9.52% pendant des heures parce que Mistral citait "8% requires
+// pullback". Override env MIN_SAMPLE_SIZE_FOR_PROMPT pour ajuster.
+// n=1 reste dans DB pour audit/historique — juste pas injecté dans prompts LLM.
+const MIN_SAMPLE_SIZE_FOR_PROMPT = 5;
+
 interface LessonRow {
   lesson_kind: string;
   lesson_text: string;
@@ -70,8 +80,12 @@ export class ScannerLessonsContextService {
     // Score = confidence × log(1 + sample_size) → favorise lessons à fort sample
     // tout en gardant confidence comme dimension principale. Évite que des lessons
     // n=5/conf=0.95 écrasent des lessons n=200/conf=0.80 (statistiquement meilleures).
+    // Filter scope + sample size (anti-pollution Mistral n=1).
+    // Env override : MIN_SAMPLE_SIZE_FOR_PROMPT (default 5).
+    const minSample = Number(process.env.MIN_SAMPLE_SIZE_FOR_PROMPT ?? MIN_SAMPLE_SIZE_FOR_PROMPT);
     const filtered = lessons
       .filter((l) => scopes.has(l.scope))
+      .filter((l) => (l.sample_size ?? 0) >= minSample)
       .map((l) => {
         const samplePenalty = Math.log(1 + (l.sample_size ?? 0));
         const score = l.confidence * (1 + samplePenalty * 0.15);
