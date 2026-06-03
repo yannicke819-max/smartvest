@@ -5177,10 +5177,13 @@ export class TopGainersScannerService implements OnModuleInit {
         // décideur (Mistral Medium primary via callWithPro + lessons block).
         // Si LLM rejette → skip + log. Si approuve → procéder.
         //
-        // Backward compat : env GAINERS_REQUIRES_LLM_APPROVAL=false désactive le gate.
-        // Default = true (sécurité par défaut, conformément au design CLAUDE.md
-        // mode délégation MANUAL/HYBRID : LLM seul peut valider une ouverture).
-        const llmGateEnabled = (this.config.get<string>('GAINERS_REQUIRES_LLM_APPROVAL') ?? 'true').toLowerCase() === 'true';
+        // Default DÉSACTIVÉ 03/06/2026 — Mistral ignorait les instructions du
+        // prompt et rejettait sur changePct > 10% même après prompt explicite
+        // "ne PAS rejeter sur changePct". L'OVERPUMP per-class déployé ce matin
+        // (asia=30, eu=15, us=15, crypto=30) couvre déjà la protection
+        // anti-pump. Le LLM gate sera réécrit ou switché vers Gemini Pro plus
+        // tard. Réactivable via GAINERS_REQUIRES_LLM_APPROVAL=true.
+        const llmGateEnabled = (this.config.get<string>('GAINERS_REQUIRES_LLM_APPROVAL') ?? 'false').toLowerCase() === 'true';
         if (llmGateEnabled && this.llmRouter.isEnabled()) {
           const llmDecision = await this.validateCandidateWithLlm(cand, item.direction, portfolioId, directionalNotional)
             .catch((e) => {
@@ -5765,19 +5768,12 @@ ${lessonsBlock ? '\n=== LESSONS ACTIVES ===\n' + lessonsBlock : ''}`;
       // Flash-Lite gère 200 tokens parfaitement, 700ms vs 3s, $0.001 vs $0.013.
       // Aligne avec matrice routing Perplexity ("analyse standard du téléscripteur
       // = Mistral Medium ou Gemini Flash-Lite").
-      // skipMistralPrimary: 03/06/2026 — Mistral medium ignore l'instruction
-      // explicite "ne PAS rejeter sur changePct" du prompt et applique son
-      // bias d'entraînement "pump > 10% = bad". Confirmé 07:26 UTC : 360.AU
-      // 13.25% rejeté "pump parabolique" malgré prompt nouvelle version
-      // déployée 07:25 UTC qui dit le contraire. Force Gemini chain qui
-      // suit mieux les instructions explicites.
       const res = await this.llmRouter.call({
         system: systemPrompt,
         user: userPrompt,
         temperature: 0.1,
         maxTokens: 200,
         timeoutMs: 8_000,
-        skipMistralPrimary: true,
       });
       // Parse JSON robust : extract first {...} block
       const match = res.content.match(/\{[\s\S]*\}/);
