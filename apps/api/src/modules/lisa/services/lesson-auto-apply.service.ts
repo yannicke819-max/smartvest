@@ -53,7 +53,62 @@ const LISA_SESSION_CONFIG_AUTO_APPLY_COLUMNS: ReadonlySet<string> = new Set<stri
   'gainers_persistence_top_n',
   'news_shock_close_max_age_minutes_lse',
   'news_shock_close_sentiment_threshold_lse',
+  // Fix A 03/06/2026 — extension whitelist suite audit GLOBAL: KO :
+  // 270 lessons en `needs_manual_review` car les ConfigSanity générées par
+  // le system ciblent des colonnes lisa_session_configs PAS dans la whitelist
+  // (min_change_pct_eu, max_open_positions, position_pct, etc.). Résultat :
+  // 0 auto-apply en 24h. Bounds appliqués via SAFE_VALUE_BOUNDS ci-dessous.
+  'min_change_pct_eu',
+  'min_change_pct_us_smallmid',
+  'min_change_pct_us_large',
+  'min_change_pct_asia',
+  'min_change_pct_crypto',
+  'max_open_positions',
+  'position_pct',
+  'sl_pct',
+  'tp_pct',
 ]);
+
+/**
+ * Bounds de sécurité par colonne. Empêche un auto-apply catastrophique
+ * (Gemini propose position_pct=80 → tout le capital sur 1 trade). Si la
+ * valeur proposée est hors bounds, la lesson tombe en needs_manual_review.
+ *
+ * Format : [min, max] inclusifs.
+ */
+const SAFE_VALUE_BOUNDS: Record<string, [number, number]> = {
+  // Existing whitelist columns (bounds documented à titre informatif, pas appliqués sur les anciennes)
+  gainers_default_sl_pct: [0.3, 5],
+  gainers_default_tp_pct: [0.5, 10],
+  gainers_min_persistence_score: [0, 1],
+  gainers_min_path_efficiency: [0, 1],
+  gainers_max_change_pct: [3, 50],
+  gainers_min_change_pct: [0.5, 10],
+  gainers_fees_aware_buffer: [1, 5],
+  gainers_position_pct: [1, 30],
+  gainers_cycle_minutes: [1, 60],
+  gainers_persistence_top_n: [5, 100],
+  news_shock_close_max_age_minutes_lse: [5, 240],
+  news_shock_close_sentiment_threshold_lse: [-1, 0],
+  // Fix A nouvelles colonnes — bounds STRICTS
+  min_change_pct_eu: [0.5, 15],
+  min_change_pct_us_smallmid: [0.5, 15],
+  min_change_pct_us_large: [0.5, 15],
+  min_change_pct_asia: [0.5, 15],
+  min_change_pct_crypto: [0.5, 15],
+  max_open_positions: [1, 20],
+  position_pct: [1, 30],
+  sl_pct: [0.5, 5],
+  tp_pct: [0.5, 10],
+};
+
+function isValueWithinBounds(column: string, value: unknown): boolean {
+  const bounds = SAFE_VALUE_BOUNDS[column];
+  if (!bounds) return true; // Pas de bounds = pas de check (compat backward)
+  const n = Number(value);
+  if (!Number.isFinite(n)) return false;
+  return n >= bounds[0] && n <= bounds[1];
+}
 
 interface LessonRow {
   id: string;
@@ -248,6 +303,17 @@ export class LessonAutoApplyService {
         for (const target of dbColumnTargets) {
           const col = target.replace('lisa_session_configs.', '');
           const value = change[target];
+
+          // Fix A 03/06/2026 — bounds check (anti-catastrophic-value)
+          if (!isValueWithinBounds(col, value)) {
+            this.logger.warn(
+              `[lesson-auto-apply] BOUNDS_REJECT ${col}=${JSON.stringify(value)} ` +
+              `outside ${JSON.stringify(SAFE_VALUE_BOUNDS[col])} — lesson skipped`,
+            );
+            failedTargets.push(`${col}:out_of_bounds`);
+            errorCount++;
+            continue;
+          }
 
           // Anti-flap guard
           if (recentCols.has(col)) {
