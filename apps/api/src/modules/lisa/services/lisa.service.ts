@@ -3265,12 +3265,19 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         + (corrupt ? ' [fallback-guard: closed at entry_price]' : ` (source=${quote?.source ?? '?'})`),
     });
 
-    // Capture outcome (Phase 5) + resync session (compta Harvest/gainers)
+    // Capture outcome (Phase 5) + resync session (compta Harvest/gainers).
+    // resyncSessionFromPositions(sessionId, portfolioId, sessionDate) — on
+    // récupère/crée la session du jour pour avoir id + date (cf. pattern
+    // daily-profit-governor.onTradeClosed). Best-effort : un échec resync ne
+    // doit pas bloquer le close (le realized_pnl est déjà écrit par le broker).
     this.tradeOutcomeRecorder.recordOutcome(positionId, closePx, 'closed_user').catch(() => null);
     try {
       const { data: cfg } = await this.supabase.getClient()
         .from('lisa_session_configs').select('*').eq('portfolio_id', portfolioId).maybeSingle();
-      if (cfg) await this.dailySession.resyncSessionFromPositions(portfolioId, cfg as never);
+      if (cfg) {
+        const session = await this.dailySession.createOrGetTodaySession(portfolioId, cfg as never);
+        await this.dailySession.resyncSessionFromPositions(session.id, portfolioId, session.sessionDate);
+      }
     } catch (e) {
       this.logger.warn(`[close-manual] session resync skip: ${String(e).slice(0, 120)}`);
     }
