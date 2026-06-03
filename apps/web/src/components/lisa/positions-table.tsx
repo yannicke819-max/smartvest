@@ -6,6 +6,7 @@ import {
   useLisaPositions,
   useLisaPositionsRealtime,
   useOpenPositionsLive,
+  useClosePositionManual,
   type LisaPosition,
   type OpenPositionLive,
 } from '@/hooks/use-lisa';
@@ -130,7 +131,7 @@ export function LisaPositionsTable({ portfolioId }: { portfolioId: string }) {
         <div>
           <p className="text-xs font-medium mb-2 text-emerald-700">Ouvertes</p>
           <div className="space-y-2">
-            {open.map((p) => <PositionRow key={p.id} pos={p} live={liveById.get(p.id)} />)}
+            {open.map((p) => <PositionRow key={p.id} pos={p} live={liveById.get(p.id)} portfolioId={portfolioId} />)}
           </div>
         </div>
       )}
@@ -173,7 +174,7 @@ const UNKNOWN_STATUS_CFG = {
   color: 'bg-slate-50 text-slate-500 border-slate-200',
 };
 
-function PositionRow({ pos, live }: { pos: LisaPosition; live?: OpenPositionLive }) {
+function PositionRow({ pos, live, portfolioId }: { pos: LisaPosition; live?: OpenPositionLive; portfolioId?: string }) {
   // PR #253 — affine le label closed_target via exitReason.
   const statusCfg = pos.status
     ? refineCloseLabel(pos.status, pos.exitReason)
@@ -228,10 +229,33 @@ function PositionRow({ pos, live }: { pos: LisaPosition; live?: OpenPositionLive
             {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)} ({pnlPct.toFixed(2)}%)
           </div>
         )}
-        {/* Position OUVERTE → valeur temps réel + tendance 5 min */}
+        {/* Position OUVERTE → valeur temps réel + tendance 5 min + bouton Fermer */}
         {pos.status === 'open' && <PositionLiveValue live={live} />}
+        {pos.status === 'open' && portfolioId && (
+          <ClosePositionButton positionId={pos.id} portfolioId={portfolioId} symbol={pos.symbol} />
+        )}
       </div>
     </div>
+  );
+}
+
+/** Bouton "Fermer" sur une position ouverte. Close immédiat au prix live. */
+function ClosePositionButton({ positionId, portfolioId, symbol }: { positionId: string; portfolioId: string; symbol: string }) {
+  const closeMut = useClosePositionManual(portfolioId);
+  return (
+    <button
+      type="button"
+      disabled={closeMut.isPending}
+      onClick={() => {
+        if (closeMut.isPending) return;
+        if (window.confirm(`Fermer ${symbol} maintenant au prix live ?`)) {
+          closeMut.mutate(positionId);
+        }
+      }}
+      className="mt-1.5 w-full rounded border border-red-200 bg-red-50 px-2 py-1 text-[10px] font-medium text-red-700 hover:bg-red-100 disabled:opacity-50"
+    >
+      {closeMut.isPending ? 'Fermeture…' : 'Fermer'}
+    </button>
   );
 }
 

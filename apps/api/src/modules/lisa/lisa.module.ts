@@ -138,6 +138,8 @@ import { KellyRecomputeService } from './services/kelly-recompute.service';
 import { TwelveDataService } from './services/twelve-data.service';
 // PR #352 — Router intraday TD-first avec fallback EODHD (flag-gated)
 import { IntradayProviderRouter } from './services/intraday-provider-router.service';
+// Étape 3 tracker — snapshot indicateurs positions ouvertes (cron 2min, gated OFF)
+import { PositionIndicatorsTrackerService } from './services/position-indicators-tracker.service';
 // R&D batch — services env-gated OFF par défaut (audit 23/05 propositions sérieuses)
 import { GeminiRiskManagerService } from './services/research/gemini-risk-manager.service';
 import { GeminiOpportunityScoutService } from './services/research/gemini-opportunity-scout.service';
@@ -353,6 +355,8 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     TwelveDataService,
     // PR #352 — Router intraday TD-first (flag OFF par défaut → passthrough EODHD)
     IntradayProviderRouter,
+    // Étape 3 tracker — snapshot indicateurs positions (cron 2min, POSITION_TRACKER_ENABLED OFF)
+    PositionIndicatorsTrackerService,
     // R&D batch (23/05 propositions sérieuses, ENV-gated OFF par défaut)
     GeminiRiskManagerService,
     GeminiOpportunityScoutService,

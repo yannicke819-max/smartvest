@@ -1463,6 +1463,24 @@ export class LisaController {
     return { positions, asOf: new Date().toISOString() };
   }
 
+  /**
+   * Close MANUEL d'une position ouverte (bouton "Fermer" sur la carte UI).
+   * Close immédiat au prix live, compta complète. Override staleness (l'user
+   * veut fermer même si prix LSE delayed). Garde anti-fallback : si prix
+   * corrompu → close à entry (pnl≈0).
+   */
+  @Post('positions/:positionId/close')
+  @HttpCode(200)
+  async closePositionManual(
+    @Headers() headers: Record<string, string>,
+    @Param('positionId') positionId: string,
+    @Body('portfolioId') portfolioId: string,
+  ) {
+    const userId = extractUserId(headers);
+    if (!portfolioId) throw new BadRequestException('portfolioId requis');
+    return this.lisa.closePositionManual(userId, portfolioId, positionId);
+  }
+
   @Get('binance/balance')
   getBinanceBalance(@Headers() headers: Record<string, string>) {
     extractUserId(headers); // throws si non authentifié

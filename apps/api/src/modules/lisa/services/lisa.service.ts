@@ -3227,6 +3227,70 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     return { closedPositions: openPositions.length };
   }
 
+  /**
+   * Close MANUEL d'une position par l'utilisateur (bouton "Fermer" sur la
+   * carte). Close immédiat au prix live, compta complète (realized_pnl, outcome,
+   * resync session). À la différence du cron mécanique, on OVERRIDE le rejet
+   * staleness : quand l'user clique "Fermer", il VEUT fermer même si le prix
+   * LSE est delayed (stale_eodhd). Anti-corruption conservé : si source
+   * `fallback_*` OU prix invalide → close à entry_price (pnl≈0) plutôt qu'à
+   * un prix aberrant.
+   */
+  async closePositionManual(userId: string, portfolioId: string, positionId: string) {
+    await this.assertPortfolioOwner(userId, portfolioId);
+
+    const { data: row, error } = await this.supabase.getClient()
+      .from('lisa_positions')
+      .select('id, symbol, status, entry_price, portfolio_id')
+      .eq('id', positionId)
+      .maybeSingle();
+    if (error || !row) throw new NotFoundException(`Position ${positionId} introuvable`);
+    if (row.portfolio_id !== portfolioId) throw new BadRequestException('Position hors portfolio');
+    if (row.status !== 'open') throw new BadRequestException(`Position déjà fermée (status=${row.status})`);
+
+    const quote = await this.getLivePrice(String(row.symbol)).catch(() => null);
+    const priceNum = quote ? parseFloat(quote.price) : NaN;
+    const isFallback = quote?.source != null && quote.source.startsWith('fallback');
+    const corrupt = !quote || isFallback || !Number.isFinite(priceNum) || priceNum <= 0;
+    // fallback/corrompu → close à entry (pnl≈0, anti-$0). Sinon prix live.
+    const closePx = corrupt ? String(row.entry_price) : quote!.price;
+    // Override staleness : user veut fermer. On NE passe PAS livePriceSource
+    // → le paper-broker skippe le rejet staleness (stale_eodhd LSE accepté).
+    // L'anti-corruption fallback_* est déjà géré en amont (closePx=entry).
+    const result = await this.paperBroker.closePosition({
+      positionId,
+      reason: 'closed_user',
+      livePrice: closePx,
+      rationale: `[manual] Close user @ ${closePx}`
+        + (corrupt ? ' [fallback-guard: closed at entry_price]' : ` (source=${quote?.source ?? '?'})`),
+    });
+
+    // Capture outcome (Phase 5) + resync session (compta Harvest/gainers)
+    this.tradeOutcomeRecorder.recordOutcome(positionId, closePx, 'closed_user').catch(() => null);
+    try {
+      const { data: cfg } = await this.supabase.getClient()
+        .from('lisa_session_configs').select('*').eq('portfolio_id', portfolioId).maybeSingle();
+      if (cfg) await this.dailySession.resyncSessionFromPositions(portfolioId, cfg as never);
+    } catch (e) {
+      this.logger.warn(`[close-manual] session resync skip: ${String(e).slice(0, 120)}`);
+    }
+
+    await this.logDecision(portfolioId, 'position_closed_manual', {
+      summary: `User closed ${row.symbol} (${positionId.slice(0, 8)}) @ ${closePx}`.slice(0, 200),
+      rationale: `Manual close button. pnl=${result.realizedPnlUsd ?? '?'} USD`,
+      payload: { positionId, symbol: row.symbol, closePrice: closePx, source: quote?.source, corrupt },
+      triggeredBy: 'user_manual',
+    }).catch(() => null);
+
+    return {
+      ok: true,
+      symbol: row.symbol,
+      exitPrice: closePx,
+      realizedPnlUsd: result.realizedPnlUsd ?? null,
+      realizedPnlPct: result.realizedPnlPct ?? null,
+    };
+  }
+
   // ── Helpers ─────────────────────────────────────────────────────────────────
 
   private async assertPortfolioOwner(userId: string, portfolioId: string): Promise<void> {

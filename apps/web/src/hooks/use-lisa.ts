@@ -328,6 +328,25 @@ export function useOpenPositionsLive(portfolioId: string | null) {
   });
 }
 
+/**
+ * Close MANUEL d'une position ouverte (bouton "Fermer" sur la carte).
+ * Invalide les caches positions + live après succès.
+ */
+export function useClosePositionManual(portfolioId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (positionId: string) =>
+      apiFetch<{ ok: boolean; symbol: string; exitPrice: string; realizedPnlUsd: string | null; realizedPnlPct: number | null }>(
+        `/lisa/positions/${positionId}/close`,
+        { method: 'POST', body: JSON.stringify({ portfolioId }) },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['lisa', 'positions', portfolioId] });
+      qc.invalidateQueries({ queryKey: ['lisa', 'open-positions-live', portfolioId] });
+    },
+  });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Proposals
 // ─────────────────────────────────────────────────────────────────────────────
