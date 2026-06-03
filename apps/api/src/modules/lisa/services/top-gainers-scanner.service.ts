@@ -3878,6 +3878,48 @@ export class TopGainersScannerService implements OnModuleInit {
           recordShadowDecision(cand, 'reject_path_eff', persistence);
           continue;
         }
+
+        // CHOP_NOISE GATE (03/06/2026) — exploite le setup_kind classifier.
+        // Audit 02-03/06 : 25/34 trades classifiés CHOP_NOISE avec WR 16% et
+        // sumPnl -12.19%. Le scanner sélectionne massivement du chop intra-day
+        // sans direction → perte cumulée significative. Le classifier est
+        // déjà invoqué dans persistPaperTrade (post-open audit). On l'utilise
+        // maintenant comme gate pré-open pour rejeter les CHOP_NOISE.
+        // Opt-in via env GAINERS_REJECT_CHOP_NOISE_ENABLED=true (default true
+        // pour la phase "trade large 1-2 sem" — on filtre le bruit dès maintenant).
+        const rejectChop = (this.config.get<string>('GAINERS_REJECT_CHOP_NOISE_ENABLED') ?? 'true').toLowerCase() === 'true';
+        if (rejectChop) {
+          try {
+            const pathEff = persistence.pathQuality?.overallEfficiency;
+            const cls = classifySetup({
+              changePct: cand.changePct,
+              close: cand.close,
+              high: cand.high,
+              volume: cand.volume,
+              avgVol50d: cand.avgVol50d,
+              persistenceScore: persistence.persistenceScore,
+              ...(pathEff != null ? { pathEfficiency: pathEff } : {}),
+              ...(cand.momentum
+                ? { momentum: {
+                    gradientPctPerMin: cand.momentum.gradientPctPerMin,
+                    acceleration: cand.momentum.acceleration,
+                    verticalityScore: cand.momentum.verticalityScore,
+                    risingScore: cand.momentum.risingScore,
+                  } }
+                : {}),
+              ...(cand.bucket ? { bucket: cand.bucket } : {}),
+            });
+            if (cls.setup_kind === 'CHOP_NOISE') {
+              this.logger.log(
+                `[top-gainers] ${cand.symbol} CHOP_NOISE gate (regime=${cls.regime_at_entry}, classifier_v=${cls.classifier_version}) → skip`,
+              );
+              recordShadowDecision(cand, 'reject_other', persistence);
+              continue;
+            }
+          } catch (e) {
+            this.logger.debug(`[top-gainers] classifySetup ${cand.symbol} threw (fail-open): ${String(e).slice(0, 120)}`);
+          }
+        }
         // PR #345 + #360 + #368 — Filtres d'entrée TwelveData (Supertrend US/EU/asia
         // 30m + RSI crypto). No-op si flags OFF ou service non injecté. Fail-open
         // total (null TD = pass).
