@@ -57,34 +57,31 @@ const sinceDay = new Date(); sinceDay.setUTCHours(0, 0, 0, 0);
 
   // 4. Open positions
   const { data: pos }: any = await sb.from('lisa_positions')
-    .select('symbol, status, entry_price, current_price, unrealized_pnl_usd, opened_at, asset_class, size_units')
+    .select('symbol, status, entry_price, take_profit_price, stop_loss_price, entry_timestamp, asset_class')
     .eq('portfolio_id', TRADER).eq('status', 'open')
-    .order('opened_at', { ascending: false });
+    .order('entry_timestamp', { ascending: false });
   console.log(`\n--- OPEN POSITIONS: ${pos?.length ?? 0} ---`);
-  let totalPnl = 0;
   for (const p of pos ?? []) {
-    totalPnl += Number(p.unrealized_pnl_usd ?? 0);
-    console.log(`  ${(p.symbol ?? '?').padEnd(14)} ${p.asset_class?.padEnd(12)} size=${p.size_units} entry=${p.entry_price} px=${p.current_price} upnl=$${Number(p.unrealized_pnl_usd ?? 0).toFixed(2)} opened=${p.opened_at?.slice(11,19)}`);
+    console.log(`  ${(p.symbol ?? '?').padEnd(14)} ${String(p.asset_class).padEnd(12)} entry=$${p.entry_price} TP=$${p.take_profit_price} SL=$${p.stop_loss_price} opened=${p.entry_timestamp?.slice(11,19)}`);
   }
-  console.log(`Total unrealized PnL: $${totalPnl.toFixed(2)}`);
 
   // 5. Closed today (PnL session)
   const { data: closed }: any = await sb.from('lisa_positions')
-    .select('symbol, status, realized_pnl_usd, closed_at, close_reason')
+    .select('symbol, status, realized_pnl_usd, exit_timestamp, exit_reason')
     .eq('portfolio_id', TRADER).neq('status', 'open')
-    .gte('closed_at', sinceDay.toISOString())
-    .order('closed_at', { ascending: false });
+    .gte('exit_timestamp', sinceDay.toISOString())
+    .order('exit_timestamp', { ascending: false });
   console.log(`\n--- CLOSED TODAY: ${closed?.length ?? 0} ---`);
   let totalRealized = 0;
   const reasonStats: Record<string, number> = {};
   for (const c of closed ?? []) {
     totalRealized += Number(c.realized_pnl_usd ?? 0);
-    reasonStats[c.close_reason ?? '-'] = (reasonStats[c.close_reason ?? '-'] ?? 0) + 1;
+    reasonStats[c.exit_reason ?? '-'] = (reasonStats[c.exit_reason ?? '-'] ?? 0) + 1;
   }
   console.log('reason counts:', reasonStats);
   console.log(`Total realized PnL today: $${totalRealized.toFixed(2)}`);
   for (const c of (closed ?? []).slice(0, 5)) {
-    console.log(`  ${c.closed_at?.slice(11,19)} ${(c.symbol ?? '?').padEnd(14)} ${(c.close_reason ?? '-').padEnd(20)} pnl=$${Number(c.realized_pnl_usd ?? 0).toFixed(2)}`);
+    console.log(`  ${c.exit_timestamp?.slice(11,19)} ${(c.symbol ?? '?').padEnd(14)} ${(c.exit_reason ?? '-').padEnd(20)} pnl=$${Number(c.realized_pnl_usd ?? 0).toFixed(2)}`);
   }
 
   // 6. Decision log kinds counts 24h (verifie pipeline alive)
