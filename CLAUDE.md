@@ -128,6 +128,20 @@ Guide de travail pour Claude Code sur ce repo.
   - Pour modifier un secret Fly : l'utilisateur le fait via Fly UI
     (Edit/Add button), pas via `fly secrets set`. Lui donner la valeur
     à coller, pas la commande shell.
+- **ADMIN_TOKEN procédure — la valeur NE DOIT JAMAIS être committée** :
+  - Le token protège les endpoints `/admin/*` (`config-dump`,
+    `llm-router-probe`, `eodhd-status`, etc.)
+  - Quand l'utilisateur partage la valeur en chat, je l'utilise
+    UNIQUEMENT dans des variables shell éphémères du sandbox
+    (`export ADMIN_TOKEN=...`), JAMAIS écrit dans un fichier tracké
+  - Endpoints disponibles avec ce token :
+    - `GET /admin/config-dump` → tous les secrets non-sensitive (valeur + default)
+    - `GET /admin/llm-router-probe` → test call Mistral + verdict primary/fallback
+    - `GET /admin/eodhd-status` → quota EODHD + throttle state
+  - **Toujours recommander à l'utilisateur de rotater le token** après
+    chaque session où il l'a partagé en chat (set une nouvelle valeur
+    dans Fly UI). C'est le prix à payer pour ne pas écrire en clair
+    dans le repo.
 - **Localisation** : France (Europe/Paris timezone, CEST en été = UTC+2,
   CET en hiver = UTC+1). Quand on logue / compare des heures, garder en
   tête que **les marchés sont en UTC** mais l'utilisateur raisonne en
