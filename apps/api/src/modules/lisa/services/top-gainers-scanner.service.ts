@@ -130,6 +130,12 @@ import {
   type MaxChangePerClassConfig,
 } from './max-change-per-class.helper';
 import {
+  parseOverpumpPerClassConfig,
+  resolveOverpumpThreshold,
+  describeOverpumpOverrides,
+  type OverpumpPerClassConfig,
+} from './overpump-per-class.helper';
+import {
   computeEntryConvictionScore,
   decideSizingMultiplier,
   parseConvictionSizingConfig,
@@ -575,6 +581,13 @@ export class TopGainersScannerService implements OnModuleInit {
   private maxChangePerClass!: MaxChangePerClassConfig;
 
   /**
+   * Per-class OVERPUMP threshold (fix 03/06/2026). Defaults sensés bakés
+   * dans le helper (asia=30, eu=15, us=15, crypto=30) au lieu de l'ancien
+   * global hardcodé `12` qui contredisait la calibration per-class MAX_CHANGE.
+   */
+  private overpumpPerClass!: OverpumpPerClassConfig;
+
+  /**
    * Data-driven gates per-class (audit 23-24/05). Default toutes envs vides = OFF.
    * S'ajoute aux gates existants (additif, OR logique).
    */
@@ -957,6 +970,16 @@ export class TopGainersScannerService implements OnModuleInit {
     if (maxChangeOverrideDesc) {
       this.logger.log(`[max-change-per-class] ENABLED — ${maxChangeOverrideDesc}`);
     }
+
+    // Per-class OVERPUMP threshold (fix 03/06/2026).
+    this.overpumpPerClass = parseOverpumpPerClassConfig({
+      GAINERS_OVERPUMP_THRESHOLD_PCT_ASIA: this.config.get<string>('GAINERS_OVERPUMP_THRESHOLD_PCT_ASIA'),
+      GAINERS_OVERPUMP_THRESHOLD_PCT_EU: this.config.get<string>('GAINERS_OVERPUMP_THRESHOLD_PCT_EU'),
+      GAINERS_OVERPUMP_THRESHOLD_PCT_US_LARGE: this.config.get<string>('GAINERS_OVERPUMP_THRESHOLD_PCT_US_LARGE'),
+      GAINERS_OVERPUMP_THRESHOLD_PCT_US_SMALL_MID: this.config.get<string>('GAINERS_OVERPUMP_THRESHOLD_PCT_US_SMALL_MID'),
+      GAINERS_OVERPUMP_THRESHOLD_PCT_CRYPTO: this.config.get<string>('GAINERS_OVERPUMP_THRESHOLD_PCT_CRYPTO'),
+    });
+    this.logger.log(`[overpump-per-class] ENABLED — ${describeOverpumpOverrides(this.overpumpPerClass)}`);
   }
 
   /**
@@ -3244,19 +3267,23 @@ export class TopGainersScannerService implements OnModuleInit {
         }
       }
 
-      // OVERPUMP GATE (29/05/2026 03:30 UTC, extension du TRADER overpump à scanners) :
-      // refuse l'open si le candidat a déjà pumpé > X% sur la 1m. Cause root identifiée :
-      // entry au peak local d'un move déjà mature → drawdown ≥ 2% quasi-systématique.
-      // Cas vérifié 29/05 02:48 → 03:23 : MIDDLE re-entre 393890.KQ à $15950 (+4.5% au
-      // dessus du MAIN entry $15270) — exactement quand TRADER refusait l'entrée à
-      // changePct=14.15%. Threshold default 12% : entre le "8-15% winning bucket" et
-      // le ban dead-zone 15-20%. Configurable via GAINERS_OVERPUMP_THRESHOLD_PCT.
-      const overpumpThreshold = Number(this.config.get<string>('GAINERS_OVERPUMP_THRESHOLD_PCT') ?? '12');
-      if (Number.isFinite(overpumpThreshold) && overpumpThreshold > 0) {
+      // OVERPUMP GATE (29/05/2026 03:30 UTC, extension du TRADER overpump à scanners).
+      // Per-class depuis 03/06/2026 : ancien default global 12 % tuait 85 % des
+      // rejets Asia (KOSDAQ/SHE 12-30 % movers = pépites). Defaults per-class :
+      //   asia=30, eu=15, us_large=15, us_small_mid=15, crypto=30
+      // Override via GAINERS_OVERPUMP_THRESHOLD_PCT_<CLASS>. Le global
+      // GAINERS_OVERPUMP_THRESHOLD_PCT reste un kill switch descendant (min).
+      const globalOverpump = Number(this.config.get<string>('GAINERS_OVERPUMP_THRESHOLD_PCT') ?? '0');
+      const overpumpThreshold = resolveOverpumpThreshold(
+        cand.assetClass,
+        this.overpumpPerClass,
+        Number.isFinite(globalOverpump) ? globalOverpump : 0,
+      );
+      if (overpumpThreshold > 0) {
         const changePct = cand.changePct ?? 0;
         if (changePct > overpumpThreshold) {
           this.logger.log(
-            `[top-gainers] ${cand.symbol} OVERPUMP_GATE actif (changePct=${changePct.toFixed(1)}% > ${overpumpThreshold}% — entry au peak refusée, attendre pullback)`,
+            `[top-gainers] ${cand.symbol} OVERPUMP_GATE [${cand.assetClass}] (changePct=${changePct.toFixed(1)}% > ${overpumpThreshold}% — entry au peak refusée, attendre pullback)`,
           );
           recordShadowDecision(cand, 'reject_overextended', undefined);
           continue;
