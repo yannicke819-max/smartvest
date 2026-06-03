@@ -113,6 +113,21 @@ Guide de travail pour Claude Code sur ce repo.
 ## Contexte utilisateur
 
 - **Langue de travail** : français (toujours répondre en français).
+- **❌ NE SAIT PAS UTILISER LE TERMINAL** (curl, fly CLI, bash). Tout
+  diagnostic doit passer par :
+  1. Mon sandbox (j'exécute moi-même `curl`, `npx tsx scripts/...`,
+     queries Supabase via SUPABASE_SERVICE_ROLE_KEY local .env)
+  2. L'UI web (ajouter pages admin pour surfacer les diagnostics que je
+     vérifierais sinon via curl)
+  3. Logs Fly que l'utilisateur copie/colle depuis le panel UI
+  4. **JAMAIS** demander à l'utilisateur de taper une commande shell
+  - Conséquence pratique : pour tester un endpoint admin protégé par
+    `x-admin-token`, soit l'utilisateur partage la valeur du token en
+    chat (et je curl depuis mon sandbox), soit je crée une page UI qui
+    consomme l'endpoint avec auth déjà gérée.
+  - Pour modifier un secret Fly : l'utilisateur le fait via Fly UI
+    (Edit/Add button), pas via `fly secrets set`. Lui donner la valeur
+    à coller, pas la commande shell.
 - **Localisation** : France (Europe/Paris timezone, CEST en été = UTC+2,
   CET en hiver = UTC+1). Quand on logue / compare des heures, garder en
   tête que **les marchés sont en UTC** mais l'utilisateur raisonne en
