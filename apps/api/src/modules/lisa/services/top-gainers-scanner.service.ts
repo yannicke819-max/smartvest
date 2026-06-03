@@ -3174,17 +3174,32 @@ export class TopGainersScannerService implements OnModuleInit {
         }
       }
 
-      // XETRA small-cap blacklist (28/05/2026, ADDENDUM A4) — porte la logique
-      // de live-trader-agent.service.ts au scanner. Cas QH9.XETRA 28/05 :
-      // entry $16.68, SL $16.35, prix tombé à $14.58 sans trigger polling →
-      // force-close manuel -$132. Les XETRA small/mid-cap ont des gaps de liquidité
-      // qui contournent le SL polling. Skip si notional < $3000.
-      if (cand.symbol.toUpperCase().endsWith('.XETRA') && positionNotionalUsd < 3000) {
-        this.logger.log(
-          `[top-gainers] ${cand.symbol} XETRA small-cap blacklist (notional=$${positionNotionalUsd.toFixed(0)} < $3000 — anti-gap polling failure QH9 28/05) → skip`,
-        );
-        recordShadowDecision(cand, 'reject_other', undefined);
-        continue;
+      // XETRA notional gate (28/05/2026, ADDENDUM A4, recalibré 03/06/2026).
+      //
+      // Origine : 2 incidents SNG.XETRA -$35 + QH9.XETRA -$132 sur small-caps
+      // peu liquides (entry $16.68, SL $16.35, prix tombé à $14.58 sans trigger
+      // polling → force-close manuel). Gate initial $3000 min anti-gap.
+      //
+      // Bug observé 03/06/2026 : avec capital=$525/portfolio actuel, le gate
+      // $3000 bannit 100% des XETRA y compris mid/large caps liquides
+      // (BC8.XETRA BMW $60B, EVD.XETRA CTS Eventim $5-10B, MSF.XETRA Munich Re).
+      //
+      // Fix : porte la logique PR #574 (live-trader-agent.service.ts L2240) au
+      // scanner. Bypass le gate pour les mid/large caps XETRA (marketCap >= $5B).
+      // Le gap-and-fade qui motivait le gate n'affecte que les small-caps peu
+      // liquides. Mid/large caps ont un orderbook suffisant pour absorber un
+      // notional $1000-3000. Min absolu $1000 pour éviter dust trades.
+      if (cand.symbol.toUpperCase().endsWith('.XETRA')) {
+        const mcap = Number(cand.marketCap ?? 0);
+        const isMidLargeCap = mcap >= 5_000_000_000; // $5B
+        const minNotional = isMidLargeCap ? 1000 : 3000;
+        if (positionNotionalUsd < minNotional) {
+          this.logger.log(
+            `[top-gainers] ${cand.symbol} XETRA notional gate (mcap=${(mcap / 1e9).toFixed(1)}B, ${isMidLargeCap ? 'mid/large' : 'small'}-cap min=$${minNotional}, actual=$${positionNotionalUsd.toFixed(0)}) → skip`,
+          );
+          recordShadowDecision(cand, 'reject_other', undefined);
+          continue;
+        }
       }
 
       // Dead-zone gate — analyse stats 06-27/05/2026 (n=363 positions matchées).
