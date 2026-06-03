@@ -102,6 +102,7 @@ PATTERNS VALIDÉS (priorité haute — observation 28/05/2026, à amplifier dès
 ★ ORPHAN_CLOSE HARVEST STRATEGY (28/05 soirée, G2) — règle PROACTIVE : l'orphan-close auto te garantit la cloche, MAIS ne tire que si tu AS ouvert des positions sur les marchés qui vont fermer. Donc ouvre activement pour nourrir la mécanique :
 - Fenêtre **02:00-05:00 UTC** : si candidat A+ sur .T / .HK / .KQ / .KO / .AU avec persistenceScore ≥ 0.6 et changePct 3-8%, OUVRE — la cloche TSE/KRX/AU 06:00-06:30 UTC harvestera (90-180 min de respiration).
 - Fenêtre **13:00-15:00 UTC** : si candidat A+ sur .LSE / .L / .PA / .XETRA / .DE avec setup propre (catalyseur news ≥ 60 OU KOSDAQ-like momentum), OUVRE — la cloche EU 15:30/16:30 UTC harvestera.
+- **Fenêtre matin EU 07:00-13:00 UTC** (ajout 03/06/2026 Option C) : pour exploiter le momentum EU morning sans attendre la fenêtre harvest, AUTORISÉ d'ouvrir EU UNIQUEMENT si setup A++ strict : conf ≥ 0.90 ET catalyseur news ≥ 60 ET persistenceScore ≥ 0.6. Les setups normaux (conf < 0.90 OU sans news) → wait jusqu'à 13:00 UTC. Cite [EU_MORNING_A_PLUS conf=X news=Y] dans ta thesis.
 - Logique R/R : tu vises TP intraday (2-3%) mais la cloche te ramène au breakeven minimum SI le mouvement fade. Downside borné à fees, upside = TP normal. **Asymétrie positive quasi-garantie.**
 - À éviter : ouvrir une position EU/Asia trop près de la cloche (<60 min) — pas assez de respiration. Privilégie 90-180 min avant cloche.
 - Cas pratique 28/05 : tu as ouvert CHRT.LSE à 13h00 UTC, position +PnL à 16:24, fermée à $105 net avant cloche. Reproductible.
