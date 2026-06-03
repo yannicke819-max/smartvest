@@ -169,6 +169,22 @@ C) ⚠️ RÈGLE PULLBACK — SEUIL ABSOLU 15% (RECALIBRÉE 03/06, fix audit fun
    ❌ INTERDIT : rejeter un candidat à 10-15% pour cause de "[PULLBACK_WAIT]". C'est un BUG, pas une discipline.
    ❌ INTERDIT : citer "[PULLBACK_WAIT_KTOS_LESSON]" ou "[PUMP_SCORE_SWEET_SPOT]" — lessons archivées.
    Rappel : la veine MIDDLE +$70/j gagne sur setups 3-9%, MIDDLE étendu à 15% pour collecter data.
+C-bis) ⚠️ DÉTECTION PUMP EXHAUSTION (ajout 03/06 post-mortem RPI.LSE #1 closed_choppy break-even) :
+   Distingue "pump EN COURS" vs "pump TERMINÉ flatline au top". Le code te fournit
+   les enriched fields nécessaires : closeToHighRatio, momentum.gradientPctPerMin,
+   momentum.acceleration. Règle anti-entry-top :
+   - SI \`changePct ≥ 8%\` ET \`closeToHighRatio ≥ 0.97\` (à 3% du high jour) ET
+     (\`momentum.gradientPctPerMin ≤ 0.05\` OU \`momentum.acceleration < 0\`)
+     → pump TERMINÉE, NE PAS ENTRER ce cycle. Cite "[PUMP_EXHAUSTED changePct=X.X cthr=Y gradient=Z]"
+   - SI \`changePct ≥ 8%\` MAIS \`closeToHighRatio < 0.95\` (pullback engagé depuis high)
+     OU \`momentum.acceleration > 0\` (re-acceleration) → pump VIVANTE, entrée autorisée
+   Exemple 03/06 RPI.LSE #1 : entry $882.79 @ changePct 10.27%, closeToHigh=0.987,
+   gradient ≈ 0%/min → pump TERMINÉE → aurait dû hold. Peak intra-vie +0.25% confirme.
+   Exemple 03/06 RPI.LSE #2 (15:44) : entry $875 = -0.88% vs précédent peak $883
+   → pullback engagé → entrée légitime.
+   ❌ NE PAS confondre PUMP_EXHAUSTED avec PULLBACK_WAIT (ce dernier > 15% seulement) :
+   - PUMP_EXHAUSTED = "pump déjà fini au sommet, plus d'essence" → hold + cherche un autre candidat
+   - PULLBACK_WAIT = "pump parabolique > 15%, retracement obligatoire avant entry"
 D) ANTI-REVENGE : si tu as déjà ouvert le même ticker DANS LES 2 DERNIÈRES
    HEURES (regarde state.recent_closed_trades), tu N'OUVRES PAS À NOUVEAU même
    si persistenceScore=1. Le système te bloquera de toute façon, mais ça pollue
@@ -2687,6 +2703,8 @@ Si momentum/bucket absents (Phase 2 désactivée ou fetch échoué), ignore ces 
     'OBJ_AGGRESSIVE', 'OBJ_DEFENSIVE_NO_OPEN', 'OBJ_NORMAL', 'OBJ_EN_AVANCE',
     'OBJ_CAUTIOUS_TRY', 'OBJ_CAUTIOUS_NO_VALID', 'OBJ_LATE_NO_OPEN',
     'OVERRIDE_SUGGESTED_POSTURE', 'EOS_WAIT', 'END_OF_SESSION_WAIT',
+    // 03/06/2026 — règle C-bis pump exhaustion detection (post-mortem RPI.LSE #1)
+    'PUMP_EXHAUSTED',
   ]);
 
   /**
