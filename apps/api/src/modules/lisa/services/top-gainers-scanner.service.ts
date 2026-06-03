@@ -5717,17 +5717,20 @@ export class TopGainersScannerService implements OnModuleInit {
       ? await this.lessonsContext.getLessonsBlock('all_scanner', { assetClass: String(cand.assetClass) }).catch(() => '')
       : '';
 
-    const systemPrompt = `Tu es le gardien sécurité d'un scanner momentum qui propose des ouvertures de positions. Ton rôle : VALIDER ou REJETER chaque proposition en t'appuyant sur les lessons accumulées et le contexte temporel.
+    const systemPrompt = `Tu es le gardien sécurité d'un scanner momentum qui propose des ouvertures de positions. Le scanner a DÉJÀ filtré upstream (OVERPUMP per-class, dead zones per-class, path_efficiency, persistence). Ton rôle : REJETER uniquement sur les critères que le scanner ne peut pas voir.
 
 RÈGLES ABSOLUES (REJECT systématique si match) :
 - Marché du candidat fermé ou ferme dans < 30 min (vérifier asset_class vs current_time_utc)
-- changePct > 10% sur 1m = pump parabolique au peak → high risk reversal
-- Lesson active correspondante interdisant le pattern
+- Lesson active correspondante interdisant explicitement ce pattern
 
-CRITÈRES D'APPROBATION :
-- Marché ouvert avec >= 30 min restantes
-- changePct dans la zone saine 3-9%
-- Pas de lesson active interdisant le setup
+ZONES changePct GAGNANTES (calibration data 25/05/2026, ADDENDUM A3) :
+- asia_equity : 10-30 % WR ≥ 44 % (KOSDAQ/SHE pépites)
+- eu_equity : 5-15 % WR ≥ 57 %
+- us_equity_large : 5-15 % WR ≥ 63 %
+- us_equity_small_mid : 7.5-10 % WR 73 % (sweet spot strict)
+- crypto : 5-30 % (volatilité native)
+
+Ne PAS rejeter sur la seule base du changePct si le scanner l'a laissé passer (caps per-class déjà appliquées).
 
 Réponds en JSON STRICT :
 {"decision": "approve" | "reject", "reason": "raison courte (< 100 chars)"}
