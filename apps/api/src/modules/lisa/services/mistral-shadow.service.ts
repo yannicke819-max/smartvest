@@ -46,19 +46,31 @@ const MISTRAL_API_URL = 'https://api.mistral.ai/v1/chat/completions';
 const MODEL_MEDIUM_LATEST = 'mistral-medium-latest';
 
 /**
- * Table de prix officielle Mistral (USD per MTok, verified 31/05/2026 sur
- * mistral.ai/pricing). Lookup par préfixe model name. Fallback Medium si
- * model name inconnu (defensive : on prefere sur-estimer le cout que crash).
+ * Table de prix officielle Mistral (USD per MTok, **recalibré 03/06/2026**
+ * sur mistral.ai/pricing). Précédentes valeurs sur-estimaient × 3.75 pour
+ * mistral-medium-2505 (1.50/7.50 vs réalité 0.40/2.00) — UI affichait
+ * $2.21 vs facture réelle ≈ $1.38.
+ *
+ * Champ `cached` : prix réduit pour tokens en cache (Mistral applique 25%
+ * du fresh sur prompt_tokens_details.cached_tokens). Si non spécifié,
+ * fallback à `input` (= pas de remise = sur-estimation safe).
+ *
+ * Lookup par préfixe model name. Fallback Medium si inconnu.
  */
-type MistralPricing = { input: number; output: number };
+type MistralPricing = { input: number; output: number; cached?: number };
 const MISTRAL_PRICING: Record<string, MistralPricing> = {
-  'mistral-large': { input: 0.50, output: 1.50 },
-  'mistral-medium': { input: 1.50, output: 7.50 },
-  'mistral-small': { input: 0.10, output: 0.30 },
-  'magistral-medium': { input: 2.00, output: 5.00 },
-  'magistral-small': { input: 0.50, output: 1.50 },
-  'ministral-3b': { input: 0.10, output: 0.10 },
-  'ministral-8b': { input: 0.15, output: 0.15 },
+  // Mistral Medium 3.5 (mistral-medium-2505) — primary model SmartVest
+  'mistral-medium': { input: 0.40, output: 2.00, cached: 0.10 },
+  // Mistral Large 2.1 / Large 3 (mistral-large-2411 / mistral-large-2512)
+  'mistral-large': { input: 2.00, output: 6.00, cached: 0.50 },
+  // Mistral Small 3 (mistral-small-2503)
+  'mistral-small': { input: 0.10, output: 0.30, cached: 0.025 },
+  // Magistral series (reasoning models)
+  'magistral-medium': { input: 2.00, output: 5.00, cached: 0.50 },
+  'magistral-small': { input: 0.50, output: 1.50, cached: 0.125 },
+  // Ministral edge series
+  'ministral-3b': { input: 0.04, output: 0.04, cached: 0.01 },
+  'ministral-8b': { input: 0.10, output: 0.10, cached: 0.025 },
 };
 
 function lookupPricing(model: string): MistralPricing {
@@ -227,24 +239,32 @@ export class MistralShadowService {
 
       const data = (await res.json()) as {
         choices?: Array<{ message?: { content?: string } }>;
-        usage?: { prompt_tokens?: number; completion_tokens?: number };
+        usage?: {
+          prompt_tokens?: number;
+          completion_tokens?: number;
+          // Mistral renvoie cached_tokens dans prompt_tokens_details (depuis 02/2026)
+          prompt_tokens_details?: { cached_tokens?: number };
+        };
       };
 
       result.content = data.choices?.[0]?.message?.content ?? null;
       result.inputTokens = data.usage?.prompt_tokens ?? 0;
       result.outputTokens = data.usage?.completion_tokens ?? 0;
+      // Cached tokens (sous-ensemble de inputTokens, facturé moins cher)
+      const cachedTokens = data.usage?.prompt_tokens_details?.cached_tokens ?? 0;
+      const freshInputTokens = Math.max(0, result.inputTokens - cachedTokens);
+
       // Pricing model-aware : lookup par prefixe pour matcher la facturation
-      // Mistral reelle (Medium != Large != Magistral != Ministral).
-      // En free tier (default), coût réel = 0 — pas de facturation Mistral
-      // sur la "Experiment plan" (1B tokens/mois). On garde les token counts
-      // pour les stats d'usage mais on zéro-out le costUsd pour ne pas polluer
-      // le widget /lisa/llm-cost-live avec du théorique payant.
+      // Mistral reelle. Fix 03/06/2026 : applique le prix cached réduit
+      // (~25% du fresh) sur cached_tokens pour matcher l'invoice Mistral.
       if (this.freeTier) {
         result.costUsd = 0;
       } else {
         const pricing = lookupPricing(this.model);
+        const cachedPrice = pricing.cached ?? pricing.input; // fallback safe
         result.costUsd =
-          (result.inputTokens / 1_000_000) * pricing.input +
+          (freshInputTokens / 1_000_000) * pricing.input +
+          (cachedTokens / 1_000_000) * cachedPrice +
           (result.outputTokens / 1_000_000) * pricing.output;
       }
 

@@ -25,8 +25,11 @@ import { ConfigService } from '@nestjs/config';
 
 const MISTRAL_API_URL = 'https://api.mistral.ai/v1/chat/completions';
 const MODEL_LARGE_LATEST = 'mistral-large-latest';
-const PRICE_INPUT_PER_M = 0.50;
-const PRICE_OUTPUT_PER_M = 1.50;
+// Recalibré 03/06/2026 (mistral.ai/pricing) — mistral-large-2.x facturé
+// $2.00/$6.00 par MTok (anciennes valeurs 0.50/1.50 sous-estimaient × 4).
+const PRICE_INPUT_PER_M = 2.00;
+const PRICE_OUTPUT_PER_M = 6.00;
+const PRICE_CACHED_PER_M = 0.50; // ~25% du fresh input
 
 export interface MistralLargeShadowResult {
   content: string | null;
@@ -115,19 +118,26 @@ export class MistralLargeShadowService {
 
       const data = (await res.json()) as {
         choices?: Array<{ message?: { content?: string } }>;
-        usage?: { prompt_tokens?: number; completion_tokens?: number };
+        usage?: {
+          prompt_tokens?: number;
+          completion_tokens?: number;
+          prompt_tokens_details?: { cached_tokens?: number };
+        };
       };
 
       result.content = data.choices?.[0]?.message?.content ?? null;
       result.inputTokens = data.usage?.prompt_tokens ?? 0;
       result.outputTokens = data.usage?.completion_tokens ?? 0;
+      const cachedTokens = data.usage?.prompt_tokens_details?.cached_tokens ?? 0;
+      const freshInputTokens = Math.max(0, result.inputTokens - cachedTokens);
       // En free tier (default), coût réel = 0 (Experiment plan Mistral 1B tok/mois).
       // Cf. mistral-shadow.service.ts pour la rationale et MISTRAL_FREE_TIER env.
       if (this.freeTier) {
         result.costUsd = 0;
       } else {
         result.costUsd =
-          (result.inputTokens / 1_000_000) * PRICE_INPUT_PER_M +
+          (freshInputTokens / 1_000_000) * PRICE_INPUT_PER_M +
+          (cachedTokens / 1_000_000) * PRICE_CACHED_PER_M +
           (result.outputTokens / 1_000_000) * PRICE_OUTPUT_PER_M;
       }
 
