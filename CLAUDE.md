@@ -739,6 +739,68 @@ restent à mesurer via cross-check `lisa_decision_log`.
 
 ---
 
+## RÈGLE OPÉRATIONNELLE — CALIBRATION SEUILS & BLACKLIST (audit 03/06/2026)
+
+Audit complet du funnel scanner gainers (script `scripts/backtest-overextended-by-band.ts`
++ analyse frontière accept/reject sur `gainers_user_shadow_signals`). Décisions :
+
+### Seuils overextended par classe (gate maxChangeLong, change_pct 1min)
+
+Backtest band-by-band (TP+3/SL-1.5, 60min, marché réel) → seuils data-optimaux :
+
+| Classe | Seuil | Bandes gagnantes (data) | Bandes rejetées |
+|---|---|---|---|
+| us_small_mid | **10** | 3-8% (+0.42%), 8-10% (+0.97%) | 10-15% breakeven, 15-25% perdant |
+| us_large | 15 | (large caps moins volatiles) | — |
+| eu | 15 | — | — |
+| asia | **30** | 15-25% (+0.54%), 25-100% (+0.93%) | — laisser la bande LARGE |
+| crypto | 30 | non-validé (Binance géo-bloqué backtest) | — |
+
+**Fix code 03/06 (`max-change-per-class.helper.ts`)** : `DEFAULT_MAX_CHANGE_PER_CLASS`
+n'est plus `null` partout (asia 30, eu 15, us_large 15, us_small_mid 10, crypto 30).
+Avant, les classes sans secret Fly tombaient sur le **fallback global**
+`GAINERS_MAX_CHANGE_PCT_LONG` qui les écrasait silencieusement — asia capé à ~12
+au lieu de 30 = **edge asia détruit** (bug constaté). Un secret per-class
+`GAINERS_MAX_CHANGE_PCT_LONG_<CLASS>` prime toujours sur le défaut.
+
+⚠️ **2e gate** : si asia reste capé après deploy, c'est `GAINERS_OVERPUMP_THRESHOLD_PCT`
+(global descending-min sur gate #2) qui mord → setter `GAINERS_OVERPUMP_THRESHOLD_PCT_ASIA=30`.
+Vérifier via re-run de l'analyse frontière à l'ouverture Asia (00:00 UTC).
+
+### Venue blacklist STALE_GUARD (`GAINERS_VENUE_BLACKLIST`)
+
+Audit 48 échecs `position_open_failed` STALE_GUARD/24h (source `stale_eodhd`=42) :
+
+| Venue | Échecs | Verdict |
+|---|---|---|
+| **WAR** (Varsovie) | 23 (48%) | 🔴 **0 trade jamais ouvert** → blacklist (EODHD pas de live Varsovie) |
+| LSE | 7 (GABI uniquement) | ⚠️ NE PAS blacklister — EZJ/RPI gagnants sont sur LSE |
+| KQ (KOSDAQ) | 5 | ⚠️ NE PAS blacklister — veine prouvée, juste thin stocks |
+| AU/SHE/TO | 2-3 chacun | faible couverture EODHD — surveiller, optionnel |
+
+**Recommandation** : `GAINERS_VENUE_BLACKLIST=KO,WAR` (garder KO existant + ajouter WAR).
+NE JAMAIS blacklister LSE/KQ (winners). Pas de blacklist par symbole (venue only) —
+GABI.LSE reste filtré safe par STALE_GUARD (juste du bruit log).
+
+### Crypto live price = Binance WS (PAS EODHD)
+
+`fetchLivePriceInner` lit `realtimePrice.getCached()` = cache WebSocket Binance.
+NEARUSDT tombé en `stale_eodhd` = Binance WS n'a pas fourni NEAR → fallback EODHD.
+**Risque majeur** : si Fly cdg (Paris) est géo-bloqué par Binance (HTTP 451, cas
+des IP datacenter — vérifié sur sandbox), TOUT le crypto tourne sur fallback EODHD
+stale → crypto effectivement cassé. Binance market data = endpoints PUBLICS (pas
+besoin de clé API) ; le problème est la JOIGNABILITÉ réseau depuis Fly, pas l'auth.
+Diagnostic : grep Fly logs `[binance-ws]` (connecté ? ou 451 ?). Si bloqué →
+soit proxy/region, soit désactiver crypto (`gainers_universe_crypto=false`) jusqu'à fix.
+
+### Pattern horaire US (confirmé 03/06)
+
+Creux post-lunch US **17-18h UTC** (13-14h ET) = chop/léthargie → déjà couvert par
+`GAINERS_HOUR_BLACKLIST_US_UTC=17,18`. Le marché US **repart ~19h UTC**. Alignement
+correct : le système s'abstient 17-18 et reprend 19h automatiquement.
+
+---
+
 ## RÈGLE OPÉRATIONNELLE — INVENTAIRE FLY SECRETS (état prod 25/05/2026)
 
 Source de vérité = `fly secrets list -a smartvest`. Cette section documente la
