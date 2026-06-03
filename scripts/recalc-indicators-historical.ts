@@ -238,7 +238,10 @@ interface TradeRecord {
 
 function classifyOutcome(pnlPct: number | null, exitReason: string | null): 'WINNER' | 'LOSER' | 'NEUTRAL' {
   if (pnlPct === null) return 'NEUTRAL';
-  if (pnlPct >= 0.5) return 'WINNER';
+  // Constat audit 03/06 : 0 TP (>=2%) sur 109 trades, masse neutrale, 30 vraies
+  // pertes. Pour avoir une séparation winner/loser exploitable, on baisse le
+  // seuil WINNER à > 0 (any positive close) et LOSER à <= -0.5%.
+  if (pnlPct > 0) return 'WINNER';
   if (pnlPct <= -0.5) return 'LOSER';
   return 'NEUTRAL';
 }
