@@ -47,6 +47,7 @@ import {
 import { SupabaseService } from '../../supabase/supabase.service';
 import { PerformanceService } from '../../performance/performance.service';
 import { DecisionLogService } from './decision-log.service';
+import { CloseDecisionCaptureService } from './close-decision-capture.service';
 import { LisaService } from './lisa.service';
 import { EodhdTechnicalService } from './eodhd-technical.service';
 import { ExchangeHoursService } from './exchange-hours.service';
@@ -224,6 +225,9 @@ export class MechanicalTradingService {
     @Optional() private readonly llmAccuracy?: LlmAccuracyService,
     // PR #545 — LLM gate sur close mécaniques (anti closed_choppy prématuré)
     @Optional() private readonly llmRouter?: ScannerLlmRouterService,
+    // Apprentissage — capture les closes MÉCANIQUES (choppy/stop/TP) avec
+    // contexte + counterfactuel, pour comparer chiffré vs closes user. @Optional.
+    @Optional() private readonly closeDecisionCapture?: CloseDecisionCaptureService,
   ) {}
 
   /**
@@ -3203,6 +3207,37 @@ Réponds JSON STRICT : {"decision": "approve" | "reject", "reason": "raison < 10
       .catch((e) => this.logger.error(
         `[DAILY_HARVEST_HOOK] failed for ${pos.symbol} pnl=${realizedPnl.toFixed(2)}: ${String(e).slice(0, 200)}`,
       ));
+
+    // Apprentissage — capture le close MÉCANIQUE avec contexte + counterfactuel,
+    // pour comparer chiffré vs les closes user (idée user 03/06). Fire-and-forget.
+    // Map reason + exitReason → closer_type pour distinguer choppy/stop/TP/orphan.
+    if (this.closeDecisionCapture) {
+      const exitReasonStr = String(exitReasonOverride ?? reason).toUpperCase();
+      let closerType: 'closed_choppy' | 'closed_stop' | 'closed_target' | 'orphan_close' | 'other';
+      if (reason === 'closed_stop') closerType = 'closed_stop';
+      else if (reason === 'closed_target') closerType = 'closed_target';
+      else if (exitReasonStr.includes('CHOPPY')) closerType = 'closed_choppy';
+      else if (exitReasonStr.includes('ORPHAN') || exitReasonStr.includes('PRE-CLOCHE') || exitReasonStr.includes('PRE_CLOCHE')) closerType = 'orphan_close';
+      else closerType = 'other';
+      const u = updated[0] as Record<string, unknown>;
+      const entryTsStr = (u.entry_timestamp as string) ?? now;
+      const ageMin = Math.max(0, (new Date(now).getTime() - new Date(entryTsStr).getTime()) / 60_000);
+      this.closeDecisionCapture.captureClose({
+        positionId,
+        portfolioId: pos.portfolio_id as string,
+        symbol: pos.symbol as string,
+        direction: pos.direction as string,
+        assetClass: (pos.asset_class as string) ?? null,
+        closerType,
+        entryPrice: entryPrice.toNumber(),
+        exitPrice: exitPrice.toNumber(),
+        pnlPct,
+        pnlUsd: realizedPnl.toNumber(),
+        ageMinutes: ageMin,
+        takeProfitPrice: u.take_profit_price != null ? Number(u.take_profit_price) : null,
+        stopLossPrice: u.stop_loss_price != null ? Number(u.stop_loss_price) : null,
+      });
+    }
 
     // BOT LAB Phase 4 — boucle feedback patterns adoptés.
     // Pour chaque pattern adopté actif sur ce portfolio, check si ce trade
