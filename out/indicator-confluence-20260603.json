@@ -1,0 +1,71 @@
+{
+  "generated_at": "2026-06-03T14:34:51.427Z",
+  "methodology": {
+    "sample": 5000,
+    "horizon_min": 60,
+    "tp_pct": 2,
+    "sl_pct": 1.5,
+    "source": "top_gainers_log + confluence MFI/ROC/Volume"
+  },
+  "processed": 1515,
+  "baseline": {
+    "WIN": 415,
+    "LOSE": 1071,
+    "NEUTRAL": 29
+  },
+  "baseline_wr": 0.27927321668909827,
+  "filtered_pass": {
+    "WIN": 401,
+    "LOSE": 1050,
+    "NEUTRAL": 29
+  },
+  "filtered_pass_wr": 0.27636113025499653,
+  "filtered_block": {
+    "WIN": 14,
+    "LOSE": 21,
+    "NEUTRAL": 0
+  },
+  "filtered_block_wr": 0.4,
+  "by_signal_count": {
+    "0": {
+      "WIN": 285,
+      "LOSE": 767,
+      "NEUTRAL": 21
+    },
+    "1": {
+      "WIN": 116,
+      "LOSE": 283,
+      "NEUTRAL": 8
+    },
+    "2": {
+      "WIN": 13,
+      "LOSE": 20,
+      "NEUTRAL": 0
+    },
+    "3": {
+      "WIN": 1,
+      "LOSE": 1,
+      "NEUTRAL": 0
+    }
+  },
+  "by_signal_individual": {
+    "mfi_div": {
+      "triggered": 14,
+      "win_rate": 0.2857142857142857,
+      "n_win": 4,
+      "n_total": 14
+    },
+    "roc_flat": {
+      "triggered": 127,
+      "win_rate": 0.36220472440944884,
+      "n_win": 46,
+      "n_total": 127
+    },
+    "vol_fade": {
+      "triggered": 338,
+      "win_rate": 0.28106508875739644,
+      "n_win": 95,
+      "n_total": 338
+    }
+  }
+}
