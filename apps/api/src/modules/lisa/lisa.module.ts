@@ -122,6 +122,8 @@ import {
 } from './quick-wins';
 // Phase 5 N1 PR-2 — matrice TP/SL par asset_class
 import { AssetClassTpSlConfigService } from './services/asset-class-tpsl-config.service';
+// 03/06/2026 — visibility complète des secrets Fly au boot
+import { ConfigDumpService } from './services/config-dump.service';
 // PR #338 — UI Phase 5 N1+N2
 import { AssetClassTpslService } from './services/asset-class-tpsl.service';
 import { QuickWinsStatsService } from './services/quick-wins-stats.service';
@@ -327,6 +329,8 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     QuickWinsPipelineService,
     // Phase 5 N1 PR-2 — matrice TP/SL DB-driven (read-only, cache 60s, fail-open)
     AssetClassTpSlConfigService,
+    // Visibility secrets Fly au boot (no runtime cost)
+    ConfigDumpService,
     // PR #338 — UI Phase 5 N1+N2 (lecture/écriture matrice TP/SL, agrégation QW stats, état de risque)
     AssetClassTpslService,
     QuickWinsStatsService,
