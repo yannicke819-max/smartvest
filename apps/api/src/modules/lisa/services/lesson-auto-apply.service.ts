@@ -68,6 +68,21 @@ const LISA_SESSION_CONFIG_AUTO_APPLY_COLUMNS: ReadonlySet<string> = new Set<stri
   'position_pct',
   'sl_pct',
   'tp_pct',
+  // Fix B 03/06/2026 (VRAIE correction) — les entrées "Fix A" ci-dessus
+  // OUBLIAIENT le préfixe `gainers_`. Or la colonne DB réelle ET la cible des
+  // lessons ConfigSanity sont `gainers_min_change_pct_us_smallmid` (avec
+  // préfixe). col.replace('lisa_session_configs.','') = `gainers_...` → la
+  // whitelist cherchait `min_change_pct_...` (sans préfixe) → NO MATCH →
+  // no_applicable_target → manual_review éternel. CE bug est revenu 3× car
+  // chaque "fix" rajoutait les mauvais noms. Voici les VRAIS noms de colonnes :
+  'gainers_min_change_pct_us_smallmid',
+  'gainers_min_change_pct_us_large',
+  'gainers_min_change_pct_eu',
+  'gainers_min_change_pct_eu_equity',
+  'gainers_min_change_pct_asia',
+  'gainers_min_change_pct_crypto_major',
+  'gainers_min_change_pct_crypto_alt',
+  'gainers_max_open_positions',
 ]);
 
 /**
@@ -101,6 +116,15 @@ const SAFE_VALUE_BOUNDS: Record<string, [number, number]> = {
   position_pct: [1, 30],
   sl_pct: [0.5, 5],
   tp_pct: [0.5, 10],
+  // Fix B 03/06 — VRAIS noms de colonnes (avec préfixe gainers_)
+  gainers_min_change_pct_us_smallmid: [0.5, 15],
+  gainers_min_change_pct_us_large: [0.5, 15],
+  gainers_min_change_pct_eu: [0.5, 15],
+  gainers_min_change_pct_eu_equity: [0.5, 15],
+  gainers_min_change_pct_asia: [0.5, 15],
+  gainers_min_change_pct_crypto_major: [0.5, 15],
+  gainers_min_change_pct_crypto_alt: [0.5, 15],
+  gainers_max_open_positions: [1, 20],
 };
 
 function isValueWithinBounds(column: string, value: unknown): boolean {
