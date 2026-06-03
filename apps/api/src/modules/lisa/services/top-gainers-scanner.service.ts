@@ -5161,6 +5161,12 @@ export class TopGainersScannerService implements OnModuleInit {
               if (envVal === 'blocking') cfg[ruleName].mode = 'blocking';
             }
 
+            // Fix 03/06/2026 — wire quoteAgeMs pour débloquer microstructure rule
+            // (sinon detail "age=n/ams" toujours, jamais triggered). VIX/HY_OAS
+            // restent TODO (besoin MarketSnapshot accessible — fetch sortie loop).
+            const quoteAgeMs = quote?.asOf
+              ? Math.max(0, Date.now() - new Date(quote.asOf).getTime())
+              : undefined;
             const skepticInput: SkepticInput = {
               candidate: {
                 symbol: cand.symbol,
@@ -5168,9 +5174,11 @@ export class TopGainersScannerService implements OnModuleInit {
                 close: cand.close,
                 notionalUsd: directionalNotional,
                 avgVol50d: cand.avgVol50d,
+                ...(quoteAgeMs !== undefined ? { quoteAgeMs } : {}),
               },
-              // v1 wiring — macro features défèrent (besoin MarketSnapshot service
-              // injection ; pour l'instant, regime_macro fera 'info' partout)
+              // TODO regime_macro wiring : nécessite fetch MarketSnapshot
+              // (VIX, HY_OAS, US10Y, DXY) en début de cycle scanner. Cache 30s.
+              // Skip pour l'instant — rule retourne 'info' partout (no harm).
               macro: {},
               openPositions,
               portfolioCapitalUsd: effectiveCapital,
