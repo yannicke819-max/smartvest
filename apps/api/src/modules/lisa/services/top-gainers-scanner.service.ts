@@ -5177,10 +5177,13 @@ export class TopGainersScannerService implements OnModuleInit {
         // décideur (Mistral Medium primary via callWithPro + lessons block).
         // Si LLM rejette → skip + log. Si approuve → procéder.
         //
-        // Backward compat : env GAINERS_REQUIRES_LLM_APPROVAL=false désactive le gate.
-        // Default = true (sécurité par défaut, conformément au design CLAUDE.md
-        // mode délégation MANUAL/HYBRID : LLM seul peut valider une ouverture).
-        const llmGateEnabled = (this.config.get<string>('GAINERS_REQUIRES_LLM_APPROVAL') ?? 'true').toLowerCase() === 'true';
+        // Default DÉSACTIVÉ 03/06/2026 — Mistral ignorait les instructions du
+        // prompt et rejettait sur changePct > 10% même après prompt explicite
+        // "ne PAS rejeter sur changePct". L'OVERPUMP per-class déployé ce matin
+        // (asia=30, eu=15, us=15, crypto=30) couvre déjà la protection
+        // anti-pump. Le LLM gate sera réécrit ou switché vers Gemini Pro plus
+        // tard. Réactivable via GAINERS_REQUIRES_LLM_APPROVAL=true.
+        const llmGateEnabled = (this.config.get<string>('GAINERS_REQUIRES_LLM_APPROVAL') ?? 'false').toLowerCase() === 'true';
         if (llmGateEnabled && this.llmRouter.isEnabled()) {
           const llmDecision = await this.validateCandidateWithLlm(cand, item.direction, portfolioId, directionalNotional)
             .catch((e) => {
