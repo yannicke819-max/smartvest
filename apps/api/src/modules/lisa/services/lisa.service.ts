@@ -44,6 +44,7 @@ import { EodhdTechnicalService } from './eodhd-technical.service';
 import { EodhdIntradayService } from './eodhd-intraday.service';
 import { IntradayProviderRouter } from './intraday-provider-router.service';
 import { MultiTimeframePersistenceService } from './multi-tf-persistence.service';
+import { CloseDecisionCaptureService } from './close-decision-capture.service';
 import { BinanceMarketService } from './binance-market.service';
 import { EodhdMacroService } from './eodhd-macro.service';
 import { EodhdScreenerService } from './eodhd-screener.service';
@@ -154,6 +155,9 @@ export class LisaService {
     // ouvertes via le pipeline LLM (en plus du scanner). @Optional pour ne pas casser
     // les tests existants qui instancient LisaService avec un sous-ensemble de deps.
     @Optional() private readonly mtfPersistence?: MultiTimeframePersistenceService,
+    // Apprentissage décisions fermeture (capture close manuel + counterfactuel).
+    // @Optional : ne casse pas les tests qui instancient LisaService partiel.
+    @Optional() private readonly closeDecisionCapture?: CloseDecisionCaptureService,
   ) {
     const anthropicKey = this.config.get<string>('ANTHROPIC_API_KEY');
     const geminiKey = this.config.get<string>('GEMINI_API_KEY');
@@ -3288,6 +3292,27 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       payload: { positionId, symbol: row.symbol, closePrice: closePx, source: quote?.source, corrupt },
       triggeredBy: 'user_manual',
     }).catch(() => null);
+
+    // Apprentissage — capture le contexte de CETTE décision de fermeture user
+    // (fire-and-forget). Le cron counterfactuel labellisera GOOD/EARLY/OK +60min.
+    if (this.closeDecisionCapture) {
+      const ageMin = (Date.now() - new Date(String((result as { entryTimestamp?: string }).entryTimestamp ?? Date.now())).getTime()) / 60_000;
+      this.closeDecisionCapture.captureClose({
+        positionId,
+        portfolioId,
+        symbol: String(row.symbol),
+        direction: String((result as { direction?: string }).direction ?? 'long'),
+        assetClass: (result as { assetClass?: string | null }).assetClass ?? null,
+        closerType: 'user_manual',
+        entryPrice: Number(row.entry_price),
+        exitPrice: Number(closePx),
+        pnlPct: result.realizedPnlPct ?? null,
+        pnlUsd: result.realizedPnlUsd != null ? Number(result.realizedPnlUsd) : null,
+        ageMinutes: Number.isFinite(ageMin) ? ageMin : 0,
+        takeProfitPrice: (result as { takeProfitPrice?: number | null }).takeProfitPrice ?? null,
+        stopLossPrice: (result as { stopLossPrice?: number | null }).stopLossPrice ?? null,
+      });
+    }
 
     return {
       ok: true,
