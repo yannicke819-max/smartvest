@@ -99,13 +99,12 @@ PATTERNS VALIDÉS (priorité haute — observation 28/05/2026, à amplifier dès
   Marchés concernés et horaires de cloche : LSE 16:30 UTC, XETRA/PA 15:30 UTC,
   TSE 06:00 UTC, KRX/KQ 06:30 UTC, HK 08:00 UTC, AU 06:00 UTC, NYSE 21:00 UTC.
 
-★ ORPHAN_CLOSE HARVEST STRATEGY (28/05 soirée, G2) — règle PROACTIVE : l'orphan-close auto te garantit la cloche, MAIS ne tire que si tu AS ouvert des positions sur les marchés qui vont fermer. Donc ouvre activement pour nourrir la mécanique :
-- Fenêtre **02:00-05:00 UTC** : si candidat A+ sur .T / .HK / .KQ / .KO / .AU avec persistenceScore ≥ 0.6 et changePct 3-8%, OUVRE — la cloche TSE/KRX/AU 06:00-06:30 UTC harvestera (90-180 min de respiration).
-- Fenêtre **13:00-15:00 UTC** : si candidat A+ sur .LSE / .L / .PA / .XETRA / .DE avec setup propre (catalyseur news ≥ 60 OU KOSDAQ-like momentum), OUVRE — la cloche EU 15:30/16:30 UTC harvestera.
-- **Fenêtre matin EU 07:00-13:00 UTC** (ajout 03/06/2026 Option C) : pour exploiter le momentum EU morning sans attendre la fenêtre harvest, AUTORISÉ d'ouvrir EU UNIQUEMENT si setup A++ strict : conf ≥ 0.90 ET catalyseur news ≥ 60 ET persistenceScore ≥ 0.6. Les setups normaux (conf < 0.90 OU sans news) → wait jusqu'à 13:00 UTC. Cite [EU_MORNING_A_PLUS conf=X news=Y] dans ta thesis.
-- Logique R/R : tu vises TP intraday (2-3%) mais la cloche te ramène au breakeven minimum SI le mouvement fade. Downside borné à fees, upside = TP normal. **Asymétrie positive quasi-garantie.**
-- À éviter : ouvrir une position EU/Asia trop près de la cloche (<60 min) — pas assez de respiration. Privilégie 90-180 min avant cloche.
-- Cas pratique 28/05 : tu as ouvert CHRT.LSE à 13h00 UTC, position +PnL à 16:24, fermée à $105 net avant cloche. Reproductible.
+★ STRATÉGIE FULL-DAY (03/06/2026 décision utilisateur) — TRADE PENDANT TOUTE LA SESSION DE MARCHÉ, AUCUNE RESTRICTION HORAIRE :
+- Si un candidat A+ apparaît sur un marché OUVERT (peu importe l'heure UTC), OUVRE selon les critères qualité (conf, persistenceScore, catalyseur).
+- Pas de "wait until window X-Y" — chaque setup A+ pendant les heures de marché est tradable.
+- **SEULE règle horaire conservée (safety)** : ne PAS ouvrir une position si le marché ferme dans **< 60 min** (pas assez de respiration pour atteindre TP, risque orphan_close prématuré).
+- L'orphan_close pré-cloche (gainers_force_close_offset_min) reste actif pour harvester les positions ouvertes plus tôt.
+- Cas pratique 28/05 : CHRT.LSE ouvert à 13:00 UTC → +$105 net à 16:24 (avant cloche). Reproductible — mais désormais on peut aussi ouvrir à 08:00 UTC si setup A+ avec ~8h de respiration jusqu'à cloche LSE 16:30 UTC.
 
 ANTI-PATTERNS À ÉVITER (priorité haute — observation 28/05/2026) :
 
