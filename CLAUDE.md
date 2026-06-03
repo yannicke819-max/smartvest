@@ -662,8 +662,19 @@ Décisions prises soir 25/05 après backtest funnel sur shadow signals Thu+Fri
 
 ### Persistence multi-TF — DÉSACTIVÉ pour mode `gainers`
 
-`lisa_session_configs.gainers_min_persistence_score = 0` (UPDATE prod appliqué
-sur portfolio `58439d86`).
+`lisa_session_configs.gainers_min_persistence_score = 0` appliqué sur les 4
+portfolios actifs : `a0000001-a0000003` (shadows) ET `b0000001` (TRADER,
+ex-`58439d86` migré 30/05).
+
+⚠️ **BUG LATENT — migration portfolio IDs** : le 30/05/2026 le portfolio
+principal `58439d86-3f20-4a60-82a4-307f3f252bc2` a été migré vers
+`b0000001-0000-0000-0000-000000000001` (TRADER). **Toutes les calibrations
+DB-side appliquées à l'ancien ID doivent être ré-appliquées au nouveau**.
+Vérifié 03/06/2026 — l'oubli a coûté 8h+ de pipeline starved (TRADER avait
+encore persist=0.67 + pathEff=0.7 par défaut DB, alors que les shadows
+étaient à 0). Quand on documente une UPDATE prod `lisa_session_configs`
+appliquée à un portfolio, **toujours documenter le portfolio_id complet
+courant**, pas juste un prefix qui peut devenir obsolète après migration.
 
 **Rationale** : le concept de persistence multi-TF (1m/5m/10m/15m/30m/1h) est
 solide pour swing trades 3-7j mais **inadapté au scalp 60min top-gainers**. Par
