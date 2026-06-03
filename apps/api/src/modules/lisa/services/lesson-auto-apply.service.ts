@@ -25,6 +25,7 @@ import { SchedulerRegistry } from '@nestjs/schedule';
 import { CronJob } from 'cron';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../supabase/supabase.service';
+import { DecisionLogService } from './decision-log.service';
 
 const GAINERS_PORTFOLIO_IDS = [
   'b0000001-0000-0000-0000-000000000001', // TRADER (ex-MAIN 58439d86, migré 30/05/2026)
@@ -135,6 +136,7 @@ export class LessonAutoApplyService {
     private readonly config: ConfigService,
     private readonly supabase: SupabaseService,
     private readonly schedulerRegistry: SchedulerRegistry,
+    private readonly decisionLog: DecisionLogService,
   ) {}
 
   onModuleInit(): void {
@@ -456,20 +458,22 @@ export class LessonAutoApplyService {
     kind: 'lesson_auto_applied' | 'lesson_needs_manual_review',
     extra: Record<string, unknown>,
   ): Promise<void> {
-    // Insert sur lisa_decision_log : triggered_by est NOT NULL + CHECK constraint
-    // (cf. daily-catalyst-brief.service:160-162). Valeur compatible : 'autopilot_cron'.
-    // summary requis aussi (NOT NULL probable). Sans ces champs l'insert silently fail.
-    const { error } = await this.supabase.getClient().from('lisa_decision_log').insert({
-      portfolio_id: GAINERS_PORTFOLIO_IDS[0],
-      kind,
-      triggered_by: 'autopilot_cron',
-      summary: `[lesson-auto-apply] ${kind} lesson=${lesson.id.slice(0, 8)} kind=${lesson.lesson_kind}`,
-      rationale: `[lesson-auto-apply] ${lesson.lesson_text.slice(0, 200)} (lesson_id=${lesson.id.slice(0, 8)} ` +
-        `confidence=${lesson.confidence} sample=${lesson.sample_size})`,
-      payload: { lesson_id: lesson.id, lesson_kind: lesson.lesson_kind, ...extra },
-    });
-    if (error) {
-      this.logger.warn(`[lesson-auto-apply] decision_log insert failed: ${error.message}`);
+    // Fix 03/06/2026 — Route via DecisionLogService.append() au lieu d'INSERT
+    // direct. L'INSERT direct historique bypassait le mutex portfolioQueues
+    // (Option C) → race condition lors d'un batch de 10 lessons à 13:07:02-03
+    // cassait le hash chain à #784 (audit 03/06 16:00 UTC).
+    try {
+      await this.decisionLog.append({
+        portfolioId: GAINERS_PORTFOLIO_IDS[0],
+        kind,
+        summary: `[lesson-auto-apply] ${kind} lesson=${lesson.id.slice(0, 8)} kind=${lesson.lesson_kind}`,
+        rationale: `[lesson-auto-apply] ${lesson.lesson_text.slice(0, 200)} (lesson_id=${lesson.id.slice(0, 8)} ` +
+          `confidence=${lesson.confidence} sample=${lesson.sample_size})`,
+        payload: { lesson_id: lesson.id, lesson_kind: lesson.lesson_kind, ...extra },
+        triggeredBy: 'autopilot_cron',
+      });
+    } catch (e) {
+      this.logger.warn(`[lesson-auto-apply] decision_log append failed: ${String(e).slice(0, 200)}`);
     }
   }
 
