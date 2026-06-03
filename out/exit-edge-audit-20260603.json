@@ -1,0 +1,33 @@
+{
+  "generated_at": "2026-06-03T14:47:53.028Z",
+  "analyzed": 18,
+  "by_reason": {
+    "trader-agent": {
+      "n": 6,
+      "sumRealizedPct": -2.2845,
+      "sumMfePct": -0.430361449854955,
+      "missedTp15": 0,
+      "missedTp20": 0,
+      "sumMissedEdgePct": 0.4321464398436592
+    },
+    "closed_choppy": {
+      "n": 10,
+      "sumRealizedPct": 0.22100000000000003,
+      "sumMfePct": 9.836848554659065,
+      "missedTp15": 2,
+      "missedTp20": 1,
+      "sumMissedEdgePct": 8.97926284037335
+    },
+    "closed_stop": {
+      "n": 2,
+      "sumRealizedPct": -3.0662000000000003,
+      "sumMfePct": -1.0989306038711832,
+      "missedTp15": 0,
+      "missedTp20": 0,
+      "sumMissedEdgePct": 0
+    }
+  },
+  "total_missed_15": 2,
+  "total_missed_20": 1,
+  "avg_missed_edge_pct": 0.5228560711231672
+}
