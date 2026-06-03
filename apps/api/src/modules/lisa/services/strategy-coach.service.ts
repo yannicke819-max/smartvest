@@ -103,7 +103,10 @@ interface PortfolioConfig {
 
 // Issue #502 — garde-fou âge minimum. Portfolio jeune = stats 30j inutilisables,
 // le LLM coach conclut à tort "bot cassé / objectifs irréalistes". Skip propre.
-const MIN_PORTFOLIO_AGE_DAYS_FOR_COACH = 7;
+// 03/06/2026 — baissé 7 → 3j. Rationale : les portfolios migrés 30/05 ont
+// déjà ~18+ closed trades (stats statistiquement minces mais utilisables).
+// L'utilisateur veut le coach actif maintenant, pas Vendredi.
+const MIN_PORTFOLIO_AGE_DAYS_FOR_COACH = 3;
 
 // Issue #502 — post-filter contradictions. Params qui assouplissent l'entry
 // discipline. Si un param est ici ET qu'au moins une lesson active

@@ -199,7 +199,15 @@ export class LisaController {
       const site = String(r.call_site);
       const cost = Number(r.applied_cost_usd ?? 0);
       const lat = r.applied_latency_ms != null ? Number(r.applied_latency_ms) : null;
-      const provider = String(r.applied_provider ?? '').includes('pro') ? 'gemini-pro' : 'gemini-flash';
+      // Fix 03/06/2026 — la mapping précédente attribuait `mistral-medium` à
+      // `gemini-flash` (le check `.includes('pro')` était faux pour Mistral,
+      // tombait sur le fallback gemini-flash). Conséquence : 928 calls Mistral
+      // Medium = $0.751 attribués à Gemini Flash, UI montre Mistral à $0.
+      const ap = String(r.applied_provider ?? '');
+      const provider = ap.startsWith('mistral-large') ? 'mistral-large'
+        : ap.startsWith('mistral') ? 'mistral-medium'
+        : ap.includes('pro') ? 'gemini-pro'
+        : 'gemini-flash';
       stats[provider].n_calls += 1;
       stats[provider].sum_cost += cost;
       if (lat !== null && lat > 0) { stats[provider].sum_lat += lat; stats[provider].n_lat += 1; }
