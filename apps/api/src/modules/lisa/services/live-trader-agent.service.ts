@@ -1819,6 +1819,7 @@ Recommendation rules :
     // collectées mais TRADER recevait toujours news=[] → setup A+ jamais
     // matché → trader systématiquement hold). On alias en sortie pour
     // préserver les noms attendus par le prompt Mistral (cf. ligne 202+).
+    // Plus error capture explicite (sinon PostgREST error reste muet).
     const since = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
     const { data, error } = await this.supabase.getClient()
       .from('eodhd_news_articles')
