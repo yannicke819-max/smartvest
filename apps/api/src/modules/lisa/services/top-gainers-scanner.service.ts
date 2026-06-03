@@ -29,6 +29,12 @@ import { TwelveDataService, type MarketMover } from './twelve-data.service';
 import { rankByCompositeScore, parseCompositeWeights } from './composite-ranker.helper';
 import { computeMomentumMetrics, classifyBucket, type Candle as MomentumCandle } from './momentum-analyzer.helper';
 import { evaluateTwelveDataFilters } from './twelve-data-scanner-filters';
+import {
+  evaluatePathEffLongTf,
+  evaluateClimaxRun,
+  evaluateVerticalPump,
+  evaluateTopTickDrift,
+} from './blow-off-gates.helper';
 import { QwDecisionLoggerService } from '../quick-wins/qw-decision-logger.service';
 import { CronJob } from 'cron';
 import { ConfigService } from '@nestjs/config';
@@ -3879,6 +3885,47 @@ export class TopGainersScannerService implements OnModuleInit {
           continue;
         }
 
+        // OKLO-fix 03/06/2026 — 3 gates anti-blow-off (cf. blow-off-gates.helper.ts)
+        // - CHOP_LONG_TF : path eff PAR TF (tf1h/tf30m), pas seulement overall
+        // - CLIMAX_RUN   : plateau pré-burst (tf30m ≈ tf5m + tf5m ≥ 5%)
+        // - VERTICAL_PUMP: last-minute concentration (ch1m/tf5m > 0.5)
+        // Tous configurables via env _GATE_ENABLED (default true).
+        {
+          const chopLongTfHit = evaluatePathEffLongTf(persistence.pathQuality, effectiveMinPathEff);
+          if (chopLongTfHit) {
+            this.logger.log(
+              `[top-gainers] ${cand.symbol} CHOP_LONG_TF: ${chopLongTfHit.tf}=${chopLongTfHit.value.toFixed(2)} < min=${effectiveMinPathEff!.toFixed(2)} → skip [structural chop]`,
+            );
+            recordShadowDecision(cand, 'reject_path_eff', persistence);
+            continue;
+          }
+
+          const climaxGateOn = (this.config.get<string>('GAINERS_CLIMAX_RUN_GATE_ENABLED') ?? 'true').toLowerCase() === 'true';
+          if (climaxGateOn) {
+            const climaxHit = evaluateClimaxRun(persistence.tf5m, persistence.tf30m);
+            if (climaxHit) {
+              this.logger.log(
+                `[top-gainers] ${cand.symbol} CLIMAX_RUN: tf5m=${climaxHit.tf5m.toFixed(2)}% tf30m=${climaxHit.tf30m.toFixed(2)}% (plateau, |∆|=${climaxHit.gapPct.toFixed(2)}pt) → skip [blow-off]`,
+              );
+              recordShadowDecision(cand, 'reject_other', persistence);
+              continue;
+            }
+          }
+
+          const verticalGateOn = (this.config.get<string>('GAINERS_VERTICAL_PUMP_GATE_ENABLED') ?? 'true').toLowerCase() === 'true';
+          if (verticalGateOn) {
+            const ch1m = typeof cand.changePct === 'number' && Number.isFinite(cand.changePct) ? cand.changePct : null;
+            const verticalHit = evaluateVerticalPump(ch1m, persistence.tf5m);
+            if (verticalHit) {
+              this.logger.log(
+                `[top-gainers] ${cand.symbol} VERTICAL_PUMP: ch1m=${verticalHit.ch1m.toFixed(2)}% / tf5m=${verticalHit.tf5m.toFixed(2)}% = ${verticalHit.ratio.toFixed(2)} → skip [last-minute concentration]`,
+              );
+              recordShadowDecision(cand, 'reject_other', persistence);
+              continue;
+            }
+          }
+        }
+
         // CHOP_NOISE GATE (03/06/2026) — exploite le setup_kind classifier.
         // Audit 02-03/06 : 25/34 trades classifiés CHOP_NOISE avec WR 16% et
         // sumPnl -12.19%. Le scanner sélectionne massivement du chop intra-day
@@ -4982,6 +5029,33 @@ export class TopGainersScannerService implements OnModuleInit {
           this.logger.warn(
             `[top-gainers] ${cand.symbol}: live $${livePriceNum} diverges ${(divergePct * 100).toFixed(1)}% from cand.close $${candCloseNum} → skip (sanity bound)`,
           );
+          return null;
+        }
+        // OKLO-fix 03/06/2026 — Anti top-tick guard (cf. blow-off-gates.helper.ts).
+        // Tune via env GAINERS_TOP_TICK_DRIFT_MAX_PCT (default 0.25%).
+        const topTickMax = parseFloat(this.config.get<string>('GAINERS_TOP_TICK_DRIFT_MAX_PCT') ?? '0.25');
+        const topTickHit = evaluateTopTickDrift(livePriceNum, candCloseNum, topTickMax);
+        if (topTickHit) {
+          this.logger.warn(
+            `[top-gainers] ${cand.symbol} TOP_TICK_GUARD: live $${livePriceNum} drift +${topTickHit.driftPct.toFixed(3)}% vs cand.close $${candCloseNum} > ${topTickHit.threshold}% → skip [anti top-tick]`,
+          );
+          await this.decisionLog.append({
+            portfolioId,
+            kind: 'position_open_failed',
+            summary: `[TOP_TICK_GUARD] ${cand.symbol} drift +${topTickHit.driftPct.toFixed(3)}% > ${topTickHit.threshold}% → skip`,
+            rationale: `Live price drift au-dessus du snapshot scanner pendant l'évaluation gate (~5-15s LLM). Buy à ce moment = top tick par construction (Raschke "wait first pullback"). Attendre cycle suivant ou pullback. Tune via GAINERS_TOP_TICK_DRIFT_MAX_PCT.`,
+            payload: {
+              symbol: cand.symbol,
+              asset_class: cand.assetClass,
+              cand_close: candCloseNum,
+              live_price: livePriceNum,
+              drift_pct: topTickHit.driftPct,
+              threshold_pct: topTickHit.threshold,
+              stage: 'scanner_pre_open',
+              error_class: 'TopTickDriftGuard',
+            },
+            triggeredBy: 'autopilot_cron',
+          }).catch(() => { /* non-bloquant */ });
           return null;
         }
       }

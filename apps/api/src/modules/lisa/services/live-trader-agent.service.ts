@@ -37,6 +37,7 @@ import { PushNotificationsService } from './push-notifications.service';
 import { MistralShadowService } from './mistral-shadow.service';
 import { MistralLargeShadowService } from './mistral-large-shadow.service';
 import { ExitPolicyContextService } from './exit-policy-context.service';
+import { formatBlowOffPreambleBlock } from './blow-off-preamble-lessons';
 import { summarizeMomentumDecisions } from './scanner-momentum-shadow.helper';
 import type { TopGainerCandidate } from '@smartvest/ai-analyst';
 
@@ -2048,6 +2049,17 @@ Recommendation rules :
     selfReflection: string,
   ): string {
     let prompt = SYSTEM_PROMPT_BASE;
+
+    // OKLO-fix 03/06/2026 — Préambule blow-off / pump-fade lessons (priors
+    // académiques + consensus, 12 patterns nommés). Injecté en tête de prompt
+    // pour que ces patterns deviennent une grille de lecture par défaut, pas
+    // un appendice optionnel. Le scanner bloque déjà les 4 plus mécaniques
+    // (cf. blow-off-gates.helper.ts) mais le TRADER doit savoir les nommer
+    // pour verbaliser un skip propre. Configurable via env.
+    const blowOffPreambleOn = (this.config.get<string>('TRADER_BLOW_OFF_PREAMBLE_ENABLED') ?? 'true').toLowerCase() === 'true';
+    if (blowOffPreambleOn) {
+      prompt += `\n\n${formatBlowOffPreambleBlock()}`;
+    }
 
     // Bloc 1 : memory trader-spécifique (post-mortems Trader Agent)
     if (memory.length > 0) {
