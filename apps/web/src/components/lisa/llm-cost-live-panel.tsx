@@ -39,12 +39,11 @@ const PROVIDER_LABELS: Record<string, { label: string; color: string }> = {
   'magistral-medium': { label: 'Magistral Medium 2509', color: 'bg-red-500' },
 };
 
-// MISTRAL_FREE_TIER=true par défaut côté backend → le coût Mistral réel est $0
-// (le service tracke les tokens pour stats mais zéro-out costUsd avant retour).
-// Sécurité front : si le backend renvoie quand même un cost > 0 sur un bucket
-// Mistral (bug théorique de config), on l'affiche comme "gratuit" pour ne pas
-// induire l'utilisateur en erreur. Le badge tooltip explique la free tier.
-const MISTRAL_FREE_TIER_BUCKETS = new Set(['mistral-medium', 'mistral-large', 'magistral-medium']);
+// 03/06/2026 — Mistral PAYG activé (MISTRAL_FREE_TIER=false). Le backend
+// renvoie maintenant le vrai coût Mistral. Le mapping a aussi été fixé
+// (lisa.controller.ts) — précédemment Mistral cost était attribué à
+// gemini-flash par erreur. Plus de masking front.
+const MISTRAL_FREE_TIER_BUCKETS = new Set<string>();
 
 const SITE_LABELS: Record<string, string> = {
   trader_decision: 'TRADER decisions',
