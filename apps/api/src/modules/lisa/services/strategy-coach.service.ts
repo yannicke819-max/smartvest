@@ -131,21 +131,64 @@ export const ENTRY_LOOSENING_PARAMS: Record<string, 'decrease' | 'increase'> = {
  *         qu'au moins une lesson active `entry_discipline` conf ≥ 0.85 existe
  *         → drop. La lesson haute confiance "gagne" sur la suggestion coach.
  */
+/**
+ * Lesson kinds prescriptive — celles qui posent des règles numériques sur
+ * l'action TRADER (entry/exit/sizing). Pollution Mistral si générées sur
+ * faible sample : Mistral applique strictement les chiffres (8%, 10%, etc.)
+ * extrapolés par Gemini sur 1-2 trades.
+ */
+const PRESCRIPTIVE_LESSON_KINDS = new Set([
+  'ENTRY_DISCIPLINE', 'EXIT_RULE', 'SIZING_RULE',
+  'WAIT_FOR_CONFIRMATION', 'PROFIT_SECURING', 'PULLBACK_WAIT',
+  'VELOCITY_GATE', 'KELLY_SIZING', 'TRAIL_STOP_MIN',
+  'PUMP_SCORE', 'OVERPUMP_GATE', 'END_OF_SESSION_WAIT',
+]);
+
+/**
+ * Min sample observé requis pour générer une lesson prescriptive
+ * trader_agent_only. Sous ce seuil, le Coach n'a pas assez de data pour
+ * proposer des règles numériques fiables.
+ */
+const MIN_OBSERVED_TRADES_FOR_PRESCRIPTIVE_LESSON = 10;
+
 export function applyCoachConflictPostFilter(args: {
   lessons: unknown[];
   params: unknown[];
   autopilotEnabled: boolean;
   hasHighConfEntryLessons: boolean;
+  observedTradesCount?: number;
 }): { lessons: unknown[]; params: unknown[]; dropped: Array<{ type: 'lesson' | 'param'; name: string; reason: string }> } {
   const dropped: Array<{ type: 'lesson' | 'param'; name: string; reason: string }> = [];
 
   const filteredLessons = args.lessons.filter((l) => {
-    const lesson = l as { lesson_kind?: string; lesson_text?: string };
+    const lesson = l as { lesson_kind?: string; lesson_text?: string; scope?: string };
     const kind = String(lesson.lesson_kind ?? '').toUpperCase();
     const text = String(lesson.lesson_text ?? '').toLowerCase();
+    const scope = String(lesson.scope ?? '').toLowerCase();
+
     if (args.autopilotEnabled && (kind.includes('ACTIVATE_TRADING') || /activer.*bot|activate.*trading.*bot/.test(text))) {
       dropped.push({ type: 'lesson', name: kind || 'unknown', reason: 'autopilot_already_enabled' });
       return false;
+    }
+
+    // Fix 03/06/2026 — anti-pollution Mistral : drop les lessons prescriptive
+    // trader_agent_only quand observed_trades < seuil. Le Coach Gemini extrapole
+    // sur 1-2 trades et produit des règles numériques (8%, 10%) que Mistral
+    // applique strictement. Vérifié ce matin : 3 lessons archivées manuellement
+    // de ce pattern (PULLBACK_WAIT, PUMP_SCORE, KELLY_SIZING).
+    const isPrescriptive = PRESCRIPTIVE_LESSON_KINDS.has(kind)
+      || kind.includes('WAIT') || kind.includes('GATE') || kind.includes('SECURING');
+    const isTraderOnly = scope === 'trader_agent_only';
+    if (isPrescriptive && isTraderOnly) {
+      const sample = args.observedTradesCount ?? 0;
+      if (sample < MIN_OBSERVED_TRADES_FOR_PRESCRIPTIVE_LESSON) {
+        dropped.push({
+          type: 'lesson',
+          name: kind || 'unknown',
+          reason: `insufficient_sample_for_prescriptive_lesson (observed=${sample} < ${MIN_OBSERVED_TRADES_FOR_PRESCRIPTIVE_LESSON})`,
+        });
+        return false;
+      }
     }
     return true;
   });
@@ -338,11 +381,16 @@ export class StrategyCoachService {
     const rawLessons = Array.isArray(parsed.proposed_lessons) ? parsed.proposed_lessons : [];
     const rawParams = Array.isArray(parsed.proposed_parameter_changes) ? parsed.proposed_parameter_changes : [];
     const activeEntryLessons = Array.isArray(ctx.active_entry_discipline_lessons) ? ctx.active_entry_discipline_lessons : [];
+    // Sample observé pour gate prescriptive lessons : stats_lookback.trades
+    // (= total closed trades sur fenêtre. Plus représentatif que stats_short).
+    const ctxStats = ctx.stats_lookback as { trades?: number } | undefined;
+    const observedTradesCount = ctxStats?.trades ?? 0;
     const { lessons, params, dropped } = this.applyConflictPostFilter({
       lessons: rawLessons,
       params: rawParams,
       autopilotEnabled: cfg.autopilot_enabled,
       hasHighConfEntryLessons: activeEntryLessons.length > 0,
+      observedTradesCount,
     });
     if (dropped.length > 0) {
       await client.from('lisa_decision_log').insert({
@@ -602,6 +650,7 @@ export class StrategyCoachService {
     params: unknown[];
     autopilotEnabled: boolean;
     hasHighConfEntryLessons: boolean;
+    observedTradesCount?: number;
   }): { lessons: unknown[]; params: unknown[]; dropped: Array<{ type: 'lesson' | 'param'; name: string; reason: string }> } {
     return applyCoachConflictPostFilter(args);
   }
