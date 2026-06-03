@@ -142,6 +142,8 @@ import { IntradayProviderRouter } from './services/intraday-provider-router.serv
 import { PositionIndicatorsTrackerService } from './services/position-indicators-tracker.service';
 // Apprentissage décisions de fermeture (capture user+mécanique + cron counterfactuel)
 import { CloseDecisionCaptureService } from './services/close-decision-capture.service';
+// Distille les close decisions en politique de sortie apprise (prompt TRADER)
+import { ExitPolicyContextService } from './services/exit-policy-context.service';
 // R&D batch — services env-gated OFF par défaut (audit 23/05 propositions sérieuses)
 import { GeminiRiskManagerService } from './services/research/gemini-risk-manager.service';
 import { GeminiOpportunityScoutService } from './services/research/gemini-opportunity-scout.service';
@@ -361,6 +363,8 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     PositionIndicatorsTrackerService,
     // Apprentissage décisions fermeture (capture + cron counterfactuel labeler)
     CloseDecisionCaptureService,
+    // Politique de sortie apprise injectée dans le prompt TRADER
+    ExitPolicyContextService,
     // R&D batch (23/05 propositions sérieuses, ENV-gated OFF par défaut)
     GeminiRiskManagerService,
     GeminiOpportunityScoutService,

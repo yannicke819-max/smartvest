@@ -36,6 +36,7 @@ import { TopGainersScannerService } from './top-gainers-scanner.service';
 import { PushNotificationsService } from './push-notifications.service';
 import { MistralShadowService } from './mistral-shadow.service';
 import { MistralLargeShadowService } from './mistral-large-shadow.service';
+import { ExitPolicyContextService } from './exit-policy-context.service';
 import { summarizeMomentumDecisions } from './scanner-momentum-shadow.helper';
 import type { TopGainerCandidate } from '@smartvest/ai-analyst';
 
@@ -301,6 +302,9 @@ export class LiveTraderAgentService {
     // Permet comparaison directe cheap tiers : Flash (Google) vs Large 3 (Mistral)
     // sur les memes decisions Pro. Activation : MISTRAL_LARGE_SHADOW_ENABLED=true.
     @Optional() private readonly mistralLargeShadow?: MistralLargeShadowService,
+    // Politique de sortie apprise (close decisions counterfactuel) injectée
+    // dans le prompt pour décisions HOLD/TRAIL/CLOSE intelligentes. @Optional.
+    @Optional() private readonly exitPolicy?: ExitPolicyContextService,
   ) {}
 
   onModuleInit(): void {
@@ -657,7 +661,21 @@ export class LiveTraderAgentService {
       }
 
       // 4. Build system prompt (memory + cross-lessons + MIDDLE ref + self-reflection)
-      const systemPrompt = this.buildSystemPrompt(memory, crossScannerLessons, middleReference, selfReflection);
+      let systemPrompt = this.buildSystemPrompt(memory, crossScannerLessons, middleReference, selfReflection);
+
+      // 4.0bis — POLITIQUE DE SORTIE APPRISE : distille position_close_decisions
+      // (verdict counterfactuel GOOD/EARLY) en framework de décision HOLD/TRAIL/
+      // CLOSE. C'est le cœur de l'apprentissage : TRADER agrège indicateurs live
+      // + cette politique + sa mémoire en UNE décision. Cold start = heuristiques
+      // défaut (TP sweep). Best-effort, n'échoue jamais le cycle.
+      if (this.exitPolicy) {
+        try {
+          const policy = await this.exitPolicy.getLearnedExitPolicy(TRADER_AGENT_PORTFOLIO_ID);
+          systemPrompt = `${systemPrompt}\n\n${policy.promptBlock}`;
+        } catch (e) {
+          this.logger.debug(`[trader-agent] exit policy skip: ${String(e).slice(0, 120)}`);
+        }
+      }
 
       // 4.1 (01/06) — Wiring objectifs → state TRADER. Calcul du progress vs
       // cible jour + trajectory status. Le LLM était aveugle aux objectifs
