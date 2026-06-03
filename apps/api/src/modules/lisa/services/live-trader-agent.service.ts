@@ -138,14 +138,14 @@ ACTIONS DISPONIBLES (action_kind) :
 
 CONTRAINTES DURES (les viole pas) :
 1. Notional par trade : $50 ≤ N ≤ $3000 (30% capital max sur 1 symbole)
-2. Stop loss obligatoire pour tout open : 1.5% ≤ SL ≤ 3% (default 2%) — backtest 27/05 montre MAE/R médian 1.78 sur Trader Agent, donc SL <1.5% = stop-out quasi garanti avant retracement
-3. Take profit obligatoire : 2.5% ≤ TP ≤ 8% (default 4%, R/R 2:1 sur SL 2%) — capture rate Trader -45.8% montre que TP trop large laisse l'argent partir
-4. AUTONOMIE CADRÉE : tu peux dévier du default 2%/4% si tu vois un signal LIVE non-capturé
+2. Stop loss obligatoire pour tout open : 1.5% ≤ SL ≤ 3% (default 1.5%) — TP sweep 03/06 (n=2750 candidats marché réel) : SL-1.5% maximise l'espérance dans la zone sûre
+3. Take profit obligatoire : 2.5% ≤ TP ≤ 8% (default 3%) — TP sweep 03/06 : l'espérance MONTE avec le TP sur ces setups momentum (TP+3% = +0.855%/trade vs +0.61% à TP+2.5%). Les gagnants courent, baisser le TP cape l'upside. NE PAS sous-TP.
+4. AUTONOMIE CADRÉE : tu peux dévier du default 1.5%/3% si tu vois un signal LIVE non-capturé
    par le backtest (résistance proche, volatilité anormale, news imminente, microcap, etc.)
-5. SI tu dévies du default de plus de 30% (ex: TP=5.5 ou TP=2.7, SL=1.5 ou SL=2.7), tu DOIS
+5. SI tu dévies du default de plus de 30% (ex: TP=4.5 ou TP=2.5, SL=1.0 ou SL=2.5), tu DOIS
    préfixer ton thesis avec "[TP_CUSTOM: X% / SL_CUSTOM: Y%] reason: <raison concrète>"
-   Exemple: "[TP_CUSTOM: 3% / SL_CUSTOM: 2.5%] reason: résistance H4 à +3.2%, ATR daily 0.4%"
-6. Privilégie le default 4%/2% sauf raison forte — c'est le sweet spot calibré post-MFE/MAE 27/05.
+   Exemple: "[TP_CUSTOM: 4% / SL_CUSTOM: 2%] reason: résistance H4 à +4.2%, ATR daily 0.5%"
+6. Privilégie le default 3%/1.5% (R/R 2:1) sauf raison forte — sweet spot data-optimal TP sweep 03/06.
 7. Confidence ≥ 0.65 pour qu'on agisse (sinon hold)
 8. Pas plus de 5 positions ouvertes simultanément
 9. Si daily PnL < -$300 ce jour, mode défensif : open uniquement si confidence ≥ 0.85
@@ -2359,8 +2359,8 @@ Si momentum/bucket absents (Phase 2 désactivée ou fetch échoué), ignore ces 
       // capture rate -45.8% sur 7 trades). SL min 1.5% obligatoire (sinon
       // stop-out garanti avant retracement). TP max 8% (au-delà = capture rate
       // s'effondre). Default 2%/4% au lieu de 1%/6%.
-      const slPct = Math.max(1.5, Math.min(3, decision.stop_loss_pct ?? 2.0));
-      const tpPct = Math.max(2.5, Math.min(8.0, decision.take_profit_pct ?? 4.0));
+      const slPct = Math.max(1.5, Math.min(3, decision.stop_loss_pct ?? 1.5)); // default 1.5 (data-optimal TP+3/SL-1.5 TP sweep 03/06)
+      const tpPct = Math.max(2.5, Math.min(8.0, decision.take_profit_pct ?? 3.0)); // default 3.0 (data-optimal: exp +0.855%/trade vs +0.61% a TP2.5)
 
       // Overpump gate : refuse l'open si le candidat a pumpé > threshold sur la 1m.
       //
@@ -2504,8 +2504,8 @@ Si momentum/bucket absents (Phase 2 désactivée ou fetch échoué), ignore ces 
       // capture rate -45.8% sur 7 trades). SL min 1.5% obligatoire (sinon
       // stop-out garanti avant retracement). TP max 8% (au-delà = capture rate
       // s'effondre). Default 2%/4% au lieu de 1%/6%.
-      const slPct = Math.max(1.5, Math.min(3, decision.stop_loss_pct ?? 2.0));
-      const tpPct = Math.max(2.5, Math.min(8.0, decision.take_profit_pct ?? 4.0));
+      const slPct = Math.max(1.5, Math.min(3, decision.stop_loss_pct ?? 1.5)); // default 1.5 (data-optimal TP+3/SL-1.5 TP sweep 03/06)
+      const tpPct = Math.max(2.5, Math.min(8.0, decision.take_profit_pct ?? 3.0)); // default 3.0 (data-optimal: exp +0.855%/trade vs +0.61% a TP2.5)
 
       const livePriceData = await this.lisa.getLivePrice(decision.symbol).catch(() => null);
       if (!livePriceData?.price) return { applied: false, error: 'scale_in: no live price' };
