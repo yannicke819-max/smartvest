@@ -4910,6 +4910,15 @@ export class TopGainersScannerService implements OnModuleInit {
               `[correlation-guard] ${cand.symbol} REJECTED — ${assessment.reason} ` +
               `(avg=${assessment.avgCorr?.toFixed(2)} max=${assessment.maxCorr?.toFixed(2)} on ${assessment.perPosition.length} opens)`,
             );
+            // 03/06/2026 MISSION PÉPITES — audit skip
+            await this.decisionLog.append({
+              portfolioId,
+              kind: 'scanner_candidate_skip',
+              summary: `[SCANNER_SKIP] ${cand.symbol} gate=correlation_guard reason=${assessment.reason}`,
+              rationale: String(assessment.reason),
+              payload: { symbol: cand.symbol, gate: 'correlation_guard', reason: assessment.reason, asset_class: cand.assetClass, change_pct: cand.changePct, avg_corr: assessment.avgCorr, max_corr: assessment.maxCorr, n_opens: assessment.perPosition.length },
+              triggeredBy: 'autopilot_cron',
+            }).catch(() => null);
             return null;
           }
         } catch (e) {
@@ -4928,11 +4937,33 @@ export class TopGainersScannerService implements OnModuleInit {
         ? { ...this.reverseMomentum, mode: 'long_only' as const }
         : this.reverseMomentum;
       const plan = planOpens(effectiveMomentumConfig);
+      // 03/06/2026 MISSION PÉPITES — audit log : confirm reached inner loop
+      // (post correlation guard + planOpens). Si on voit ce log mais 0 skeptic_verdict
+      // ou opening downstream, le bug est entre ici et tryOpen.
+      if (plan.length === 0) {
+        await this.decisionLog.append({
+          portfolioId,
+          kind: 'scanner_candidate_skip',
+          summary: `[SCANNER_SKIP] ${cand.symbol} gate=plan_open reason=empty_plan`,
+          rationale: 'planOpens() returned empty (reverseMomentum mode misconfig?)',
+          payload: { symbol: cand.symbol, gate: 'plan_open', reason: 'empty_plan', asset_class: cand.assetClass, change_pct: cand.changePct },
+          triggeredBy: 'autopilot_cron',
+        }).catch(() => null);
+      }
       let primaryOpenedPosId: string | null = null;
       for (const item of plan) {
         const directionalNotional = Math.round(effectiveNotional * item.notionalMultiplier * 100) / 100;
         if (directionalNotional < 50) {
           this.logger.debug(`[reverse-momentum] ${cand.symbol} ${item.direction} notional $${directionalNotional} < $50 min — skip`);
+          // 03/06/2026 MISSION PÉPITES — audit skip notional
+          await this.decisionLog.append({
+            portfolioId,
+            kind: 'scanner_candidate_skip',
+            summary: `[SCANNER_SKIP] ${cand.symbol} ${item.direction} gate=notional reason=below_50usd`,
+            rationale: `directionalNotional=$${directionalNotional} < $50 floor`,
+            payload: { symbol: cand.symbol, gate: 'notional_floor', reason: 'below_50usd', direction: item.direction, asset_class: cand.assetClass, notional: directionalNotional, effectiveNotional, multiplier: item.notionalMultiplier },
+            triggeredBy: 'autopilot_cron',
+          }).catch(() => null);
           continue;
         }
         // Miracle #2 — Micro-momentum gate : skip si la vélocité 6s n'est pas
@@ -4949,6 +4980,15 @@ export class TopGainersScannerService implements OnModuleInit {
             this.logger.log(
               `[micro-momentum-gate] ${cand.symbol} ${item.direction} SKIP — ${verdict.reason}`,
             );
+            // 03/06/2026 MISSION PÉPITES — audit skip micro-momentum
+            await this.decisionLog.append({
+              portfolioId,
+              kind: 'scanner_candidate_skip',
+              summary: `[SCANNER_SKIP] ${cand.symbol} ${item.direction} gate=micro_momentum reason=${verdict.reason}`,
+              rationale: String(verdict.reason),
+              payload: { symbol: cand.symbol, gate: 'micro_momentum', reason: verdict.reason, direction: item.direction, asset_class: cand.assetClass, change_pct: cand.changePct, velocity: v?.velocityPctPerS ?? null, run_length: v?.runLength ?? null },
+              triggeredBy: 'autopilot_cron',
+            }).catch(() => null);
             continue;
           }
         }
@@ -4971,6 +5011,15 @@ export class TopGainersScannerService implements OnModuleInit {
               this.logger.warn(
                 `[debate-gate] ${cand.symbol} BLOCKED — verdict=${gateResult.verdict.decision} consensus=${(gateResult.verdict.consensusRatio * 100).toFixed(0)}% agents=${gateResult.agentCount} (${gateResult.verdict.rationale})`,
               );
+              // 03/06/2026 MISSION PÉPITES — audit skip debate gate
+              await this.decisionLog.append({
+                portfolioId,
+                kind: 'scanner_candidate_skip',
+                summary: `[SCANNER_SKIP] ${cand.symbol} gate=debate_gate reason=${gateResult.verdict.decision}`,
+                rationale: gateResult.verdict.rationale,
+                payload: { symbol: cand.symbol, gate: 'debate_gate', reason: gateResult.verdict.decision, asset_class: cand.assetClass, change_pct: cand.changePct, consensus: gateResult.verdict.consensusRatio, agents: gateResult.agentCount },
+                triggeredBy: 'autopilot_cron',
+              }).catch(() => null);
               continue;
             }
           } catch (e) {
