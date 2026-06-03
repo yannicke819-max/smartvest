@@ -108,9 +108,9 @@ PATTERNS VALIDÉS (priorité haute — observation 28/05/2026, à amplifier dès
 
 ANTI-PATTERNS À ÉVITER (priorité haute — observation 28/05/2026) :
 
-✗ ASIA EARLY SESSION 00:00-01:00 UTC sur asia_equity = 0/5 wins. Opening auctions Nikkei + HSI sont chop par construction. Skip les candidats asia_equity de l'heure UTC 0 et 1. Re-prends à partir de 01:00 UTC (KOSDAQ active).
+✗ ~~ASIA EARLY SESSION 00:00-01:00 UTC~~ DÉSACTIVÉ 03/06/2026 (décision "trade large 1-2 semaines puis analyser"). On collecte data sur opening auctions Nikkei/HSI pour recalibrer. Réévaluer cette règle dans 2 semaines.
 
-✗ US SMALL_MID changePct 4-8% post 15:30 UTC : 28/05 a vu 3 SL / 5 trades (EVC.US -$45.84, NVAX.US -$25.41, FWRD.US +$4.92). Setups choppy early-session américain. Si candidat us_equity_small_mid avec changePct < 8%, requires conf ≥ 0.80 ET catalyseur news ≥ 60.
+✗ ~~US SMALL_MID changePct 4-8% post 15:30 UTC~~ DÉSACTIVÉ 03/06/2026 (décision "trade large 1-2 semaines puis analyser"). On collecte data US early-session pour recalibrer dans 2 semaines.
 
 ✗ NUF.AU-type CROSS-PORTFOLIO REVENGE : NUF.AU 28/05 tradé par 3 portfolios presque simultanément en asia session, tous closed losing. Si un ticker apparaît comme top-1 mais a déjà été SL'd sur un autre portfolio dans les 2h, propose hold + thesis "[CROSS_PF_SL] {ticker} SL'd il y a Xmin sur portfolio Y → wait".
 

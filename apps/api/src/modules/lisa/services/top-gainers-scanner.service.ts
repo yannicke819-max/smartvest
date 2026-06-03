@@ -3173,8 +3173,13 @@ export class TopGainersScannerService implements OnModuleInit {
       //   .SS/.SZ) restent bannis : leurs stats opening confirment -$527 et
       //   .SHE historiquement 0% WR sur 4 trades 30j.
       //
-      // Opt-out global via env `GAINERS_ASIA_OPENING_SUFFIX_BAN_ENABLED=false` (default true).
-      const asiaOpeningBanEnabled = (this.config.get<string>('GAINERS_ASIA_OPENING_SUFFIX_BAN_ENABLED') ?? 'true').toLowerCase() === 'true';
+      // Opt-out global via env `GAINERS_ASIA_OPENING_SUFFIX_BAN_ENABLED=false`.
+      // Default DÉSACTIVÉ 03/06/2026 (décision utilisateur "trade large 1-2
+      // semaines puis analyser"). Les bans horaires statiques pré-calibrés
+      // basent sur historique court (3 semaines MFE/MAE) — on collecte
+      // davantage de data en open-trading puis on recalibre. Réactivable via
+      // env=true si volume de pertes explosent en attendant.
+      const asiaOpeningBanEnabled = (this.config.get<string>('GAINERS_ASIA_OPENING_SUFFIX_BAN_ENABLED') ?? 'false').toLowerCase() === 'true';
       if (asiaOpeningBanEnabled) {
         const nowHourUtc = new Date().getUTCHours();
         if (nowHourUtc < 2) {
