@@ -1,7 +1,14 @@
 'use client';
 
-import { Briefcase, TrendingUp, TrendingDown, AlertCircle } from 'lucide-react';
-import { useLisaPositions, useLisaPositionsRealtime, type LisaPosition } from '@/hooks/use-lisa';
+import { useRef } from 'react';
+import { Briefcase, TrendingUp, TrendingDown, ArrowUp, ArrowDown, Minus, AlertCircle } from 'lucide-react';
+import {
+  useLisaPositions,
+  useLisaPositionsRealtime,
+  useOpenPositionsLive,
+  type LisaPosition,
+  type OpenPositionLive,
+} from '@/hooks/use-lisa';
 import { SkeletonCard } from '@/components/ui/skeleton';
 
 const STATUS_LABELS: Record<LisaPosition['status'], { label: string; color: string }> = {
@@ -63,6 +70,11 @@ export function LisaPositionsTable({ portfolioId }: { portfolioId: string }) {
   useLisaPositionsRealtime(portfolioId);
   const openQuery = useLisaPositions(portfolioId, true);
   const allQuery = useLisaPositions(portfolioId, false);
+  // Live snapshot prix temps réel des positions ouvertes (poll 30s).
+  const liveQuery = useOpenPositionsLive(portfolioId);
+  const liveById = new Map<string, OpenPositionLive>(
+    (liveQuery.data?.positions ?? []).map((p) => [p.id, p]),
+  );
 
   const openRaw = openQuery.data ?? [];
   const all = allQuery.data ?? [];
@@ -118,7 +130,7 @@ export function LisaPositionsTable({ portfolioId }: { portfolioId: string }) {
         <div>
           <p className="text-xs font-medium mb-2 text-emerald-700">Ouvertes</p>
           <div className="space-y-2">
-            {open.map((p) => <PositionRow key={p.id} pos={p} />)}
+            {open.map((p) => <PositionRow key={p.id} pos={p} live={liveById.get(p.id)} />)}
           </div>
         </div>
       )}
@@ -161,7 +173,7 @@ const UNKNOWN_STATUS_CFG = {
   color: 'bg-slate-50 text-slate-500 border-slate-200',
 };
 
-function PositionRow({ pos }: { pos: LisaPosition }) {
+function PositionRow({ pos, live }: { pos: LisaPosition; live?: OpenPositionLive }) {
   // PR #253 — affine le label closed_target via exitReason.
   const statusCfg = pos.status
     ? refineCloseLabel(pos.status, pos.exitReason)
@@ -216,7 +228,101 @@ function PositionRow({ pos }: { pos: LisaPosition }) {
             {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)} ({pnlPct.toFixed(2)}%)
           </div>
         )}
+        {/* Position OUVERTE → valeur temps réel + tendance 5 min */}
+        {pos.status === 'open' && <PositionLiveValue live={live} />}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Valeur temps réel d'une position ouverte : prix live, PnL non réalisé,
+ * et tendance 5 min (flèche verte ↑ / rouge ↓) calculée via un ring buffer
+ * client des prix successifs (poll 30s → ~10 points sur 5 min).
+ *
+ * Le ring buffer évite de surcharger EODHD avec un fetch candles par poll :
+ * on garde l'historique des `livePrice` reçus et on compare le prix actuel
+ * au plus ancien point dans la fenêtre 5 min.
+ */
+function PositionLiveValue({ live }: { live?: OpenPositionLive }) {
+  // Ring buffer { ts, price } persistant entre renders (par instance de carte).
+  const bufRef = useRef<Array<{ ts: number; price: number }>>([]);
+
+  if (!live) {
+    return <div className="mt-1 text-[10px] text-muted-foreground">live —</div>;
+  }
+  if (live.stale || live.livePrice === null) {
+    return (
+      <div className="mt-1 text-[10px] text-amber-600" title={`source=${live.source}`}>
+        live indispo
+      </div>
+    );
+  }
+
+  // Push le point courant + purge > 5 min (300 000 ms).
+  const now = Date.now();
+  const buf = bufRef.current;
+  const last = buf[buf.length - 1];
+  // Évite les doublons si re-render sans nouveau poll (même asOf)
+  if (!last || last.price !== live.livePrice) {
+    buf.push({ ts: now, price: live.livePrice });
+  }
+  while (buf.length > 0 && now - buf[0].ts > 300_000) buf.shift();
+
+  // Tendance 5 min : prix actuel vs plus ancien point dans la fenêtre.
+  const oldest = buf[0];
+  const trend5mPct =
+    oldest && oldest.price > 0 && buf.length >= 2
+      ? ((live.livePrice - oldest.price) / oldest.price) * 100
+      : null;
+
+  const pnlColor =
+    live.pnlPct === null ? '' : live.pnlPct >= 0 ? 'text-emerald-600' : 'text-red-500';
+
+  return (
+    <div className="mt-1 space-y-0.5">
+      {/* Prix live + PnL non réalisé vs entrée */}
+      <div className={`text-[11px] font-semibold ${pnlColor} flex items-center gap-0.5 justify-end`}>
+        <span className="text-muted-foreground font-normal text-[10px]">live</span>
+        {live.livePrice.toFixed(4)}
+        {live.pnlPct !== null && (
+          <span>
+            {' '}({live.pnlPct >= 0 ? '+' : ''}
+            {live.pnlPct.toFixed(2)}%)
+          </span>
+        )}
+      </div>
+      {/* Tendance 5 min : flèche verte ↑ / rouge ↓ / neutre — */}
+      <div className="flex items-center gap-0.5 justify-end text-[10px]">
+        <span className="text-muted-foreground">5min</span>
+        {trend5mPct === null ? (
+          <span className="text-muted-foreground" title="warm-up (besoin de 2 polls)">
+            <Minus className="h-3 w-3 inline" />
+          </span>
+        ) : trend5mPct > 0.02 ? (
+          <span className="text-emerald-600 font-medium">
+            <ArrowUp className="h-3 w-3 inline" />
+            {trend5mPct.toFixed(2)}%
+          </span>
+        ) : trend5mPct < -0.02 ? (
+          <span className="text-red-500 font-medium">
+            <ArrowDown className="h-3 w-3 inline" />
+            {trend5mPct.toFixed(2)}%
+          </span>
+        ) : (
+          <span className="text-muted-foreground">
+            <Minus className="h-3 w-3 inline" />
+            {trend5mPct.toFixed(2)}%
+          </span>
+        )}
+      </div>
+      {/* Distance TP / SL restante */}
+      {(live.distToTpPct !== null || live.distToSlPct !== null) && (
+        <div className="text-[9px] text-muted-foreground flex gap-1.5 justify-end">
+          {live.distToTpPct !== null && <span>TP {live.distToTpPct > 0 ? '+' : ''}{live.distToTpPct.toFixed(1)}%</span>}
+          {live.distToSlPct !== null && <span>SL {live.distToSlPct.toFixed(1)}%</span>}
+        </div>
+      )}
     </div>
   );
 }

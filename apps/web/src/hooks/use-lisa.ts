@@ -285,6 +285,50 @@ export function useLisaConfigRealtime(portfolioId: string | null): void {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Open positions LIVE (prix temps réel + PnL non réalisé)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface OpenPositionLive {
+  id: string;
+  symbol: string;
+  direction: string;
+  entryPrice: number;
+  livePrice: number | null;
+  source: string;
+  asOf: string | null;
+  stale: boolean;
+  pnlPct: number | null;
+  pnlUsd: number | null;
+  takeProfitPrice: number | null;
+  stopLossPrice: number | null;
+  distToTpPct: number | null;
+  distToSlPct: number | null;
+  entryTimestamp: string;
+}
+
+export interface OpenPositionsLiveResponse {
+  positions: OpenPositionLive[];
+  asOf: string;
+  error?: string;
+}
+
+/**
+ * Live snapshot des positions ouvertes (prix temps réel, PnL non réalisé).
+ * Poll 30s. La tendance 5 min est calculée côté composant via ring buffer
+ * des `livePrice` successifs (cf. PositionLiveValue).
+ */
+export function useOpenPositionsLive(portfolioId: string | null) {
+  return useQuery({
+    queryKey: ['lisa', 'open-positions-live', portfolioId],
+    queryFn: () => apiFetch<OpenPositionsLiveResponse>(`/lisa/open-positions-live/${portfolioId}`),
+    enabled: !!portfolioId,
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: true,
+    ...LISA_QUERY_OPTIONS,
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Proposals
 // ─────────────────────────────────────────────────────────────────────────────
 

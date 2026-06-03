@@ -1378,6 +1378,91 @@ export class LisaController {
     };
   }
 
+  /**
+   * Live snapshot des positions OUVERTES d'un portfolio : prix temps réel,
+   * PnL non réalisé vs entry, source, distance TP/SL. Consommé par l'UI
+   * (cartes positions ouvertes, poll ~30s). La tendance 5 min est calculée
+   * côté frontend via ring buffer des polls successifs (évite de surcharger
+   * EODHD avec un fetch candles par position à chaque poll).
+   *
+   * Read-only, aucune action de trading. Fail-soft par position : si le prix
+   * live échoue, on renvoie source=fallback_unknown + price null (l'UI affiche
+   * "—" sans casser la carte).
+   */
+  @Get('open-positions-live/:portfolioId')
+  async getOpenPositionsLive(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    extractUserId(headers); // throws si non authentifié
+    const { data, error } = await this.supabase.getClient()
+      .from('lisa_positions')
+      .select('id, symbol, direction, entry_price, take_profit_price, stop_loss_price, entry_notional_usd, quantity, entry_timestamp')
+      .eq('portfolio_id', portfolioId)
+      .eq('status', 'open');
+    if (error) {
+      return { positions: [], error: error.message, asOf: new Date().toISOString() };
+    }
+    const rows = data ?? [];
+    const positions = await Promise.all(
+      rows.map(async (p: Record<string, unknown>) => {
+        const symbol = String(p.symbol);
+        const entry = Number(p.entry_price);
+        const qty = Number(p.quantity ?? 0);
+        const dir = String(p.direction);
+        const sign = dir === 'short' ? -1 : 1;
+        let livePrice: number | null = null;
+        let source = 'fallback_unknown';
+        let asOf: string | null = null;
+        try {
+          const q = await this.lisa.getLivePrice(symbol);
+          source = q.source;
+          asOf = q.asOf;
+          const px = Number(q.price);
+          // source fallback/stale OU prix 0 → pas exploitable pour PnL live
+          if (Number.isFinite(px) && px > 0 && !q.source.startsWith('fallback')) {
+            livePrice = px;
+          }
+        } catch {
+          /* fail-soft : livePrice reste null */
+        }
+        const pnlPct = livePrice !== null && entry > 0
+          ? (((livePrice - entry) / entry) * 100) * sign
+          : null;
+        const pnlUsd = livePrice !== null && qty > 0
+          ? (livePrice - entry) * qty * sign
+          : null;
+        const tp = p.take_profit_price != null ? Number(p.take_profit_price) : null;
+        const sl = p.stop_loss_price != null ? Number(p.stop_loss_price) : null;
+        // Distance restante vers TP / SL en % (depuis le prix live)
+        const distToTpPct = livePrice !== null && tp !== null && livePrice > 0
+          ? ((tp - livePrice) / livePrice) * 100 * sign
+          : null;
+        const distToSlPct = livePrice !== null && sl !== null && livePrice > 0
+          ? ((livePrice - sl) / livePrice) * 100 * sign
+          : null;
+        return {
+          id: String(p.id),
+          symbol,
+          direction: dir,
+          entryPrice: entry,
+          livePrice,
+          source,
+          asOf,
+          stale: livePrice === null,
+          pnlPct: pnlPct !== null ? Math.round(pnlPct * 100) / 100 : null,
+          pnlUsd: pnlUsd !== null ? Math.round(pnlUsd * 100) / 100 : null,
+          takeProfitPrice: tp,
+          stopLossPrice: sl,
+          distToTpPct: distToTpPct !== null ? Math.round(distToTpPct * 100) / 100 : null,
+          distToSlPct: distToSlPct !== null ? Math.round(distToSlPct * 100) / 100 : null,
+          entryTimestamp: String(p.entry_timestamp),
+        };
+      }),
+    );
+    return { positions, asOf: new Date().toISOString() };
+  }
+
   @Get('binance/balance')
   getBinanceBalance(@Headers() headers: Record<string, string>) {
     extractUserId(headers); // throws si non authentifié
