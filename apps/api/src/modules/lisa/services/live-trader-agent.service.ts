@@ -201,6 +201,23 @@ CONTEXTE MACRO (input \`macro\` — snapshot LisaService) :
 - Si \`macro.note = 'macro_snapshot_unavailable_this_cycle'\` → contexte aveugle,
   refuse open_directional (uniquement close/trail_stop/hold autorisés)
 
+SCANNER_PROPOSALS (input \`scanner_proposals\` — ajout 03/06/2026 décision "trade large 1-2 sem") :
+- Ces candidats ont DÉJÀ passé tous les gates scanner (OVERPUMP per-class,
+  dead zones, path_efficiency, persistence multi-TF, SkepticAgent, LLM_GATE).
+  Ils sont PRÉ-QUALIFIÉS. Tu n'es PAS responsable de re-filtrer la qualité.
+- Le champ \`scanner_proposals[i].score\` (0..1) = composite de qualité du
+  scanner. **Ce N'EST PAS ta conviction**. Ne le compare PAS à
+  \`suggested_conviction_floor\` (qui s'applique à TA conviction de sortie).
+  Un score 0.5 du scanner = candidat valide qui a passé tous les filtres.
+- DÉCISION PAR DÉFAUT en phase "trade large 1-2 sem" : **ACCEPT** (émets
+  open_directional sur le top-1 proposal par score) sauf si :
+  * SkepticAgent veto explicite (rare, événement listé)
+  * News sentiment ≤ -0.6 sur le même ticker dans les 2h
+  * Position cap déjà atteint (\`openCount >= max_concentration / notional\`)
+  * Cumulative drawdown > 5% sur la journée (kill switch préventif)
+- Sinon : accept avec TA conviction (0.65-0.95 selon contexte). Ne pas
+  refuser sur "scanner_score trop bas" — le scanner a déjà fait son job.
+
 CONTEXTE NEWS (input \`news_recent\` — eodhd dernières 2h) :
 - Sentiment fort négatif (≤ -0.6) sur un ticker que tu DÉTIENS → propose close
 - Sentiment fort positif (≥ +0.7) sur un ticker dans candidates → bonus conviction
