@@ -3635,6 +3635,24 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       return { symbol, price: cached.price, asOf: cached.asOf, source: cached.source };
     }
 
+    // 0-crypto. FIX chicken-egg crypto (03/06/2026) : le WS Binance ne souscrit
+    // que les positions DÉJÀ ouvertes (cf. lisa-autopilot updateActiveCryptoSymbols).
+    // Un NOUVEAU candidat crypto (NEAR, OP...) n'a donc pas de cache WS → tombait
+    // en `stale_eodhd` → STALE_GUARD bloquait l'ouverture → position jamais ouverte
+    // → WS jamais souscrit → boucle. On casse la boucle : pour tout symbole
+    // convertible en paire Binance, fetch REST direct (ticker/24hr, lastPrice
+    // frais). source='binance_rest' (NON-stale → STALE_GUARD passe). Binance
+    // market data = public, pas de clé. Fonctionne depuis Fly (BNBUSDT prouvé).
+    const binSym = this.binanceMarket.toBinanceSymbol(symbol);
+    if (binSym) {
+      const ticker = await this.binanceMarket.getTicker24h(binSym).catch(() => null);
+      if (ticker && Number.isFinite(ticker.lastPrice) && ticker.lastPrice > 0) {
+        // Alimente le cache realtime pour les checks suivants (cohérence + coût).
+        this.realtimePrice.setCached(symbol, String(ticker.lastPrice), 'binance_ws', now);
+        return { symbol, price: String(ticker.lastPrice), asOf: now, source: 'binance_rest' };
+      }
+    }
+
     // 0bis. Asie (Corée/Chine) : EODHD ne couvre pas le live sur ces marchés
     // (intraday récurremment auto-blacklisté → la cascade EODHD ci-dessous
     // tomberait en `fallback_unknown` → garde-fou fallback skippe tout stop/TP
