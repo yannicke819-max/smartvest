@@ -132,9 +132,13 @@ export class ScannerLlmRouterService {
    * callWithPro() pour que TOUT le système (scout, helpers scanner,
    * post-mortem, Strategy Coach) passe par Mistral en primary quand activé.
    */
-  async call(params: LlmCallParams): Promise<{ content: string; providerId: string; costUsd: number; latencyMs: number; fallbackUsed: boolean }> {
+  async call(params: LlmCallParams & { skipMistralPrimary?: boolean }): Promise<{ content: string; providerId: string; costUsd: number; latencyMs: number; fallbackUsed: boolean }> {
+    // skipMistralPrimary : pour les call-sites qui ont besoin de suivre des
+    // instructions explicites contre un bias d'entraînement (ex: LLM_GATE
+    // scanner qui dit "ne PAS rejeter sur changePct" — Mistral ignore et
+    // applique son bias "pump > 10% = bad"). Force le path Gemini chain.
     // Mistral primary path (gated par env)
-    if (this.primaryProvider === 'mistral-medium' && this.mistralShadow) {
+    if (!params.skipMistralPrimary && this.primaryProvider === 'mistral-medium' && this.mistralShadow) {
       try {
         const res = await this.mistralShadow.call({
           system: params.system,
