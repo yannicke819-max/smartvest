@@ -68,6 +68,11 @@ beforeEach(() => {
 function makeService(): TopGainersScannerService {
   mockConfig.get.mockImplementation((key: string) => {
     if (key === 'SCAN_INTERVAL_MINUTES') return '15';
+    // Désactive le CHOP_NOISE gate (commit ca8fcc6) — sans ADX/momentum/bucket,
+    // makeCandidate() est systématiquement classifié CHOP_NOISE par le fallback
+    // du classifier. Ce test scope cible la persistence shadow logging, pas le
+    // classifier. On disable explicitement la gate ici pour préserver l'intent.
+    if (key === 'GAINERS_REJECT_CHOP_NOISE_ENABLED') return 'false';
     return undefined;
   });
   return new TopGainersScannerService(

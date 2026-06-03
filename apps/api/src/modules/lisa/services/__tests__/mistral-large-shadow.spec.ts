@@ -2,7 +2,7 @@
  * Smoke tests pour MistralLargeShadowService (PR #521).
  * Test minimal qui valide le service cheap tier Mistral Large 3 :
  * - isConfigured selon flag dédié MISTRAL_LARGE_SHADOW_ENABLED (distinct de MISTRAL_SHADOW_ENABLED)
- * - Pricing hardcoded Large 3 ($0.50/$1.50)
+ * - Pricing hardcoded Large 2.x ($2.00/$6.00 — recalibré 03/06/2026)
  * - Best-effort (jamais throw, error captured)
  */
 import { ConfigService } from '@nestjs/config';
@@ -55,7 +55,7 @@ describe('MistralLargeShadowService (PR #521 cheap tier)', () => {
     expect(svcLargeOn.isConfigured()).toBe(true);
   });
 
-  it('call() pricing hardcoded Large 3 ($0.50 in / $1.50 out)', async () => {
+  it('call() pricing hardcoded Large 2.x ($2.00 in / $6.00 out)', async () => {
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
       status: 200,
@@ -69,8 +69,9 @@ describe('MistralLargeShadowService (PR #521 cheap tier)', () => {
     );
     const r = await svc.call({ system: 's', user: 'u' });
     expect(r.error).toBeNull();
-    // 2M × $0.50/M + 1M × $1.50/M = $1.00 + $1.50 = $2.50
-    expect(r.costUsd).toBeCloseTo(2.5, 5);
+    // Recalibré 03/06/2026 — mistral-large-2.x $2.00/$6.00 par MTok.
+    // 2M × $2.00/M + 1M × $6.00/M = $4.00 + $6.00 = $10.00
+    expect(r.costUsd).toBeCloseTo(10, 5);
     expect(r.providerId).toBe('mistral-large');
     expect(r.model).toBe('mistral-large-latest');
   });

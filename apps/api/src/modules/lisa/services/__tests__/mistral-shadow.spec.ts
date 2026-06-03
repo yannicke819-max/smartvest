@@ -46,7 +46,7 @@ describe('MistralShadowService', () => {
     expect(r.costUsd).toBe(0);
   });
 
-  it('call() HTTP 200 — cost via pricing Medium 3.5 default ($1.50 in / $7.50 out)', async () => {
+  it('call() HTTP 200 — cost via pricing Medium 2505 default ($0.40 in / $2.00 out)', async () => {
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
       status: 200,
@@ -61,8 +61,8 @@ describe('MistralShadowService', () => {
     expect(r.content).toContain('hold');
     expect(r.inputTokens).toBe(2_000_000);
     expect(r.outputTokens).toBe(1_000_000);
-    // Default = mistral-medium-latest → 2M × $1.50/M + 1M × $7.50/M = $3 + $7.50 = $10.50
-    expect(r.costUsd).toBeCloseTo(10.5, 5);
+    // Default = mistral-medium-latest (Medium 2505) → 2M × $0.40/M + 1M × $2.00/M = $0.80 + $2.00 = $2.80
+    expect(r.costUsd).toBeCloseTo(2.8, 5);
     expect(r.providerId).toBe('mistral-medium');
     expect(r.model).toBe('mistral-medium-latest');
   });
@@ -80,8 +80,8 @@ describe('MistralShadowService', () => {
       mockConfig({ MISTRAL_API_KEY: 'sk-test', MISTRAL_SHADOW_ENABLED: 'true', MISTRAL_SHADOW_MODEL: 'mistral-large-latest', MISTRAL_FREE_TIER: 'false' }),
     );
     const r = await svc.call({ system: 's', user: 'u' });
-    // Large 3 = $0.50 in + $1.50 out → 2M × $0.50 + 1M × $1.50 = $1.00 + $1.50 = $2.50
-    expect(r.costUsd).toBeCloseTo(2.5, 5);
+    // Large 2.x = $2.00 in + $6.00 out → 2M × $2.00 + 1M × $6.00 = $4.00 + $6.00 = $10.00
+    expect(r.costUsd).toBeCloseTo(10, 5);
     expect(r.providerId).toBe('mistral-large');
     expect(r.model).toBe('mistral-large-latest');
   });
