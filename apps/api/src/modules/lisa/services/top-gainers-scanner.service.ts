@@ -3140,21 +3140,30 @@ export class TopGainersScannerService implements OnModuleInit {
       // .SS/.SZ inclus aussi pour back-compat (convention Yahoo Finance ; EODHD utilise .SHG/.SHE)
       //  - .KQ                : n=32, WR 31%, Σ -$407 (KOSDAQ opening)
       // En revanche .KQ rest 02-08h UTC = WR 57%, Σ +$96 sur n=63 — veine prouvée.
-      // Le gate envisage donc une fenêtre stricte 00-02h UTC ban sur ces 6 suffixes.
-      // Opt-out via env `GAINERS_ASIA_OPENING_SUFFIX_BAN_ENABLED=false` (default true).
+      //
+      // MISSION PÉPITES 03/06/2026 04:30 UTC — retrait .KQ du ban :
+      //   Audit shadow funnel session 03/06 a montré 104 KQ rejets `reject_other`
+      //   entre 00-02h UTC sur 992 events total. Or sur 30j historique en mode
+      //   open : .KQ = 12 trades, WR 75%, Σ +$15.48 (CLAUDE.md). Le bucket KQ
+      //   est LE bucket gagnant identifié — le ban opening kill précisément les
+      //   pépites de la session. Les autres suffixes (.T/.HK/.SHG/.SHE/.SI/
+      //   .SS/.SZ) restent bannis : leurs stats opening confirment -$527 et
+      //   .SHE historiquement 0% WR sur 4 trades 30j.
+      //
+      // Opt-out global via env `GAINERS_ASIA_OPENING_SUFFIX_BAN_ENABLED=false` (default true).
       const asiaOpeningBanEnabled = (this.config.get<string>('GAINERS_ASIA_OPENING_SUFFIX_BAN_ENABLED') ?? 'true').toLowerCase() === 'true';
       if (asiaOpeningBanEnabled) {
         const nowHourUtc = new Date().getUTCHours();
         if (nowHourUtc < 2) {
           const symUpper = cand.symbol.toUpperCase();
+          // .KQ retiré 03/06 (cf. commentaire ci-dessus — bucket gagnant 75% WR).
           const isBanned = symUpper.endsWith('.T')
             || symUpper.endsWith('.HK')
             || symUpper.endsWith('.SHG')
             || symUpper.endsWith('.SHE')
             || symUpper.endsWith('.SS')
             || symUpper.endsWith('.SZ')
-            || symUpper.endsWith('.SI')
-            || symUpper.endsWith('.KQ');
+            || symUpper.endsWith('.SI');
           if (isBanned) {
             this.logger.log(
               `[top-gainers] ${cand.symbol} ASIA_OPENING_SUFFIX_BAN actif (heure UTC ${nowHourUtc} < 02:00, suffix opening-toxic) → skip (lesson MFE/MAE 3w)`,
