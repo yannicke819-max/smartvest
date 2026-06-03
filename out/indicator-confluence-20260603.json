@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-06-03T14:34:51.427Z",
+  "generated_at": "2026-06-03T14:44:03.302Z",
   "methodology": {
     "sample": 5000,
     "horizon_min": 60,
@@ -7,65 +7,65 @@
     "sl_pct": 1.5,
     "source": "top_gainers_log + confluence MFI/ROC/Volume"
   },
-  "processed": 1515,
+  "processed": 2494,
   "baseline": {
-    "WIN": 415,
-    "LOSE": 1071,
-    "NEUTRAL": 29
+    "WIN": 1255,
+    "LOSE": 989,
+    "NEUTRAL": 250
   },
-  "baseline_wr": 0.27927321668909827,
+  "baseline_wr": 0.5592691622103387,
   "filtered_pass": {
-    "WIN": 401,
-    "LOSE": 1050,
-    "NEUTRAL": 29
+    "WIN": 1197,
+    "LOSE": 969,
+    "NEUTRAL": 243
   },
-  "filtered_pass_wr": 0.27636113025499653,
+  "filtered_pass_wr": 0.5526315789473685,
   "filtered_block": {
-    "WIN": 14,
-    "LOSE": 21,
-    "NEUTRAL": 0
+    "WIN": 58,
+    "LOSE": 20,
+    "NEUTRAL": 7
   },
-  "filtered_block_wr": 0.4,
+  "filtered_block_wr": 0.7435897435897436,
   "by_signal_count": {
     "0": {
-      "WIN": 285,
-      "LOSE": 767,
-      "NEUTRAL": 21
+      "WIN": 783,
+      "LOSE": 658,
+      "NEUTRAL": 163
     },
     "1": {
-      "WIN": 116,
-      "LOSE": 283,
-      "NEUTRAL": 8
+      "WIN": 414,
+      "LOSE": 311,
+      "NEUTRAL": 80
     },
     "2": {
-      "WIN": 13,
-      "LOSE": 20,
-      "NEUTRAL": 0
+      "WIN": 53,
+      "LOSE": 19,
+      "NEUTRAL": 7
     },
     "3": {
-      "WIN": 1,
+      "WIN": 5,
       "LOSE": 1,
       "NEUTRAL": 0
     }
   },
   "by_signal_individual": {
     "mfi_div": {
-      "triggered": 14,
-      "win_rate": 0.2857142857142857,
-      "n_win": 4,
-      "n_total": 14
+      "triggered": 90,
+      "win_rate": 0.7222222222222222,
+      "n_win": 65,
+      "n_total": 90
     },
     "roc_flat": {
-      "triggered": 127,
-      "win_rate": 0.36220472440944884,
-      "n_win": 46,
-      "n_total": 127
+      "triggered": 180,
+      "win_rate": 0.6444444444444445,
+      "n_win": 116,
+      "n_total": 180
     },
     "vol_fade": {
-      "triggered": 338,
-      "win_rate": 0.28106508875739644,
-      "n_win": 95,
-      "n_total": 338
+      "triggered": 711,
+      "win_rate": 0.4978902953586498,
+      "n_win": 354,
+      "n_total": 711
     }
   }
 }

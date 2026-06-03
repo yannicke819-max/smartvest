@@ -212,28 +212,40 @@ function simulateOutcome(candles: Candle[], entryTs: number, entryPrice: number,
 (async () => {
   console.log(`\n========== PHASE B+ — CONFLUENCE BACKTEST ==========\n`);
 
-  // 1. Fetch candidates (same logic Phase B)
-  const since = new Date(Date.now() - 28 * 86400_000).toISOString();
-  const candidates: any[] = [];
-  let pageFrom = 0, pageSize = 1000;
-  while (candidates.length < SAMPLE) {
-    const { data, error } = await sb.from('top_gainers_log')
+  // 1. Fetch candidates — STRATIFIÉ (fix biais 03/06 : l'ancien fetch prenait
+  // les 5000 plus VIEUX rows = concentré début mai = 36 symbols seulement).
+  // Nouveau : échantillonne sur chaque jour des 28 derniers + cap par symbol.
+  const MAX_PER_SYMBOL = Number(process.argv.find((a) => a.startsWith('--max-per-symbol='))?.slice('--max-per-symbol='.length) ?? '30');
+  console.log(`Stratified sampling — max ${MAX_PER_SYMBOL} candidates/symbol across 28 days`);
+  const rawCandidates: any[] = [];
+  for (let day = 0; day < 28; day++) {
+    const from = new Date(Date.now() - (day + 1) * 86400_000).toISOString();
+    const to = new Date(Date.now() - day * 86400_000).toISOString();
+    // Pull up to 2000 par jour, randomisés ensuite
+    const { data } = await sb.from('top_gainers_log')
       .select('symbol, captured_at, close_price, change_pct, market, decision')
-      .gte('captured_at', since).in('decision', ['passed', 'opened'])
-      .order('captured_at', { ascending: true }).range(pageFrom, pageFrom + pageSize - 1);
-    if (error || !data || data.length === 0) break;
-    candidates.push(...data);
-    if (data.length < pageSize) break;
-    pageFrom += pageSize;
+      .gte('captured_at', from).lt('captured_at', to)
+      .in('decision', ['passed', 'opened'])
+      .limit(2000);
+    if (data) rawCandidates.push(...data);
   }
-  console.log(`Candidates: ${candidates.length}`);
-  if (candidates.length > SAMPLE) {
-    for (let i = candidates.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
-    }
-    candidates.length = SAMPLE;
+  console.log(`Raw candidates (28d stratified): ${rawCandidates.length}`);
+  // Shuffle
+  for (let i = rawCandidates.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [rawCandidates[i], rawCandidates[j]] = [rawCandidates[j], rawCandidates[i]];
   }
+  // Cap per symbol
+  const perSymbolCount: Record<string, number> = {};
+  const candidates: any[] = [];
+  for (const c of rawCandidates) {
+    if (candidates.length >= SAMPLE) break;
+    const n = perSymbolCount[c.symbol] ?? 0;
+    if (n >= MAX_PER_SYMBOL) continue;
+    perSymbolCount[c.symbol] = n + 1;
+    candidates.push(c);
+  }
+  console.log(`Candidates after cap: ${candidates.length}`);
 
   // 2. Group + process
   const bySymbol: Record<string, any[]> = {};
