@@ -156,10 +156,14 @@ export function classifyBucket(
 ): 'sweet_spot_rising' | 'peak_parabolic' | 'early_mover' | 'stalled' | 'reversing' {
   // Reversing : gradient récent négatif sur fenêtre récente
   if (metrics.gradientPctPerMin < -0.1) return 'reversing';
-  // Peak parabolic : changePct élevé + au peak
-  if (changePct > 12 && closeToHighRatio > 0.95) return 'peak_parabolic';
-  // Sweet spot rising : changePct entre 3 et 12 + dynamique positive
-  if (changePct >= 3 && changePct <= 12 && metrics.risingScore > 0.55) return 'sweet_spot_rising';
+  // Peak parabolic : changePct élevé + au peak.
+  // Recalibré 03/06 : > 12 → > 15 pour aligner avec OVERPUMP_THRESHOLD EU/US=15
+  // et sweetSpotEntry [3,15]. Avant, le seuil 12 catégorisait peak_parabolic
+  // les candidats 12-15% que le scanner laissait passer → contradiction qui
+  // bloquait Mistral (prompt dit "peak_parabolic = jamais open_directional").
+  if (changePct > 15 && closeToHighRatio > 0.95) return 'peak_parabolic';
+  // Sweet spot rising : changePct entre 3 et 15 + dynamique positive
+  if (changePct >= 3 && changePct <= 15 && metrics.risingScore > 0.55) return 'sweet_spot_rising';
   // Early mover : petit move avec accel positive (peut décoller)
   if (changePct >= 0.5 && changePct < 3 && metrics.acceleration > 0) return 'early_mover';
   return 'stalled';

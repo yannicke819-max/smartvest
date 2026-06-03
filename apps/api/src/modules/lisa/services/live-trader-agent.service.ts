@@ -75,7 +75,7 @@ const SYSTEM_PROMPT_BASE = `Tu es un trader intraday professionnel autonome qui 
 
 PATTERNS VALIDÉS (priorité haute — observation 28/05/2026, à amplifier dès Asia 00:00 UTC) :
 
-★ KOSDAQ SMALL-MID (suffix .KQ) = veine PROUVÉE : MIDDLE 28/05 a fait 2 TP clean = +$120 sur 208710.KQ (+2.10%, hold 4min) et 200470.KQ (+1.89%, hold 3min) en session asia matin. Pattern : KOSDAQ small-mid momentum 1m persistant 1-5min, TP rapide 2%. Si un .KQ apparaît dans candidates avec changePct 3-8% et persistenceScore ≥ 0.6 → setup A+, conf 0.85+, notional 3000-4000, TP 2-2.5%, SL 1.5%.
+★ KOSDAQ SMALL-MID (suffix .KQ) = veine PROUVÉE : MIDDLE 28/05 a fait 2 TP clean = +$120 sur 208710.KQ (+2.10%, hold 4min) et 200470.KQ (+1.89%, hold 3min) en session asia matin. Pattern : KOSDAQ small-mid momentum 1m persistant 1-5min, TP rapide 2%. Si un .KQ apparaît dans candidates avec changePct 3-15% (recalibré 03/06 — sample initial était 3-8% mais on étend à 15% pour collecter data 1-2 sem) et persistenceScore ≥ 0.6 → setup A+, conf 0.85+, notional 3000-4000, TP 2-2.5%, SL 1.5%.
 
 ★ ORPHAN_CLOSE PRE-CLOCHE = R/R ABSURDE : TRADER 28/05 a fait +$190 net (CHRT.LSE +$105 +$37, IQE.LSE +$47) en fermant systématiquement les positions sur marchés fermant <30 min. **RÈGLE IMPÉRATIVE NON-AMBIGUË** (révisée 29/05 après incident 382840.KQ fermée à -$16.97 par erreur de discipline) :
 
@@ -1646,7 +1646,7 @@ Recommendation rules :
     //   - closeToHighRatio : close / high (1.0 = au top du jour, < 0.9 = retrace)
     //   - volumeRatio : volume / avgVol50d (>2.0 = momentum confirmé)
     //   - kellyMaxNotional : USD plafond Kelly fraction (TP 2.5% SL 1.5% p_win=0.5 → max 20% cap)
-    //   - sweetSpotEntry : booléen, true si changePct ∈ [3,8]% (winning bucket)
+    //   - sweetSpotEntry : booléen, true si changePct ∈ [3,15]% (winning bucket)
     // Ces champs sont injectés dans le userPrompt JSON et lus naturellement par le LLM.
     // PAS de gate hardcodé — décision reste autonome côté Gemini Pro.
     const feedMin = Number(this.config.get<string>('TRADER_FEED_MIN_PCT') ?? '2');
@@ -1733,7 +1733,7 @@ Recommendation rules :
    *   - kellyMaxNotional = TRADER_CAPITAL × Kelly fraction (TP 2.5% SL 1.5% p_win=0.5 fallback)
    *     · Formule : f* = (TP×p_win - SL×(1-p_win)) / TP = 0.20 (default 0.5 win prob)
    *     · → max $2000 sur $10k capital tant que p_win pas remontée par P9
-   *   - sweetSpotEntry = (changePct ∈ [3,8]%) : true si dans le bucket gagnant historique
+   *   - sweetSpotEntry = (changePct ∈ [3,15]%) : true si dans le bucket gagnant historique
    *
    * Cf. scanner_lessons : 319e867e (PULLBACK_WAIT), ab035237 (velocity), 42101ada (Kelly),
    * aa6eda5f (pump score).
@@ -1766,8 +1766,14 @@ Recommendation rules :
     // LISA refonte A.4 — utilise currentCapital (composé) au lieu du constant.
     const kellyMaxNotional = Math.round(currentCapital * 0.20);
 
-    // Sweet spot bucket gagnant historique (lesson aa6eda5f) : [3,8]%
-    const sweetSpotEntry = changePct >= 3 && changePct <= 8;
+    // Sweet spot bucket d'entrée — band [3,15]% recalibrée 03/06 ("trade large
+    // 1-2 sem"). Avant : [3,8]% sourcé lesson aa6eda5f (archivée). Le band
+    // étroit envoyait `sweetSpotEntry: false` à Mistral dès changePct > 8% →
+    // Mistral interprétait "hors sweet spot = ne pas entrer" et générait
+    // [PULLBACK_WAIT] sur RPI/PRX/IFX (9-11%) — SOURCE RACINE des 11h sans
+    // trade aujourd'hui. Aligné avec OVERPUMP_THRESHOLD_PCT_EU/US=15 et la
+    // règle prompt C qui dit explicitement "3-15% = momentum sain".
+    const sweetSpotEntry = changePct >= 3 && changePct <= 15;
 
     return {
       symbol: c.symbol,
@@ -2088,9 +2094,9 @@ Tu vois maintenant 5 métriques par candidat, computées sur les 12 dernières c
 - risingScore : 0-1 composite. >0.65 strong momentum, 0.4-0.65 neutre, <0.35 reversing.
 
 bucket classification (déterministe côté scanner, à utiliser comme HEURISTIQUE prioritaire) :
-- sweet_spot_rising : changePct ∈ [3,12]% + momentum positif → SETUP A à A+ pour entry long.
+- sweet_spot_rising : changePct ∈ [3,15]% + momentum positif → SETUP A à A+ pour entry long (recalibré 03/06, avant [3,12]).
 - early_mover : changePct ∈ [0.5,3]% + accel positive → SETUP B, premier signal, plus risqué mais R/R supérieur.
-- peak_parabolic : changePct > 12 + closeToHigh > 0.95 → PASS, late entry, P&D risk élevé.
+- peak_parabolic : changePct > 15 + closeToHigh > 0.95 → PASS, late entry, P&D risk élevé (recalibré 03/06, avant > 12).
 - stalled : sweet-spot zone MAIS momentum faible (risingScore < 0.55) → WAIT pullback, ne pas chase.
 - reversing : gradient < -0.1 → SKIP long, peut être short si setup confirme.
 

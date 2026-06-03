@@ -7,11 +7,11 @@
  * Score = w1·sweetSpotProximity + w2·volumeStrength + w3·notAtPeakBonus
  *       + w4·mcapTier - w5·parabolicPenalty
  *
- *   sweetSpotProximity : 1 = au sweet-spot 3-8% changePct, 0 = très loin
+ *   sweetSpotProximity : 1 = au sweet-spot 3-15% changePct, 0 = très loin (recalibré 03/06)
  *   volumeStrength     : clamp(volumeRatio / 2, 0, 1) — surge volume = signal
  *   notAtPeakBonus     : 1 - closeToHighRatio — plus on est sous le high, plus on respire
  *   mcapTier           : tier 0 (<100M) à 1 (>10B), préférence mid/large pour liquidité
- *   parabolicPenalty   : pénalité forte si changePct > 12% (= au-delà du sweet-spot)
+ *   parabolicPenalty   : pénalité forte si changePct > 15% (= au-delà du sweet-spot, recalibré 03/06)
  *
  * Architecture additive : remplace UNIQUEMENT l'ordre des candidats. Tous les
  * candidats remontés par EODHD restent dans la liste, juste mieux triés.
@@ -60,11 +60,11 @@ export function parseCompositeWeights(raw: string | undefined): CompositeWeights
   };
 }
 
-/** Sweet-spot proximity: cloche centrée sur 5.5% (= milieu du range gagnant 3-8%). */
+/** Sweet-spot proximity: cloche centrée sur 9% (= milieu du range gagnant 3-15%, recalibré 03/06). */
 function sweetSpotProximity(changePct: number): number {
   if (!Number.isFinite(changePct)) return 0;
-  const target = 5.5;
-  const sigma = 3; // largeur de la cloche : tolère 3-8 confortablement
+  const target = 9;
+  const sigma = 6; // largeur de la cloche : tolère 3-15 confortablement
   const z = (changePct - target) / sigma;
   return Math.max(0, Math.exp(-(z * z) / 2));
 }
@@ -89,12 +89,14 @@ function mcapTier(marketCap: number | null | undefined): number {
   return 0;
 }
 
-/** Parabolic penalty: 0 si <8%, ramp up vers 1 à 25%. Tue les Korean limit-up +30%. */
+/** Parabolic penalty: 0 si <15%, ramp up vers 1 à 30%. Recalibré 03/06 — tue
+ *  uniquement les vrais paraboliques (Korean limit-up +30%, US small cap mania).
+ *  Avant : ramp 8-25 → pénalisait à tort la veine 9-15% (RPI/PRX/IFX rejetés). */
 function parabolicPenalty(changePct: number): number {
   if (!Number.isFinite(changePct)) return 0;
-  if (changePct <= 8) return 0;
-  if (changePct >= 25) return 1;
-  return (changePct - 8) / 17; // linéaire entre 8 et 25
+  if (changePct <= 15) return 0;
+  if (changePct >= 30) return 1;
+  return (changePct - 15) / 15; // linéaire entre 15 et 30
 }
 
 /** Compute le score composite d'un candidat. Retourne valeur dans ~[-0.15, 0.85]. */
