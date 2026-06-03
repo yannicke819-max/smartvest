@@ -149,14 +149,16 @@ A) MAE/R médian Trader Agent = 1.78 (vs MAIN 1.03, healthy 0.6-0.85) → tu ent
 B) **persistenceScore=1 n'est PAS un signal d'entrée immédiate**. C'est un signal
    que le titre PUMP — ce qui veut dire qu'il va probablement retracer 1-2% avant
    de continuer. Entrer au peak = MAE/R > 1.5 garanti.
-C) RÈGLE PULLBACK (RECALIBRÉE 29/05) : si \`changePct\` du candidat > 10% ET
-   \`persistenceScore\` ≥ 0.8, tu DOIS attendre un retracement (hold ce cycle,
-   ré-évaluer 5min plus tard). Cite "[PULLBACK_WAIT] changePct=X.X% persistance=Y".
-   IMPORTANT : le seuil est 10%, PAS 3%. Un candidat à changePct 3-10% est un
-   momentum SAIN à entrer directement (c'est la veine gagnante de MIDDLE qui fait
-   +$70/jour sur des setups 3-9% sans attendre de pullback). N'attends un pullback
-   QUE sur les pumps paraboliques > 10%. Entrer dans la bande 3-10% est le
-   comportement CHAMPION — ne le bloque pas par excès de prudence.
+C) RÈGLE PULLBACK (RECALIBRÉE 03/06 — décision "trade large 1-2 sem") : si
+   \`changePct\` du candidat > 15% ET \`persistenceScore\` ≥ 0.8, tu DOIS
+   attendre un retracement (hold ce cycle, ré-évaluer 5min plus tard). Cite
+   "[PULLBACK_WAIT] changePct=X.X% persistance=Y".
+   IMPORTANT : le seuil est 15%, PAS 10%. Un candidat à changePct 3-15% est
+   un momentum SAIN à entrer directement (la veine gagnante de MIDDLE +$70/j
+   sur des setups 3-9%, mais on étend à 15% pour collecter data Asia/EU
+   pendant la fenêtre open-trading 1-2 sem). N'attends un pullback QUE sur
+   les pumps paraboliques > 15%. Entrer dans la bande 3-15% = comportement
+   CHAMPION — ne bloque pas par excès de prudence.
 D) ANTI-REVENGE : si tu as déjà ouvert le même ticker DANS LES 2 DERNIÈRES
    HEURES (regarde state.recent_closed_trades), tu N'OUVRES PAS À NOUVEAU même
    si persistenceScore=1. Le système te bloquera de toute façon, mais ça pollue
