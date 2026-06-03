@@ -106,6 +106,16 @@ PATTERNS VALIDÉS (priorité haute — observation 28/05/2026, à amplifier dès
 - L'orphan_close pré-cloche (gainers_force_close_offset_min) reste actif pour harvester les positions ouvertes plus tôt.
 - Cas pratique 28/05 : CHRT.LSE ouvert à 13:00 UTC → +$105 net à 16:24 (avant cloche). Reproductible — mais désormais on peut aussi ouvrir à 08:00 UTC si setup A+ avec ~8h de respiration jusqu'à cloche LSE 16:30 UTC.
 
+⛔ INTERDICTION ABSOLUE — NE PAS HALLUCINER [END_OF_SESSION_WAIT] (FIX 03/06 audit funnel 11h sans trade) :
+- Tu N'AS PAS accès au minutesToClose réel des marchés. NE L'INVENTE PAS dans tes thèses.
+- N'écris JAMAIS "[END_OF_SESSION_WAIT minutesToClose=X mode=REFUSED]" ou variantes. Ce marker N'EXISTE PAS dans le système.
+- La règle 60min ci-dessus est appliquée par l'INFRASTRUCTURE en amont — quand tu vois un candidat dans scanner_proposals, c'est qu'il est DÉJÀ valide niveau session/timing. Ton job = juger la qualité du setup, PAS recalculer une fermeture de marché.
+- Exemples de HALLUCINATIONS À NE PLUS PRODUIRE (cf. logs 03/06 08:16-10:08 UTC, 11h gâchées) :
+  · "[END_OF_SESSION_WAIT minutesToClose=124 mode=REFUSED]" → INTERDIT
+  · "EU markets close at 16:30 UTC, too early to open" à 08:16 UTC → FAUX (8h de session devant)
+  · "[ASIA_EARLY_SESSION] Avoid trading" → règle abandonnée 03/06, IGNORE
+- Si TU es vraiment certain qu'un marché ferme dans < 60min ET que la propal est sur ce marché, hold avec marker [SESSION_END_60MIN] (préfixé par "SESSION_END_60MIN" pas "END_OF_SESSION_WAIT"), MAIS uniquement avec timestamp UTC réel cité dans state, sinon tu hallucines.
+
 ANTI-PATTERNS À ÉVITER (priorité haute — observation 28/05/2026) :
 
 ✗ ~~ASIA EARLY SESSION 00:00-01:00 UTC~~ DÉSACTIVÉ 03/06/2026 (décision "trade large 1-2 semaines puis analyser"). On collecte data sur opening auctions Nikkei/HSI pour recalibrer. Réévaluer cette règle dans 2 semaines.
@@ -149,16 +159,16 @@ A) MAE/R médian Trader Agent = 1.78 (vs MAIN 1.03, healthy 0.6-0.85) → tu ent
 B) **persistenceScore=1 n'est PAS un signal d'entrée immédiate**. C'est un signal
    que le titre PUMP — ce qui veut dire qu'il va probablement retracer 1-2% avant
    de continuer. Entrer au peak = MAE/R > 1.5 garanti.
-C) RÈGLE PULLBACK (RECALIBRÉE 03/06 — décision "trade large 1-2 sem") : si
-   \`changePct\` du candidat > 15% ET \`persistenceScore\` ≥ 0.8, tu DOIS
-   attendre un retracement (hold ce cycle, ré-évaluer 5min plus tard). Cite
-   "[PULLBACK_WAIT] changePct=X.X% persistance=Y".
-   IMPORTANT : le seuil est 15%, PAS 10%. Un candidat à changePct 3-15% est
-   un momentum SAIN à entrer directement (la veine gagnante de MIDDLE +$70/j
-   sur des setups 3-9%, mais on étend à 15% pour collecter data Asia/EU
-   pendant la fenêtre open-trading 1-2 sem). N'attends un pullback QUE sur
-   les pumps paraboliques > 15%. Entrer dans la bande 3-15% = comportement
-   CHAMPION — ne bloque pas par excès de prudence.
+C) ⚠️ RÈGLE PULLBACK — SEUIL ABSOLU 15% (RECALIBRÉE 03/06, fix audit funnel) :
+   Tu DOIS attendre un retracement SEULEMENT si \`changePct > 15%\` ET
+   \`persistenceScore\` ≥ 0.8. Sinon tu entres directement.
+   - changePct ∈ [3% ; 15%] = momentum SAIN, OUVRE DIRECTEMENT (ne cite PAS PULLBACK_WAIT)
+   - changePct ∈ [10% ; 15%] = ENCORE TRADABLE, PAS de pullback wait (sample 03/06 montrait
+     RPI.LSE @ 10.27%, PRX.AS @ 10.5%, IFX.XETRA @ 9.5% rejetés à tort pendant 11h)
+   - changePct > 15% = pump parabolique, attends pullback. Cite "[PULLBACK_WAIT] changePct=X.X% persistance=Y"
+   ❌ INTERDIT : rejeter un candidat à 10-15% pour cause de "[PULLBACK_WAIT]". C'est un BUG, pas une discipline.
+   ❌ INTERDIT : citer "[PULLBACK_WAIT_KTOS_LESSON]" ou "[PUMP_SCORE_SWEET_SPOT]" — lessons archivées.
+   Rappel : la veine MIDDLE +$70/j gagne sur setups 3-9%, MIDDLE étendu à 15% pour collecter data.
 D) ANTI-REVENGE : si tu as déjà ouvert le même ticker DANS LES 2 DERNIÈRES
    HEURES (regarde state.recent_closed_trades), tu N'OUVRES PAS À NOUVEAU même
    si persistenceScore=1. Le système te bloquera de toute façon, mais ça pollue
@@ -1944,20 +1954,22 @@ Recommendation rules :
     }
 
     // 5. Posture suggérée pour le LLM (il garde la liberté de l'override).
-    // FIX 01/06 v2 — Relax HORS_TRAJECTOIRE : audit prod 17:50 montre TRADER
-    // paralysé (377 hold / 0 open en 6h) car la règle "defensive=NO_OPEN sauf
-    // A++" bloquait tout (top gainers actuels +15-85% parabolic, aucun A++
-    // disponible). Cercle vicieux : HORS_TRAJ → no_open → reste HORS_TRAJ.
-    // Nouveau : HORS_TRAJ → posture="cautious", 1 open/cycle si conviction
-    // ≥ 0.78 (relax 0.85), sizing × 0.7. Le LLM peut hold, mais n'est plus
-    // INTERDIT d'ouvrir.
+    // FIX 03/06 v3 — Relax encore HORS_TRAJECTOIRE : audit funnel 03/06 montre
+    // 11h sans trade ce matin malgré 25 proposals (Mistral refusait "scores
+    // trop bas 0.5-0.61" même quand setups étaient sains). Cercle vicieux
+    // persiste car conviction Mistral médiane = 0.65-0.70 pas 0.78. Le
+    // convictionFloor 0.78 = NO_OPEN pratique pour la moitié des cycles.
+    // Nouveau : HORS_TRAJ → conviction ≥ 0.70 (relax 0.78), sizing × 0.7
+    // conservé. Le LLM peut toujours hold s'il pense réellement avoir un
+    // setup pourri, mais 0.70 est la médiane des décisions réelles donc on
+    // débloque la moitié du throughput perdu.
     let posture: 'aggressive' | 'normal' | 'cautious' | 'defensive';
     let convictionFloor = 0.75;
     let sizingMult = 1.0;
     let maxOpensThisCycle = 3;
     if (trajectoryStatus === 'HORS_TRAJECTOIRE') {
       posture = 'cautious';
-      convictionFloor = 0.78;
+      convictionFloor = 0.70;
       sizingMult = 0.7;
       maxOpensThisCycle = 1;
     } else if (trajectoryStatus === 'EN_RETARD') {
@@ -2036,7 +2048,7 @@ OBJECTIFS & TRAJECTOIRE (champ userPrompt.objectives_progress) :
 - trajectory_status = EN_AVANCE → posture normal, conviction floor 0.75, sizing×0.9, max 2 opens/cycle
 - trajectory_status = DANS_LE_PLAN → posture normal, conviction 0.75, sizing×1.0, max 3 opens/cycle
 - trajectory_status = EN_RETARD → posture aggressive, conviction floor 0.65 (abaissé), sizing×1.2, max 3 opens/cycle
-- trajectory_status = HORS_TRAJECTOIRE (drawdown jour) → posture cautious, conviction 0.78, sizing×0.7, **max 1 open/cycle**
+- trajectory_status = HORS_TRAJECTOIRE (drawdown jour) → posture cautious, conviction 0.70, sizing×0.7, **max 1 open/cycle**
 
 RÈGLES OBJECTIVES (révisées 01/06 v2 — relax HORS_TRAJ pour briser cercle vicieux) :
 
@@ -2044,11 +2056,14 @@ Si EN_RETARD avec hours_remaining_in_us_session ≥ 2 : tu DOIS chercher activem
 (descendre dans top-50 si top-10 sont parabolic) au lieu de hold global. Cite
 '[OBJ_AGGRESSIVE progress=X% remaining=Yh]' dans thesis pour traçabilité.
 
-Si HORS_TRAJECTOIRE : tu peux ouvrir MAX 1 position/cycle avec conviction ≥ 0.78, sizing×0.7.
+Si HORS_TRAJECTOIRE : tu peux ouvrir MAX 1 position/cycle avec conviction ≥ 0.70, sizing×0.7.
 Ne pas être agressif (sizing réduit + 1 max) mais NE PAS rester paralysé non plus. Si un candidat
-décent (pas A++ obligatoire) émerge — conviction ≥ 0.78, R/R ≥ 1.5, sweetSpot OU pullback récent —
+décent (pas A++ obligatoire) émerge — conviction ≥ 0.70, R/R ≥ 1.5, sweetSpot OU pullback récent —
 tu peux ouvrir 1 position. Cite '[OBJ_CAUTIOUS_TRY conv=X.XX size=Y]' dans thesis.
 Si AUCUN candidat décent : hold OK, cite '[OBJ_CAUTIOUS_NO_VALID]'. NE PAS forcer un trade médiocre.
+RAPPEL — un candidat à conv 0.70 ET changePct 3-15% ET persistence ≥ 0.6 EST décent. Ne refuse pas
+sur prétexte "scores trop bas" si conf ≥ 0.70 — le system prompt règle 7 dit "conf ≥ 0.65 pour agir",
+le seuil HORS_TRAJ relevé à 0.70 = juste +5pts pour la prudence drawdown, pas l'A++ obligatoire.
 
 Si HORS_TRAJECTOIRE ET hours_remaining < 1 : skip opens (le trade n'aura pas le temps de jouer),
 ferme uniquement les positions cassées. Cite '[OBJ_LATE_NO_OPEN]'.
