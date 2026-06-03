@@ -424,32 +424,34 @@ export class OpenPositionRiskMonitorService {
       const currentTp = pos.take_profit_price != null ? Number(pos.take_profit_price) : null;
       if (currentTp != null) suggestedTpPrice = currentTp * 2.0;
     }
+    const rationale = `risk_monitor advisory composite=${composite.toFixed(3)} (sub_a=${subA?.toFixed(2) ?? 'n/a'} sub_b=${subB?.toFixed(2) ?? 'n/a'} sub_c=${subC?.toFixed(2) ?? 'n/a'})`;
     try {
-      const { error } = await this.supabase.getClient()
-        .from('lisa_decision_log')
-        .insert({
-          portfolio_id: pos.portfolio_id,
-          kind: 'risk_advisory',
-          payload: {
-            position_id: pos.id,
-            symbol: pos.symbol,
-            asset_class: pos.asset_class,
-            composite_score: composite,
-            sub_a: subA,
-            sub_b: subB,
-            sub_c: subC,
-            verdict,
-            suggested_action: verdict,
-            suggested_sl_price: suggestedSlPrice,
-            suggested_tp_price: suggestedTpPrice,
-            rationale: `risk_monitor advisory composite=${composite.toFixed(3)} (sub_a=${subA?.toFixed(2) ?? 'n/a'} sub_b=${subB?.toFixed(2) ?? 'n/a'} sub_c=${subC?.toFixed(2) ?? 'n/a'})`,
-            expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
-          },
-        });
-      if (error) {
-        this.logger.warn(`[risk-monitor] ${pos.symbol} advisory INSERT failed: ${error.message}`);
-        return false;
-      }
+      // Route via DecisionLogService.append() : (1) garantit summary/rationale/
+      // triggered_by non-null (constraints DB — l'INSERT direct historique
+      // produisait "null value in column summary" en spam log), (2) chaîne
+      // hash via mutex portfolioQueues (sinon race avec autopilot_cron /
+      // mechanical_cron concurrents → corruption hash chain récurrente).
+      await this.decisionLog.append({
+        portfolioId: pos.portfolio_id,
+        kind: 'risk_advisory',
+        summary: `[RISK_ADVISORY] ${verdict} ${pos.symbol} composite=${composite.toFixed(3)}`,
+        rationale,
+        payload: {
+          position_id: pos.id,
+          symbol: pos.symbol,
+          asset_class: pos.asset_class,
+          composite_score: composite,
+          sub_a: subA,
+          sub_b: subB,
+          sub_c: subC,
+          verdict,
+          suggested_action: verdict,
+          suggested_sl_price: suggestedSlPrice,
+          suggested_tp_price: suggestedTpPrice,
+          expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+        },
+        triggeredBy: 'risk_monitor',
+      });
       this.logger.log(`[risk-monitor] ${pos.symbol} ADVISORY ${verdict} composite=${composite.toFixed(3)} (TRADER décidera)`);
       return true;
     } catch (e) {
