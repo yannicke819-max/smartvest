@@ -782,16 +782,34 @@ Audit 48 échecs `position_open_failed` STALE_GUARD/24h (source `stale_eodhd`=42
 NE JAMAIS blacklister LSE/KQ (winners). Pas de blacklist par symbole (venue only) —
 GABI.LSE reste filtré safe par STALE_GUARD (juste du bruit log).
 
-### Crypto live price = Binance WS (PAS EODHD)
+### Crypto live price = Binance WS + fallback REST (chicken-egg FIXÉ 03/06)
 
 `fetchLivePriceInner` lit `realtimePrice.getCached()` = cache WebSocket Binance.
-NEARUSDT tombé en `stale_eodhd` = Binance WS n'a pas fourni NEAR → fallback EODHD.
-**Risque majeur** : si Fly cdg (Paris) est géo-bloqué par Binance (HTTP 451, cas
-des IP datacenter — vérifié sur sandbox), TOUT le crypto tourne sur fallback EODHD
-stale → crypto effectivement cassé. Binance market data = endpoints PUBLICS (pas
-besoin de clé API) ; le problème est la JOIGNABILITÉ réseau depuis Fly, pas l'auth.
-Diagnostic : grep Fly logs `[binance-ws]` (connecté ? ou 451 ?). Si bloqué →
-soit proxy/region, soit désactiver crypto (`gainers_universe_crypto=false`) jusqu'à fix.
+
+**CHICKEN-EGG historique (fixé db097ab)** : le WS Binance ne souscrit QUE les
+positions crypto **déjà ouvertes** (`lisa-autopilot.updateActiveCryptoSymbols`
+lit `lisa_positions WHERE status=open`). Conséquence : un NOUVEAU candidat crypto
+(NEAR, OP...) n'avait pas de cache WS → `getLivePrice` tombait en `stale_eodhd`
+→ STALE_GUARD bloquait l'open → position jamais ouverte → WS jamais souscrit →
+**boucle infinie**. Seuls 2 BNBUSDT ont jamais ouvert (30-31/05), NEAR/OP bloqués.
+
+**Fix** : `fetchLivePriceInner` fait désormais, après cache WS et AVANT EODHD,
+un fetch Binance REST direct (`getTicker24h().lastPrice`, `source='binance_rest'`,
+non-stale) pour tout symbole convertible en paire Binance (`toBinanceSymbol`
+non-null = crypto uniquement ; equities → null → inchangés). Casse la boucle :
+les candidats crypto ont enfin un prix frais à l'entrée.
+
+**Binance & Fly** : market data = endpoints PUBLICS (PAS de clé API requise).
+Binance EST joignable depuis Fly cdg (BNBUSDT a ouvert avec vrais prix = preuve).
+Les clés `BINANCE_API_KEY/SECRET` ne servent QU'à l'exécution réelle
+(`BINANCE_EXECUTION_ENABLED`), inutiles en paper. ⚠️ Sandbox locale géo-bloquée
+(HTTP 451 IP datacenter) → backtests crypto via Binance impossibles en local,
+utiliser EODHD `.CC` (NEARUSDT → NEAR-USD.CC) ou tourner sur Fly.
+
+**Edge crypto NON prouvé** : backtest band-by-band (EODHD .CC, n=155) montre
+crypto faible partout (3-8% breakeven, 8-15% perdant). Le fix chicken-egg rend
+le crypto *tradable* mais ne prouve pas qu'il *faut* le trader. Refaire un vrai
+backtest Binance sur Fly avant d'investir sur le crypto.
 
 ### Pattern horaire US (confirmé 03/06)
 
