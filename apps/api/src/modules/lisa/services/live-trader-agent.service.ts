@@ -1778,13 +1778,23 @@ Recommendation rules :
   }
 
   private async fetchRecentNews(n: number): Promise<object[]> {
+    // Fix 03/06/2026 — la table `eodhd_news_articles` utilise les colonnes
+    // `ticker`/`sentiment_polarity`/`source_url`, pas `symbol`/`sentiment`/
+    // `source` (la query précédente échouait silencieusement → 8612 news
+    // collectées mais TRADER recevait toujours news=[] → setup A+ jamais
+    // matché → trader systématiquement hold). On alias en sortie pour
+    // préserver les noms attendus par le prompt Mistral (cf. ligne 202+).
     const since = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
-    const { data } = await this.supabase.getClient()
+    const { data, error } = await this.supabase.getClient()
       .from('eodhd_news_articles')
-      .select('title, symbol, sentiment, source, published_at')
+      .select('title, symbol:ticker, sentiment:sentiment_polarity, source:source_url, published_at')
       .gte('published_at', since)
       .order('published_at', { ascending: false })
       .limit(n);
+    if (error) {
+      this.logger.warn(`[trader-agent] fetchRecentNews failed: ${error.message}`);
+      return [];
+    }
     return (data ?? []) as object[];
   }
 
