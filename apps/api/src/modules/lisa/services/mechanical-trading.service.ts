@@ -405,6 +405,29 @@ export class MechanicalTradingService {
   private async processPortfolio(cfg: SessionConfig, skipNewOpens: boolean = false): Promise<void> {
     const portfolioId = cfg.portfolio_id;
 
+    // 04/06/2026 — Mode OVERSOLD : cycle mécanique 60s NO-OP.
+    //
+    // Le mode oversold est un scanner déterministe swing géré de bout en bout
+    // par OversoldScannerService (ouverture quotidienne post-close US) +
+    // OversoldExitService (exit J+10 ouvrés + stop catastrophe -15%, cron à part
+    // qui charge les positions par venue_fee_detail->>source='scanner_oversold',
+    // indépendant de autopilot/kill_switch).
+    //
+    // Le faire passer dans cette boucle 60s déclenchait un fetch live-price
+    // (TwelveData, 4-6s de latence) PAR position À CHAQUE minute. Pour 26
+    // positions US tenues hors heures de marché (quotes stale), ça a saturé
+    // l'I/O de la machine Fly unique + brûlé le quota TwelveData → instance
+    // unhealthy / crash-loop (incident 04/06 08:53 UTC : PR03 "no healthy
+    // instances"). Un backstop -15% sur un swing J+10 n'a pas besoin d'une
+    // cadence 60s ; OversoldExitService (30 min) en est l'autorité.
+    //
+    // NB : pas un trou de protection au sens CLAUDE.md (les stops/TP des modes
+    // LLM + crypto 24/7 continuent de tourner ici) — l'exit oversold a juste un
+    // owner dédié, plus économe.
+    if ((cfg.strategy_mode as string | null | undefined) === 'oversold') {
+      return;
+    }
+
     // Load latest valid directive
     const directive = await this.loadDirective(portfolioId);
 

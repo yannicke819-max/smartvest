@@ -64,8 +64,14 @@ export class OversoldExitService {
     return (this.config.get<string>('OVERSOLD_EXIT_ENABLED') ?? 'true').toLowerCase() === 'true';
   }
 
-  /** Cron horaire (minute 0). */
-  @Cron(CronExpression.EVERY_HOUR, { name: 'oversold-exit', timeZone: 'UTC' })
+  /**
+   * Cron toutes les 30 min. Owner unique des exits oversold (hold J+10 + stop
+   * catastrophe -15%) depuis que le mode oversold est sorti de la boucle
+   * mécanique 60s (incident 04/06 : 26 positions US polled/60s = saturation I/O
+   * Fly). 30 min = backstop -15% réactif sans charge (26 fetches × 2/h vs
+   * 26 × 60/h dans l'ancienne boucle).
+   */
+  @Cron(CronExpression.EVERY_30_MINUTES, { name: 'oversold-exit', timeZone: 'UTC' })
   async runExitCycle(): Promise<void> {
     try {
       if (!this.isEnabled()) {
