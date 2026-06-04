@@ -274,8 +274,13 @@ export class DebateGateService {
   }
 
   private pathQualityVerdict(eff: number): TradingDecision {
-    if (eff >= 0.7) return 'BUY';
-    if (eff >= 0.4) return 'HOLD';
+    // Env-overridable seuils. Defaults conservés (0.7 / 0.4) pour back-compat.
+    // Set DEBATE_GATE_PATH_BUY_MIN=0.5 dans Fly UI pour relâcher (cas NVTS
+    // 04/06 pathEff=0.51 → HOLD au lieu de BUY = mid → pépite ratée).
+    const buyMin = Number(this.config.get<string>('DEBATE_GATE_PATH_BUY_MIN') ?? '0.7');
+    const holdMin = Number(this.config.get<string>('DEBATE_GATE_PATH_HOLD_MIN') ?? '0.4');
+    if (eff >= buyMin) return 'BUY';
+    if (eff >= holdMin) return 'HOLD';
     return 'CHASE_THE_TOP';
   }
 
@@ -286,19 +291,24 @@ export class DebateGateService {
   }
 
   private momentumVerdict(changePct: number, direction: 'long' | 'short' = 'long'): TradingDecision {
+    // Env-overridable seuil "chase-the-top". Default 15% (comportement historique).
+    // Set DEBATE_GATE_MOMENTUM_CHASE_PCT=25 dans Fly UI pour ne déclencher CHASE_THE_TOP
+    // qu'au-delà de 25% (cas NVTS 04/06 changePct=19.26% → veto LONG abusif). Aligné
+    // sur la décision per-class us_small_mid seuil overextended=25% du 03/06/2026.
+    const chasePct = Number(this.config.get<string>('DEBATE_GATE_MOMENTUM_CHASE_PCT') ?? '15');
     if (direction === 'short') {
       // PR #465 — inversion sémantique pour les shorts (fade momentum).
-      // changePct > 15 = stock déjà très haut → setup IDÉAL pour fade = BUY (short opportunity).
+      // changePct > chase = stock déjà très haut → setup IDÉAL pour fade = BUY (short opportunity).
       // changePct >= 2 = momentum haussier confirmé mais pas extrême → HOLD (wait for top).
       // changePct < 0 = momentum déjà baissier → trop tard pour entrer short (mean reversion fini) = WAIT.
       if (changePct < 0) return 'WAIT';
-      if (changePct > 15) return 'BUY';
+      if (changePct > chasePct) return 'BUY';
       if (changePct >= 2) return 'HOLD';
       return 'WAIT';
     }
     // LONG (comportement historique)
     if (changePct < 0) return 'WAIT';
-    if (changePct > 15) return 'CHASE_THE_TOP';
+    if (changePct > chasePct) return 'CHASE_THE_TOP';
     if (changePct >= 2) return 'BUY';
     return 'HOLD';
   }
