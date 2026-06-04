@@ -319,8 +319,15 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
         // son propre cron et gère les ouvertures via TopGainersScannerService.
         // Les fermetures (stops/TP/drawdown/news shock) restent gérées par le
         // moteur mécanique sans Lisa LLM (cf. mechanical-trading.service.ts).
-        if ((cfg.strategy_mode as string | null) === 'gainers') {
-          this.logger.debug(`Portfolio ${String(cfg.portfolio_id)}: strategy_mode=gainers → Lisa LLM cycle skipped`);
+        //
+        // Étendu 04/06/2026 — strategy_mode='oversold' suit la même logique :
+        // OversoldScannerService cron quotidien 21:15 UTC + book mark-to-market
+        // EOD. AUCUN besoin de Lisa LLM cycle toutes les 5-20min, c'était une
+        // fuite Gemini Pro 2.5 silencieuse (~63s/call, 59k tokens, observée
+        // dans logs prod 04/06 15:50 UTC).
+        const strategyMode = cfg.strategy_mode as string | null;
+        if (strategyMode === 'gainers' || strategyMode === 'oversold') {
+          this.logger.debug(`Portfolio ${String(cfg.portfolio_id)}: strategy_mode=${strategyMode} → Lisa LLM cycle skipped`);
           continue;
         }
 
