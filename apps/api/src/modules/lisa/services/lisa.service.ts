@@ -3645,7 +3645,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       // 900s rejetait quasi tous les ticks EU. À revert à 900s dès activation
       // BCXE Cboe Europe (TD add-on en attente account manager — request
       // soumise 26/05 11:30 UTC). BCXE = true real-time <1 sec.
-      case 'eu':     return 1800;
+      case 'eu':     return 3600;  // 04/06 bumped 1800→3600s (user "ouvre les 3 EU") : LSE EODHD délayé >30min sur certains noms (DEBS/0MDT). Accepte un quote jusqu'à 1h. Sanity-bound 30% reste le filet anti-prix-aberrant.
       case 'asia':   return 1800;  // bumped 600→1800s (Asia small caps lunch breaks Tokyo/Seoul/HK)
       default:       return 180;
     }

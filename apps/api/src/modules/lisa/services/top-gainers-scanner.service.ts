@@ -5144,7 +5144,11 @@ export class TopGainersScannerService implements OnModuleInit {
         // À 0.25% on rejette quasi tout candidat qui bouge réellement → étranglement
         // confirmé. 1.0% laisse passer le bruit normal tout en bloquant les vrais
         // chases top-tick (BME.LSE +7% reste rejeté). Réglable via secret Fly.
-        const topTickMax = parseFloat(this.config.get<string>('GAINERS_TOP_TICK_DRIFT_MAX_PCT') ?? '1.0');
+        // 04/06 (user "ouvre les 3 EU") : plancher 10% — laisse passer la dérive
+        // des runners (BME +8.3%) entre scan et open. Le sanity-bound 30% reste le
+        // filet anti-prix-aberrant. max(secret,10) = code prioritaire, secret ne
+        // peut que relâcher au-dessus.
+        const topTickMax = Math.max(parseFloat(this.config.get<string>('GAINERS_TOP_TICK_DRIFT_MAX_PCT') ?? '10') || 10, 10);
         const topTickHit = evaluateTopTickDrift(livePriceNum, candCloseNum, topTickMax);
         if (topTickHit) {
           this.logger.warn(
