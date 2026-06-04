@@ -3985,21 +3985,43 @@ export class TopGainersScannerService implements OnModuleInit {
               ...(cand.bucket ? { bucket: cand.bucket } : {}),
             });
             if (cls.setup_kind === 'CHOP_NOISE') {
+              // 04/06/2026 — FIX cécité du gate CHOP_NOISE (inhibition chirurgicale).
+              //
+              // Le monitor distribution a prouvé que 100% des verdicts CHOP_NOISE
+              // tombaient avec has_momentum=false ET bucket=none : le classifier
+              // n'avait AUCUNE feature pour juger (momentum/bucket calculés uniquement
+              // si SCANNER_MOMENTUM_ANALYSIS_ENABLED=true, default OFF). Sans momentum,
+              // sans bucket, sans VWAP/ATR/ADX, classifySetup retombe sur le DÉFAUT
+              // CHOP_NOISE — pas sur un signal de chop réel. Le gate rejetait donc
+              // ~54% des candidats sur l'ABSENCE de features, pas sur du bruit avéré.
+              // (Le "16% WR" du 03/06 mesurait la même cécité, biais de confusion.)
+              //
+              // Fix : on ne REJETTE que si le verdict CHOP_NOISE repose sur une vraie
+              // preuve (momentum ou bucket disponible, typiquement bucket='stalled').
+              // Sinon → fail-OPEN : on laisse passer vers les gates aval (debate,
+              // skeptic, micro-momentum…) qui ont leur propre jugement. Le gate se
+              // RÉACTIVE automatiquement dès que SCANNER_MOMENTUM_ANALYSIS_ENABLED=true
+              // peuple les features — aucune logique morte, pas de flag mort.
+              const hasChopEvidence = cand.momentum != null || cand.bucket != null;
+              const verdict = hasChopEvidence ? 'reject' : 'blind_pass';
               this.logger.log(
-                `[top-gainers] ${cand.symbol} CHOP_NOISE gate (regime=${cls.regime_at_entry}, classifier_v=${cls.classifier_version}) → skip`,
+                `[top-gainers] ${cand.symbol} CHOP_NOISE gate (regime=${cls.regime_at_entry}, classifier_v=${cls.classifier_version}, evidence=${hasChopEvidence}) → ${verdict === 'reject' ? 'skip' : 'PASS (gate aveugle, features absentes)'}`,
               );
-              // Instrumentation 04/06 — persiste le DÉTAIL du rejet CHOP_NOISE
-              // pour mesurer la distribution interne (quel bucket / quelle cause
-              // domine). But : décider quel sous-filtre inhiber sur données réelles
-              // plutôt que couper tout le gate. Fire-and-forget, non-bloquant.
+              // Audit : on persiste TOUJOURS le verdict (reject ET blind_pass) pour
+              // continuer à mesurer combien le gate rejetterait s'il avait les features.
               await this.decisionLog.append({
                 portfolioId,
                 kind: 'scanner_candidate_skip',
-                summary: `[CHOP_NOISE] ${cand.symbol} bucket=${cand.bucket ?? 'none'} regime=${cls.regime_at_entry}`,
-                rationale: `Gate CHOP_NOISE — bucket=${cand.bucket ?? 'none'} (stalled→CHOP_NOISE est le mapping dominant). risingScore mou ou momentum non-confirmé.`,
+                summary: `[CHOP_NOISE:${verdict}] ${cand.symbol} bucket=${cand.bucket ?? 'none'} regime=${cls.regime_at_entry}`,
+                rationale:
+                  verdict === 'reject'
+                    ? `Gate CHOP_NOISE REJECT — bucket=${cand.bucket ?? 'none'} (stalled→CHOP_NOISE dominant), evidence présente.`
+                    : `Gate CHOP_NOISE BLIND_PASS — momentum+bucket absents (SCANNER_MOMENTUM_ANALYSIS_ENABLED off) : verdict par défaut, pas de preuve de chop → fail-open vers gates aval.`,
                 payload: {
                   symbol: cand.symbol,
                   gate: 'CHOP_NOISE',
+                  verdict,
+                  has_chop_evidence: hasChopEvidence,
                   asset_class: cand.assetClass,
                   change_pct: cand.changePct,
                   bucket: cand.bucket ?? null,
@@ -4012,8 +4034,11 @@ export class TopGainersScannerService implements OnModuleInit {
                 },
                 triggeredBy: 'autopilot_cron',
               }).catch(() => null);
-              recordShadowDecision(cand, 'reject_other', persistence);
-              continue;
+              if (verdict === 'reject') {
+                recordShadowDecision(cand, 'reject_other', persistence);
+                continue;
+              }
+              // blind_pass : on NE rejette PAS — le candidat continue vers l'aval.
             }
           } catch (e) {
             this.logger.debug(`[top-gainers] classifySetup ${cand.symbol} threw (fail-open): ${String(e).slice(0, 120)}`);
