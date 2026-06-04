@@ -18,19 +18,27 @@ describe('parseMaxChangePerClassConfig', () => {
     expect(c.us_small_mid).toBe(25);
     expect(c.crypto).toBe(30);
   });
-  it('parse valeurs valides (secret Fly prime sur défaut)', () => {
+  it('secret Fly RELÂCHE au-dessus du plancher (prime si plus permissif)', () => {
     const c = parseMaxChangePerClassConfig({
-      GAINERS_MAX_CHANGE_PCT_LONG_ASIA: '25',
-      GAINERS_MAX_CHANGE_PCT_LONG_EU: '14',
-      GAINERS_MAX_CHANGE_PCT_LONG_US_LARGE: '16',
-      GAINERS_MAX_CHANGE_PCT_LONG_US_SMALL_MID: '8',
-      GAINERS_MAX_CHANGE_PCT_LONG_CRYPTO: '12',
+      GAINERS_MAX_CHANGE_PCT_LONG_ASIA: '40',
+      GAINERS_MAX_CHANGE_PCT_LONG_EU: '35',
+      GAINERS_MAX_CHANGE_PCT_LONG_US_LARGE: '40',
+      GAINERS_MAX_CHANGE_PCT_LONG_US_SMALL_MID: '30',
+      GAINERS_MAX_CHANGE_PCT_LONG_CRYPTO: '50',
     });
-    expect(c.asia).toBe(25);
-    expect(c.eu).toBe(14);
-    expect(c.us_large).toBe(16);
-    expect(c.us_small_mid).toBe(8);
-    expect(c.crypto).toBe(12);
+    expect(c.asia).toBe(40);
+    expect(c.eu).toBe(35);
+    expect(c.us_large).toBe(40);
+    expect(c.us_small_mid).toBe(30);
+    expect(c.crypto).toBe(50);
+  });
+  it('secret Fly sous le plancher → floored au défaut (vannes ouvertes garanties)', () => {
+    const c = parseMaxChangePerClassConfig({
+      GAINERS_MAX_CHANGE_PCT_LONG_EU: '15',         // vieux secret resserré
+      GAINERS_MAX_CHANGE_PCT_LONG_US_SMALL_MID: '10',
+    });
+    expect(c.eu).toBe(30);          // floored
+    expect(c.us_small_mid).toBe(25); // floored
   });
   it('valeurs hors range → défaut per-class', () => {
     const c = parseMaxChangePerClassConfig({

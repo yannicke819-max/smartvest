@@ -70,10 +70,14 @@ export function parseMaxChangePerClassConfig(env: {
 }): MaxChangePerClassConfig {
   // parse(raw, def) : secret Fly prime ; sinon défaut sensé per-class (≠ null
   // → la classe n'hérite JAMAIS du global, fix anti-écrasement 03/06).
+  // 04/06/2026 — Le défaut code est un PLANCHER de permissivité. Un secret Fly
+  // ne peut que RELÂCHER (cap plus haut), JAMAIS resserrer sous le défaut. Ainsi
+  // les vannes restent ouvertes sans toucher Fly, même si un vieux secret =15 traîne.
   const parse = (raw: string | undefined, def: number): number => {
     if (raw == null || raw.trim() === '') return def;
     const n = Number.parseFloat(raw);
-    return Number.isFinite(n) && n > 0 && n <= 100 ? n : def;
+    const v = Number.isFinite(n) && n > 0 && n <= 100 ? n : def;
+    return Math.max(v, def);
   };
   return {
     asia: parse(env.GAINERS_MAX_CHANGE_PCT_LONG_ASIA, DEFAULT_MAX_CHANGE_PER_CLASS.asia!),

@@ -14,18 +14,18 @@ describe('parseOverpumpPerClassConfig', () => {
     expect(c.us_small_mid).toBe(25);
     expect(c.crypto).toBe(30);
   });
-  it('parse valeurs valides', () => {
+  it('secret RELÂCHE au-dessus du plancher / floor sinon', () => {
     const c = parseOverpumpPerClassConfig({
-      GAINERS_OVERPUMP_THRESHOLD_PCT_ASIA: '25',
-      GAINERS_OVERPUMP_THRESHOLD_PCT_EU: '18',
-      GAINERS_OVERPUMP_THRESHOLD_PCT_US_LARGE: '12',
-      GAINERS_OVERPUMP_THRESHOLD_PCT_US_SMALL_MID: '10',
+      GAINERS_OVERPUMP_THRESHOLD_PCT_ASIA: '40',  // > 30 → 40
+      GAINERS_OVERPUMP_THRESHOLD_PCT_EU: '18',     // < 30 → floored 30
+      GAINERS_OVERPUMP_THRESHOLD_PCT_US_LARGE: '35',
+      GAINERS_OVERPUMP_THRESHOLD_PCT_US_SMALL_MID: '10', // < 25 → floored 25
       GAINERS_OVERPUMP_THRESHOLD_PCT_CRYPTO: '40',
     });
-    expect(c.asia).toBe(25);
-    expect(c.eu).toBe(18);
-    expect(c.us_large).toBe(12);
-    expect(c.us_small_mid).toBe(10);
+    expect(c.asia).toBe(40);
+    expect(c.eu).toBe(30);
+    expect(c.us_large).toBe(35);
+    expect(c.us_small_mid).toBe(25);
     expect(c.crypto).toBe(40);
   });
   it('valeurs invalides → fallback default', () => {

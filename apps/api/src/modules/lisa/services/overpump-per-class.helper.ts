@@ -49,10 +49,13 @@ export function parseOverpumpPerClassConfig(env: {
   GAINERS_OVERPUMP_THRESHOLD_PCT_US_SMALL_MID?: string | undefined;
   GAINERS_OVERPUMP_THRESHOLD_PCT_CRYPTO?: string | undefined;
 }): OverpumpPerClassConfig {
+  // 04/06/2026 — Défaut = PLANCHER. Un secret Fly ne peut que relâcher au-dessus,
+  // jamais resserrer sous le défaut (cohérent max-change ; vannes ouvertes sans Fly).
   const parse = (raw: string | undefined, fallback: number): number => {
     if (raw == null || raw.trim() === '') return fallback;
     const n = Number.parseFloat(raw);
-    return Number.isFinite(n) && n > 0 && n <= 100 ? n : fallback;
+    const v = Number.isFinite(n) && n > 0 && n <= 100 ? n : fallback;
+    return Math.max(v, fallback);
   };
   return {
     asia: parse(env.GAINERS_OVERPUMP_THRESHOLD_PCT_ASIA, DEFAULT_OVERPUMP_PER_CLASS.asia),
