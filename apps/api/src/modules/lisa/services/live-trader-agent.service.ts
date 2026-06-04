@@ -47,7 +47,7 @@ const TRADER_AGENT_CAPITAL_USD = 10000;
 const MAX_DAILY_LOSS_USD = 500;
 const MAX_CONCENTRATION_USD = 4500;  // 45% capital — boost 28/05/2026 pour target $400/jour
 const MIN_NOTIONAL_USD = 50;
-const MIN_CONFIDENCE = 0.75;  // recalibré 29/05 10:35. 0.80 bloquait OVH.PA +9.6% conf 0.73 (setup champion 3-10%). Le 0.80 était justifié quand le feed était plein de paraboliques >20% (confidence = dernier filtre). Maintenant le feed est nettoyé EN AMONT (band [2,15] + pullback >10% + overpump >15% + falling-knife + velocity), donc exiger 0.80 fait double-emploi et bloque les setups modérés légitimes. 0.75 = compromis : laisse passer 3-10% conf 0.75-0.79, garde sélectivité vs 0.72.
+const MIN_CONFIDENCE = 0.55;  // recalibré 04/06 (user "ouvrir les vannes") : 0.75 → 0.55. Le pool était étranglé EN AMONT (persistence 0.67 bug → corrigé à 0) ; le trader holdait faute de A+ (seul candidat = SOI.PA score 0.49). On baisse la barre pour laisser passer les setups moyens et collecter de la data — le SL mécanique + le contrôle manuel par position protègent. Réversible. // [29/05 10:35 : était 0.75. 0.80 bloquait OVH.PA +9.6% conf 0.73.]
 const PRICE_SANITY_MAX_DIVERGENCE_PCT = 2.0;
 
 type TraderAction =
@@ -148,7 +148,7 @@ CONTRAINTES DURES (les viole pas) :
    préfixer ton thesis avec "[TP_CUSTOM: X% / SL_CUSTOM: Y%] reason: <raison concrète>"
    Exemple: "[TP_CUSTOM: 4% / SL_CUSTOM: 2%] reason: résistance H4 à +4.2%, ATR daily 0.5%"
 6. Privilégie le default 3%/1.5% (R/R 2:1) sauf raison forte — sweet spot data-optimal TP sweep 03/06.
-7. Confidence ≥ 0.65 pour qu'on agisse (sinon hold)
+7. Confidence ≥ 0.55 pour qu'on agisse (sinon hold)  // abaissé 04/06 0.65→0.55 (ouvrir les vannes, collecte data)
 8. Pas plus de 5 positions ouvertes simultanément
 9. Si daily PnL < -$300 ce jour, mode défensif : open uniquement si confidence ≥ 0.85
 10. Pour les shorts : confirmer setup retournement clair (RSI > 70, distribution candle, level résistance majeur)
