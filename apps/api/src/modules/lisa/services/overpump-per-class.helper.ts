@@ -31,11 +31,14 @@ export interface OverpumpPerClassConfig {
   crypto: number;
 }
 
+// 04/06/2026 — VANNES OUVERTES (user) : overpump gate #2 relâché en cohérence
+// avec max-change (eu/us_large 15→30, us_small_mid 15→25). Sinon ce 2e cap
+// rebloquait les runners. SL + contrôle manuel = filets. Réversible.
 export const DEFAULT_OVERPUMP_PER_CLASS: OverpumpPerClassConfig = {
   asia: 30,
-  eu: 15,
-  us_large: 15,
-  us_small_mid: 15,
+  eu: 30,
+  us_large: 30,
+  us_small_mid: 25,
   crypto: 30,
 };
 

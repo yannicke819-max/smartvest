@@ -53,8 +53,12 @@ export interface MaxChangePerClassConfig {
  * Un secret Fly per-class `GAINERS_MAX_CHANGE_PCT_LONG_<CLASS>` prime toujours
  * sur ces défauts (cf. parse() ci-dessous).
  */
+// 04/06/2026 — VANNES OUVERTES (user). Caps relâchés pour laisser passer les
+// runners (FR.PA +18%, DEBS.LSE +17%, BME.LSE +14.6% étaient jetés à 15). Le
+// user assume le chase, protégé par SL mécanique + contrôle manuel par position.
+// Réversible. (Avant : eu 15, us_large 15, us_small_mid 10.)
 export const DEFAULT_MAX_CHANGE_PER_CLASS: MaxChangePerClassConfig = {
-  asia: 30, eu: 15, us_large: 15, us_small_mid: 10, crypto: 30,
+  asia: 30, eu: 30, us_large: 30, us_small_mid: 25, crypto: 30,
 };
 
 export function parseMaxChangePerClassConfig(env: {

@@ -13,9 +13,9 @@ describe('parseMaxChangePerClassConfig', () => {
   it('env vide → défauts sensés per-class (plus de null)', () => {
     const c = parseMaxChangePerClassConfig({});
     expect(c.asia).toBe(30);
-    expect(c.eu).toBe(15);
-    expect(c.us_large).toBe(15);
-    expect(c.us_small_mid).toBe(10);
+    expect(c.eu).toBe(30);
+    expect(c.us_large).toBe(30);
+    expect(c.us_small_mid).toBe(25);
     expect(c.crypto).toBe(30);
   });
   it('parse valeurs valides (secret Fly prime sur défaut)', () => {
@@ -39,8 +39,8 @@ describe('parseMaxChangePerClassConfig', () => {
       GAINERS_MAX_CHANGE_PCT_LONG_US_LARGE: '-5',
     });
     expect(c.asia).toBe(30);
-    expect(c.eu).toBe(15);
-    expect(c.us_large).toBe(15);
+    expect(c.eu).toBe(30);
+    expect(c.us_large).toBe(30);
   });
   it('NaN → défaut per-class', () => {
     expect(parseMaxChangePerClassConfig({ GAINERS_MAX_CHANGE_PCT_LONG_ASIA: 'abc' }).asia).toBe(30);
@@ -60,8 +60,8 @@ describe('resolveMaxChangePct', () => {
     // Le global (10) ne doit PLUS écraser asia/crypto : ils ont leurs défauts.
     expect(resolveMaxChangePct('asia_equity', defaults, 10)).toBe(30);
     expect(resolveMaxChangePct('crypto_major', defaults, 10)).toBe(30);
-    expect(resolveMaxChangePct('eu_equity', defaults, 10)).toBe(15);
-    expect(resolveMaxChangePct('us_equity_small_mid', defaults, 10)).toBe(10);
+    expect(resolveMaxChangePct('eu_equity', defaults, 10)).toBe(30);
+    expect(resolveMaxChangePct('us_equity_small_mid', defaults, 10)).toBe(25);
   });
 
   it('asia_equity → seuil asia override', () => {
@@ -100,7 +100,7 @@ describe('resolveMaxChangePct', () => {
 
 describe('describeOverrides', () => {
   it('défauts → string descriptive (tous non-null désormais)', () => {
-    expect(describeOverrides(DEFAULT_MAX_CHANGE_PER_CLASS)).toBe('asia=30 eu=15 us_large=15 us_small_mid=10 crypto=30');
+    expect(describeOverrides(DEFAULT_MAX_CHANGE_PER_CLASS)).toBe('asia=30 eu=30 us_large=30 us_small_mid=25 crypto=30');
   });
   it('1 valeur seule → string descriptive', () => {
     expect(describeOverrides({ asia: 30, eu: null, us_large: null, us_small_mid: null, crypto: null })).toBe('asia=30');
