@@ -5109,8 +5109,14 @@ export class TopGainersScannerService implements OnModuleInit {
           return null;
         }
         // OKLO-fix 03/06/2026 — Anti top-tick guard (cf. blow-off-gates.helper.ts).
-        // Tune via env GAINERS_TOP_TICK_DRIFT_MAX_PCT (default 0.25%).
-        const topTickMax = parseFloat(this.config.get<string>('GAINERS_TOP_TICK_DRIFT_MAX_PCT') ?? '0.25');
+        // Tune via env GAINERS_TOP_TICK_DRIFT_MAX_PCT.
+        // 04/06 — default 0.25% → 1.0% : 0.25% était ABSURDEMENT serré pour un
+        // scanner momentum. Audit funnel TRADER 24h : 688625.SHG rejeté pour un
+        // drift de 0.655% (mouvement parfaitement normal entre le scan et l'open).
+        // À 0.25% on rejette quasi tout candidat qui bouge réellement → étranglement
+        // confirmé. 1.0% laisse passer le bruit normal tout en bloquant les vrais
+        // chases top-tick (BME.LSE +7% reste rejeté). Réglable via secret Fly.
+        const topTickMax = parseFloat(this.config.get<string>('GAINERS_TOP_TICK_DRIFT_MAX_PCT') ?? '1.0');
         const topTickHit = evaluateTopTickDrift(livePriceNum, candCloseNum, topTickMax);
         if (topTickHit) {
           this.logger.warn(

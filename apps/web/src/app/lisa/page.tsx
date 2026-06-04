@@ -39,7 +39,6 @@ import { LessonsImpactPanel } from '@/components/lisa/lessons-impact-panel';
 import { LearningLoopAuditPanel } from '@/components/lisa/learning-loop-audit-panel';
 import { LisaConfigPanel } from '@/components/lisa/lisa-config-panel';
 import { CoachProposalsPanel } from '@/components/lisa/coach-proposals-panel';
-import { ShadowsSummaryPanel } from '@/components/lisa/shadows-summary-panel';
 import { ScalingReadinessPanel } from '@/components/lisa/scaling-readiness-panel';
 import { LiveTradingStatusPanel } from '@/components/lisa/live-trading-status-panel';
 import { LiveTradingWizard } from '@/components/lisa/live-trading-wizard';
@@ -729,10 +728,9 @@ export default function LisaPage() {
         <OversoldPanel portfolioId={selectedPortfolioId} />
       )}
 
-      {/* Shadow Sizing read-only — comparatif HIGH/MIDDLE/SMALL vs TRADER.
-          04/06 — masqué en mode oversold (et de toute façon obsolète depuis le
-          retrait des shadows MIDDLE/SMALL + recyclage de HIGH en oversold). */}
-      {currentMode !== 'oversold' && <ShadowsSummaryPanel />}
+      {/* Shadow Sizing — RETIRÉ 04/06. Les shadows MIDDLE/SMALL sont figés et
+          HIGH est passé en oversold : le comparatif A/B momentum n'a plus de sens.
+          Carte supprimée de l'UI dans tous les modes (historique conservé en DB). */}
 
       {/* LISA refonte C.2 — Strategy Coach proposals (Gemini hourly + review modal) */}
       {selectedPortfolioId && <CoachProposalsPanel portfolioId={selectedPortfolioId} />}
