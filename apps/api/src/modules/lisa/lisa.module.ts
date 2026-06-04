@@ -74,6 +74,10 @@ import { ShadowExitSimulatorService } from './services/shadow-exit-simulator.ser
 import { ShadowSignalsCleanupService } from './services/shadow-signals-cleanup.service';
 import { MicroMomentumProbeService } from './services/micro-momentum-probe.service';
 import { OperatingModeService } from './services/operating-mode.service';
+// Mode OVERSOLD (mean-reversion swing) — services ISOLÉS (ne touchent pas gainers/mechanical).
+// PR-2 scanner losers EOD (cron 21:15 UTC) + PR-3 exit par durée (cron horaire).
+import { OversoldScannerService } from './services/oversold-scanner.service';
+import { OversoldExitService } from './services/oversold-exit.service';
 import { MultiTimeframePersistenceService } from './services/multi-tf-persistence.service';
 import { EodhdQuotaService } from './services/eodhd-quota.service';
 import { YahooIntradayService } from './services/yahoo-intraday.service';
@@ -277,6 +281,10 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     MicroMomentumProbeService,
     // P7-MODE-GAINERS-BADGE — toggle 3-modes opératoires (UI badge → DB strategy_mode)
     OperatingModeService,
+    // Mode OVERSOLD — scanner mean-reversion (cron 21:15 UTC) + exit J+10 (cron horaire).
+    // Deps : SupabaseService, LisaService (getPaperBroker), DecisionLogService, ConfigService.
+    OversoldScannerService,
+    OversoldExitService,
     // P8-MULTI-TIMEFRAME-PERSISTENCE — fetch + score multi-TF (1m/5m/10m/15m/30m/1h)
     MultiTimeframePersistenceService,
     // OpenPositionRiskMonitor — cron 5min, thesis_health_score → CLOSE/TIGHTEN_SL/RAISE_TP/MOMENTUM_RIDE
