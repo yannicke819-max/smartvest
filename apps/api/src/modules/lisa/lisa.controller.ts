@@ -24,6 +24,7 @@ import {
 } from './services/operating-mode.service';
 import { TopGainersScannerService } from './services/top-gainers-scanner.service';
 import { OversoldScannerService } from './services/oversold-scanner.service';
+import { OversoldMistralExitService } from './services/oversold-mistral-exit.service';
 import { GainersExitPolicyService } from './services/research/gainers-exit-policy.service';
 import { OversoldExitPolicyService } from './services/research/oversold-exit-policy.service';
 import { TradingStatsService } from './services/trading-stats.service';
@@ -55,6 +56,7 @@ export class LisaController {
     private readonly operatingMode: OperatingModeService,
     private readonly topGainersScanner: TopGainersScannerService,
     private readonly oversoldScanner: OversoldScannerService,
+    private readonly oversoldMistralExit: OversoldMistralExitService,
     private readonly gainersExitPolicy: GainersExitPolicyService,
     private readonly oversoldExitPolicy: OversoldExitPolicyService,
     private readonly mtfPersistence: MultiTimeframePersistenceService,
@@ -1572,6 +1574,18 @@ export class LisaController {
   async triggerOversoldScan(@Headers() headers: Record<string, string>) {
     extractUserId(headers);
     await this.oversoldScanner.runDailyScan();
+    return { ok: true, triggeredAt: new Date().toISOString() };
+  }
+
+  /**
+   * Force le cycle Mistral 15min à la demande (sans attendre HH:00/15/30/45 UTC).
+   * Évalue les 7 positions HIGH source=scanner_oversold avec le LLM Mistral.
+   * Decision_log + position_close_decisions alimentés si CLOSE détecté.
+   */
+  @Post('oversold/mistral-exit-now')
+  async triggerOversoldMistralExit(@Headers() headers: Record<string, string>) {
+    extractUserId(headers);
+    await this.oversoldMistralExit.runExitCycle();
     return { ok: true, triggeredAt: new Date().toISOString() };
   }
 
