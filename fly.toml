@@ -1,34 +1,7 @@
-# fly.toml — SmartVest API (NestJS)
+# fly.toml app configuration file generated for smartvest on 2026-06-04T13:34:51Z
 #
-# Last forced redeploy : 2026-05-31 — re-trigger Fly workflow after PR #504
-# (crypto univers 10→30) was cancelled by concurrency: cancel-in-progress
-# during the back-to-back merges of #503 + #504 on 30/05 ~20:42 UTC. The
-# Fly deploy completed for #503 (sha 588586a) but the #504 run was killed
-# in-flight; production stayed on #503 only. fly.toml is in fly.yml paths
-# filter so this no-op edit re-enqueues the deploy from main HEAD which
-# now includes both PRs (#503 + #504, sha c9477a4).
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
-# Previous note 2026-05-27 — re-trigger Fly workflow after b4f6667
-# (dead-zone gate) hung on initial push 15:37 UTC. fly.toml is in trigger paths
-# so a no-op edit re-enqueues the deploy job. Previous note 2026-05-02 #197.
-# pre-hotfix build; #197 only touched supabase/migrations/* which doesn't
-# match fly.yml `paths` filter, so no auto-deploy was triggered. This bump
-# forces fly.yml to re-deploy from main HEAD (post-#196 BLOC 4 + #197 fix).
-#
-# auto_stop_machines = 'off' : la machine reste TOUJOURS up.
-# Indispensable pour que les crons Lisa tournent sans interruption :
-#   - autopilot (1 min)
-#   - fast-risk-monitor (1 min)
-#   - price-warmer (30 s)
-#   - WebSocket Binance (connexion persistante)
-# Si Fly mettait la machine en veille, ces crons s'arrêtent et les
-# positions ne sont plus surveillées.
-#
-# primary_region = 'cdg' (Paris) : Binance.com bloque les IPs US (HTTP 451
-# "Service unavailable from a restricted location"). Le WebSocket public
-# stream.binance.com a la même restriction. Une région EU est obligatoire
-# pour que la connexion Binance fonctionne — `iad` (Washington DC) ne
-# convient pas.
 
 app = 'smartvest'
 primary_region = 'cdg'
@@ -58,10 +31,11 @@ primary_region = 'cdg'
 [http_service]
   internal_port = 3001
   force_https = true
-  auto_stop_machines = 'off'
+  auto_stop_machines = false
   auto_start_machines = true
   min_machines_running = 1
   processes = ['app']
+  checks = [{ grace_period = '30s', interval = '30s', method = 'GET', path = '/health', timeout = '5s' }]
 
   [[http_service.checks]]
     grace_period = "30s"
@@ -75,3 +49,11 @@ primary_region = 'cdg'
   cpu_kind = 'shared'
   cpus = 1
   memory_mb = 1024
+
+[[vm]]
+  memory = '2gb'
+  cpu_kind = 'shared'
+  cpus = 2
+  memory_mb = 2048
+  processes = ['app']
+  size = 'shared-cpu-2x'
