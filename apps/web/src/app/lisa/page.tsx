@@ -712,11 +712,20 @@ export default function LisaPage() {
       {/* PR #524 — Compteur LLM temps réel 4 providers × 5 call sites */}
       <LlmCostLivePanel />
 
-      {/* LISA refonte A.3 — Section Gains (badges + reset display-only) */}
-      {selectedPortfolioId && <GainsTracker portfolioId={selectedPortfolioId} />}
+      {/* LISA refonte A.3 — Section Gains (badges + reset display-only).
+          04/06 — masqué en mode oversold : ce widget de session (cibles JOUR/
+          SEMAINE/MOIS/ANNÉE, $200/j, reset, WR scalp) est conçu pour gainers/
+          harvest. Le mode oversold est un swing J+10 sans cible journalière —
+          afficher ces compteurs (alimentés par lisa_initial_capital_usd hérité
+          + l'historique gainers de HIGH) crée la confusion signalée. */}
+      {selectedPortfolioId && currentMode !== 'oversold' && (
+        <GainsTracker portfolioId={selectedPortfolioId} />
+      )}
 
-      {/* Shadow Sizing read-only — comparatif HIGH/MIDDLE/SMALL vs TRADER */}
-      <ShadowsSummaryPanel />
+      {/* Shadow Sizing read-only — comparatif HIGH/MIDDLE/SMALL vs TRADER.
+          04/06 — masqué en mode oversold (et de toute façon obsolète depuis le
+          retrait des shadows MIDDLE/SMALL + recyclage de HIGH en oversold). */}
+      {currentMode !== 'oversold' && <ShadowsSummaryPanel />}
 
       {/* LISA refonte C.2 — Strategy Coach proposals (Gemini hourly + review modal) */}
       {selectedPortfolioId && <CoachProposalsPanel portfolioId={selectedPortfolioId} />}
