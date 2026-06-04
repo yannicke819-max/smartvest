@@ -73,6 +73,10 @@ function makeService(): TopGainersScannerService {
     // du classifier. Ce test scope cible la persistence shadow logging, pas le
     // classifier. On disable explicitement la gate ici pour préserver l'intent.
     if (key === 'GAINERS_REJECT_CHOP_NOISE_ENABLED') return 'false';
+    // 04/06 — Désactive le garde-fou session à l'ouverture (always-on en prod).
+    // Sinon isInExchangeSession bloque les opens des symboles equity selon l'heure
+    // du run CI → tests non-déterministes (mêmes raison que sessionFilterEnabled=false).
+    if (key === 'GAINERS_OPEN_SESSION_GUARD') return 'false';
     return undefined;
   });
   return new TopGainersScannerService(
