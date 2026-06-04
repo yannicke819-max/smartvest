@@ -3896,8 +3896,10 @@ export class TopGainersScannerService implements OnModuleInit {
             this.logger.log(
               `[top-gainers] ${cand.symbol} CHOP_LONG_TF: ${chopLongTfHit.tf}=${chopLongTfHit.value.toFixed(2)} < min=${effectiveMinPathEff!.toFixed(2)} → skip [structural chop]`,
             );
-            // PR 0190 — reason_code granulaire (était reject_path_eff lumping)
-            recordShadowDecision(cand, 'reject_chop_long_tf', persistence);
+            // ROLLBACK 04/06 03:05 UTC — granular codes provoquaient silence scanner
+            // après deploy 022e487 (scanner gel 8+ min). Retour code legacy en attendant
+            // diagnostic. Migration 0190 reste applicable (idempotente, additive).
+            recordShadowDecision(cand, 'reject_path_eff', persistence);
             continue;
           }
 
@@ -3908,8 +3910,7 @@ export class TopGainersScannerService implements OnModuleInit {
               this.logger.log(
                 `[top-gainers] ${cand.symbol} CLIMAX_RUN: tf5m=${climaxHit.tf5m.toFixed(2)}% tf30m=${climaxHit.tf30m.toFixed(2)}% (plateau, |∆|=${climaxHit.gapPct.toFixed(2)}pt) → skip [blow-off]`,
               );
-              // PR 0190 — reason_code granulaire (était reject_other lumping)
-              recordShadowDecision(cand, 'reject_climax_run', persistence);
+              recordShadowDecision(cand, 'reject_other', persistence);
               continue;
             }
           }
@@ -3922,8 +3923,7 @@ export class TopGainersScannerService implements OnModuleInit {
               this.logger.log(
                 `[top-gainers] ${cand.symbol} VERTICAL_PUMP: ch1m=${verticalHit.ch1m.toFixed(2)}% / tf5m=${verticalHit.tf5m.toFixed(2)}% = ${verticalHit.ratio.toFixed(2)} → skip [last-minute concentration]`,
               );
-              // PR 0190 — reason_code granulaire (était reject_other lumping)
-              recordShadowDecision(cand, 'reject_vertical_pump', persistence);
+              recordShadowDecision(cand, 'reject_other', persistence);
               continue;
             }
           }
