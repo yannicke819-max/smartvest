@@ -3988,6 +3988,30 @@ export class TopGainersScannerService implements OnModuleInit {
               this.logger.log(
                 `[top-gainers] ${cand.symbol} CHOP_NOISE gate (regime=${cls.regime_at_entry}, classifier_v=${cls.classifier_version}) → skip`,
               );
+              // Instrumentation 04/06 — persiste le DÉTAIL du rejet CHOP_NOISE
+              // pour mesurer la distribution interne (quel bucket / quelle cause
+              // domine). But : décider quel sous-filtre inhiber sur données réelles
+              // plutôt que couper tout le gate. Fire-and-forget, non-bloquant.
+              await this.decisionLog.append({
+                portfolioId,
+                kind: 'scanner_candidate_skip',
+                summary: `[CHOP_NOISE] ${cand.symbol} bucket=${cand.bucket ?? 'none'} regime=${cls.regime_at_entry}`,
+                rationale: `Gate CHOP_NOISE — bucket=${cand.bucket ?? 'none'} (stalled→CHOP_NOISE est le mapping dominant). risingScore mou ou momentum non-confirmé.`,
+                payload: {
+                  symbol: cand.symbol,
+                  gate: 'CHOP_NOISE',
+                  asset_class: cand.assetClass,
+                  change_pct: cand.changePct,
+                  bucket: cand.bucket ?? null,
+                  regime_at_entry: cls.regime_at_entry,
+                  has_momentum: cand.momentum != null,
+                  vertical_score: cand.momentum?.verticalityScore ?? null,
+                  rising_score: cand.momentum?.risingScore ?? null,
+                  persistence_score: persistence.persistenceScore,
+                  path_eff: persistence.pathQuality?.overallEfficiency ?? null,
+                },
+                triggeredBy: 'autopilot_cron',
+              }).catch(() => null);
               recordShadowDecision(cand, 'reject_other', persistence);
               continue;
             }
