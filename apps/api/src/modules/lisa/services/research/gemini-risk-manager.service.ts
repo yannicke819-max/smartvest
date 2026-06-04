@@ -223,30 +223,32 @@ export class GeminiRiskManagerService {
    * Évaluation positions cappée à 20 (cf. fetchOpenPositions limit). Si plus
    * de 20 positions ouvertes simultanément, augmenter le cap.
    */
-  @Cron(CronExpression.EVERY_MINUTE)
+  @Cron(CronExpression.EVERY_3_MINUTES)
   async cronEvalOpenPositions(): Promise<void> {
     if (!this.enabled) return;
     if (!this.supabase.isReady()) return;
     try {
       const positions = await this.fetchOpenPositions();
       if (positions.length === 0) return;
-      // Pré-fetch news macro 1× pour tout le cycle (cache 5 min, partagé).
-      // Le cache 5min absorbe les cycles minute pour éviter de spammer
-      // EODHD/StockTwits/Reddit/Twitter — 1 fetch news / 5 min suffit.
       const heldSymbols = positions.map(p => p.symbol);
       if (this.useMacroNews) await this.getMacroNews(heldSymbols);
-      this.logger.log(`[risk-manager] eval ${positions.length} open positions (parallel)`);
-      // Parallélisation : tous les calls Gemini Flash-Lite en concurrent
-      // (~700-1500ms each → cycle ≤ 5s au lieu de ~20s séquentiel).
-      // Errors per-position isolées, n'arrêtent pas le batch.
-      await Promise.all(
-        positions.map((pos) =>
-          this.assessThesis(pos).catch((e) => {
-            this.logger.warn(`[risk-manager] ${pos.symbol} assessment failed: ${String(e).slice(0, 200)}`);
-            return null;
-          }),
-        ),
-      );
+      // 04/06/2026 — Anti-saturation machine (3 crashes en 5h sur 1×CPU/1GB).
+      // Avant : 20 assessments parallèles toutes les 60s = 20 LLM concurrents +
+      // fetch news/prix par position → saturation sockets/event-loop → PR03.
+      // Maintenant : batches de 4 séquentiels + cron 60s → 3min. Charge ÷ 5.
+      // assessThesis reste async/parallèle DANS un batch, juste plus de 20 d'un coup.
+      this.logger.log(`[risk-manager] eval ${positions.length} open positions (batched x4 / 3min)`);
+      const BATCH = 4;
+      for (let i = 0; i < positions.length; i += BATCH) {
+        await Promise.all(
+          positions.slice(i, i + BATCH).map((pos) =>
+            this.assessThesis(pos).catch((e) => {
+              this.logger.warn(`[risk-manager] ${pos.symbol} assessment failed: ${String(e).slice(0, 200)}`);
+              return null;
+            }),
+          ),
+        );
+      }
     } catch (e) {
       this.logger.warn(`[risk-manager] cron failed: ${String(e).slice(0, 200)}`);
     }
