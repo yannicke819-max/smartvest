@@ -186,6 +186,31 @@ describe('OperatingModeService.applyMode', () => {
     expect(r.mode).toBe('gainers');
   });
 
+  it('oversold writes strategy_mode + autopilot_enabled=true + kill_switch=false', async () => {
+    const { service, macro, state } = makeService({ capitalUsd: 150000 });
+    await service.applyMode(USER_ID, PORTFOLIO_ID, 'oversold');
+
+    expect(macro.applyMacroMode).not.toHaveBeenCalled();
+    const cfgUpdate = state.updates.find(
+      (u) => u.table === 'lisa_session_configs' && u.values.strategy_mode === 'oversold',
+    );
+    expect(cfgUpdate?.values.autopilot_enabled).toBe(true);
+    expect(cfgUpdate?.values.kill_switch_active).toBe(false);
+  });
+
+  it('oversold throws BadRequestException when capital < $5000', async () => {
+    const { service } = makeService({ capitalUsd: 4999 });
+    await expect(
+      service.applyMode(USER_ID, PORTFOLIO_ID, 'oversold'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('oversold accepts capital >= $5000', async () => {
+    const { service } = makeService({ capitalUsd: 5000 });
+    const r = await service.applyMode(USER_ID, PORTFOLIO_ID, 'oversold');
+    expect(r.mode).toBe('oversold');
+  });
+
   it('writes mode_change_log entry on every successful apply', async () => {
     const { service, state } = makeService({ strategyMode: 'investment', capitalUsd: 2000 });
     await service.applyMode(USER_ID, PORTFOLIO_ID, 'gainers', {

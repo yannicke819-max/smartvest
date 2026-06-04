@@ -25,15 +25,19 @@ import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { MacroModeService } from './macro-mode.service';
 
-export type OperatingMode = 'investment' | 'harvest' | 'gainers';
+export type OperatingMode = 'investment' | 'harvest' | 'gainers' | 'oversold';
 
 export const OPERATING_MODES: readonly OperatingMode[] = [
   'investment',
   'harvest',
   'gainers',
+  'oversold',
 ] as const;
 
 export const MIN_CAPITAL_FOR_GAINERS_USD = 1000;
+// Mode oversold = book diversifié (~150 positions). Exige plus de capital
+// que gainers pour que la diversification (le risk management du mode) fonctionne.
+export const MIN_CAPITAL_FOR_OVERSOLD_USD = 5000;
 
 @Injectable()
 export class OperatingModeService {
@@ -85,6 +89,13 @@ export class OperatingModeService {
         );
       }
     }
+    if (mode === 'oversold') {
+      if (capital == null || capital < MIN_CAPITAL_FOR_OVERSOLD_USD) {
+        throw new BadRequestException(
+          `Capital insuffisant pour Oversold (min $${MIN_CAPITAL_FOR_OVERSOLD_USD}, current $${(capital ?? 0).toFixed(2)})`,
+        );
+      }
+    }
 
     if (mode === 'investment' || mode === 'harvest') {
       // Applique le preset macro complet (profile + capital_discipline_mode
@@ -97,9 +108,12 @@ export class OperatingModeService {
       // Le preset MacroMode ne touche pas strategy_mode — on l'écrit ici.
       await this.writeStrategyMode(userId, portfolioId, mode);
     } else {
-      // gainers : autopilot_enabled forcé, kill-switch désarmé. Profile
-      // et capital_discipline_mode préservés.
-      await this.writeStrategyMode(userId, portfolioId, 'gainers', {
+      // gainers / oversold : autopilot_enabled forcé, kill-switch désarmé
+      // (sinon le scanner exit early). Profile et capital_discipline_mode
+      // préservés. NB oversold : inerte tant que OversoldScannerService (PR-2)
+      // n'existe pas — le portfolio est "réservé" en mode oversold mais ne
+      // trade rien jusqu'à l'implémentation du screener.
+      await this.writeStrategyMode(userId, portfolioId, mode, {
         autopilot_enabled: true,
         kill_switch_active: false,
       });
@@ -123,7 +137,7 @@ export class OperatingModeService {
   }
 
   private normalize(raw: string): OperatingMode {
-    return raw === 'harvest' || raw === 'gainers' ? raw : 'investment';
+    return raw === 'harvest' || raw === 'gainers' || raw === 'oversold' ? raw : 'investment';
   }
 
   private async writeStrategyMode(
