@@ -58,6 +58,9 @@ export const PaperPosition = z.object({
   /** Coûts d'exécution simulés (frais, slippage estimé, fx markup) */
   estimatedEntryCostUsd: z.string(),
 
+  /** 04/06 — Contrôle manuel : true = auto-trader ne ferme plus cette position. */
+  manualControl: z.boolean().default(false),
+
   /** Métadata */
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
@@ -180,5 +183,14 @@ export const ClosePositionCommand = z.object({
    * d'accepter une close sur prix `stale_*` (last close valide).
    */
   marketClosed: z.boolean().optional(),
+  /**
+   * 04/06/2026 — Contrôle manuel par position. Quand une position a
+   * `manual_control=true`, le paper-broker REFUSE tout close automatique
+   * (SL, TP, trailing, risk-monitor, news-shock…) — l'utilisateur a pris la
+   * main à 100%. SEULE la close manuelle (bouton UI → closePositionManual)
+   * passe ce flag à `true` pour autoriser la fermeture. Les chemins auto ne
+   * le passent jamais → bloqués sur les positions sous contrôle manuel.
+   */
+  allowManualControlled: z.boolean().optional(),
 });
 export type ClosePositionCommand = z.infer<typeof ClosePositionCommand>;

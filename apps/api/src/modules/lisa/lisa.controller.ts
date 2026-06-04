@@ -1483,6 +1483,24 @@ export class LisaController {
     return this.lisa.closePositionManual(userId, portfolioId, positionId);
   }
 
+  /**
+   * Contrôle manuel par position (bouton UI 🔒). Quand activé, l'auto-trader ne
+   * ferme plus JAMAIS cette position (SL/TP/trailing/risk-monitor) — l'utilisateur
+   * a la main à 100%. Réversible. Le SL reste affiché comme repère non-déclencheur.
+   */
+  @Post('positions/:positionId/manual-control')
+  @HttpCode(200)
+  async setManualControl(
+    @Headers() headers: Record<string, string>,
+    @Param('positionId') positionId: string,
+    @Body('portfolioId') portfolioId: string,
+    @Body('enabled') enabled: boolean,
+  ) {
+    const userId = extractUserId(headers);
+    if (!portfolioId) throw new BadRequestException('portfolioId requis');
+    return this.lisa.setManualControl(userId, portfolioId, positionId, enabled === true);
+  }
+
   @Get('binance/balance')
   getBinanceBalance(@Headers() headers: Record<string, string>) {
     extractUserId(headers); // throws si non authentifié

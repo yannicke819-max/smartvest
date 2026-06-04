@@ -7,6 +7,7 @@ import {
   useLisaPositionsRealtime,
   useOpenPositionsLive,
   useClosePositionManual,
+  useSetManualControl,
   type LisaPosition,
   type OpenPositionLive,
 } from '@/hooks/use-lisa';
@@ -229,10 +230,23 @@ function PositionRow({ pos, live, portfolioId }: { pos: LisaPosition; live?: Ope
             {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)} ({pnlPct.toFixed(2)}%)
           </div>
         )}
-        {/* Position OUVERTE → valeur temps réel + tendance 5 min + bouton Fermer */}
+        {/* Position OUVERTE → valeur temps réel + tendance 5 min + boutons */}
         {pos.status === 'open' && <PositionLiveValue live={live} />}
+        {pos.status === 'open' && pos.manualControl && (
+          <div className="mt-1 text-[10px] font-medium text-purple-700" title="Auto-trader désactivé sur cette position : SL/TP affichés mais NON-déclencheurs.">
+            🔒 Contrôle manuel — SL/TP indicatifs (non-déclencheurs)
+          </div>
+        )}
         {pos.status === 'open' && portfolioId && (
-          <ClosePositionButton positionId={pos.id} portfolioId={portfolioId} symbol={pos.symbol} />
+          <div className="mt-1.5 flex gap-1.5">
+            <ManualControlButton
+              positionId={pos.id}
+              portfolioId={portfolioId}
+              symbol={pos.symbol}
+              enabled={pos.manualControl === true}
+            />
+            <ClosePositionButton positionId={pos.id} portfolioId={portfolioId} symbol={pos.symbol} />
+          </div>
         )}
       </div>
     </div>
@@ -252,9 +266,55 @@ function ClosePositionButton({ positionId, portfolioId, symbol }: { positionId: 
           closeMut.mutate(positionId);
         }
       }}
-      className="mt-1.5 w-full rounded border border-red-200 bg-red-50 px-2 py-1 text-[10px] font-medium text-red-700 hover:bg-red-100 disabled:opacity-50"
+      className="flex-1 rounded border border-red-200 bg-red-50 px-2 py-1 text-[10px] font-medium text-red-700 hover:bg-red-100 disabled:opacity-50"
     >
       {closeMut.isPending ? 'Fermeture…' : 'Fermer'}
+    </button>
+  );
+}
+
+/**
+ * Bouton "Contrôle manuel" : prend la main 100% sur la position (l'auto-trader
+ * ne ferme plus rien — surtout pas sur hit SL) ou rend la main à l'auto.
+ * Le SL/TP restent affichés comme repères non-déclencheurs.
+ */
+function ManualControlButton({
+  positionId,
+  portfolioId,
+  symbol,
+  enabled,
+}: {
+  positionId: string;
+  portfolioId: string;
+  symbol: string;
+  enabled: boolean;
+}) {
+  const mut = useSetManualControl(portfolioId);
+  return (
+    <button
+      type="button"
+      disabled={mut.isPending}
+      title={
+        enabled
+          ? 'Rendre la main à l\'auto-trader (stops/targets ré-activés)'
+          : 'Prendre le contrôle 100% : l\'auto-trader ne fermera plus cette position (ni sur SL)'
+      }
+      onClick={() => {
+        if (mut.isPending) return;
+        const msg = enabled
+          ? `Rendre ${symbol} à l'auto-trader ? (stops/targets ré-activés)`
+          : `Prendre le contrôle manuel de ${symbol} ? L'auto-trader ne la fermera plus (ni sur SL). Tu fermes toi-même.`;
+        if (window.confirm(msg)) {
+          mut.mutate({ positionId, enabled: !enabled });
+        }
+      }}
+      className={
+        enabled
+          ? 'flex-1 rounded border border-purple-300 bg-purple-100 px-2 py-1 text-[10px] font-medium text-purple-800 hover:bg-purple-200 disabled:opacity-50'
+          : 'flex-1 rounded border border-purple-200 bg-purple-50 px-2 py-1 text-[10px] font-medium text-purple-700 hover:bg-purple-100 disabled:opacity-50'
+      }
+    >
+      {mut.isPending ? '…' : enabled ? '🔓 Rendre à l\'auto' : '🔒 Manuel'}
     </button>
   );
 }

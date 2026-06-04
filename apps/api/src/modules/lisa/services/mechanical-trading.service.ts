@@ -150,6 +150,7 @@ interface OpenPosition {
   status: string;
   autonomy_rules?: AutonomyRuleDb[] | null;
   conviction_score?: number | null;
+  manual_control?: boolean | null;
 }
 
 interface AutonomyRuleDb {
@@ -1906,6 +1907,12 @@ export class MechanicalTradingService {
   }
 
   private async checkStopTarget(pos: OpenPosition, isHyperActive: boolean = false): Promise<void> {
+    // 04/06/2026 — CONTRÔLE MANUEL : si l'utilisateur a pris la main sur cette
+    // position, l'auto-trader ne touche plus à rien (surtout pas le SL). Le SL
+    // reste stocké/affiché comme repère visuel non-déclencheur ; seule la close
+    // manuelle utilisateur ferme la position. Early-return ici évite d'atteindre
+    // closePosition (qui re-bloquerait + loggerait une erreur à chaque cycle).
+    if (pos.manual_control === true) return;
     if (!pos.stopLossPrice && !pos.takeProfitPrice) return;
 
     const quote = await this.lisa.getLivePrice(pos.symbol).catch(() => null);

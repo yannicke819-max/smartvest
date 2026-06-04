@@ -3478,8 +3478,17 @@ export class TopGainersScannerService implements OnModuleInit {
       // comme ouverte jusqu'à 08:00 → ouvertures post-cloche sur prix figé,
       // ingérables (incident 067310.KQ ouverte à 06:37, Corée fermée à 06:30).
       // Crypto exempt (24/7, pas de suffixe exchange).
+      //
+      // 04/06/2026 — DÉCOUPLÉ de `sessionFilterEnabled` (flag par-portfolio,
+      // false sur TRADER → 358570.KQ ouverte à 08:42 UTC, KOSDAQ fermé depuis
+      // 06:30 → scalp coincé sur prix gelé). Ouvrir un scalp sur un marché fermé
+      // n'a JAMAIS de sens : ce garde-fou est désormais TOUJOURS actif (default),
+      // indépendant du flag d'économie EODHD. Kill-switch dédié si besoin :
+      // GAINERS_OPEN_SESSION_GUARD=false.
+      const openSessionGuard =
+        (this.config.get<string>('GAINERS_OPEN_SESSION_GUARD') ?? 'true').toLowerCase() !== 'false';
       const candIsCryptoSession = cand.assetClass === 'crypto_major' || cand.assetClass === 'crypto_alt';
-      if (sessionFilterEnabled && !candIsCryptoSession && !isInExchangeSession(cand.symbol, nowUtc)) {
+      if (openSessionGuard && !candIsCryptoSession && !isInExchangeSession(cand.symbol, nowUtc)) {
         this.logger.log(
           `[top-gainers] ${cand.symbol} marché fermé (session par-bourse) → skip open (pas d'ouverture sur prix figé)`,
         );

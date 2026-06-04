@@ -106,6 +106,7 @@ export interface LisaPosition {
   takeProfitPrice: string | null;
   horizonTargetDate: string | null;
   estimatedEntryCostUsd: string;
+  manualControl?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -339,6 +340,26 @@ export function useClosePositionManual(portfolioId: string) {
       apiFetch<{ ok: boolean; symbol: string; exitPrice: string; realizedPnlUsd: string | null; realizedPnlPct: number | null }>(
         `/lisa/positions/${positionId}/close`,
         { method: 'POST', body: JSON.stringify({ portfolioId }) },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['lisa', 'positions', portfolioId] });
+      qc.invalidateQueries({ queryKey: ['lisa', 'open-positions-live', portfolioId] });
+    },
+  });
+}
+
+/**
+ * Active/désactive le CONTRÔLE MANUEL d'une position : quand ON, l'auto-trader
+ * ne ferme plus jamais cette position (SL/TP/trailing/risk-monitor) — l'user a
+ * la main à 100%. Réversible.
+ */
+export function useSetManualControl(portfolioId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: { positionId: string; enabled: boolean }) =>
+      apiFetch<{ ok: boolean; positionId: string; manualControl: boolean }>(
+        `/lisa/positions/${args.positionId}/manual-control`,
+        { method: 'POST', body: JSON.stringify({ portfolioId, enabled: args.enabled }) },
       ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['lisa', 'positions', portfolioId] });

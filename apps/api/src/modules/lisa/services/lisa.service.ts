@@ -3267,6 +3267,8 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       livePrice: closePx,
       rationale: `[manual] Close user @ ${closePx}`
         + (corrupt ? ' [fallback-guard: closed at entry_price]' : ` (source=${quote?.source ?? '?'})`),
+      // Close initiée par l'utilisateur → autorisée même sous contrôle manuel.
+      allowManualControlled: true,
     });
 
     // Capture outcome (Phase 5) + resync session (compta Harvest/gainers).
@@ -3321,6 +3323,48 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       realizedPnlUsd: result.realizedPnlUsd ?? null,
       realizedPnlPct: result.realizedPnlPct ?? null,
     };
+  }
+
+  /**
+   * Active/désactive le CONTRÔLE MANUEL sur une position. Quand `enabled=true`,
+   * l'auto-trader ne ferme plus jamais cette position (SL/TP/trailing/risk-
+   * monitor) — l'utilisateur a la main à 100%. Réversible (`enabled=false` rend
+   * la main à l'auto). Le SL reste stocké (repère visuel non-déclencheur).
+   */
+  async setManualControl(
+    userId: string,
+    portfolioId: string,
+    positionId: string,
+    enabled: boolean,
+  ): Promise<{ ok: true; positionId: string; manualControl: boolean }> {
+    await this.assertPortfolioOwner(userId, portfolioId);
+
+    const { data: row, error } = await this.supabase.getClient()
+      .from('lisa_positions')
+      .select('id, symbol, status, portfolio_id')
+      .eq('id', positionId)
+      .maybeSingle();
+    if (error || !row) throw new NotFoundException(`Position ${positionId} introuvable`);
+    if (row.portfolio_id !== portfolioId) throw new BadRequestException('Position hors portfolio');
+    if (row.status !== 'open') throw new BadRequestException(`Position déjà fermée (status=${row.status})`);
+
+    const { error: upErr } = await this.supabase.getClient()
+      .from('lisa_positions')
+      .update({ manual_control: enabled })
+      .eq('id', positionId)
+      .eq('status', 'open');
+    if (upErr) throw new Error(`Update manual_control failed: ${upErr.message}`);
+
+    await this.logDecision(portfolioId, 'position_manual_control_toggled', {
+      summary: `${enabled ? '🔒 Contrôle manuel ON' : '🤖 Auto rendu'} sur ${row.symbol} (${positionId.slice(0, 8)})`.slice(0, 200),
+      rationale: enabled
+        ? 'Utilisateur a pris le contrôle 100% : aucun close auto (SL/TP/trailing/risk-monitor) jusqu\'à révocation. SL reste repère non-déclencheur.'
+        : 'Utilisateur rend la main à l\'auto-trader : stops/targets ré-activés.',
+      payload: { positionId, symbol: row.symbol, manual_control: enabled },
+      triggeredBy: 'user_manual',
+    }).catch(() => null);
+
+    return { ok: true, positionId, manualControl: enabled };
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────────

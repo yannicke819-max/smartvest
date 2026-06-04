@@ -293,6 +293,7 @@ export class PaperBrokerService {
         Date.now() + cmd.horizonDays * 86_400_000,
       ).toISOString(),
       estimatedEntryCostUsd: estimatedCost.toFixed(2),
+      manualControl: false,
       createdAt: now,
       updatedAt: now,
     };
@@ -453,6 +454,7 @@ export class PaperBrokerService {
         Date.now() + cmd.horizonDays * 86_400_000,
       ).toISOString(),
       estimatedEntryCostUsd: estimatedCost.toFixed(2),
+      manualControl: false,
       createdAt: now,
       updatedAt: now,
     };
@@ -529,6 +531,22 @@ export class PaperBrokerService {
     const position = this.mapRow(posRow);
     if (position.status !== 'open') {
       throw new Error(`Cannot close: position ${cmd.positionId} already ${position.status}`);
+    }
+
+    // 04/06/2026 — CONTRÔLE MANUEL (chokepoint unique). Si la position est sous
+    // contrôle manuel, on REFUSE tout close automatique (SL/TP/trailing/risk-
+    // monitor/news-shock/early-exit). Tous les chemins auto convergent ici, donc
+    // ce seul garde-fou couvre 100% des cas. SEULE la close manuelle utilisateur
+    // (closePositionManual) passe `allowManualControlled=true`. On lève une erreur
+    // typée (MANUAL_CONTROL_ACTIVE) que les callers auto catchent déjà (try/catch
+    // best-effort) → pas de spam destructeur, la position reste ouverte.
+    if (
+      (posRow as Record<string, unknown>)['manual_control'] === true &&
+      cmd.allowManualControlled !== true
+    ) {
+      throw new Error(
+        `MANUAL_CONTROL_ACTIVE: position ${cmd.positionId} (${position.symbol}) sous contrôle manuel — close auto (${cmd.reason}) refusé`,
+      );
     }
 
     const entryPx = new Decimal(position.entryPrice);
@@ -947,6 +965,7 @@ export class PaperBrokerService {
       takeProfitPrice: (row.take_profit_price as string | null) ?? null,
       horizonTargetDate: (row.horizon_target_date as string | null) ?? null,
       estimatedEntryCostUsd: row.estimated_entry_cost_usd as string,
+      manualControl: (row.manual_control as boolean | null) ?? false,
       createdAt: row.created_at as string,
       updatedAt: row.updated_at as string,
     };
