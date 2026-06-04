@@ -114,6 +114,10 @@ function makeBlacklistMock(opts?: { blacklisted?: string[] }): TickerBlacklistSe
   const set = new Set(opts?.blacklisted ?? []);
   return {
     isBlacklisted: (ticker: string) => set.has(ticker),
+    // Fix 04/06 — le router skip TD désormais sur isStaticBlacklisted (pas
+    // isBlacklisted). Le mock map les deux sur le même set : un ticker passé
+    // dans { blacklisted } simule un ticker statique mort (skip TD légitime).
+    isStaticBlacklisted: (ticker: string) => set.has(ticker),
     recordStrike: () => undefined,
     getStats: () => ({ staticEnabled: true, staticSize: 0, dynamicCount: 0, strikesThreshold: 3, ttlHours: 24 }),
   } as unknown as TickerBlacklistService;
