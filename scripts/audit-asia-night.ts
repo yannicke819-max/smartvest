@@ -40,7 +40,7 @@ function bar(n: number, max: number, width = 30): string {
   return '█'.repeat(len).padEnd(width, ' ');
 }
 
-interface ShadowRow { decision: string; reason_code: string | null; symbol: string; change_pct: number | null; created_at: string; asset_class?: string; }
+interface ShadowRow { decision: string; symbol: string; change_pct_1m: number | null; created_at: string; asset_class?: string; }
 interface PositionRow {
   symbol: string; asset_class: string; status: string;
   entry_price: number; entry_timestamp: string;
@@ -53,12 +53,13 @@ interface SnapshotRow { position_id: string; symbol: string; live_price: number 
 interface CloseDecisionRow { symbol: string; asset_class: string; closer_type: string; pnl_pct: number | null; mfe_pct: number | null; mae_pct: number | null; give_back_from_mfe: number | null; verdict: string | null; raw_payload: Record<string, unknown> | null; closed_at: string; max_favorable_after_60m_pct: number | null; }
 
 async function fetchShadowSignals(since: string, until: string): Promise<ShadowRow[]> {
-  const { data } = await sb.from('gainers_user_shadow_signals')
-    .select('decision, reason_code, symbol, change_pct, created_at, asset_class')
+  const { data, error } = await sb.from('gainers_user_shadow_signals')
+    .select('decision, symbol, change_pct_1m, created_at, asset_class')
     .eq('portfolio_id', TRADER)
     .eq('asset_class', 'asia_equity')
     .gte('created_at', since).lte('created_at', until)
     .order('created_at', { ascending: true });
+  if (error) console.error('  ⚠ shadow signals fetch err:', error.message);
   return (data ?? []) as ShadowRow[];
 }
 
