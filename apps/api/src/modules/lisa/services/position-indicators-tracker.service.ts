@@ -67,7 +67,9 @@ export class PositionIndicatorsTrackerService {
   ) {}
 
   onModuleInit(): void {
-    this.enabled = (this.config.get<string>('POSITION_TRACKER_ENABLED') ?? 'false').toLowerCase() === 'true';
+    // Default true depuis 04/06/2026 — service append-only sans effet sur trading,
+    // pas de raison d'être opt-in. Coût EODHD ~6% du quota max.
+    this.enabled = (this.config.get<string>('POSITION_TRACKER_ENABLED') ?? 'true').toLowerCase() === 'true';
     if (this.enabled) {
       this.logger.log('[position-tracker] ENABLED — cron 2min, snapshot indicateurs positions ouvertes');
     }

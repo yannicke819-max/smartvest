@@ -162,7 +162,7 @@ export class CloseDecisionCaptureService {
       const to = new Date(Date.now() - 60 * 60_000).toISOString();
       const { data: rows } = await this.supabase.getClient()
         .from('position_close_decisions')
-        .select('id, symbol, asset_class, direction, exit_price, closed_at, take_profit_price, entry_price')
+        .select('id, symbol, asset_class, direction, exit_price, closed_at, take_profit_price, entry_price, raw_payload')
         .is('verdict', null)
         .gte('closed_at', from).lte('closed_at', to)
         .limit(50);
@@ -187,13 +187,28 @@ export class CloseDecisionCaptureService {
     const sign = String(r.direction) === 'short' ? -1 : 1;
     if (!(exit > 0)) return false;
 
-    const candles = await this.fetchCandles(symbol, r.asset_class as string | null);
-    const post = candles.filter((c) => true).length ? await this.postCloseCandles(symbol, r.asset_class as string | null, closedAt) : [];
+    // Fix 04/06/2026 — Retire le guard `candles.filter(...).length` qui short-circuitait
+    // postCloseCandles dès que fetchCandles (60 candles) renvoyait vide. Cas EZJ.LSE
+    // 03/06 : fetchCandles vide (raison inconnue) → post=[] → verdict 'OK' permanent
+    // avec label_reason='no_post_data' alors que LSE avait 39min de post-data dispo.
+    // On essaie TOUJOURS postCloseCandles directement.
+    const post = await this.postCloseCandles(symbol, r.asset_class as string | null, closedAt);
     if (post.length === 0) {
-      // Pas de données post-close (marché fermé / coverage) → marque OK neutre
-      // pour ne pas re-tenter indéfiniment.
+      // Fix 04/06/2026 — Retry up to 3 fois (~45min entre tentatives) avant marquer
+      // verdict='OK' permanent. Évite de fermer définitivement un label quand le
+      // provider intraday a juste un trou ponctuel.
+      const existingPayload = (r.raw_payload ?? {}) as Record<string, unknown>;
+      const attempts = Number(existingPayload.label_attempts ?? 0) + 1;
+      if (attempts < 3) {
+        // Retry plus tard : pas de verdict définitif, juste increment counter
+        await this.supabase.getClient().from('position_close_decisions')
+          .update({ raw_payload: { ...existingPayload, label_attempts: attempts, last_attempt_at: new Date().toISOString() } })
+          .eq('id', String(r.id));
+        return false;
+      }
+      // 3 attempts → on abandonne et on marque OK définitivement
       await this.supabase.getClient().from('position_close_decisions')
-        .update({ verdict: 'OK', labeled_at: new Date().toISOString(), raw_payload: { label_reason: 'no_post_data' } })
+        .update({ verdict: 'OK', labeled_at: new Date().toISOString(), raw_payload: { ...existingPayload, label_reason: 'no_post_data', label_attempts: attempts } })
         .eq('id', String(r.id));
       return true;
     }
