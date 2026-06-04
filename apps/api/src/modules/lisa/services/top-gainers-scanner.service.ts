@@ -372,8 +372,12 @@ export const GAINERS_LEVERAGED_PROXIES: FixedBasketEntry[] = [
  */
 type MarketSessionClass = 'us' | 'eu' | 'asia';
 const MARKET_SESSION_HOURS: Record<MarketSessionClass, { openUtcMin: number; closeUtcMin: number }> = {
-  // NYSE/NASDAQ : 14:30 - 21:00 UTC (été — hiver +1h, on accepte la dérive)
-  us:   { openUtcMin: 14 * 60 + 30, closeUtcMin: 21 * 60 },
+  // NYSE/NASDAQ : 13:30 - 20:00 UTC en ÉTÉ (EDT = UTC-4, 9:30 ET).
+  // Hiver (EST = UTC-5) : 14:30 - 21:00. On prend la fenêtre la PLUS LARGE pour
+  // ne JAMAIS bloquer un open valide : 13:30 - 21:00 UTC (couvre EDT + EST).
+  // Bug 04/06/2026 : valeur 14:30 (EST winter only) bloquait toute ouverture US
+  // entre 13:30 et 14:30 UTC en été → symptôme : 0 candidat US à 13:39 UTC.
+  us:   { openUtcMin: 13 * 60 + 30, closeUtcMin: 21 * 60 },
   // EU agrégé (LSE/Euronext/XETRA) : 07:00 - 16:30 UTC en ÉTÉ (CEST = UTC+2).
   // Paris/XETRA ouvrent 09:00 CEST = 07:00 UTC ; LSE 08:00 BST = 07:00 UTC.
   // En hiver Paris ouvre 09:00 CET = 08:00 UTC : on accepte la dérive 1h (idem US).
