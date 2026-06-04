@@ -128,6 +128,24 @@ export class TickerBlacklistService {
   }
 
   /**
+   * True UNIQUEMENT si blacklist STATIQUE (ticker confirmé mort sur TOUS les
+   * providers, ex .NSE 404 permanent). N'inclut PAS la blacklist dynamique.
+   *
+   * Fix 04/06/2026 — La blacklist dynamique compte des strikes EODHD
+   * HTTP_200_EMPTY. Or EODHD est cassé sur l'intraday Asia (SHE/SHG/KO/KQ/TSE)
+   * alors que TwelveData fonctionne pour ces mêmes tickers. Bloquer TD sur un
+   * strike EODHD verrouillait tout le flux Asia (068290.KO, 3336.HK, etc.
+   * jamais évalués → 0 open). Le caller (IntradayProviderRouter) doit skip TD
+   * UNIQUEMENT sur la blacklist statique, pas dynamique : si EODHD est down,
+   * TD devient le fallback essentiel, pas un call à éviter.
+   */
+  isStaticBlacklisted(ticker: string): boolean {
+    if (!ticker) return false;
+    if (!this.isStaticEnabled()) return false;
+    return DEAD_NSE_TICKERS.has(ticker.toUpperCase());
+  }
+
+  /**
    * Enregistre un strike 404 pour ce ticker. Si le compteur sur la fenêtre
    * 24h glissante atteint le seuil, blackliste pour TTL_HOURS.
    *

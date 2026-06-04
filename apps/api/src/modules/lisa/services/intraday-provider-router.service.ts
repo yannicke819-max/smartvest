@@ -206,10 +206,13 @@ export class IntradayProviderRouter implements OnModuleInit {
     ) {
       return 'flag_off';
     }
-    // PR #355 — éviter de tirer TD sur les tickers déjà skippés EODHD-side
-    // pour cause de blacklist (statique ou dynamique R10). Sinon TD répète
-    // les calls inutiles que EODHD a évités.
-    if (this.blacklist?.isBlacklisted(eodhdTicker)) return 'ticker_blacklisted';
+    // PR #355 — éviter de tirer TD sur les tickers EODHD-skippés pour blacklist.
+    // Fix 04/06/2026 — UNIQUEMENT la blacklist STATIQUE (tickers morts partout).
+    // La blacklist DYNAMIQUE compte des strikes EODHD HTTP_200_EMPTY ; or EODHD
+    // est cassé sur l'intraday Asia alors que TD fonctionne. Skip TD sur un
+    // strike EODHD verrouillait tout le flux Asia (068290.KO etc. jamais
+    // évalués → 0 open). Quand EODHD est down, TD doit rester le fallback.
+    if (this.blacklist?.isStaticBlacklisted(eodhdTicker)) return 'ticker_blacklisted';
     if (hasTimeWindow) return 'time_window_present';
     if (!this.shouldRouteToTd(eodhdTicker)) return 'ab_test_sent_to_eodhd';
     if (this.convertToTdSymbol(eodhdTicker) === null) return 'unsupported_suffix';

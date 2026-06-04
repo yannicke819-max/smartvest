@@ -91,6 +91,46 @@ describe('TickerBlacklistService', () => {
     });
   });
 
+  describe('isStaticBlacklisted — fix 04/06 (TD fallback sur EODHD down)', () => {
+    it('ticker statique mort → isStaticBlacklisted=true', () => {
+      const svc = makeService();
+      expect(svc.isStaticBlacklisted('BHEL.NSE')).toBe(true);
+      expect(svc.isStaticBlacklisted('222420.KQ')).toBe(true);
+    });
+
+    it('ticker dynamiquement blacklisté (3 strikes EODHD) → isStaticBlacklisted=FALSE', () => {
+      const svc = makeService();
+      const t = '068290.KO'; // ticker Asia non-statique, EODHD empty
+      svc.recordStrike(t, 'HTTP_200_EMPTY');
+      svc.recordStrike(t, 'HTTP_200_EMPTY');
+      svc.recordStrike(t, 'HTTP_200_EMPTY');
+      // isBlacklisted (dynamique) = true MAIS isStaticBlacklisted = false
+      // → le router doit quand même tenter TwelveData (le fallback qui marche)
+      expect(svc.isBlacklisted(t)).toBe(true);
+      expect(svc.isStaticBlacklisted(t)).toBe(false);
+    });
+
+    it('ticker inconnu jamais strikée → isStaticBlacklisted=false', () => {
+      const svc = makeService();
+      expect(svc.isStaticBlacklisted('300088.SHE')).toBe(false);
+    });
+
+    it('static disabled via env → isStaticBlacklisted=false même sur ticker mort', () => {
+      const svc = makeService({ GAINERS_NSE_BLACKLIST_ENABLED: 'false' });
+      expect(svc.isStaticBlacklisted('BHEL.NSE')).toBe(false);
+    });
+
+    it('case-insensitive', () => {
+      const svc = makeService();
+      expect(svc.isStaticBlacklisted('bhel.nse')).toBe(true);
+    });
+
+    it('ticker vide → false (pas de crash)', () => {
+      const svc = makeService();
+      expect(svc.isStaticBlacklisted('')).toBe(false);
+    });
+  });
+
   describe('auto-blacklist on strikes', () => {
     it('3 strikes 404 in 24h → blacklisted', () => {
       const svc = makeService();
