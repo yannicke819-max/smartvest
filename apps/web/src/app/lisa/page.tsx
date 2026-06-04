@@ -34,6 +34,7 @@ import { GainersStatusTile } from '@/components/lisa/gainers-status-tile';
 import { GainersConfigPanel } from '@/components/lisa/gainers-config-panel';
 import { LisaStickyHeader } from '@/components/lisa/lisa-sticky-header';
 import { GainsTracker } from '@/components/lisa/gains-tracker';
+import { OversoldPanel } from '@/components/lisa/oversold-panel';
 import { LessonsImpactPanel } from '@/components/lisa/lessons-impact-panel';
 import { LearningLoopAuditPanel } from '@/components/lisa/learning-loop-audit-panel';
 import { LisaConfigPanel } from '@/components/lisa/lisa-config-panel';
@@ -720,6 +721,12 @@ export default function LisaPage() {
           + l'historique gainers de HIGH) crée la confusion signalée. */}
       {selectedPortfolioId && currentMode !== 'oversold' && (
         <GainsTracker portfolioId={selectedPortfolioId} />
+      )}
+
+      {/* 04/06 — Vue dédiée mode oversold (remplace les widgets gainers) :
+          book value, P&L réalisé vs latent, positions + drop% + compte à rebours J+10. */}
+      {selectedPortfolioId && currentMode === 'oversold' && (
+        <OversoldPanel portfolioId={selectedPortfolioId} />
       )}
 
       {/* Shadow Sizing read-only — comparatif HIGH/MIDDLE/SMALL vs TRADER.

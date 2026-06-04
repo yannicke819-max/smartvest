@@ -1553,6 +1553,20 @@ export class LisaController {
     return { ok: true, triggeredAt: new Date().toISOString() };
   }
 
+  /**
+   * Mode OVERSOLD — synthèse du book pour l'UI dédiée. Valorisation au close EOD
+   * (swing J+10, pas d'intraday live). Stats scopées source=scanner_oversold
+   * (pas de mélange avec l'historique gainers du portfolio).
+   */
+  @Get('oversold-summary/:portfolioId')
+  async getOversoldSummary(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    extractUserId(headers);
+    return this.oversoldScanner.getBookSummary(portfolioId);
+  }
+
   @Get('eodhd/stats')
   getEodhdStats(@Headers() headers: Record<string, string>) {
     extractUserId(headers);

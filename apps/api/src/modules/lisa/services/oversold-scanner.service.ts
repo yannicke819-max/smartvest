@@ -28,10 +28,47 @@ import { DecisionLogService } from './decision-log.service';
 import {
   buildOversoldCandidates,
   selectOversoldOpens,
+  businessDaysSince,
   type OversoldConfig,
   type EodBar,
   type OversoldCandidate,
 } from './oversold.helper';
+
+/** Une position oversold enrichie pour l'UI dédiée (book summary). */
+export interface OversoldBookPosition {
+  symbol: string;
+  entryPrice: number;
+  currentPrice: number | null; // dernier close EOD (null si indispo)
+  quantity: number;
+  notionalUsd: number; // notionnel à l'entrée
+  unrealizedPnlUsd: number | null;
+  unrealizedPnlPct: number | null;
+  dropPctAtEntry: number | null; // (entry/closePrev - 1)×100, recalculé EOD
+  heldDays: number; // jours ouvrés écoulés depuis l'entrée
+  daysRemaining: number; // holdDays - heldDays (≥ 0)
+  stopPrice: number | null; // entry × (1 + stop_catastrophe%/100)
+  distToStopPct: number | null; // marge avant stop catastrophe (positif = OK)
+}
+
+/** Synthèse du book oversold pour un portfolio (endpoint UI). */
+export interface OversoldBookSummary {
+  portfolioId: string;
+  capitalUsd: number;
+  openCount: number;
+  deployedNotionalUsd: number;
+  currentBookValueUsd: number; // Σ quantity × currentPrice (positions valorisées)
+  unrealizedPnlUsd: number;
+  unrealizedPnlPct: number; // vs notionnel déployé
+  realizedPnlUsd: number; // closed source=scanner_oversold
+  realizedTrades: number;
+  realizedWins: number;
+  realizedWinRatePct: number | null;
+  holdDaysTarget: number;
+  stopCatastrophePct: number;
+  dropBand: { min: number; max: number };
+  asOf: string;
+  positions: OversoldBookPosition[];
+}
 
 /** Row config oversold lue depuis lisa_session_configs. */
 interface OversoldPortfolioRow {
@@ -259,6 +296,173 @@ export class OversoldScannerService {
       return new Set();
     }
     return new Set(data.map((r) => r.symbol as string));
+  }
+
+  /**
+   * Synthèse du book oversold pour l'UI dédiée (endpoint GET /lisa/oversold-summary/:id).
+   *
+   * Valorise chaque position au DERNIER CLOSE EOD (pas en intraday live) : cohérent
+   * avec un swing J+10, et évite le fetch live-price stale qui pollue les logs hors
+   * heures US. EOD ne change qu'1×/jour → cache léger (TTL ci-dessous) suffisant.
+   *
+   * Filtre les positions sur venue_fee_detail->>source='scanner_oversold' (le broker
+   * n'écrit pas la colonne `source`). Les stats réalisées sont elles aussi scopées
+   * oversold → pas de mélange avec l'historique gainers de HIGH.
+   */
+  async getBookSummary(portfolioId: string): Promise<OversoldBookSummary> {
+    const client = this.supabase.getClient();
+
+    // 1. Config oversold du portfolio (defaults migration 0191 si NULL).
+    const { data: cfg } = await client
+      .from('lisa_session_configs')
+      .select(
+        'capital_usd, oversold_hold_days, oversold_stop_catastrophe_pct, oversold_drop_min_pct, oversold_drop_max_pct',
+      )
+      .eq('portfolio_id', portfolioId)
+      .maybeSingle();
+    const holdDaysTarget = Number(cfg?.oversold_hold_days ?? DEFAULTS.holdDays);
+    const stopCatastrophePct = Number(cfg?.oversold_stop_catastrophe_pct ?? DEFAULTS.stopCatastrophePct);
+    const capitalUsd = Number(cfg?.capital_usd ?? 0);
+    const dropBand = {
+      min: Number(cfg?.oversold_drop_min_pct ?? DEFAULTS.dropMinPct),
+      max: Number(cfg?.oversold_drop_max_pct ?? DEFAULTS.dropMaxPct),
+    };
+
+    // 2. Positions oversold OUVERTES de ce portfolio.
+    const { data: openRows } = await client
+      .from('lisa_positions')
+      .select('symbol, entry_price, entry_notional_usd, quantity, entry_timestamp, stop_loss_price')
+      .eq('portfolio_id', portfolioId)
+      .eq('venue_fee_detail->>source', 'scanner_oversold')
+      .eq('status', 'open');
+    const open = (openRows ?? []) as Array<Record<string, unknown>>;
+
+    // 3. Stats réalisées (closed oversold) — scopées source, pas de mélange gainers.
+    const { data: closedRows } = await client
+      .from('lisa_positions')
+      .select('realized_pnl_usd')
+      .eq('portfolio_id', portfolioId)
+      .eq('venue_fee_detail->>source', 'scanner_oversold')
+      .neq('status', 'open');
+    const closed = (closedRows ?? []) as Array<{ realized_pnl_usd?: unknown }>;
+    let realizedPnlUsd = 0;
+    let realizedWins = 0;
+    for (const r of closed) {
+      const pnl = Number(r.realized_pnl_usd ?? 0);
+      if (Number.isFinite(pnl)) {
+        realizedPnlUsd += pnl;
+        if (pnl > 0) realizedWins++;
+      }
+    }
+    const realizedTrades = closed.length;
+    const realizedWinRatePct = realizedTrades > 0 ? (realizedWins / realizedTrades) * 100 : null;
+
+    // 4. Valorisation EOD des positions ouvertes (cache TTL 10 min).
+    const symbols = Array.from(new Set(open.map((p) => String(p.symbol))));
+    const barsBySymbol = await this.getBookBarsCached(symbols);
+
+    const now = new Date();
+    const positions: OversoldBookPosition[] = [];
+    let deployedNotionalUsd = 0;
+    let currentBookValueUsd = 0;
+    let unrealizedPnlUsd = 0;
+
+    for (const p of open) {
+      const symbol = String(p.symbol);
+      const entryPrice = Number(p.entry_price);
+      const notionalUsd = Number(p.entry_notional_usd ?? 0);
+      const qtyRaw = Number(p.quantity ?? 0);
+      const quantity = Number.isFinite(qtyRaw) && qtyRaw > 0
+        ? qtyRaw
+        : entryPrice > 0 ? notionalUsd / entryPrice : 0;
+      const entryTs = String(p.entry_timestamp ?? '');
+      const stopPrice = p.stop_loss_price != null ? Number(p.stop_loss_price) : entryPrice * (1 + stopCatastrophePct / 100);
+
+      const bars = barsBySymbol.get(symbol) ?? [];
+      const currentPrice = bars.length > 0 ? bars[bars.length - 1].close : null;
+
+      // drop% à l'entrée : (entry / close de la barre AVANT la date d'entrée − 1).
+      let dropPctAtEntry: number | null = null;
+      if (entryTs && bars.length >= 2 && entryPrice > 0) {
+        const entryDay = entryTs.slice(0, 10);
+        const idx = bars.findIndex((b) => b.date === entryDay);
+        if (idx >= 1) {
+          const prevClose = bars[idx - 1].close;
+          if (prevClose > 0) dropPctAtEntry = (entryPrice / prevClose - 1) * 100;
+        }
+      }
+
+      const heldDays = entryTs ? businessDaysSince(entryTs, now) : 0;
+      const daysRemaining = Math.max(0, holdDaysTarget - heldDays);
+
+      const unrealizedPnlUsdPos = currentPrice != null ? quantity * (currentPrice - entryPrice) : null;
+      const unrealizedPnlPctPos = currentPrice != null && entryPrice > 0 ? (currentPrice / entryPrice - 1) * 100 : null;
+      const distToStopPct = currentPrice != null && stopPrice > 0 ? (currentPrice / stopPrice - 1) * 100 : null;
+
+      deployedNotionalUsd += notionalUsd;
+      if (currentPrice != null) {
+        currentBookValueUsd += quantity * currentPrice;
+        if (unrealizedPnlUsdPos != null) unrealizedPnlUsd += unrealizedPnlUsdPos;
+      } else {
+        // Pas de prix frais → on retient le notionnel d'entrée pour la valeur book.
+        currentBookValueUsd += notionalUsd;
+      }
+
+      positions.push({
+        symbol,
+        entryPrice,
+        currentPrice,
+        quantity,
+        notionalUsd,
+        unrealizedPnlUsd: unrealizedPnlUsdPos,
+        unrealizedPnlPct: unrealizedPnlPctPos,
+        dropPctAtEntry,
+        heldDays,
+        daysRemaining,
+        stopPrice,
+        distToStopPct,
+      });
+    }
+
+    // Tri : P&L latent croissant (les positions en souffrance d'abord).
+    positions.sort((a, b) => (a.unrealizedPnlPct ?? 0) - (b.unrealizedPnlPct ?? 0));
+
+    const unrealizedPnlPct = deployedNotionalUsd > 0 ? (unrealizedPnlUsd / deployedNotionalUsd) * 100 : 0;
+
+    return {
+      portfolioId,
+      capitalUsd,
+      openCount: open.length,
+      deployedNotionalUsd,
+      currentBookValueUsd,
+      unrealizedPnlUsd,
+      unrealizedPnlPct,
+      realizedPnlUsd,
+      realizedTrades,
+      realizedWins,
+      realizedWinRatePct,
+      holdDaysTarget,
+      stopCatastrophePct,
+      dropBand,
+      asOf: now.toISOString(),
+      positions,
+    };
+  }
+
+  /**
+   * Cache EOD pour la valorisation du book (TTL 10 min). EOD ne change qu'1×/jour
+   * donc un cache court évite de re-frapper EODHD à chaque poll UI (30s).
+   */
+  private bookBarsCache: { at: number; bars: Map<string, EodBar[]> } | null = null;
+  private async getBookBarsCached(symbols: string[]): Promise<Map<string, EodBar[]>> {
+    const TTL_MS = 10 * 60 * 1000;
+    const cached = this.bookBarsCache;
+    if (cached && Date.now() - cached.at < TTL_MS && symbols.every((s) => cached.bars.has(s))) {
+      return cached.bars;
+    }
+    const bars = symbols.length > 0 ? await this.fetchUniverseBars(symbols) : new Map<string, EodBar[]>();
+    this.bookBarsCache = { at: Date.now(), bars };
+    return bars;
   }
 
   /**
