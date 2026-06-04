@@ -78,6 +78,7 @@ import { OperatingModeService } from './services/operating-mode.service';
 // PR-2 scanner losers EOD (cron 21:15 UTC) + PR-3 exit par durée (cron horaire).
 import { OversoldScannerService } from './services/oversold-scanner.service';
 import { OversoldExitService } from './services/oversold-exit.service';
+import { OversoldMistralExitService } from './services/oversold-mistral-exit.service';
 import { MultiTimeframePersistenceService } from './services/multi-tf-persistence.service';
 import { EodhdQuotaService } from './services/eodhd-quota.service';
 import { YahooIntradayService } from './services/yahoo-intraday.service';
@@ -287,6 +288,9 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     // Deps : SupabaseService, LisaService (getPaperBroker), DecisionLogService, ConfigService.
     OversoldScannerService,
     OversoldExitService,
+    // OVERSOLD MISTRAL EXIT — gain-picker LLM (cron 15min, opt-in via env). Filet
+    // déterministe OversoldExitService reste actif EN DESSOUS (J+10 hard + -15%).
+    OversoldMistralExitService,
     // P8-MULTI-TIMEFRAME-PERSISTENCE — fetch + score multi-TF (1m/5m/10m/15m/30m/1h)
     MultiTimeframePersistenceService,
     // OpenPositionRiskMonitor — cron 5min, thesis_health_score → CLOSE/TIGHTEN_SL/RAISE_TP/MOMENTUM_RIDE
