@@ -6,12 +6,12 @@ import { apiFetch } from '@/lib/api-client';
 /**
  * P7-MODE-GAINERS-BADGE — Hooks pour le toggle 3-modes opératoires.
  *
- * GET /lisa/mode/:portfolioId        → { mode: 'investment'|'harvest'|'gainers' }
+ * GET /lisa/mode/:portfolioId        → { mode: 'investment'|'harvest'|'gainers'|'oversold' }
  * POST /lisa/mode/:portfolioId       → applique + audit
  * GET /lisa/gainers-status/:portfolioId → mini-tile poll 30s
  */
 
-export type OperatingMode = 'investment' | 'harvest' | 'gainers';
+export type OperatingMode = 'investment' | 'harvest' | 'gainers' | 'oversold';
 
 export function useOperatingMode(portfolioId: string | null) {
   return useQuery({

@@ -92,12 +92,29 @@ const profileLabelOf = (
 // (= scanners Gainers déterministes) sont visibles séparément en bas (chunk A.2.5).
 const TRADER_PORTFOLIO_ID = 'b0000001-0000-0000-0000-000000000001';
 
+// 04/06/2026 — Shadows MIDDLE + SMALL retirés (option douce : autopilot off,
+// kill armé, historique conservé en DB). Les 9 backtests prix réels ont prouvé
+// que le scalp momentum n'a pas d'edge ; on ne garde qu'UN portfolio gainers
+// d'observation (TRADER) + HIGH recyclé en mode oversold. On masque MIDDLE/SMALL
+// du sélecteur sans effacer leurs rows (le panel shadows-summary reste libre de
+// les afficher en lecture seule s'il le souhaite).
+const RETIRED_SHADOW_IDS = new Set<string>([
+  'a0000002-0000-0000-0000-000000000002', // MIDDLE
+  'a0000003-0000-0000-0000-000000000003', // SMALL
+]);
+
+// HIGH recyclé en mode oversold (mean-reversion swing, $150k paper) — gardé
+// visible avec un libellé dédié dans le sélecteur.
+const HIGH_OVERSOLD_PORTFOLIO_ID = 'a0000001-0000-0000-0000-000000000001';
+
 export default function LisaPage() {
   const portfoliosQuery = usePortfolios();
   const qc = useQueryClient();
   // Filter sim portfolios par is_simulation. TRADER + 3 Shadows + le perso.
   const rawSimPortfolios = (portfoliosQuery.data ?? []).filter(
-    (p) => (p as { is_simulation?: boolean }).is_simulation,
+    (p) =>
+      (p as { is_simulation?: boolean }).is_simulation &&
+      !RETIRED_SHADOW_IDS.has((p as { id?: string }).id ?? ''),
   );
 
   // Garantit que TRADER est TOUJOURS dans la liste (même si is_simulation
@@ -626,8 +643,11 @@ export default function LisaPage() {
             >
               {simulationPortfolios.map((p) => {
                 const isTrader = p.id === TRADER_PORTFOLIO_ID;
+                const isOversold = p.id === HIGH_OVERSOLD_PORTFOLIO_ID;
                 const label = isTrader
                   ? `🤖 ${p.name} (agent autonome LISA)`
+                  : isOversold
+                  ? `📉 ${p.name} (mean-reversion oversold)`
                   : `🎯 ${p.name}`;
                 return (
                   <option key={p.id} value={p.id}>{label}</option>
@@ -646,7 +666,7 @@ export default function LisaPage() {
               )}
           </div>
           <p className="text-[11px] text-muted-foreground">
-            TRADER = agent LLM autonome (Mistral primary, Gemini fallback). Shadow High/Middle/Small = scanners momentum A/B (read-only).
+            TRADER = agent LLM autonome (Mistral primary, Gemini fallback) + scanner Gainers d&apos;observation. HIGH = mode Oversold (mean-reversion swing, $150k paper). Shadows MIDDLE/SMALL retirés (momentum sans edge, prouvé 3-fold).
           </p>
         </div>
       )}

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { TrendingUp, Wheat, Rocket, Settings, AlertCircle } from 'lucide-react';
+import { TrendingUp, Wheat, Rocket, TrendingDown, Settings, AlertCircle } from 'lucide-react';
 import {
   useOperatingMode,
   useApplyOperatingMode,
@@ -88,7 +88,7 @@ export function MacroModeSelector({ portfolioId }: { portfolioId: string }) {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
         <ModeCard
           icon={TrendingUp}
           title="📈 Investment"
@@ -116,6 +116,15 @@ export function MacroModeSelector({ portfolioId }: { portfolioId: string }) {
           onClick={() => handleSelect('gainers')}
           color="orange"
         />
+        <ModeCard
+          icon={TrendingDown}
+          title="📉 Oversold"
+          subtitle="Mean-reversion swing · achète les chutes · scan 1×/jour"
+          description="Inverse du momentum : achète les titres ayant chuté de -5 à -12% sur 1J (sur-réaction), exclut les falling-knife (<-12%). Hold J+10 ouvrés, stop catastrophe -15% par position, book diversifié (~150 lignes). Edge mean-reversion validé 3-fold (alpha +1.4% vs SPY, N=1416)."
+          isActive={currentMode === 'oversold'}
+          onClick={() => handleSelect('oversold')}
+          color="purple"
+        />
       </div>
 
       <p className="text-[11px] text-muted-foreground italic">
@@ -135,6 +144,8 @@ export function MacroModeSelector({ portfolioId }: { portfolioId: string }) {
               <p className="text-muted-foreground">
                 {confirmMode === 'gainers'
                   ? 'Active le scanner Gainers (24/7 cross-asset). Autopilot activé, kill-switch désarmé. Profile et capital_discipline_mode actuels préservés.'
+                  : confirmMode === 'oversold'
+                  ? 'Active le scanner Oversold (mean-reversion swing, 1 scan/jour post-close US). Achète les titres ayant chuté de -5 à -12%, hold J+10, stop catastrophe -15%/position. Autopilot activé, kill-switch désarmé. Exige capital ≥ $5000. Profile et capital_discipline_mode préservés.'
                   : 'Cette action écrase les paramètres suivants : profile, capital_discipline_mode, risk_constraints (caps, stops, leverage), autopilot_aggressive, cycle_minutes. Capital, objectifs, kill-switch préservés.'}
               </p>
               {applyError && (
@@ -172,26 +183,30 @@ const LABEL_FOR: Record<OperatingMode, string> = {
   investment: '📈 Investment',
   harvest: '🌾 Harvest',
   gainers: '🚀 Gainers',
+  oversold: '📉 Oversold',
 };
 
-type CardColor = 'blue' | 'emerald' | 'orange';
+type CardColor = 'blue' | 'emerald' | 'orange' | 'purple';
 
 const ACTIVE_STYLES: Record<CardColor, string> = {
   blue: 'border-blue-500 bg-blue-50 dark:bg-blue-950/30 ring-2 ring-blue-500/20',
   emerald: 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/30 ring-2 ring-emerald-500/20',
   orange: 'border-orange-500 bg-orange-50 dark:bg-orange-950/30 ring-2 ring-orange-500/20',
+  purple: 'border-purple-500 bg-purple-50 dark:bg-purple-950/30 ring-2 ring-purple-500/20',
 };
 
 const ICON_COLORS: Record<CardColor, string> = {
   blue: 'text-blue-600',
   emerald: 'text-emerald-600',
   orange: 'text-orange-600',
+  purple: 'text-purple-600',
 };
 
 const BADGE_COLORS: Record<CardColor, string> = {
   blue: 'bg-blue-600 text-white',
   emerald: 'bg-emerald-600 text-white',
   orange: 'bg-orange-600 text-white',
+  purple: 'bg-purple-600 text-white',
 };
 
 function ModeCard(props: {
