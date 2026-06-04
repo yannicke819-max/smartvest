@@ -148,6 +148,8 @@ import { PositionIndicatorsTrackerService } from './services/position-indicators
 import { CloseDecisionCaptureService } from './services/close-decision-capture.service';
 // Distille les close decisions en politique de sortie apprise (prompt TRADER)
 import { ExitPolicyContextService } from './services/exit-policy-context.service';
+import { GainersExitPolicyService } from './services/research/gainers-exit-policy.service';
+import { OversoldExitPolicyService } from './services/research/oversold-exit-policy.service';
 // R&D batch — services env-gated OFF par défaut (audit 23/05 propositions sérieuses)
 import { GeminiRiskManagerService } from './services/research/gemini-risk-manager.service';
 import { GeminiOpportunityScoutService } from './services/research/gemini-opportunity-scout.service';
@@ -373,6 +375,8 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     CloseDecisionCaptureService,
     // Politique de sortie apprise injectée dans le prompt TRADER
     ExitPolicyContextService,
+    GainersExitPolicyService,
+    OversoldExitPolicyService,
     // R&D batch (23/05 propositions sérieuses, ENV-gated OFF par défaut)
     GeminiRiskManagerService,
     GeminiOpportunityScoutService,

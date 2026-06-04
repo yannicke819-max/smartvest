@@ -24,6 +24,8 @@ import {
 } from './services/operating-mode.service';
 import { TopGainersScannerService } from './services/top-gainers-scanner.service';
 import { OversoldScannerService } from './services/oversold-scanner.service';
+import { GainersExitPolicyService } from './services/research/gainers-exit-policy.service';
+import { OversoldExitPolicyService } from './services/research/oversold-exit-policy.service';
 import { TradingStatsService } from './services/trading-stats.service';
 import { GainersUserShadowService } from './services/gainers-user-shadow.service';
 import { GainersAutoRelaxService } from './services/gainers-auto-relax.service';
@@ -53,6 +55,8 @@ export class LisaController {
     private readonly operatingMode: OperatingModeService,
     private readonly topGainersScanner: TopGainersScannerService,
     private readonly oversoldScanner: OversoldScannerService,
+    private readonly gainersExitPolicy: GainersExitPolicyService,
+    private readonly oversoldExitPolicy: OversoldExitPolicyService,
     private readonly mtfPersistence: MultiTimeframePersistenceService,
     private readonly persistenceProbability: PersistenceProbabilityService,
     private readonly quotaService: EodhdQuotaService,
@@ -1583,6 +1587,29 @@ export class LisaController {
   ) {
     extractUserId(headers);
     return this.oversoldScanner.getBookSummary(portfolioId);
+  }
+
+  /**
+   * 04/06 — Boucles d'apprentissage SÉPARÉES (user request). Chacune lit
+   * uniquement les closes labellisés de SA source pour ne pas mixer les
+   * patterns scalp gainers (5-60min) avec swing oversold (J+10).
+   */
+  @Get('learned-exit-policy/gainers/:portfolioId')
+  async getGainersLearnedExitPolicy(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    extractUserId(headers);
+    return this.gainersExitPolicy.getLearnedPolicy(portfolioId);
+  }
+
+  @Get('learned-exit-policy/oversold/:portfolioId')
+  async getOversoldLearnedExitPolicy(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    extractUserId(headers);
+    return this.oversoldExitPolicy.getLearnedPolicy(portfolioId);
   }
 
   @Get('eodhd/stats')

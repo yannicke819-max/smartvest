@@ -58,6 +58,47 @@ export class ExitPolicyContextService {
     return policy;
   }
 
+  /**
+   * 04/06/2026 — Variante source-scoped : distille uniquement les closes des
+   * positions dont venue_fee_detail->>source matche (ex: 'scanner_oversold',
+   * 'scanner_top_gainers'). Permet 2 boucles d'apprentissage SÉPARÉES sur le
+   * même portfolio_id (HIGH a 28 vieux gainers shadow + N oversold ; mixer
+   * biaiserait la policy oversold). Cache 5 min, clé = `${portfolioId}::${source}`.
+   */
+  async getLearnedExitPolicyBySource(portfolioId: string, source: string): Promise<LearnedExitPolicy> {
+    const cacheKey = `${portfolioId}::${source}`;
+    const hit = this.cache.get(cacheKey);
+    if (hit && Date.now() - hit.at < this.TTL_MS) return hit.policy;
+    const policy = await this.computeBySource(portfolioId, source).catch((e) => {
+      this.logger.debug(`[exit-policy:${source}] ${portfolioId.slice(0, 8)}: ${String(e).slice(0, 120)}`);
+      return this.defaultPolicy(0, 0);
+    });
+    this.cache.set(cacheKey, { at: Date.now(), policy });
+    return policy;
+  }
+
+  private async computeBySource(portfolioId: string, source: string): Promise<LearnedExitPolicy> {
+    const since = new Date(Date.now() - 30 * 86400_000).toISOString();
+    const client = this.supabase.getClient();
+    // Étape 1 : récupérer les position_id du portfolio qui matchent la source.
+    const { data: posRows } = await client
+      .from('lisa_positions')
+      .select('id')
+      .eq('portfolio_id', portfolioId)
+      .eq('venue_fee_detail->>source', source)
+      .gte('exit_timestamp', since);
+    const positionIds = ((posRows ?? []) as Array<{ id: string }>).map((p) => p.id);
+    if (positionIds.length === 0) return this.defaultPolicy(0, 0);
+    // Étape 2 : close_decisions filtrées sur ces IDs.
+    const { data } = await client
+      .from('position_close_decisions')
+      .select('closer_type, verdict, pnl_pct, give_back_from_mfe, mfe_pct, rsi14, macd_hist, trend_5m_pct, bb_pct_b, max_favorable_after_60m_pct')
+      .in('position_id', positionIds)
+      .limit(5000);
+    const rows = (data ?? []) as CloseRow[];
+    return this.synthesize(rows);
+  }
+
   private async compute(portfolioId: string): Promise<LearnedExitPolicy> {
     const since = new Date(Date.now() - 30 * 86400_000).toISOString();
     const { data } = await this.supabase.getClient()
@@ -67,6 +108,12 @@ export class ExitPolicyContextService {
       .gte('closed_at', since)
       .limit(5000);
     const rows = (data ?? []) as CloseRow[];
+    return this.synthesize(rows);
+  }
+
+  /** Synthèse partagée entre compute() et computeBySource(). */
+  private synthesize(rowsIn: CloseRow[]): LearnedExitPolicy {
+    const rows = rowsIn;
     const labeled = rows.filter((r) => r.verdict != null);
 
     if (labeled.length < this.MIN_SAMPLE) {

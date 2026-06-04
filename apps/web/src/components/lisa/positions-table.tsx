@@ -381,7 +381,7 @@ function PositionLiveValue({ live }: { live?: OpenPositionLive }) {
 
   return (
     <div className="mt-1 space-y-0.5">
-      {/* Prix live + PnL non réalisé vs entrée */}
+      {/* Prix live + PnL non réalisé vs entrée (% puis $) */}
       <div className={`text-[11px] font-semibold ${pnlColor} flex items-center gap-0.5 justify-end`}>
         <span className="text-muted-foreground font-normal text-[10px]">live</span>
         {live.livePrice.toFixed(4)}
@@ -389,6 +389,11 @@ function PositionLiveValue({ live }: { live?: OpenPositionLive }) {
           <span>
             {' '}({live.pnlPct >= 0 ? '+' : ''}
             {live.pnlPct.toFixed(2)}%)
+          </span>
+        )}
+        {live.pnlUsd !== null && (
+          <span className="ml-1 tabular-nums">
+            {live.pnlUsd >= 0 ? '+$' : '-$'}{Math.abs(live.pnlUsd).toFixed(2)}
           </span>
         )}
       </div>
