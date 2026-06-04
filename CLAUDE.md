@@ -235,6 +235,19 @@ splits/dividends, exchange-symbol-list, delisted) :
 
 ---
 
+## Plans market data — quotas (note budget)
+
+| Provider | Plan SmartVest | Quota | Contrainte pratique |
+|---|---|---|---|
+| EODHD | ALL-IN-ONE $99.99/mo | 100k calls/jour | aucune |
+| TwelveData | **$229/mo** | **infini (quota illimité)** | **aucune — ne pas optimiser le volume de calls par souci de coût** |
+| Binance | public market data | gratuit | géo-block sandbox locale (HTTP 451), OK depuis Fly |
+| FRED | gratuit | 120 req/min | non bloquant |
+
+**Conséquence opérationnelle** : le volume de calls TwelveData (`daily_usage` qui grimpe à 3000+/h) **n'est PAS un problème de quota** — le plan $229 est illimité. Si on optimise les calls TD, c'est uniquement pour **latence** (pression sur le rate-limit instantané, pas le quota journalier) ou **fraîcheur** (éviter de payer un round-trip pour une quote `STALE` qu'on va re-tagger). Ne PAS proposer de réduire la fréquence du price warmer ou les dual-calls IntradayRouter pour économiser du quota — c'est zéro impact budget.
+
+---
+
 ## RÈGLE OPÉRATIONNELLE — GAINERS UX + PATH QUALITY — P9-UX
 
 P9-UX livre 2 features UX critiques + 1 dimension qualité (addendum) sur le scanner Gainers :
