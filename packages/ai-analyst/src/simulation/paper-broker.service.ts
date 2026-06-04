@@ -697,13 +697,19 @@ export class PaperBrokerService {
     // P19x.8 — Merge entry breakdown (déjà persisté à open) + exit breakdown
     // pour conserver le full audit trail dans venue_fee_detail JSONB.
     const existingDetail = (posRow as Record<string, unknown>)['venue_fee_detail'] as
-      | { entry?: VenueFeeBreakdown; exit?: VenueFeeBreakdown }
+      | { entry?: VenueFeeBreakdown; exit?: VenueFeeBreakdown; source?: string }
       | null
       | undefined;
-    const mergedFeeDetail = {
+    // 04/06/2026 — BUG FIX : préserver `source` à la close (user a perdu son historique
+    // oversold filtré quand il a fermé manuellement, parce que ce merge écrasait
+    // venue_fee_detail SANS recopier le tag source posé à l'open).
+    const mergedFeeDetail: Record<string, unknown> = {
       entry: existingDetail?.entry ?? null,
       exit: exitFeeBreakdown,
     };
+    if (existingDetail?.source) {
+      mergedFeeDetail.source = existingDetail.source;
+    }
 
     const { data: updated, error: updErr } = await this.supabase
       .from('lisa_positions')
