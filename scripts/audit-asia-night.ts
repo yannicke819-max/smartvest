@@ -49,6 +49,8 @@ interface PositionRow {
   peak_pre_exit: number | null;
 }
 interface DecisionLogRow { kind: string; summary: string; timestamp: string; payload: Record<string, unknown> | null; }
+interface SnapshotRow { position_id: string; symbol: string; live_price: number | null; pnl_pct: number | null; mfe_pct: number | null; mae_pct: number | null; mae_r_ratio: number | null; rsi14: number | null; adx14: number | null; bb_pct_b: number | null; captured_at: string; }
+interface CloseDecisionRow { symbol: string; asset_class: string; closer_type: string; pnl_pct: number | null; mfe_pct: number | null; mae_pct: number | null; give_back_from_mfe: number | null; verdict: string | null; raw_payload: Record<string, unknown> | null; closed_at: string; max_favorable_after_60m_pct: number | null; }
 
 async function fetchShadowSignals(since: string, until: string): Promise<ShadowRow[]> {
   const { data } = await sb.from('gainers_user_shadow_signals')
@@ -194,8 +196,98 @@ async function main() {
     console.log('    - aucun cycle scanner n\'a tourné (vérifier autopilot_enabled)');
   }
 
-  // === 4. Net verdict ===
-  console.log('\n━━━ 4. VERDICT NUIT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  // === 4. Tracker snapshots (Asia positions ouvertes pendant la nuit) ===
+  console.log('\n━━━ 4. TRACKER SNAPSHOTS (position_indicators_snapshot) ━━━━━━━━━━━━━━━━━━━━━');
+  const { data: snapshots } = await sb.from('position_indicators_snapshot')
+    .select('position_id, symbol, live_price, pnl_pct, mfe_pct, mae_pct, mae_r_ratio, rsi14, adx14, bb_pct_b, captured_at')
+    .eq('portfolio_id', TRADER)
+    .gte('captured_at', SINCE).lte('captured_at', UNTIL)
+    .order('captured_at', { ascending: false }).limit(500) as { data: SnapshotRow[] | null };
+
+  if (!snapshots || snapshots.length === 0) {
+    console.log('  → 0 snapshot Asia capturé pendant la fenêtre.');
+    console.log('    Causes possibles :');
+    console.log('    - 0 position Asia ouverte → cron tracker n\'a rien à snapshot (normal)');
+    console.log('    - POSITION_TRACKER_ENABLED=false en prod → service inerte (vérifier Fly secrets)');
+    console.log('    - EODHD/Binance fetch candles échouent en boucle');
+  } else {
+    const byPosition = new Map<string, SnapshotRow[]>();
+    for (const s of snapshots) {
+      if (!byPosition.has(s.position_id)) byPosition.set(s.position_id, []);
+      byPosition.get(s.position_id)!.push(s);
+    }
+    console.log(`  Snapshots fenêtre : ${snapshots.length} sur ${byPosition.size} position(s) distincte(s)`);
+    console.log(`  Cycle moyen / position : ${(snapshots.length / Math.max(byPosition.size, 1)).toFixed(1)} snapshots`);
+    console.log('\n  Évolution par position (1ère/médiane/dernière snapshot) :');
+    for (const [posId, snaps] of byPosition) {
+      const ordered = snaps.slice().sort((a, b) => new Date(a.captured_at).getTime() - new Date(b.captured_at).getTime());
+      const first = ordered[0];
+      const last = ordered[ordered.length - 1];
+      const mid = ordered[Math.floor(ordered.length / 2)];
+      const sym = first.symbol.padEnd(15);
+      console.log(`    ${sym} (n=${ordered.length})`);
+      console.log(`      first : px=${fmt(first.live_price, 4)} pnl=${pct(first.pnl_pct)} mfe=${pct(first.mfe_pct)} mae=${pct(first.mae_pct)} mae_R=${fmt(first.mae_r_ratio, 2)}`);
+      console.log(`      mid   : px=${fmt(mid.live_price, 4)} pnl=${pct(mid.pnl_pct)} mfe=${pct(mid.mfe_pct)} rsi=${fmt(mid.rsi14, 1)} adx=${fmt(mid.adx14, 1)} bb%=${fmt(mid.bb_pct_b, 2)}`);
+      console.log(`      last  : px=${fmt(last.live_price, 4)} pnl=${pct(last.pnl_pct)} mfe=${pct(last.mfe_pct)} mae=${pct(last.mae_pct)} mae_R=${fmt(last.mae_r_ratio, 2)}`);
+    }
+  }
+
+  // === 5. Close decisions verdict (counterfactual labeling) ===
+  console.log('\n━━━ 5. CLOSE DECISIONS (counterfactual labeling) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  const { data: closeDecs } = await sb.from('position_close_decisions')
+    .select('symbol, asset_class, closer_type, pnl_pct, mfe_pct, mae_pct, give_back_from_mfe, verdict, raw_payload, closed_at, max_favorable_after_60m_pct')
+    .eq('portfolio_id', TRADER)
+    .eq('asset_class', 'asia_equity')
+    .gte('closed_at', SINCE).lte('closed_at', UNTIL)
+    .order('closed_at', { ascending: false }).limit(50) as { data: CloseDecisionRow[] | null };
+
+  if (!closeDecs || closeDecs.length === 0) {
+    console.log('  → 0 close Asia capturé. Cohérent avec 0 closed dans section 2.');
+  } else {
+    const verdictCounts = new Map<string, number>();
+    const labelReasonCounts = new Map<string, number>();
+    for (const c of closeDecs) {
+      const v = c.verdict ?? 'pending';
+      verdictCounts.set(v, (verdictCounts.get(v) ?? 0) + 1);
+      const reason = (c.raw_payload?.label_reason as string | undefined) ?? 'none';
+      labelReasonCounts.set(reason, (labelReasonCounts.get(reason) ?? 0) + 1);
+    }
+    console.log(`  Total closes Asia : ${closeDecs.length}`);
+    console.log('\n  Verdict breakdown :');
+    for (const [v, n] of [...verdictCounts.entries()].sort((a, b) => b[1] - a[1])) {
+      const pctOf = (n / closeDecs.length) * 100;
+      console.log(`    ${v.padEnd(10)} ${String(n).padStart(3)} (${pctOf.toFixed(0).padStart(3)}%)`);
+    }
+
+    console.log('\n  Label_reason breakdown (raw_payload) :');
+    for (const [r, n] of [...labelReasonCounts.entries()].sort((a, b) => b[1] - a[1])) {
+      console.log(`    ${r.padEnd(25)} ${String(n).padStart(3)}`);
+    }
+
+    // Stats give_back (sur closes avec MFE > 0)
+    const withGiveBack = closeDecs.filter(c => c.give_back_from_mfe != null && c.mfe_pct != null && c.mfe_pct > 0);
+    if (withGiveBack.length > 0) {
+      const giveBacks = withGiveBack.map(c => c.give_back_from_mfe!).sort((a, b) => a - b);
+      const median = giveBacks[Math.floor(giveBacks.length / 2)];
+      const avg = giveBacks.reduce((s, n) => s + n, 0) / giveBacks.length;
+      const max = giveBacks[giveBacks.length - 1];
+      console.log(`\n  Give-back from MFE (n=${withGiveBack.length} closes avec MFE>0) :`);
+      console.log(`    median=${fmt(median, 2)}pt · avg=${fmt(avg, 2)}pt · max=${fmt(max, 2)}pt`);
+      console.log(`    → seuil trailing recommandé (par exit-policy) : ~${fmt(Math.min(median * 1.5, 1.5), 2)}pt`);
+    }
+
+    // EARLY signaling : combien d'exits sortis trop tôt ?
+    const earlyCount = verdictCounts.get('EARLY') ?? 0;
+    const goodCount = verdictCounts.get('GOOD') ?? 0;
+    if (earlyCount + goodCount > 0) {
+      const earlyRate = (earlyCount / (earlyCount + goodCount)) * 100;
+      console.log(`\n  EARLY rate (vs GOOD+EARLY) : ${earlyRate.toFixed(0)}%`);
+      if (earlyRate > 50) console.log('    ⚠️  TRADER sort trop tôt — review trailing rule + TP discipline');
+    }
+  }
+
+  // === 6. Net verdict ===
+  console.log('\n━━━ 6. VERDICT NUIT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   const flow = sigs.length;
   const acceptRate = flow > 0 ? (accepts / flow) * 100 : 0;
   const openings = opens.filter(p => new Date(p.entry_timestamp).getUTCHours() < 2).length;
