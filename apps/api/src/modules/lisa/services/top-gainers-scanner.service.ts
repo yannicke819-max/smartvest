@@ -1005,7 +1005,20 @@ export class TopGainersScannerService implements OnModuleInit {
       const n = parseFloat(envRaw);
       if (Number.isFinite(n) && n >= 0 && n <= 1) return n;
     }
-    return 0.67;
+    // 04/06/2026 — Défaut scanner gainers = 0 (persistence DÉSACTIVÉE), PAS 0.67.
+    //
+    // Le 0.67 historique faisait l'INVERSE de l'edge : la persistence multi-TF
+    // élevée signifie que le move est déjà propagé sur tous les TF = entrée TARDIVE
+    // (exit liquidity), tandis qu'un pump 1m frais (= la pépite, l'edge) a une
+    // persistence ≈ 0. Backtest 25/05 : bucket reject_persistence score≈0 = 75% WR
+    // (47 TP_HIT cachés). Confirmé 04/06 (relation inverse score↔edge).
+    //
+    // La calibration documentée (CLAUDE.md) dit explicitement "persistence
+    // DÉSACTIVÉE pour mode gainers". Ce défaut 0 garantit la vanne ouverte même
+    // si la config DB arrive null au runtime (bug de câblage observé : DB=0.00
+    // mais gate utilisait 0.67). La valeur UI/DB (cfg-first ci-dessus) reste
+    // prioritaire si l'utilisateur veut RÉ-activer le filet (ex: 0.5).
+    return 0;
   }
 
   /**
@@ -2529,6 +2542,12 @@ export class TopGainersScannerService implements OnModuleInit {
       cfgRow?.gainers_min_persistence_score != null
         ? Number(cfgRow.gainers_min_persistence_score)
         : null,
+    );
+    // 04/06 — Observabilité câblage persistence : surface la valeur DB brute vs
+    // résolue par portfolio/cycle, pour confirmer que l'UI/config session pilote
+    // bien le gate (et diagnostiquer tout null runtime résiduel).
+    this.logger.log(
+      `[persistence-wiring] ${portfolioId.slice(0, 8)} dbRaw=${cfgRow?.gainers_min_persistence_score ?? 'null'} → minScore=${minScore}`,
     );
     // P9-UX ADDENDUM — Path efficiency gate (null désactive)
     const minPathEff = cfgRow?.gainers_min_path_efficiency != null
