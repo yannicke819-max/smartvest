@@ -294,6 +294,7 @@ export class PaperBrokerService {
       ).toISOString(),
       estimatedEntryCostUsd: estimatedCost.toFixed(2),
       manualControl: false,
+      source: null,
       createdAt: now,
       updatedAt: now,
     };
@@ -455,6 +456,7 @@ export class PaperBrokerService {
       ).toISOString(),
       estimatedEntryCostUsd: estimatedCost.toFixed(2),
       manualControl: false,
+      source: null,
       createdAt: now,
       updatedAt: now,
     };
@@ -966,6 +968,17 @@ export class PaperBrokerService {
       horizonTargetDate: (row.horizon_target_date as string | null) ?? null,
       estimatedEntryCostUsd: row.estimated_entry_cost_usd as string,
       manualControl: (row.manual_control as boolean | null) ?? false,
+      // 04/06/2026 — `source` extrait du JSONB venue_fee_detail.source (broker n'écrit
+      // pas la colonne `source` du fait du CHECK enum 'lisa'/'mechanical'). Permet à
+      // l'UI de filtrer l'historique d'un portfolio multi-modes (HIGH = oversold +
+      // legacy gainers shadow trades du même portfolio_id).
+      source: (() => {
+        const vfd = row.venue_fee_detail as Record<string, unknown> | string | null | undefined;
+        if (vfd && typeof vfd === 'object' && typeof (vfd as Record<string, unknown>).source === 'string') {
+          return (vfd as { source: string }).source;
+        }
+        return null;
+      })(),
       createdAt: row.created_at as string,
       updatedAt: row.updated_at as string,
     };

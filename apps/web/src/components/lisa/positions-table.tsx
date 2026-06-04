@@ -66,7 +66,16 @@ function refineCloseLabel(
   return base;
 }
 
-export function LisaPositionsTable({ portfolioId }: { portfolioId: string }) {
+export function LisaPositionsTable({
+  portfolioId,
+  sourceFilter,
+}: {
+  portfolioId: string;
+  /** 04/06 — Filtre l'historique sur une source précise (ex: 'scanner_oversold').
+   *  Évite que la vue oversold de HIGH expose les vieux trades shadow-gainers du
+   *  même portfolio_id (HIGH a 28 vieux gainers + 25 oversold). null = pas de filtre. */
+  sourceFilter?: string | null;
+}) {
   // PR E — invalidation immédiate de la cache positions sur INSERT/UPDATE/DELETE
   // côté DB (le mécanique ouvre/ferme sans interaction UI).
   useLisaPositionsRealtime(portfolioId);
@@ -78,8 +87,15 @@ export function LisaPositionsTable({ portfolioId }: { portfolioId: string }) {
     (liveQuery.data?.positions ?? []).map((p) => [p.id, p]),
   );
 
-  const openRaw = openQuery.data ?? [];
-  const all = allQuery.data ?? [];
+  const openRawAll = openQuery.data ?? [];
+  const allRaw = allQuery.data ?? [];
+  // Filtre source si demandé (mode oversold sur HIGH : on cache les vieux gainers).
+  const openRaw = sourceFilter
+    ? openRawAll.filter((p) => p.source === sourceFilter)
+    : openRawAll;
+  const all = sourceFilter
+    ? allRaw.filter((p) => p.source === sourceFilter)
+    : allRaw;
   // Tri par entry_timestamp desc (plus récente en haut) pour voir l'activité Lisa
   const open = [...openRaw].sort(
     (a, b) => new Date(b.entryTimestamp).getTime() - new Date(a.entryTimestamp).getTime(),

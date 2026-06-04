@@ -775,7 +775,15 @@ export default function LisaPage() {
       {selectedPortfolioId && <DailyHarvestTracker portfolioId={selectedPortfolioId} />}
 
       {/* Positions */}
-      {selectedPortfolioId && <LisaPositionsTable portfolioId={selectedPortfolioId} />}
+      {selectedPortfolioId && (
+        <LisaPositionsTable
+          portfolioId={selectedPortfolioId}
+          // 04/06 — En mode oversold, ne montre QUE les trades oversold (HIGH a aussi
+          // 28 vieux trades shadow-gainers du même portfolio_id, qui pollueraient
+          // l'historique). Les autres modes montrent tout.
+          sourceFilter={currentMode === 'oversold' ? 'scanner_oversold' : null}
+        />
+      )}
 
       {/* Config card */}
       <div className="rounded-lg border p-5 space-y-4">

@@ -61,6 +61,10 @@ export const PaperPosition = z.object({
   /** 04/06 — Contrôle manuel : true = auto-trader ne ferme plus cette position. */
   manualControl: z.boolean().default(false),
 
+  /** 04/06 — Source extraite de venue_fee_detail.source ('scanner_oversold',
+   *  'scanner_top_gainers', etc). Null pour positions legacy sans tag. */
+  source: z.string().nullable().default(null),
+
   /** Métadata */
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),

@@ -107,6 +107,7 @@ export interface LisaPosition {
   horizonTargetDate: string | null;
   estimatedEntryCostUsd: string;
   manualControl?: boolean;
+  source?: string | null;
   createdAt: string;
   updatedAt: string;
 }
