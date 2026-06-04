@@ -920,6 +920,30 @@ Manager + Opportunity Scout + Daily Brief news), `CLAUDE_MODEL_OPUS`,
 **Other** : `SNIPER_MODE_UNLOCK_CODE` (Section 6 bis), `EODHD_NEWS_PERSIST_ENABLED`,
 `EODHD_ECONOMIC_EVENTS_ENABLED`, `GEMINI_DAILY_BRIEF_ENABLED`.
 
+**TRADER LLM bypass (04/06/2026 — mission "gate qui rate les pépites")** :
+- `TRADER_BYPASS_HIGH_CONVICTION` = `off` (default) | `shadow` | `active`
+- `TRADER_BYPASS_MIN_SCORE` = `0.85` (default)
+
+Audit logs 04/06 17:13-17:14 a montré que TRADER LLM Mistral rejetait NVTS.US
+(scanner score=0.91, signal_quality=0.90, persistence=5/5, pathEff=0.78,
+conviction ×1.50) avec "Aucun candidat valide". 2 proposals/cycle → 0 ouverture.
+
+Le bypass court-circuite le LLM trader quand une `scanner_proposals` arrive avec
+`score >= TRADER_BYPASS_MIN_SCORE`. Modes :
+- `off` : LLM décide comme avant (no change)
+- `shadow` : log `[trader-bypass:shadow]` seulement, LLM continue normalement
+- `active` : `applyDecision` direct avec synthetic decision, skip LLM
+
+**Safety préservée** : `applyDecision` conserve TOUS les garde-fous (max 5 open,
+kill switch, US opening block 13:00-15:30 UTC, B3 hard guard scanner_proposals,
+confidence ≥ MIN_CONFIDENCE). Le bypass court-circuite uniquement la décision
+LLM, pas la safety.
+
+Procédure rollout recommandée : `shadow` 24-48h pour calibrer (compter combien
+de cycles auraient bypass × combien aurait été des winners post-60min) → si
+ratio sain, passer à `active`. Si ratio toxique, monter `TRADER_BYPASS_MIN_SCORE`
+à 0.90 puis 0.95.
+
 ### Secrets explicitement ABSENTS de la prod (à ne pas réintroduire sans raison)
 
 - `TWELVEDATA_FILTER_CRYPTO_RSI_SHADOW` — non setté (PR-shadow non déployé)

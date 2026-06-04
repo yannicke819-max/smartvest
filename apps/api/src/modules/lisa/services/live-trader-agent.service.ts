@@ -625,6 +625,89 @@ export class LiveTraderAgentService {
             `[trader-agent] arbitration ON — ${scannerProposals.length} scanner proposals + ${riskAdvisories.length} risk advisories injectés dans le state`,
           );
         }
+
+        // ───────────────────────────────────────────────────────────────
+        // HIGH CONVICTION BYPASS — court-circuit LLM TRADER quand une
+        // scanner_proposal arrive avec un score ≥ seuil (default 0.85).
+        // Mission CLAUDE.md 03/06/2026 "identifier le gate qui fait rater
+        // les pépites" : audit logs 04/06 17:13-17:14 a montré que TRADER
+        // LLM Mistral rejetait NVTS.US (score=0.91 quality=0.90 persist=5/5)
+        // avec "Aucun candidat valide". 8e gate masqué.
+        // Modes :
+        //   off (default — pas de changement, LLM décide comme avant)
+        //   shadow — log only, LLM décide quand même (calibration)
+        //   active — applyDecision direct, skip LLM
+        // applyDecision conserve TOUS les garde-fous (max 5 open, kill switch,
+        // US opening block, B3 hard guard) — le bypass court-circuite juste
+        // la décision LLM, pas la safety.
+        // ───────────────────────────────────────────────────────────────
+        const bypassMode = (this.config.get<string>('TRADER_BYPASS_HIGH_CONVICTION') ?? 'off').toLowerCase();
+        const bypassMinScore = Number(this.config.get<string>('TRADER_BYPASS_MIN_SCORE') ?? '0.85');
+        if ((bypassMode === 'shadow' || bypassMode === 'active') && scannerProposals.length > 0) {
+          const qualifying = scannerProposals
+            .map((p) => ({ p, score: Number(p.score) }))
+            .filter((x) => Number.isFinite(x.score) && x.score >= bypassMinScore)
+            .sort((a, b) => b.score - a.score);
+          if (qualifying.length > 0) {
+            const top = qualifying[0].p;
+            const topScore = qualifying[0].score;
+            if (bypassMode === 'shadow') {
+              this.logger.log(
+                `[trader-bypass:shadow] ${qualifying.length} proposal(s) score≥${bypassMinScore} — top=${top.symbol} ${top.direction} score=${topScore.toFixed(2)} (LLM continues normalement, shadow only)`,
+              );
+            } else {
+              this.logger.log(
+                `[trader-bypass:active] ${top.symbol} ${top.direction} score=${topScore.toFixed(2)} ≥ ${bypassMinScore} — skip LLM, applyDecision direct`,
+              );
+              const syntheticDecision: TraderDecision = {
+                action_kind: 'open_directional',
+                symbol: String(top.symbol),
+                direction: top.direction as 'long' | 'short',
+                notional_usd: Number(top.notional_usd_suggested),
+                stop_loss_pct: Number(top.stop_loss_pct_suggested),
+                take_profit_pct: Number(top.take_profit_pct_suggested),
+                thesis: `[TRADER_BYPASS_HIGH_CONVICTION] ${top.symbol} score=${topScore.toFixed(2)} ≥ ${bypassMinScore} — skip LLM, accept scanner proposal directly. Reasoning: ${String(top.scanner_reasoning ?? '').slice(0, 200)}`,
+                confidence: 0.85,
+              };
+              let bypassApplyResult: { applied: boolean; positionId?: string; error?: string };
+              try {
+                bypassApplyResult = await this.applyDecision(syntheticDecision, state, []);
+              } catch (e) {
+                const errMsg = `bypass applyDecision throw: ${String(e).slice(0, 200)}`;
+                this.logger.error(`[trader-bypass:active] ${errMsg}`);
+                bypassApplyResult = { applied: false, error: errMsg };
+              }
+              const bypassChosenSymbol = bypassApplyResult.applied ? String(top.symbol) : null;
+              const bypassChosenDirection = bypassApplyResult.applied ? (top.direction as 'long' | 'short') : null;
+              await this.markNonChosenSuperseded(scannerProposals, bypassChosenSymbol, bypassChosenDirection)
+                .catch((e) => this.logger.debug(`[trader-bypass:active] markNonChosenSuperseded skip: ${String(e).slice(0, 120)}`));
+              if (!bypassApplyResult.applied) {
+                await this.markProposalRejected(String(top.symbol), top.direction as 'long' | 'short', bypassApplyResult.error ?? 'bypass_apply_failed')
+                  .catch((e) => this.logger.debug(`[trader-bypass:active] markProposalRejected skip: ${String(e).slice(0, 120)}`));
+              }
+              try {
+                const logArgs: Parameters<typeof this.logDecision>[0] = {
+                  cycleStartedAt,
+                  state,
+                  decision: syntheticDecision,
+                  candidates: [],
+                  action: 'open_directional',
+                  actionKindOverride: 'open_directional',
+                  notionalUsd: syntheticDecision.notional_usd ?? 0,
+                  confidence: syntheticDecision.confidence,
+                  thesis: syntheticDecision.thesis,
+                  applied: bypassApplyResult.applied,
+                };
+                if (bypassApplyResult.positionId) logArgs.appliedPositionId = bypassApplyResult.positionId;
+                if (bypassApplyResult.error) logArgs.applyError = bypassApplyResult.error;
+                await this.logDecision(logArgs);
+              } catch (e) {
+                this.logger.warn(`[trader-bypass:active] logDecision failed: ${String(e).slice(0, 120)}`);
+              }
+              return;
+            }
+          }
+        }
       }
       const fetchFailures = settled
         .map((s, i) => s.status === 'rejected' ? `${['candidates','macro','news','memory','lessons','middle_ref','self_reflect','daily_brief'][i]}=${String(s.reason).slice(0,80)}` : null)
