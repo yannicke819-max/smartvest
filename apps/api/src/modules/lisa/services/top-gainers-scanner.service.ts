@@ -1580,30 +1580,42 @@ export class TopGainersScannerService implements OnModuleInit {
       // P19s+ — log warn on screener failure (was silent .catch(() => [])
       // qui masquait les 0-result silencieux sur LSE/PA/TSE/HK/AU avant le
       // fix UPPERCASE + change_p).
+      // 04/06/2026 — Trace observabilité : list explicite des exchanges fetchés
+      // vs skipped (debug 0 US gainers en pleine session NYSE). Posté à INFO
+      // pour être visible dans Fly logs sans grep DEBUG.
+      const queuedNonEu: string[] = [];
       const skippedNonEu: string[] = [];
       for (const ex of NON_EU_EXCHANGES) {
         if (sessionAware) {
           const cls = exchangeToSession[ex];
           if (cls && !isMarketOpen(cls, now)) {
-            skippedNonEu.push(`${ex}(${cls})`);
+            skippedNonEu.push(`${ex}(${cls}:closed)`);
             continue;
           }
         }
+        queuedNonEu.push(ex);
         tasks.push(
           this.fetchEodhdScreener(ex, apiKey)
             .then((rows) => {
               this.recordExchangeResult(ex, rows.length);
+              // 04/06 — log fetch result par exchange (INFO) pour debug 0-US.
+              this.logger.log(
+                `[top-gainers:trace] ${ex} fetchEodhdScreener returned ${rows.length} rows`,
+              );
               return rows;
             })
             .catch((e) => {
               const msg = e?.message ?? String(e);
-              this.logger.warn(`[top-gainers] ${ex} failed: ${msg}`);
+              this.logger.warn(`[top-gainers:trace] ${ex} fetchEodhdScreener FAILED: ${msg.slice(0, 200)}`);
               this.recordExchangeResult(ex, 0, msg);
               this.recordEarlyReturn('upstream_provider_error', `${ex}: ${msg.slice(0, 80)}`);
               return [];
             }),
         );
       }
+      this.logger.log(
+        `[top-gainers:trace] NON_EU dispatch — queued=[${queuedNonEu.join(',')}] skipped=[${skippedNonEu.join(',')}] sessionAware=${sessionAware} nowUtc=${now.toISOString().slice(11, 16)}`,
+      );
       if (sessionAware && skippedNonEu.length > 0) {
         this.logger.log(
           `[top-gainers] session-aware fetch: skipped ${skippedNonEu.length} closed exchanges (${skippedNonEu.join(',')}) — saved ${skippedNonEu.length} EODHD screener calls`,
