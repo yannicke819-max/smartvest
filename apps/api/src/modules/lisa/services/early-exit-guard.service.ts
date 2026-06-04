@@ -142,10 +142,15 @@ export class EarlyExitGuardService {
     const now = Date.now();
     const minAgeIso = new Date(now - this.ageMaxMin * 60_000).toISOString(); // entries plus vieilles que ageMax
     const maxAgeIso = new Date(now - this.ageMinMin * 60_000).toISOString(); // entries plus récentes que ageMin
+    // Scope: gainers scalping uniquement (TP/SL ~1.5%, fenêtre 5-15min).
+    // Les positions oversold (hold J+10, stop catastrophe -15%) sont gérées
+    // par OversoldMistralExitService (cron 15min, Mistral). Sans ce filtre,
+    // un swing oversold à -1.66% se faisait FADE-close par erreur.
     const { data, error } = await this.supabase.getClient()
       .from('lisa_positions')
       .select('id, portfolio_id, symbol, direction, entry_price, entry_timestamp, stop_loss_price, take_profit_price, path_eff_at_entry, market_ch1m_at_entry')
       .eq('status', 'open')
+      .eq('venue_fee_detail->>source', 'scanner_top_gainers')
       .gte('entry_timestamp', minAgeIso)
       .lte('entry_timestamp', maxAgeIso);
     if (error) {
