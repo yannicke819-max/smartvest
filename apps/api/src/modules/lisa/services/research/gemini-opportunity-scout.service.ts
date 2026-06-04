@@ -147,50 +147,10 @@ export class GeminiOpportunityScoutService {
    * réutilisé par TRADER (toujours vivant).
    */
   async cronScout(): Promise<void> {
-    // No-op permanent — anciennement gated par GEMINI_OPPORTUNITY_SCOUT_ENABLED,
-    // maintenant kill code-level pour éviter toute réactivation accidentelle via env.
+    // No-op permanent. Dead code retiré 04/06/2026 pour débloquer le CI TS
+    // (verdict possibly null sur narrowing inutile post-`return`). Si réactivation
+    // un jour, restaurer depuis l'historique (commit b1991761 ou avant 22879b9).
     return;
-    if (!this.enabled) return;
-    if (!this.supabase.isReady()) return;
-    try {
-      // 1. Fetch news positives
-      // Multi-source : EODHD news global + StockTwits trending + Reddit hot
-       // (Twitter ticker-specific — irrélevant pour macro broad, mais l'aggregator
-       // sera cap retail social à 30% pour éviter le biais r/wallstreetbets).
-      const aggr = await this.newsAggregator.aggregate([], 30).catch(() => null);
-      const allNews = aggr?.items ?? [];
-      const positives = allNews.filter((n) => {
-        const isPositive = typeof n.sentiment === 'number' && n.sentiment > 0.4;
-        const hasPositiveKw = POSITIVE_KEYWORDS.test(`${n.title} ${n.contentPreview ?? ''}`);
-        return isPositive || hasPositiveKw;
-      }).slice(0, 5);
-
-      if (positives.length === 0) {
-        return;
-      }
-      this.logger.log(`[opportunity-scout] ${positives.length} news positives détectées`);
-
-      // 2. Pour chaque news → Gemini scout
-      for (const news of positives) {
-        const verdict = await this.scoutNews(news);
-        if (!verdict || !verdict.sector || verdict.confidence < this.minConfidence) continue;
-
-        const sectorCfg = SECTOR_PROXIES[verdict.sector];
-        if (!sectorCfg) {
-          this.logger.warn(`[opportunity-scout] Gemini a retourné sector inconnu: ${verdict.sector}`);
-          continue;
-        }
-
-        // 3. Pour chaque proxy du sector → tentative d'open
-        for (const proxy of sectorCfg.proxies) {
-          await this.tryOpenOpportunity(proxy, sectorCfg.assetClass, sectorCfg.venue, verdict, news).catch((e) => {
-            this.logger.warn(`[opportunity-scout] open ${proxy} failed: ${String(e).slice(0, 200)}`);
-          });
-        }
-      }
-    } catch (e) {
-      this.logger.warn(`[opportunity-scout] cron failed: ${String(e).slice(0, 200)}`);
-    }
   }
 
   private async scoutNews(news: EodhdNewsItem): Promise<ScoutVerdict | null> {
