@@ -5728,13 +5728,41 @@ export class TopGainersScannerService implements OnModuleInit {
   /**
    * P18 — Analyse signal LLM : valide si le top candidat est un genuine momentum signal.
    * Fallback déterministe (pass=true) si router off ou échec LLM — comportement P17 préservé.
+   *
+   * 04/06/2026 — CIRCUIT-BREAKER (incident saturation 11:27). Quand la vanne
+   * persistence ouverte laisse passer 6× plus de candidats, chacun appelait ici
+   * Mistral(30s)→Gemini(30s) ; avec le routeur LLM en panne (provider=none), ces
+   * hangs concurrents saturaient les sockets/event-loop de la machine Fly unique
+   * → tous les fetch (Supabase/EODHD/Binance) échouaient → health check KO → PR03.
+   * Le breaker coupe les appels après N échecs consécutifs (fail-open, pass:true)
+   * pendant un cooldown, puis ré-essaie. Aucune action Fly requise.
    */
+  private llmSignalConsecFailures = 0;
+  private llmSignalCircuitOpenUntil = 0;
+  private static readonly LLM_SIGNAL_FAIL_THRESHOLD = 3;
+  private static readonly LLM_SIGNAL_COOLDOWN_MS = 5 * 60 * 1000;
+
   private async analyzeSignal(
     cand: TopGainerCandidate & { score: number; assetClass: TopGainerAssetClass },
     persistence: PersistenceResult,
   ): Promise<{ pass: boolean; signal_quality: number; reason: string }> {
     const fallback = { pass: true, signal_quality: 1.0, reason: 'deterministic_fallback' };
     if (!this.llmRouter.isEnabled()) return fallback;
+    // Circuit ouvert (routeur LLM en panne récente) → fail-open SANS appel réseau,
+    // pour ne pas re-saturer la machine. Se referme après le cooldown.
+    if (Date.now() < this.llmSignalCircuitOpenUntil) {
+      return { pass: true, signal_quality: 1.0, reason: 'llm_circuit_open' };
+    }
+    const noteFailure = () => {
+      this.llmSignalConsecFailures++;
+      if (this.llmSignalConsecFailures >= TopGainersScannerService.LLM_SIGNAL_FAIL_THRESHOLD) {
+        this.llmSignalCircuitOpenUntil = Date.now() + TopGainersScannerService.LLM_SIGNAL_COOLDOWN_MS;
+        this.llmSignalConsecFailures = 0;
+        this.logger.warn(
+          `[scanner-llm:signal] CIRCUIT OPEN ${TopGainersScannerService.LLM_SIGNAL_COOLDOWN_MS / 60000}min — routeur LLM en panne, fail-open (anti-saturation)`,
+        );
+      }
+    };
     try {
       const user = JSON.stringify({
         symbol: cand.symbol,
@@ -5770,14 +5798,17 @@ export class TopGainersScannerService implements OnModuleInit {
       const parsed = parseLlmJson<{ pass: boolean; signal_quality: number; reason: string }>(res.content);
       if (!parsed) {
         this.logger.warn(`[scanner-llm:signal] ${cand.symbol} parse fail content=${res.content.slice(0, 120)}`);
+        noteFailure();  // provider=none / contenu vide compte comme échec routeur
         return fallback;
       }
+      this.llmSignalConsecFailures = 0;  // succès → reset le compteur
       this.logger.log(
         `[scanner-llm:signal] symbol=${cand.symbol} provider=${res.providerId} latencyMs=${res.latencyMs} costUsd=${res.costUsd.toFixed(6)} pass=${parsed.pass} signal_quality=${parsed.signal_quality}`,
       );
       return parsed;
     } catch (e) {
       this.logger.warn(`[scanner-llm:signal] ${cand.symbol} failed — deterministic fallback: ${String(e).slice(0, 100)}`);
+      noteFailure();
       return fallback;
     }
   }
