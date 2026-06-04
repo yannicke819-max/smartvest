@@ -135,8 +135,21 @@ export class GeminiOpportunityScoutService {
     }
   }
 
-  @Cron('*/5 * * * *')
+  /**
+   * KILLED 04/06/2026 (décision user "un seul pipeline, pas d'extrapolation inutile") :
+   * le @Cron est retiré, ce cron n'est plus jamais enregistré au boot. Le service reste
+   * injecté pour ne pas casser le module, mais ne fait plus aucune action.
+   *
+   * Note : le helper LisaService.openForOpportunityScout(...) reste utilisé par
+   * LiveTraderAgent (le tag DB venue_fee_detail.source='opportunity_scout' est un
+   * misnomer hérité — c'est TRADER Mistral qui ouvre, pas Gemini). Ne pas confondre
+   * cette boucle Gemini news → ETF proxies (KILLED) avec le helper d'ouverture
+   * réutilisé par TRADER (toujours vivant).
+   */
   async cronScout(): Promise<void> {
+    // No-op permanent — anciennement gated par GEMINI_OPPORTUNITY_SCOUT_ENABLED,
+    // maintenant kill code-level pour éviter toute réactivation accidentelle via env.
+    return;
     if (!this.enabled) return;
     if (!this.supabase.isReady()) return;
     try {
