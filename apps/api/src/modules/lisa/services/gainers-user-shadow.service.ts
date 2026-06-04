@@ -52,6 +52,11 @@ export type ShadowDecision =
   | 'reject_volatile_regime'    // Phase C — symbole structurellement volatile (ATR/close > seuil), SL cassé par bruit
   | 'reject_stagflation_hedge_guard'  // Audit 23/05 — ticker dans watchlist stagflation_hedge, -$3,463 historiques (env-gated)
   | 'reject_dead_zone'          // Analyse 27/05 — buckets changePct 4-8% (Σpnl -28%) + 15-20% (Σpnl -111%) structurellement perdants
+  // PR #584 OKLO 03/06 — granularité gates anti-blow-off
+  | 'reject_climax_run'         // tf30m ≈ tf5m + tf5m ≥ 5% (plateau pré-burst, top tick par construction)
+  | 'reject_vertical_pump'      // ch1m/tf5m > 0.5 + tf5m ≥ 5% (last-minute concentration FOMO)
+  | 'reject_chop_long_tf'       // tf1h OU tf30m pathEff < threshold (chop structurel long-horizon)
+  | 'reject_top_tick_drift'     // drift_up > GAINERS_TOP_TICK_DRIFT_MAX_PCT au fill (anti-top-tick post-éval)
   | 'reject_other';
 
 export interface RecordDecisionInput {
