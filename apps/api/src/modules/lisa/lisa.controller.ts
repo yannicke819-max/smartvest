@@ -23,6 +23,7 @@ import {
   type OperatingMode,
 } from './services/operating-mode.service';
 import { TopGainersScannerService } from './services/top-gainers-scanner.service';
+import { OversoldScannerService } from './services/oversold-scanner.service';
 import { TradingStatsService } from './services/trading-stats.service';
 import { GainersUserShadowService } from './services/gainers-user-shadow.service';
 import { GainersAutoRelaxService } from './services/gainers-auto-relax.service';
@@ -51,6 +52,7 @@ export class LisaController {
     private readonly macroMode: MacroModeService,
     private readonly operatingMode: OperatingModeService,
     private readonly topGainersScanner: TopGainersScannerService,
+    private readonly oversoldScanner: OversoldScannerService,
     private readonly mtfPersistence: MultiTimeframePersistenceService,
     private readonly persistenceProbability: PersistenceProbabilityService,
     private readonly quotaService: EodhdQuotaService,
@@ -1534,6 +1536,21 @@ export class LisaController {
     extractUserId(headers);
     const result = await this.eventEngine.tick();
     return result;
+  }
+
+  /**
+   * Mode OVERSOLD — trigger manuel du scan quotidien (debug / bootstrap).
+   * Le cron tourne à 21:15 UTC (post-close US) car le signal = drop sur le
+   * close complet de la journée. Cet endpoint permet de déclencher un scan
+   * à la demande sur la dernière clôture disponible (bootstrap du book sans
+   * attendre le cron du soir). Effet réel : ouvre des positions paper sur les
+   * portfolios strategy_mode='oversold' + autopilot. Idempotent (anti-doublon).
+   */
+  @Post('oversold/scan-now')
+  async triggerOversoldScan(@Headers() headers: Record<string, string>) {
+    extractUserId(headers);
+    await this.oversoldScanner.runDailyScan();
+    return { ok: true, triggeredAt: new Date().toISOString() };
   }
 
   @Get('eodhd/stats')
