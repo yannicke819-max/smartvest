@@ -1696,6 +1696,24 @@ export class MechanicalTradingService {
     if ((cfg.strategy_mode as string | null | undefined) === 'gainers') {
       return 'ok';
     }
+    // 04/06/2026 — Skip P4.1 en mode OVERSOLD (mean-reversion swing).
+    //
+    // Le mode oversold ACHÈTE des titres qui viennent de CHUTER (-5 à -12% 1J)
+    // et les détient J+10 ouvrés en pariant sur le rebond statistique (alpha
+    // +1.4% vs SPY validé 3-fold). Par construction, une position fraîchement
+    // ouverte peut continuer à baisser plusieurs jours avant de rebondir —
+    // c'est le risque assumé du setup. Un guard portfolio à 1% de drawdown
+    // intraday liquiderait systématiquement le book pendant la phase de
+    // sur-réaction, exactement quand il NE faut PAS vendre.
+    //
+    // Le garde-fou du mode oversold est le STOP CATASTROPHE -15% PAR POSITION
+    // (oversold_stop_catastrophe_pct, appliqué par OversoldExitService), pas
+    // un drawdown global serré. Incident 04/06 08:18 UTC : P4.1 a fermé les
+    // positions résiduelles de HIGH (drawdown 1.89% > 1%) + re-armé kill_switch
+    // juste après le passage en mode oversold → 0 ouverture possible.
+    if ((cfg.strategy_mode as string | null | undefined) === 'oversold') {
+      return 'ok';
+    }
     if (cfg.portfolio_id === 'b0000001-0000-0000-0000-000000000001') {
       return 'ok';
     }
