@@ -223,7 +223,7 @@ export class GeminiRiskManagerService {
    * Évaluation positions cappée à 20 (cf. fetchOpenPositions limit). Si plus
    * de 20 positions ouvertes simultanément, augmenter le cap.
    */
-  @Cron(CronExpression.EVERY_3_MINUTES)
+  @Cron('0 */3 * * * *', { name: 'gemini-risk-manager', timeZone: 'UTC' })
   async cronEvalOpenPositions(): Promise<void> {
     if (!this.enabled) return;
     if (!this.supabase.isReady()) return;
