@@ -208,6 +208,33 @@ export class OversoldScannerService {
     const cfg = this.resolveConfig(row);
     const portfolioId = row.portfolio_id;
 
+    // Gate régime macro (VIX + SPY) — calibré sur backtest 04/06 vs 05/06.
+    // 04/06 régime calme (VIX=15.40, SPY 5d=+0.33%) → 48 positions, 35W/2L, +$761.
+    // 05/06 régime hostile (VIX=17.14, SPY 5d=-1.09%) → 11 positions toutes rouges.
+    const regime = await this.checkRegimeGate();
+    if (regime.block) {
+      await this.decisionLog
+        .append({
+          portfolioId,
+          kind: 'oversold_scan_blocked_regime',
+          summary: `Oversold scan bloqué (régime hostile): ${regime.reason}`,
+          rationale: `VIX=${regime.vix?.toFixed(2) ?? 'n/a'} (Δ1d ${regime.vixChg?.toFixed(1) ?? 'n/a'}%), SPY 5d=${regime.spy5d?.toFixed(2) ?? 'n/a'}%`,
+          payload: {
+            vix: regime.vix,
+            vix_chg_pct: regime.vixChg,
+            spy_5d_pct: regime.spy5d,
+            reason: regime.reason,
+            thresholds: regime.thresholds,
+          },
+          triggeredBy: 'autopilot_cron',
+          watchlistSource: 'mechanical',
+          market: 'us_equity',
+        })
+        .catch((e) => this.logger.warn(`[oversold] decision_log append failed: ${String(e).slice(0, 160)}`));
+      this.logger.log(`[oversold] portfolio=${portfolioId.slice(0, 8)} BLOCKED by regime gate: ${regime.reason}`);
+      return;
+    }
+
     // a. Charge l'univers depuis watchlist_universe.
     const tickers = await this.loadUniverse(cfg.universe);
     if (tickers.length === 0) {
@@ -227,9 +254,35 @@ export class OversoldScannerService {
     const candidates = buildOversoldCandidates(barsBySymbol, cfg);
     const toOpen = selectOversoldOpens(candidates, openSymbols);
 
+    // Sector cap — max N positions ouvertes par GICS sector simultané.
+    // DÉFAUT OFF : le backtest 04/06 montre que cap=5 aurait bloqué 29/48 positions
+    // (Tech 30 dominant). À activer via secret OVERSOLD_SECTOR_CAP_ENABLED=true
+    // uniquement quand on aura calibré le seuil sur N >= 100 jours.
+    // Pré-charge les sectors des positions DÉJÀ ouvertes pour amorcer le compteur.
+    const sectorCapEnabled =
+      (this.config.get<string>('OVERSOLD_SECTOR_CAP_ENABLED') ?? 'false').toLowerCase() === 'true';
+    const sectorCap = parseInt(this.config.get<string>('OVERSOLD_SECTOR_CAP') ?? '5', 10);
+    const sectorCounts = new Map<string, number>();
+    if (sectorCapEnabled && openSymbols.size > 0) {
+      for (const s of openSymbols) {
+        const sec = await this.loadSectorFor(s);
+        sectorCounts.set(sec, (sectorCounts.get(sec) ?? 0) + 1);
+      }
+    }
+
     let opened = 0;
+    let skippedSector = 0;
     const errors: string[] = [];
     for (const cand of toOpen) {
+      if (sectorCapEnabled) {
+        const sec = await this.loadSectorFor(cand.symbol);
+        const cur = sectorCounts.get(sec) ?? 0;
+        if (cur >= sectorCap) {
+          skippedSector++;
+          continue;
+        }
+        sectorCounts.set(sec, cur + 1);
+      }
       try {
         await this.openOversoldPosition(portfolioId, cand, cfg);
         opened++;
@@ -256,6 +309,10 @@ export class OversoldScannerService {
           candidates: candidates.length,
           opened,
           skipped_duplicates: candidates.filter((c) => openSymbols.has(c.symbol)).length,
+          skipped_sector_cap: skippedSector,
+          sector_cap_enabled: sectorCapEnabled,
+          sector_cap: sectorCap,
+          regime: { vix: regime.vix, vix_chg_pct: regime.vixChg, spy_5d_pct: regime.spy5d },
           open_errors: errors.length,
           top_candidates: candidates.slice(0, 10).map((c) => ({
             symbol: c.symbol,
@@ -487,6 +544,113 @@ export class OversoldScannerService {
       source: 'scanner_oversold_intraday',
       maxOpenPositions: cfg.maxOpenPositions,
     });
+  }
+
+  /**
+   * Gate régime macro — VIX (level + spike 1d) + SPY 5d return.
+   *
+   * Calibration data-driven (backtest 04/06 vs 05/06) :
+   *   - VIX > 17        bloque 05/06 (17.14), passe 04/06 (15.40)
+   *   - ΔVIX 1d > +10%  capture le shift de 05/06 (+11.3%)
+   *   - SPY 5d < -1%    bloque 05/06 (-1.09%), passe 04/06 (+0.33%)
+   *
+   * Désactivable via OVERSOLD_REGIME_GATE_ENABLED=false. Seuils tunables via
+   * OVERSOLD_VIX_MAX / OVERSOLD_VIX_DELTA_MAX_PCT / OVERSOLD_SPY_5D_MIN_PCT.
+   */
+  private async checkRegimeGate(): Promise<{
+    block: boolean;
+    reason: string;
+    vix: number | null;
+    vixChg: number | null;
+    spy5d: number | null;
+    thresholds: { vixMax: number; vixDeltaMax: number; spy5dMin: number };
+  }> {
+    const enabled =
+      (this.config.get<string>('OVERSOLD_REGIME_GATE_ENABLED') ?? 'true').toLowerCase() === 'true';
+    const vixMax = parseFloat(this.config.get<string>('OVERSOLD_VIX_MAX') ?? '17');
+    const vixDeltaMax = parseFloat(this.config.get<string>('OVERSOLD_VIX_DELTA_MAX_PCT') ?? '10');
+    const spy5dMin = parseFloat(this.config.get<string>('OVERSOLD_SPY_5D_MIN_PCT') ?? '-1');
+    const thresholds = { vixMax, vixDeltaMax, spy5dMin };
+
+    if (!enabled) {
+      return { block: false, reason: 'gate disabled', vix: null, vixChg: null, spy5d: null, thresholds };
+    }
+
+    const [vixBars, spyBars] = await Promise.all([
+      this.fetchEodBars('VIX.INDX').catch(() => [] as EodBar[]),
+      this.fetchEodBars('SPY.US').catch(() => [] as EodBar[]),
+    ]);
+
+    let vix: number | null = null;
+    let vixChg: number | null = null;
+    if (vixBars.length >= 2) {
+      vix = vixBars[vixBars.length - 1].close;
+      const prev = vixBars[vixBars.length - 2].close;
+      vixChg = prev > 0 ? (vix / prev - 1) * 100 : null;
+    }
+
+    let spy5d: number | null = null;
+    if (spyBars.length >= 6) {
+      const last = spyBars[spyBars.length - 1].close;
+      const fiveBack = spyBars[spyBars.length - 6].close;
+      spy5d = fiveBack > 0 ? (last / fiveBack - 1) * 100 : null;
+    }
+
+    if (vix !== null && vix > vixMax) {
+      return { block: true, reason: `VIX ${vix.toFixed(2)} > ${vixMax}`, vix, vixChg, spy5d, thresholds };
+    }
+    if (vixChg !== null && vixChg > vixDeltaMax) {
+      return {
+        block: true,
+        reason: `ΔVIX 1d ${vixChg.toFixed(1)}% > +${vixDeltaMax}%`,
+        vix,
+        vixChg,
+        spy5d,
+        thresholds,
+      };
+    }
+    if (spy5d !== null && spy5d < spy5dMin) {
+      return { block: true, reason: `SPY 5d ${spy5d.toFixed(2)}% < ${spy5dMin}%`, vix, vixChg, spy5d, thresholds };
+    }
+    return { block: false, reason: 'pass', vix, vixChg, spy5d, thresholds };
+  }
+
+  /**
+   * Cache de sector lookup via EODHD fundamentals (process lifetime).
+   * Les `assets.sector` sont NULL pour la plupart des tickers russell1000 →
+   * on bypass la DB pour aller direct au provider. 1 call/symbole en cold,
+   * puis hit cache pour la durée du process Fly (~24h entre redeploys).
+   */
+  private readonly sectorCache = new Map<string, string>();
+
+  private async loadSectorFor(symbol: string): Promise<string> {
+    const cached = this.sectorCache.get(symbol);
+    if (cached !== undefined) return cached;
+    const apiKey = this.config.get<string>('EODHD_API_KEY');
+    if (!apiKey) {
+      this.sectorCache.set(symbol, 'unknown');
+      return 'unknown';
+    }
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.FETCH_TIMEOUT_MS);
+      const res = await fetch(
+        `https://eodhd.com/api/fundamentals/${encodeURIComponent(symbol)}?api_token=${apiKey}&fmt=json`,
+        { signal: controller.signal },
+      );
+      clearTimeout(timer);
+      if (!res.ok) {
+        this.sectorCache.set(symbol, 'unknown');
+        return 'unknown';
+      }
+      const j = (await res.json()) as { General?: { Sector?: string; GicSector?: string } };
+      const sec = j?.General?.Sector ?? j?.General?.GicSector ?? 'unknown';
+      this.sectorCache.set(symbol, sec);
+      return sec;
+    } catch {
+      this.sectorCache.set(symbol, 'unknown');
+      return 'unknown';
+    }
   }
 
   /** Charge le tableau de tickers d'une watchlist nommée. */
