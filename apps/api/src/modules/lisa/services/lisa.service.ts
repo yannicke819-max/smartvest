@@ -2598,6 +2598,42 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
   }
 
   /**
+   * 05/06/2026 — TRADER mind feed pour panel UI.
+   * Retourne les N dernières décisions du TRADER agent (LLM Mistral + bypass)
+   * filtrées des CYCLE_TICK pings (sentinel cron). Permet à l'utilisateur de
+   * suivre en autonomie l'esprit décisionnel de TRADER minute par minute.
+   */
+  async getTraderMind(userId: string, portfolioId: string, limit = 30) {
+    await this.assertPortfolioOwner(userId, portfolioId);
+    const { data, error } = await this.supabase.getClient()
+      .from('trader_agent_decisions')
+      .select('id, decided_at, cycle_started_at, action_kind, action_applied, target_symbol, confidence, direction, notional_usd, thesis, gemini_provider, gemini_cost_usd, mistral_cost_usd, mistral_large_cost_usd, applied_position_id, apply_error, input_state')
+      .eq('portfolio_id', portfolioId)
+      .order('decided_at', { ascending: false })
+      .limit(limit * 3); // overfetch pour filtrer cycle_tick
+    if (error) throw new BadRequestException(error.message);
+    const filtered = (data ?? []).filter((d) => {
+      const state = d.input_state as { cycle_tick_sentinel?: boolean } | null;
+      return !state?.cycle_tick_sentinel;
+    }).slice(0, limit);
+    return filtered.map((d) => ({
+      id: d.id,
+      decided_at: d.decided_at,
+      action_kind: d.action_kind,
+      action_applied: d.action_applied,
+      target_symbol: d.target_symbol,
+      confidence: d.confidence,
+      direction: d.direction,
+      notional_usd: d.notional_usd,
+      thesis: d.thesis,
+      llm_provider: d.gemini_provider,
+      total_cost_usd: Number(d.gemini_cost_usd ?? 0) + Number(d.mistral_cost_usd ?? 0) + Number(d.mistral_large_cost_usd ?? 0),
+      applied_position_id: d.applied_position_id,
+      apply_error: d.apply_error,
+    }));
+  }
+
+  /**
    * LISA refonte B.2 — Lessons Impact Tracker.
    *
    * Agrège les citations de lessons par TRADER sur une fenêtre glissante.
