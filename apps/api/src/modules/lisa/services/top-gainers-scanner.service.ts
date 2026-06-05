@@ -2092,7 +2092,12 @@ export class TopGainersScannerService implements OnModuleInit {
             }),
           },
         });
-        if (rows.length < pageSize) break; // fin de la liste exchange
+        // 05/06/2026 — Check pagination sur rawRows (avant filter), pas rows
+        // filtrées. Sinon une page entièrement de fantômes (5 rows > 50%)
+        // → rows.length=0 → break prématuré → scanner arrête tout.
+        // Cas vu en prod 13:25 UTC : screener LSE page 1 = 0QN3/0A0F/0QG9/0P4G/0A3B
+        // tous > 50% → filtered → 0 → break → AUCUN candidat EU récupéré.
+        if (rawRows.length < pageSize) break; // fin de la liste exchange
       }
       if (allMapped.length > perExchangeCap) {
         allMapped.length = perExchangeCap; // trim
