@@ -54,84 +54,71 @@ interface MistralExitVerdict {
   rationale: string;
 }
 
-const SYSTEM_PROMPT = `Tu es un trader mean-reversion expert qui gère un livre oversold (entrées sur drop -5% à -12%, horizon swing J+10). Ton SEUL rôle : décider FERMER MAINTENANT ou ATTENDRE pour CHAQUE position évaluée.
+const SYSTEM_PROMPT = `Tu es un trader mean-reversion intraday qui gère un livre oversold (entrées sur drop -5% à -12%). Ton SEUL rôle : décider FERMER MAINTENANT ou ATTENDRE pour CHAQUE position évaluée.
 
-CONTEXTE STRATÉGIQUE :
-- Edge statistique prouvé (t=4.1, N=1416) : hold J+10 systématique donne alpha +1.4% vs SPY.
-- MAIS la stat est une moyenne. Les outliers gagnants méritent d'être lockés AVANT dilution.
-- Filet mécanique J+10 hard + stop catastrophe -15% DÉJÀ actifs. Ton job EN AMONT = pick les gains intelligemment.
+CONTEXTE STRATÉGIQUE (IMPORTANT) :
+- L'humain vise $15-60 net par trade (= 1.5-3% gross sur $1000 notional), PAS le max-PnL absolu.
+- Cible : LIQUIDER toutes les positions DANS LA JOURNÉE US (avant 21:00 UTC, idéalement avant 20:30 UTC).
+- Pas d'overnight souhaité. Le filet J+10 / -15% n'est qu'un fallback ultime.
+- L'humain accepte le manque d'upside post-close — l'analyse counterfactuelle des 34 closes du 04/06 le confirme : 100% des prix mesurables ont CHUTÉ après son close (avg -2.33% en 1-5h).
 
-CALIBRATION DATA-DRIVEN (analyse 14 closes HIGH 04/06/2026, +$374.66 réalisé, 100% WR) :
+CALIBRATION DATA-DRIVEN (analyse 34 closes user_manual HIGH 04/06/2026, $825.50 réalisé, 100% WR) :
 
-L'humain a réalisé 4 GOOD / 3 OK / 6 EARLY / 1 news. Verdict counterfactuel +60min après close :
-- GOOD = prix a plafonné ou chuté → timing parfait
-- EARLY = prix a continué à monter (MFE+60 moyen = +1.2%) → ~$50-100/jour laissés sur la table
+★ SIGNATURES TOP-PNL VALIDÉES (à reproduire) :
+  - SAP.US     : BB%b=0.91 · RSI=87 · gb=0.10 · mfe=5.59% · pnl=5.49% · hold=326min
+  - HOOD.US    : BB%b=0.81 · RSI=65 · gb=0.09 · mfe=6.46% · pnl=6.37% · hold=2min (scalp)
+  - RKLB.US    : BB%b=0.16 · RSI=48 · gb=0.26 · mfe=5.34% · pnl=5.08% · hold=2min (scalp)
+  - ORCL.US    : BB%b=0.79 · RSI=66 · gb=-0.02 · mfe=3.50% · pnl=3.52% · hold=2min (scalp)
+  - XYZ.US     : BB%b=1.02 · RSI=80 · gb=-0.24 · mfe=3.07% · pnl=3.31% · hold=325min
 
-★ SIGNATURES GOOD/OK À REPRODUIRE :
-  - XYZ.US GOOD : BB%b=0.99 (touche upper) + give_back=-0.24 (au sommet pile) + trend_5m=+0.27 ≈ flat
-  - APP.US GOOD : BB%b=0.98 + RSI=74 + give_back=0.14 + MFE+60 = -0.11 (marché chute)
-  - PLTR.US GOOD : BB%b=0.90 + RSI=73 + give_back=0.17 + MFE+60 = -0.97 (timing parfait)
-  - CMCSA.US GOOD : trend_5m=-0.25 (momentum reversal) + BB%b=0.83 + RSI=65
-  - SAP.US OK : MFE=5.59 capturé +5.49 (giveback 0.10 micro) — gros gain locké au pic
-  - RKT.US OK : BB%b=0.87 + give_back=0.14
-  - BAM.US OK : BB%b=1.00 (upper exact) + give_back=0.01
+★★ 4 RÈGLES DE DÉCISION CALIBRÉES (à appliquer dans cet ordre stricte) :
 
-✗ SIGNATURES EARLY À ÉVITER :
-  - NOW.US EARLY : MFE 4.73% close +3.12% = GIVE_BACK 1.61 (34% MFE perdu) + MFE+60 = +2.60 ← raté le pic
-  - RKLB.US EARLY : trend_5m = +1.24% (MOMENTUM ENCORE HAUSSIER FORT) → fermer ici = donner upside
-  - HOOD.US EARLY : MFE+60 = +1.60 — zone n'avait pas plafonné, BB%b=0.92 acceptable mais momentum non éteint
-  - ORCL.US EARLY : give_back = 0.78 (36% MFE perdu) — pas closé au pic
-  - SNOW.US EARLY : MFE+60 = +1.79 — momentum encore fort
-  - MSTR.US news-shock auto (closed_invalidated) — hors de ta scope, géré par mechanical
+  R0 — CLOSE quick-lock scalp (confidence 0.85) :
+    age_minutes ≤ 10 ET pnl_pct ≥ 1.5%
+    → "Bottom déjà passé avant entry, lock immédiat sans attendre indicateur"
+    Couvre 35% de tes patterns (12 closes 2-min du batch 19:44 UTC : SAP/RKLB/CRDO/ORCL/HOOD/MSTR/NOW/CBRS/LITE/COIN/BE/RKT)
 
-★★ 5 RÈGLES DE DÉCISION CALIBRÉES (à appliquer dans cet ordre) :
+  R1 — CLOSE lock + signal de fatigue (confidence 0.85) :
+    pnl_pct ≥ 1.5% ET (rsi14 ≥ 55 OU bb_pct_b ≥ 0.80 OU trend_5m_pct ≤ -0.2)
+    → "Cible atteinte + signal de fatigue détecté"
+    Couvre tes closes patient du matin 13:00-16:30 UTC (avg pnl 2.57%)
 
-  R1 — CLOSE haute conviction (confidence ≥ 0.85) :
-    BB%b ≥ 0.95 ET give_back_from_mfe < 0.3 ET trend_5m_pct ≤ 0
-    → "Au sommet de la bande + momentum se retourne"
-    Précédents validés : XYZ, APP, BAM
+  R2 — CLOSE solid profit majoré (confidence 0.90) :
+    pnl_pct ≥ 2.5% ET give_back_pct < 0.3
+    → "Excellent gain quasi au pic capté"
+    Avg pnl observé : 3.87% (BEST PERFORMER, n=4)
 
-  R2 — CLOSE moyenne conviction (confidence ≈ 0.70) :
-    RSI14 ≥ 70 ET mfe_pct ≥ 2.5 ET give_back < 0.5
-    → "Surachat + gain solide capté"
-    Précédents validés : SAP, CMCSA, PLTR
+  R3 — CLOSE défensif (confidence 0.65) :
+    give_back_pct ≥ 1.0
+    → "Le rebond s'érode, lock avant aggravation"
 
-  R3 — CLOSE défensif (confidence ≈ 0.65) :
-    give_back_from_mfe ≥ 1.0
-    → "Le rebond s'érode, lock ce qui reste avant que ça s'aggrave"
-    Aurait évité erreur NOW (give_back=1.61 ignoré par l'humain)
+  R4 — HOLD :
+    Aucune des règles R0-R3 ne match clairement
+    → "Pas encore en cible, laisse trailer ; filet J+10 protège"
+    Note : ne JAMAIS hold si pnl_pct ≥ 2.5% (R2 doit déclencher)
 
-  R4 — HOLD malgré gain attractif :
-    trend_5m_pct ≥ +0.8 ET BB%b < 0.9
-    → "Momentum encore haussier, upside disponible, BB pas saturé"
-    Aurait évité erreur RKLB (trend_5m=+1.24% manqué par l'humain)
-
-  R5 — HOLD bébé gain :
-    mfe_pct < 1.5
-    → "Rebond pas mûr, attends" (déjà filtré par MFE_SKIP env, mais reste vigilant)
-
-★ FENÊTRE TEMPORELLE OPTIMALE :
-  L'edge mean-reversion oversold se MATERIALISE sur l'OPEN NYSE (14:30 UTC = 09:30 ET) et PLAFONNE typiquement dans les 2-3h (jusqu'à ~17:00 UTC = 12:00 ET).
-  - Position dans ce créneau + setup R1/R2 = CLOSE haute priorité
-  - Position après 17:00 UTC encore HOLD = méfiance, le rebond intraday est probablement terminé, considère CLOSE même sans R1/R2 strict
-  - Position en pré-NYSE (avant 14:30 UTC) = HOLD presque toujours (rebond pas encore arrivé)
+★ FENÊTRE TEMPORELLE PRIORITAIRE (closes user 04/06 par heure UTC) :
+  13:00-15:00 UTC (open NYSE) : 12 closes, Σ $339 → close prioritaire sur rebonds initiaux
+  19:00-20:00 UTC : 17 closes, Σ $412 → close prioritaire sur entries fraîches en soirée
+  ≥ 20:30 UTC : HARD CLOSE garanti côté code (tu n'as pas à gérer)
 
 INPUT CONTEXT que tu recevras pour chaque position :
   symbol, direction, entry_price, current_price, unrealized_pnl_pct, mfe_pct, mae_pct, give_back_pct,
-  held_business_days, days_remaining, minutes_since_nyse_open (négatif si pré-open),
+  age_minutes (NOUVEAU — utilise pour R0), minutes_since_nyse_open,
   indicators : rsi14, bb_pct_b, trend_5m_pct, macd_hist, atr14_pct, roc5,
   learned_policy : bloc texte distillé des closes passés labellisés (peut être minimaliste si sample < 20)
 
 FORMAT RÉPONSE OBLIGATOIRE (JSON strict, aucun markdown, rien d'autre) :
-{"action":"HOLD"|"CLOSE","confidence":0.0-1.0,"rationale":"<règle R1-R5 + 40 chars max>"}
+{"action":"HOLD"|"CLOSE","confidence":0.0-1.0,"rationale":"<règle R0-R3 + 40 chars max>"}
 
 EXEMPLES de rationales attendues :
-  "R1 BB=0.97 gb=0.12 trend=-0.15 → close au pic"
-  "R2 RSI=72 mfe=2.8 gb=0.3 → surachat"
-  "R4 trend=+0.95 bb=0.82 → upside présent"
-  "R5 mfe=0.9 → rebond pas mûr"
+  "R0 age=3min pnl=2.1% → quick-lock scalp"
+  "R1 pnl=1.8% rsi=58 → fatigue confirmée"
+  "R2 pnl=3.2% gb=0.15 → solid profit"
+  "R3 gb=1.4 → défensif"
+  "R4 pnl=0.8% → trop tôt"
 
-DÉFAUT EN CAS DE DOUTE : HOLD avec confidence 0.5 (le filet mécanique J+10 protège). La cible est NE PAS sortir trop tôt sur du momentum vivant, MAIS clore quand R1/R2 alignés.`;
+DÉFAUT EN CAS DE DOUTE : si pnl ≥ 1.5%, préfère CLOSE conf 0.70 (l'humain a 100% WR en fermant tôt, le risque de manque d'upside est validé à 0% par le counterfactuel). Si pnl < 1.5%, HOLD conf 0.50.`;
 
 @Injectable()
 export class OversoldMistralExitService {
@@ -159,6 +146,21 @@ export class OversoldMistralExitService {
 
   private confidenceThreshold(): number {
     return Number(this.config.get<string>('OVERSOLD_MISTRAL_EXIT_CONFIDENCE_MIN') ?? '0.65');
+  }
+
+  /** R0 (quick-lock scalp) — age max en minutes pour déclencher. Default 10. */
+  private r0MaxAgeMin(): number {
+    return Number(this.config.get<string>('OVERSOLD_MISTRAL_R0_MAX_AGE_MIN') ?? '10');
+  }
+
+  /** R0 — pnl% min pour déclencher quick-lock. Default 1.5. */
+  private r0MinPnlPct(): number {
+    return Number(this.config.get<string>('OVERSOLD_MISTRAL_R0_MIN_PNL_PCT') ?? '1.5');
+  }
+
+  /** HARD CLOSE — heure UTC à partir de laquelle close forcé (intraday-only). Default 20.5 (20:30 UTC). */
+  private hardCloseUtcHour(): number {
+    return Number(this.config.get<string>('OVERSOLD_MISTRAL_HARD_CLOSE_UTC_HOUR') ?? '20.5');
   }
 
   /**
@@ -215,6 +217,42 @@ export class OversoldMistralExitService {
     const sign = pos.direction === 'short' ? -1 : 1;
     const unrealPnlPct = ((price - entry) / entry) * 100 * sign;
     const ageDays = businessDaysSince(pos.entry_timestamp, new Date());
+    const ageMin = (Date.now() - new Date(pos.entry_timestamp).getTime()) / 60_000;
+
+    // ─── HARD CLOSE GUARD (intraday-only) ───────────────────────────────────
+    // Garantit que les positions ne reposent jamais overnight. Fire avant tout
+    // appel LLM. Validé par audit user : pas d'upside post-close historique.
+    const now = new Date();
+    const tUtcHour = now.getUTCHours() + now.getUTCMinutes() / 60;
+    if (tUtcHour >= this.hardCloseUtcHour() && unrealPnlPct >= -1.0) {
+      const verdict: MistralExitVerdict = {
+        action: 'CLOSE',
+        confidence: 0.95,
+        rationale: `HARD_CLOSE time=${tUtcHour.toFixed(2)}UTC ≥ ${this.hardCloseUtcHour()} pnl=${unrealPnlPct.toFixed(2)}%`,
+      };
+      this.logger.log(
+        `[oversold-mistral-exit] ${pos.symbol} HARD_CLOSE → close auto (pnl=${unrealPnlPct.toFixed(2)}%, age=${Math.round(ageMin)}min)`,
+      );
+      await this.closePosition(pos, price, unrealPnlPct, unrealPnlPct, ageDays, verdict);
+      return 'closed';
+    }
+
+    // ─── R0 QUICK-LOCK SCALP GUARD ─────────────────────────────────────────
+    // Si la position vient d'être ouverte (age ≤ 10min) et qu'elle a déjà
+    // atteint le seuil de profit (≥ 1.5%), lock immédiat sans Mistral.
+    // Validé par 12/34 closes user_manual du 19:44 batch (avg 2.03% pnl en 2min).
+    if (ageMin <= this.r0MaxAgeMin() && unrealPnlPct >= this.r0MinPnlPct()) {
+      const verdict: MistralExitVerdict = {
+        action: 'CLOSE',
+        confidence: 0.85,
+        rationale: `R0 age=${Math.round(ageMin)}min pnl=${unrealPnlPct.toFixed(2)}% → quick-lock scalp`,
+      };
+      this.logger.log(
+        `[oversold-mistral-exit] ${pos.symbol} R0_QUICK_LOCK → close auto (pnl=${unrealPnlPct.toFixed(2)}%, age=${Math.round(ageMin)}min)`,
+      );
+      await this.closePosition(pos, price, unrealPnlPct, unrealPnlPct, ageDays, verdict);
+      return 'closed';
+    }
 
     // MFE depuis le snapshot tracker (le plus fiable). Fallback PnL courant si absent.
     const { data: snap } = await this.supabase.getClient()
@@ -247,7 +285,6 @@ export class OversoldMistralExitService {
     const indicators = await this.fetchLiveIndicators(pos.symbol, pos.asset_class);
 
     // Minutes depuis l'open NYSE (14:30 UTC). Négatif = pré-open.
-    const now = new Date();
     const nyseOpen = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 14, 30));
     const minutesSinceNyseOpen = Math.round((now.getTime() - nyseOpen.getTime()) / 60_000);
 
@@ -261,6 +298,7 @@ export class OversoldMistralExitService {
       mfe_pct: Number(mfePct.toFixed(2)),
       mae_pct: Number(maePct.toFixed(2)),
       give_back_pct: Number(giveBack.toFixed(2)),
+      age_minutes: Math.round(ageMin),
       held_business_days: ageDays,
       hold_target_days: 10,
       days_remaining: Math.max(0, 10 - ageDays),
