@@ -1925,7 +1925,34 @@ export class MechanicalTradingService {
     // position légitime à $513 (LMT) est instantanément liquidée à $100 = -80%.
     // On skip ce cycle pour cette position ; au prochain tick (60s), si EODHD
     // est revenu, on reprend normalement.
-    if (this.isFallbackSource(quote.source)) {
+    //
+    // 05/06/2026 — EU STALE TOLERANCE :
+    // Bug observé : SAVE.LSE TP=$6.84 touché par live EODHD $6.869 mais
+    // tagged stale_eodhd (age 16min > 180s default) → TP/SL skip → user
+    // dû fermer manuellement à +$50. Pour LSE/XETRA/PA, EODHD intraday a
+    // une latence naturelle 10-20min, le threshold 180s est inadapté.
+    // Fix : pour EU equity stale_eodhd ou stale_twelvedata, accepter si age
+    // < MECHANICAL_STALE_AGE_MAX_MIN_EU (default 30min). Sanity bound 30%
+    // (ligne ci-dessous) reste filet anti-LMT-incident. fallback_unknown
+    // ($0 sentinel) et fallback_* restent toujours bloqués.
+    const symU = pos.symbol.toUpperCase();
+    const isEu = (pos.assetClass === 'eu_equity') || /\.(LSE|XETRA|PA|AS|SW|F|DE|MI|BR|ST|HE|VI|LS)$/.test(symU);
+    const isStaleQuote = typeof quote.source === 'string' && quote.source.startsWith('stale_');
+    let euStaleAccepted = false;
+    if (isStaleQuote && isEu && quote.asOf) {
+      const ageMin = (Date.now() - Date.parse(quote.asOf)) / 60_000;
+      const maxAgeMin = (() => {
+        const v = parseFloat(process.env.MECHANICAL_STALE_AGE_MAX_MIN_EU ?? '30');
+        return Number.isFinite(v) && v > 0 ? v : 30;
+      })();
+      if (Number.isFinite(ageMin) && ageMin < maxAgeMin) {
+        this.logger.log(
+          `[EU_STALE_TOLERANCE] ${pos.symbol}: source=${quote.source} age=${ageMin.toFixed(0)}min < ${maxAgeMin}min — accept TP/SL check (sanity bound 30% reste actif)`,
+        );
+        euStaleAccepted = true;
+      }
+    }
+    if (this.isFallbackSource(quote.source) && !euStaleAccepted) {
       this.logger.warn(
         `[FALLBACK_GUARD] ${pos.symbol}: source=${quote.source} price=${quote.price} — skip stop/target check (prix non fiable, cycle suivant)`,
       );
