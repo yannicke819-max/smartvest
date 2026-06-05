@@ -17,7 +17,7 @@ const STATUS_LABELS: Record<LisaPosition['status'], { label: string; color: stri
   open: { label: 'Ouverte', color: 'bg-blue-50 text-blue-700 border-blue-200' },
   closed_target: { label: 'TP hit', color: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
   closed_stop: { label: 'SL hit', color: 'bg-red-50 text-red-700 border-red-200' },
-  closed_invalidated: { label: 'Invalidée', color: 'bg-amber-50 text-amber-700 border-amber-200' },
+  closed_invalidated: { label: 'Fermée par IA', color: 'bg-amber-50 text-amber-700 border-amber-200' },
   closed_user: { label: 'Fermée user', color: 'bg-slate-50 text-slate-700 border-slate-200' },
   closed_kill: { label: 'Kill switch', color: 'bg-red-100 text-red-800 border-red-300' },
   closed_expired: { label: 'Expirée', color: 'bg-slate-50 text-slate-500 border-slate-200' },

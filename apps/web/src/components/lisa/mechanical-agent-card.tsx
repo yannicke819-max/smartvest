@@ -24,7 +24,7 @@ const KIND_LABELS: Record<string, { label: string; color: string; bg: string }> 
   mechanical_open: { label: 'OPEN', color: 'text-blue-700 dark:text-blue-300', bg: 'bg-blue-50 dark:bg-blue-950/40' },
   mechanical_close_stop: { label: 'STOP', color: 'text-red-700 dark:text-red-300', bg: 'bg-red-50 dark:bg-red-950/40' },
   mechanical_close_target: { label: 'TARGET', color: 'text-emerald-700 dark:text-emerald-300', bg: 'bg-emerald-50 dark:bg-emerald-950/40' },
-  mechanical_close_invalidated: { label: 'INVALIDE', color: 'text-orange-700 dark:text-orange-300', bg: 'bg-orange-50 dark:bg-orange-950/40' },
+  mechanical_close_invalidated: { label: 'FERMÉE PAR IA', color: 'text-orange-700 dark:text-orange-300', bg: 'bg-orange-50 dark:bg-orange-950/40' },
   mechanical_skip: { label: 'SKIP', color: 'text-slate-600 dark:text-slate-400', bg: 'bg-slate-50 dark:bg-slate-900/40' },
   autopilot_cycle_started: { label: 'CYCLE', color: 'text-slate-600 dark:text-slate-400', bg: 'bg-slate-50 dark:bg-slate-900/40' },
   autopilot_cycle_completed: { label: 'CYCLE', color: 'text-slate-600 dark:text-slate-400', bg: 'bg-slate-50 dark:bg-slate-900/40' },
