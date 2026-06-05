@@ -316,8 +316,20 @@ export class ShadowSizingOrchestratorService {
     const totalPnl = realized + unrealizedPnl;
     const netPnl = totalPnl - feesPaid;
 
-    // Drawdown = perte cumulée depuis matin si négatif
-    const drawdownPct = realized < 0 ? Math.abs((realized / 10500) * 100) : 0;
+    // Read kill switch state + capital_usd (denom drawdown).
+    const { data: cfgRow } = await client
+      .from('lisa_session_configs')
+      .select('kill_switch_active, capital_usd')
+      .eq('portfolio_id', portfolioId)
+      .maybeSingle();
+
+    // Bug fix 05/06 : drawdownPct calculait `realized / 10500` (denom hardcoded
+    // valeur shadow nominale d'origine). HIGH portfolio a depuis été upgradé à
+    // $150k (oversold mode) → toute perte > -$525 sur HIGH déclenchait faussement
+    // un kill drawdown > 5%. Désormais on utilise capital_usd réel.
+    const capitalForDenom = Number(cfgRow?.capital_usd ?? 10500);
+    const denom = Number.isFinite(capitalForDenom) && capitalForDenom > 0 ? capitalForDenom : 10500;
+    const drawdownPct = realized < 0 ? Math.abs((realized / denom) * 100) : 0;
 
     // Extrapolation daily PnL (linéaire depuis maintenant)
     const nowUtc = new Date();
@@ -328,13 +340,6 @@ export class ShadowSizingOrchestratorService {
 
     const capacityUsedPct = (openCount / maxPosCount) * 100;
     const targetProgressPct = (netPnl / DAILY_TARGET_USD) * 100;
-
-    // Read kill switch state
-    const { data: cfgRow } = await client
-      .from('lisa_session_configs')
-      .select('kill_switch_active')
-      .eq('portfolio_id', portfolioId)
-      .maybeSingle();
 
     return {
       portfolioId,
