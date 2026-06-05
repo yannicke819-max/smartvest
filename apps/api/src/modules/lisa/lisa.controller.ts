@@ -1781,6 +1781,17 @@ export class LisaController {
     return this.lisa.getDecisionLog(extractUserId(headers), portfolioId, limit ? parseInt(limit, 10) : 50);
   }
 
+  // 05/06/2026 — TRADER mind feed pour panel UI live (poll 60s côté front).
+  @Get('trader-mind/:portfolioId')
+  getTraderMind(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+    @Query('limit') limit?: string,
+  ) {
+    const n = Math.min(Math.max(parseInt(limit ?? '30', 10) || 30, 1), 100);
+    return this.lisa.getTraderMind(extractUserId(headers), portfolioId, n);
+  }
+
   // LISA refonte B.2 — Lessons Impact Tracker.
   // Agrège les citations sur une fenêtre glissante (default 30j, max 365).
   @Get('lessons-impact/:portfolioId')

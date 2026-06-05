@@ -238,6 +238,32 @@ export function useLisaConfig(portfolioId: string | null) {
   });
 }
 
+// 05/06/2026 — TRADER mind live feed (poll 60s).
+export interface TraderMindDecision {
+  id: string;
+  decided_at: string;
+  action_kind: string | null;
+  action_applied: boolean | null;
+  target_symbol: string | null;
+  confidence: number | null;
+  direction: string | null;
+  notional_usd: number | null;
+  thesis: string | null;
+  llm_provider: string | null;
+  total_cost_usd: number;
+  applied_position_id: string | null;
+  apply_error: string | null;
+}
+
+export function useTraderMind(portfolioId: string | null, limit = 30) {
+  return useQuery({
+    queryKey: ['lisa', 'trader-mind', portfolioId, limit],
+    queryFn: () => apiFetch<TraderMindDecision[]>(`/lisa/trader-mind/${portfolioId}?limit=${limit}`),
+    enabled: !!portfolioId,
+    refetchInterval: 60_000,
+  });
+}
+
 export function useUpsertLisaConfig(portfolioId: string) {
   const qc = useQueryClient();
   return useMutation({
