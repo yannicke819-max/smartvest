@@ -481,7 +481,14 @@ export function useLisaPositions(portfolioId: string | null, openOnly = false) {
     // useLisaPositionsRealtime ramène le délai à <1s perçu.
     refetchInterval: 5_000,
     refetchIntervalInBackground: true,
-    ...LISA_QUERY_OPTIONS,
+    // Chart freeze fix 05/06 : la courbe restait figée au 04/06 16:27 malgré
+    // 20+ closes dans la DB. Force refetch au mount/focus pour invalider tout
+    // cache poisonné (CDN Vercel, React Query persisté, etc.). On NE spread PAS
+    // LISA_QUERY_OPTIONS ici pour pouvoir override refetchOnWindowFocus=true.
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: true,
+    staleTime: 0,
+    retry: false,
   });
 }
 
@@ -573,7 +580,12 @@ export function useLisaSnapshot(portfolioId: string | null) {
 export function useLisaSnapshotHistory(portfolioId: string | null, windowDays = 30) {
   return useQuery({
     queryKey: ['lisa', 'snapshots', portfolioId, windowDays],
-    queryFn: () => apiFetch<LisaSnapshot[]>(`/lisa/snapshots/${portfolioId}?window=${windowDays}`),
+    queryFn: () =>
+      apiFetch<LisaSnapshot[]>(
+        // Cache-busting timestamp pour bypass tout cache HTTP intermédiaire
+        // (CDN Vercel, browser HTTP cache). Chart freeze fix 05/06.
+        `/lisa/snapshots/${portfolioId}?window=${windowDays}&_t=${Date.now()}`,
+      ),
     enabled: !!portfolioId,
     retry: false,
     // Chart capital : on surcharge LISA_QUERY_OPTIONS pour forcer le refresh
@@ -583,6 +595,8 @@ export function useLisaSnapshotHistory(portfolioId: string | null, windowDays = 
     refetchInterval: 60_000,
     refetchIntervalInBackground: true,
     refetchOnWindowFocus: true,
+    refetchOnMount: 'always',
+    staleTime: 0,
   });
 }
 
