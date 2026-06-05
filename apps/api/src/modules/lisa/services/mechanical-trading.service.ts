@@ -2064,7 +2064,19 @@ export class MechanicalTradingService {
     //   MECHANICAL_DANGER_ZONE_PCT_US             default 0.80 (TwelveData live 3min)
     //   MECHANICAL_DANGER_ZONE_PCT_EU             default 0.75 (EODHD stale 30min)
     //   MECHANICAL_DANGER_ZONE_PCT_CRYPTO         default 0.85 (Binance WS sub-second)
-    const dangerZoneEnabled = (process.env.MECHANICAL_DANGER_ZONE_ENABLED ?? 'false').toLowerCase() === 'true';
+    // 05/06/2026 — EXCLUSION OVERSOLD : DANGER_ZONE_LLM ne doit JAMAIS s'appliquer
+    // aux positions oversold (HIGH portfolio). Oversold = strategy swing J+10,
+    // SL large 10-15% volontaire pour laisser respirer. Si DANGER_ZONE trigger à
+    // 80% du SL (-8% à -12%), cut loss prématuré → user a perdu MU.US -$63
+    // 05/06 alors qu'elle devait être en mode OVERSOLD_EXTENDED.
+    //
+    // Heuristique : SL_distance > 8% du entry = position oversold (gainers a
+    // SL 1.5-3%, oversold a SL 10-15%). Évite query supplémentaire à la DB.
+    const slDistancePct = stopPrice && entryPx.gt(0)
+      ? entryPx.minus(stopPrice).div(entryPx).mul(isLong ? 1 : -1).abs().mul(100).toNumber()
+      : 0;
+    const isOversoldByHeuristic = slDistancePct > 8;
+    const dangerZoneEnabled = (process.env.MECHANICAL_DANGER_ZONE_ENABLED ?? 'false').toLowerCase() === 'true' && !isOversoldByHeuristic;
     if (dangerZoneEnabled && stopPrice && stopPrice.gt(0) && entryPx.gt(0)) {
       const directionMultiplier = isLong ? 1 : -1;
       const distanceTraveled = entryPx.minus(livePx).mul(directionMultiplier);
