@@ -493,7 +493,7 @@ export class MultiTimeframePersistenceService {
     // OHLCV bars côté client. Ref :
     //   `vendor/eodhd-claude-skills/.../endpoints/us-tick-data.md`
     const tickSeries = await this.eodhd.getCandlesViaTicks(eodhdTicker, '5m', 13).catch(() => null);
-    if (tickSeries && tickSeries.candles.length > 0) {
+    if (tickSeries && tickSeries.candles.length > 0 && !isLastCandleStale(tickSeries.candles)) {
       const tickFiveMin = tickSeries.candles.map((c) => ({
         datetime: new Date(c.timestamp * 1000).toISOString(),
         open: c.open,
@@ -521,7 +521,7 @@ export class MultiTimeframePersistenceService {
 
     // 3. Cache Supabase (last_known < 15 min)
     const cached = await this.intradayCache.read(cacheKey).catch(() => null);
-    if (cached && cached.candles.length > 0) {
+    if (cached && cached.candles.length > 0 && !isLastCandleStale(cached.candles)) {
       // Convert CachedCandle[] back to the shape expected by extractors
       const cachedAsFiveMin = cached.candles.map((c) => ({
         datetime: new Date(c.timestamp * 1000).toISOString(),
