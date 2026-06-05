@@ -114,6 +114,20 @@ export interface ConsensusVerdict {
 }
 
 /**
+ * Options de calibration pour resolveDebate. Default = constantes globales
+ * (back-compat). Permet au caller (ex: DebateGateService lisant env vars)
+ * d'ajuster les seuils par contexte (TRADER mode plus permissif).
+ */
+export interface ResolveDebateOptions {
+  /** Override MIN_QUORUM (default 2). Set à 1 pour autoriser solo BUY. */
+  minQuorum?: number;
+  /** Override MIN_CONSENSUS_RATIO (default 0.5 pour BUY/SELL). */
+  minConsensusRatio?: number;
+  /** Override MIN_WINNER_CONFIDENCE (default 0.5). */
+  minWinnerConfidence?: number;
+}
+
+/**
  * Résout un débat multi-agents en consensus déterministe.
  *
  * Algorithme :
@@ -140,7 +154,11 @@ export interface ConsensusVerdict {
 export function resolveDebate(
   inputs: ReadonlyArray<DebateInput>,
   now: number = Date.now(),
+  options?: ResolveDebateOptions,
 ): ConsensusVerdict {
+  const minQuorum = options?.minQuorum ?? MIN_QUORUM;
+  const minConsensusRatio = options?.minConsensusRatio ?? MIN_CONSENSUS_RATIO;
+  const minWinnerConfidence = options?.minWinnerConfidence ?? MIN_WINNER_CONFIDENCE;
   if (inputs.length === 0) {
     return emptyConsensus('no agents');
   }
@@ -219,8 +237,8 @@ export function resolveDebate(
 
   const consensusRatio = winnerBucket ? winnerBucket.weight / totalWeight : 0;
   // Biais défensif : CLOSE peut passer à 40% de consensus (protect first),
-  // BUY/SELL exigent 60%.
-  const requiredRatio = winnerDecision === 'CLOSE' ? DEFENSIVE_CONSENSUS_RATIO : MIN_CONSENSUS_RATIO;
+  // BUY/SELL exigent minConsensusRatio (default 0.5, override possible).
+  const requiredRatio = winnerDecision === 'CLOSE' ? DEFENSIVE_CONSENSUS_RATIO : minConsensusRatio;
 
   const allDissenting = () => fresh.map((f) => ({
     agentId: f.input.agentId,
@@ -242,7 +260,7 @@ export function resolveDebate(
   }
 
   // Quorum minimum : un agent seul ne déclenche jamais une action (sauf veto safety).
-  if (isActionable(winnerDecision) && winnerBucket.agents.length < MIN_QUORUM) {
+  if (isActionable(winnerDecision) && winnerBucket.agents.length < minQuorum) {
     return {
       decision: 'WAIT',
       confidence: 0,
@@ -250,7 +268,7 @@ export function resolveDebate(
       vetoTriggered: false,
       contributingAgents: [],
       dissentingAgents: allDissenting(),
-      rationale: `Quorum insuffisant (${winnerBucket.agents.length} agent(s) < ${MIN_QUORUM} requis pour action ${winnerDecision}). Fallback WAIT.`,
+      rationale: `Quorum insuffisant (${winnerBucket.agents.length} agent(s) < ${minQuorum} requis pour action ${winnerDecision}). Fallback WAIT.`,
       staleAgents: stale,
     };
   }
@@ -258,7 +276,7 @@ export function resolveDebate(
   const avgConfidence = winnerBucket.weight / winnerBucket.agents.length;
 
   // Confidence floor : même unanimité, si conviction faible -> WAIT.
-  if (isActionable(winnerDecision) && avgConfidence < MIN_WINNER_CONFIDENCE) {
+  if (isActionable(winnerDecision) && avgConfidence < minWinnerConfidence) {
     return {
       decision: 'WAIT',
       confidence: avgConfidence,
@@ -266,7 +284,7 @@ export function resolveDebate(
       vetoTriggered: false,
       contributingAgents: [],
       dissentingAgents: allDissenting(),
-      rationale: `Conviction trop faible (avg ${avgConfidence.toFixed(2)} < ${MIN_WINNER_CONFIDENCE}). Consensus mou rejeté. Fallback WAIT.`,
+      rationale: `Conviction trop faible (avg ${avgConfidence.toFixed(2)} < ${minWinnerConfidence}). Consensus mou rejeté. Fallback WAIT.`,
       staleAgents: stale,
     };
   }
