@@ -33,6 +33,13 @@ import {
   type EodBar,
   type OversoldCandidate,
 } from './oversold.helper';
+import {
+  analyzeIntradayRebound,
+  passesIntradayReboundFilter,
+  DEFAULT_INTRADAY_REBOUND_CONFIG,
+  type IntradayReboundConfig,
+} from './oversold-intraday.helper';
+import { IntradayProviderRouter } from './intraday-provider-router.service';
 
 /** Une position oversold enrichie pour l'UI dédiée (book summary). */
 export interface OversoldBookPosition {
@@ -109,6 +116,7 @@ export class OversoldScannerService {
     private readonly lisa: LisaService,
     private readonly decisionLog: DecisionLogService,
     private readonly config: ConfigService,
+    private readonly intraday: IntradayProviderRouter,
   ) {}
 
   /** Gate env — désactivable sans redeploy via secret Fly. */
@@ -265,6 +273,220 @@ export class OversoldScannerService {
       `[oversold] portfolio=${portfolioId.slice(0, 8)} univers=${tickers.length} ` +
         `candidats=${candidates.length} ouverts=${opened}`,
     );
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // INTRADAY SCANNER — 6 ticks horaires pendant la session US (15-20 UTC).
+  //
+  // Différence vs runDailyScan (21:15 UTC) : applique en plus 4 filtres "rebond
+  // confirmé" pour ne pas ouvrir des falling-knives intra-séance.
+  // 1. drop EOD (close J vs close J-1) toujours dans [-12%, -5%]
+  // 2. rebound depuis low_60min ≥ minReboundPct
+  // 3. trend 15m ≥ minTrend15mPct
+  // 4. bottom hors des N dernières bars (≥ 10 min de stabilisation)
+  // 5. volume_last_30m / volume_first_30m ≥ minVolumeRatio
+  // ────────────────────────────────────────────────────────────────────────────
+
+  /** Gate env intraday. Opt-in (default false) — activer via OVERSOLD_INTRADAY_ENABLED=true. */
+  private intradayEnabled(): boolean {
+    return (this.config.get<string>('OVERSOLD_INTRADAY_ENABLED') ?? 'false').toLowerCase() === 'true';
+  }
+
+  private intradayConfig(): IntradayReboundConfig {
+    const num = (key: string, dflt: number) => {
+      const v = Number(this.config.get<string>(key));
+      return Number.isFinite(v) ? v : dflt;
+    };
+    return {
+      minReboundPct: num('OVERSOLD_INTRADAY_MIN_REBOUND_PCT', DEFAULT_INTRADAY_REBOUND_CONFIG.minReboundPct),
+      minTrend15mPct: num('OVERSOLD_INTRADAY_MIN_TREND_15M_PCT', DEFAULT_INTRADAY_REBOUND_CONFIG.minTrend15mPct),
+      bottomMustBeBeforeLastNBars: num('OVERSOLD_INTRADAY_BOTTOM_BEFORE_BARS', DEFAULT_INTRADAY_REBOUND_CONFIG.bottomMustBeBeforeLastNBars),
+      minVolumeRatio: num('OVERSOLD_INTRADAY_MIN_VOLUME_RATIO', DEFAULT_INTRADAY_REBOUND_CONFIG.minVolumeRatio),
+      minBarsRequired: num('OVERSOLD_INTRADAY_MIN_BARS_REQUIRED', DEFAULT_INTRADAY_REBOUND_CONFIG.minBarsRequired),
+    };
+  }
+
+  private intradayMaxOpensPerDay(): number {
+    const v = Number(this.config.get<string>('OVERSOLD_INTRADAY_MAX_OPENS_PER_DAY'));
+    return Number.isFinite(v) && v > 0 ? v : 8;
+  }
+
+  private intradayNotionalRatio(): number {
+    const v = Number(this.config.get<string>('OVERSOLD_INTRADAY_NOTIONAL_RATIO'));
+    return Number.isFinite(v) && v > 0 && v <= 2 ? v : 0.7;
+  }
+
+  /**
+   * Cron horaire pendant session US — 15:00 à 19:00 UTC, weekdays only.
+   * Skip 14:30 (ouverture turbulente) et 20:00 (dernière heure, gamma/EOD prep).
+   */
+  @Cron('0 0 15,16,17,18,19 * * 1-5', { name: 'oversold-intraday-scan', timeZone: 'UTC' })
+  async runIntradayScan(): Promise<void> {
+    try {
+      if (!this.isEnabled() || !this.intradayEnabled()) {
+        this.logger.debug('[oversold-intraday] disabled (OVERSOLD_SCANNER_ENABLED or OVERSOLD_INTRADAY_ENABLED off)');
+        return;
+      }
+      const portfolios = await this.loadOversoldPortfolios();
+      if (portfolios.length === 0) {
+        this.logger.debug('[oversold-intraday] aucun portfolio en mode oversold → skip');
+        return;
+      }
+      for (const row of portfolios) {
+        try {
+          await this.scanPortfolioIntraday(row);
+        } catch (err) {
+          this.logger.error(
+            `[oversold-intraday] portfolio ${row.portfolio_id.slice(0, 8)} échoué: ${String(err).slice(0, 300)}`,
+          );
+        }
+      }
+    } catch (err) {
+      this.logger.error(`[oversold-intraday] runIntradayScan exception: ${String(err).slice(0, 300)}`);
+    }
+  }
+
+  private async scanPortfolioIntraday(row: OversoldPortfolioRow): Promise<void> {
+    const portfolioId = row.portfolio_id;
+    const cfg = this.resolveConfig(row);
+    const reboundCfg = this.intradayConfig();
+    const maxOpensPerDay = this.intradayMaxOpensPerDay();
+    const notionalRatio = this.intradayNotionalRatio();
+
+    const tickers = await this.loadUniverse(cfg.universe);
+    if (tickers.length === 0) return;
+
+    // 1. Drop band filter (EOD reference)
+    const openSymbols = await this.loadOpenSymbols(portfolioId);
+    const barsBySymbol = await this.fetchUniverseBars(tickers);
+    const candidates = buildOversoldCandidates(barsBySymbol, cfg);
+    const toScan = selectOversoldOpens(candidates, openSymbols);
+
+    // 2. Compteur intraday du jour pour respecter le cap
+    const intradayOpenedToday = await this.countIntradayOpenedToday(portfolioId);
+    let remaining = Math.max(0, maxOpensPerDay - intradayOpenedToday);
+    if (remaining === 0) {
+      this.logger.log(
+        `[oversold-intraday] ${portfolioId.slice(0, 8)} cap reached (${intradayOpenedToday}/${maxOpensPerDay}) → skip`,
+      );
+      return;
+    }
+
+    // 3. Pour chaque candidat dans la bande : fetch candles + filtre rebond
+    let evaluated = 0;
+    let opened = 0;
+    let rejectedRebound = 0;
+    const reboundCfgForOpens: OversoldConfig = {
+      ...cfg,
+      positionNotionalUsd: Math.round(cfg.positionNotionalUsd * notionalRatio),
+    };
+
+    for (const cand of toScan) {
+      if (remaining <= 0) break;
+      evaluated++;
+      try {
+        const series = await this.intraday
+          .getCandles(cand.symbol, '5m', 18, { calledBy: 'oversold_intraday' })
+          .catch(() => null);
+        const raw = series?.candles ?? [];
+        if (raw.length < reboundCfg.minBarsRequired) {
+          rejectedRebound++;
+          continue;
+        }
+        const analysis = analyzeIntradayRebound(
+          raw.map((c) => ({ high: c.high, low: c.low, close: c.close, volume: c.volume })),
+          reboundCfg,
+        );
+        if (!analysis) {
+          rejectedRebound++;
+          continue;
+        }
+        const gate = passesIntradayReboundFilter(analysis, reboundCfg);
+        if (!gate.pass) {
+          rejectedRebound++;
+          continue;
+        }
+
+        // Open avec source intraday (distincte de scanner_oversold EOD)
+        await this.openIntradayPosition(portfolioId, cand, reboundCfgForOpens, analysis.currentPrice);
+        opened++;
+        remaining--;
+      } catch (err) {
+        this.logger.warn(
+          `[oversold-intraday] ${cand.symbol} évaluation échouée: ${String(err).slice(0, 160)}`,
+        );
+      }
+    }
+
+    await this.decisionLog
+      .append({
+        portfolioId,
+        kind: 'oversold_intraday_scan_completed',
+        summary: `Intraday scan: ${tickers.length} univers → ${candidates.length} bande → ${evaluated} évalués → ${opened} ouverts`,
+        rationale:
+          `Drop band [${cfg.dropMinPct}%, ${cfg.dropMaxPct}%], rebound ≥${reboundCfg.minReboundPct}%, ` +
+          `trend15m ≥${reboundCfg.minTrend15mPct}%, bottom-before-${reboundCfg.bottomMustBeBeforeLastNBars}bars, ` +
+          `volRatio ≥${reboundCfg.minVolumeRatio}, cap ${maxOpensPerDay}/j (used ${intradayOpenedToday + opened}).`,
+        payload: {
+          universe: cfg.universe,
+          universe_size: tickers.length,
+          drop_band_candidates: candidates.length,
+          evaluated,
+          opened,
+          rejected_rebound: rejectedRebound,
+          intraday_opened_today: intradayOpenedToday + opened,
+          notional_ratio: notionalRatio,
+        },
+        triggeredBy: 'autopilot_cron',
+        watchlistSource: 'mechanical',
+        market: 'us_equity',
+      })
+      .catch((e) => this.logger.warn(`[oversold-intraday] decision_log append failed: ${String(e).slice(0, 160)}`));
+
+    this.logger.log(
+      `[oversold-intraday] portfolio=${portfolioId.slice(0, 8)} bande=${candidates.length} ` +
+        `évalués=${evaluated} ouverts=${opened} (cap ${maxOpensPerDay}, used ${intradayOpenedToday + opened})`,
+    );
+  }
+
+  /** Compte les positions ouvertes par le scanner intraday aujourd'hui UTC. */
+  private async countIntradayOpenedToday(portfolioId: string): Promise<number> {
+    const todayStart = `${new Date().toISOString().slice(0, 10)}T00:00:00Z`;
+    const { count } = await this.supabase
+      .getClient()
+      .from('lisa_positions')
+      .select('id', { count: 'exact', head: true })
+      .eq('portfolio_id', portfolioId)
+      .filter('venue_fee_detail->>source', 'eq', 'scanner_oversold_intraday')
+      .gte('entry_timestamp', todayStart);
+    return count ?? 0;
+  }
+
+  private async openIntradayPosition(
+    portfolioId: string,
+    cand: OversoldCandidate,
+    cfg: OversoldConfig,
+    livePrice: number,
+  ): Promise<void> {
+    // Le SL/TP utilisent le prix LIVE (pas closeJ) puisqu'on entre intraday.
+    const stopLossPrice = String(livePrice * (1 + cfg.stopCatastrophePct / 100));
+    const takeProfitPrice = cfg.tpPct != null ? String(livePrice * (1 + cfg.tpPct / 100)) : null;
+
+    await this.lisa.getPaperBroker().openPositionDirect({
+      portfolioId,
+      symbol: cand.symbol,
+      assetClass: 'us_equity',
+      direction: 'long',
+      venue: 'US',
+      capitalAllocationUsd: String(cfg.positionNotionalUsd),
+      livePrice: String(livePrice),
+      livePriceSource: 'intraday_5m',
+      stopLossPrice,
+      takeProfitPrice,
+      horizonDays: cfg.holdDays,
+      source: 'scanner_oversold_intraday',
+      maxOpenPositions: cfg.maxOpenPositions,
+    });
   }
 
   /** Charge le tableau de tickers d'une watchlist nommée. */
