@@ -5546,6 +5546,38 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     const verifiedPrice = parseFloat(fresh.price);
     if (!Number.isFinite(verifiedPrice) || verifiedPrice <= 0) return null;
 
+    // Bug fix 05/06 (ABVX.US -0.40% SL hit 26 min après open) :
+    // Le scout pré-calcule SL/TP sur SON livePrice cached. Si le prix dérive
+    // entre le calcul scout et le verifiedPrice ici, le SL/TP devient
+    // déphasé (cas ABVX : scout px=102.32 → SL=100.78 ; verifiedPx=101 →
+    // SL effectif à 0.21% du entry au lieu de 1.5% → SL touché par le bruit).
+    // Solution : recalculer SL/TP à partir de verifiedPrice en préservant
+    // les ratios cibles annoncés par le scout (cmd.stopLossPrice /
+    // cmd.takeProfitPrice / cmd.livePrice).
+    let recomputedSl = cmd.stopLossPrice;
+    let recomputedTp = cmd.takeProfitPrice;
+    const scoutPx = Number(cmd.livePrice);
+    const scoutSlPx = parseFloat(cmd.stopLossPrice);
+    const scoutTpPx = parseFloat(cmd.takeProfitPrice);
+    if (
+      Number.isFinite(scoutPx) && scoutPx > 0 &&
+      Number.isFinite(scoutSlPx) && scoutSlPx > 0 &&
+      Number.isFinite(scoutTpPx) && scoutTpPx > 0
+    ) {
+      const slPct = 1 - scoutSlPx / scoutPx; // ex 0.015 (1.5%)
+      const tpPct = scoutTpPx / scoutPx - 1; // ex 0.025 (2.5%)
+      recomputedSl = (verifiedPrice * (1 - slPct)).toFixed(6);
+      recomputedTp = (verifiedPrice * (1 + tpPct)).toFixed(6);
+      const driftPct = ((verifiedPrice - scoutPx) / scoutPx) * 100;
+      if (Math.abs(driftPct) > 0.5) {
+        this.logger.log(
+          `[opportunity-scout] ${cmd.symbol} prix drift ${driftPct.toFixed(2)}% (scout=$${scoutPx} → verified=$${verifiedPrice}). ` +
+            `SL recalculé ${cmd.stopLossPrice} → ${recomputedSl} (ratio ${(slPct * 100).toFixed(2)}% préservé). ` +
+            `TP recalculé ${cmd.takeProfitPrice} → ${recomputedTp}.`,
+        );
+      }
+    }
+
     try {
       const pos = await this.paperBroker.openPositionDirect({
         portfolioId: cmd.portfolioId,
@@ -5555,8 +5587,8 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         venue: cmd.venue,
         capitalAllocationUsd: cmd.notionalUsd.toFixed(2),
         livePrice: verifiedPrice.toFixed(6),
-        stopLossPrice: cmd.stopLossPrice,
-        takeProfitPrice: cmd.takeProfitPrice,
+        stopLossPrice: recomputedSl,
+        takeProfitPrice: recomputedTp,
         horizonDays: cmd.horizonDays ?? 1,
         source: 'opportunity_scout',
         maxOpenPositions: cmd.maxOpenPositions,
