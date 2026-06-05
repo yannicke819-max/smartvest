@@ -311,12 +311,19 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => historyQuery.refetch()}
-            disabled={historyQuery.isFetching}
+            onClick={() => {
+              // Chart freeze fix 05/06 : le bouton ne refetchait QUE l'history,
+              // pas les positions → les markers (overlay scatter) restaient figés.
+              // On refetch les 2 queries pour invalider tout cache poisonné.
+              historyQuery.refetch();
+              positionsQuery.refetch();
+              liveQuery.refetch();
+            }}
+            disabled={historyQuery.isFetching || positionsQuery.isFetching}
             className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
-            title="Forcer le rafraîchissement du graph"
+            title="Forcer le rafraîchissement du graph + markers trades"
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${historyQuery.isFetching ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`h-3.5 w-3.5 ${historyQuery.isFetching || positionsQuery.isFetching ? 'animate-spin' : ''}`} />
           </button>
           <div className="flex gap-1 rounded-md border p-0.5">
           {(Object.keys(WINDOW_DAYS) as TimeWindow[]).map((w) => (
