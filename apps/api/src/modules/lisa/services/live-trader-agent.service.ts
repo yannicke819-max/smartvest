@@ -1100,6 +1100,48 @@ export class LiveTraderAgentService {
         }
       }
 
+      // USER PATTERNS — stats 30j sur closed_user (autorité humaine)
+      // Fournis à Mistral pour qu'il identifie patterns user récurrents.
+      const since30d = new Date(Date.now() - 30 * 24 * 3600_000).toISOString();
+      const { data: userCloses } = await this.supabase.getClient()
+        .from('lisa_positions')
+        .select('symbol, direction, entry_price, exit_price, entry_timestamp, exit_timestamp, realized_pnl_usd, realized_pnl_pct, exit_reason')
+        .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
+        .eq('status', 'closed_user')
+        .gte('exit_timestamp', since30d)
+        .order('exit_timestamp', { ascending: false });
+      const userStats30d = ((): {
+        total_closes: number;
+        winners: number;
+        losers: number;
+        win_rate: number;
+        avg_pnl_usd: number;
+        avg_pnl_pct: number;
+        total_pnl_usd: number;
+        recent_closes_sample: Array<{ symbol: string; pnl_usd: number; pnl_pct: number; hold_min: number; exit_reason: string }>;
+      } => {
+        const arr = userCloses ?? [];
+        const winners = arr.filter(c => Number(c.realized_pnl_usd ?? 0) > 0).length;
+        const losers = arr.filter(c => Number(c.realized_pnl_usd ?? 0) <= 0).length;
+        const totalPnl = arr.reduce((s, c) => s + Number(c.realized_pnl_usd ?? 0), 0);
+        return {
+          total_closes: arr.length,
+          winners,
+          losers,
+          win_rate: arr.length > 0 ? winners / arr.length : 0,
+          avg_pnl_usd: arr.length > 0 ? totalPnl / arr.length : 0,
+          avg_pnl_pct: arr.length > 0 ? arr.reduce((s, c) => s + Number(c.realized_pnl_pct ?? 0), 0) / arr.length : 0,
+          total_pnl_usd: totalPnl,
+          recent_closes_sample: arr.slice(0, 15).map(c => ({
+            symbol: String(c.symbol),
+            pnl_usd: Number(c.realized_pnl_usd ?? 0),
+            pnl_pct: Number(c.realized_pnl_pct ?? 0),
+            hold_min: c.entry_timestamp && c.exit_timestamp ? Math.round((new Date(c.exit_timestamp).getTime() - new Date(c.entry_timestamp).getTime()) / 60_000) : -1,
+            exit_reason: String(c.exit_reason ?? ''),
+          })),
+        };
+      })();
+
       // Macro snapshot frais — sert à corréler les outcomes (gagnant/perdant)
       // au régime du jour. Cache 2 min côté LisaService (probablement déjà chaud).
       let macroSnapshot: object;
@@ -1110,14 +1152,42 @@ export class LiveTraderAgentService {
         macroSnapshot = { note: 'macro_snapshot_unavailable' };
       }
 
-      const postMortemPrompt = `Tu es un coach trader senior. Analyse la journée du Trader Agent (portfolio $10k Gemini Pro autonome) ET le comparatif des 5 portfolios paper (main + 3 shadows + trader_agent).
+      const postMortemPrompt = `Tu es un coach trader senior. Analyse la journée du Trader Agent (portfolio $10k Mistral Medium primary autonome) ET le comparatif des 5 portfolios paper (main + 3 shadows + trader_agent).
 
-OBJECTIF : générer 5 lessons concrètes pour DOPER l'apprentissage du Trader Agent. Les lessons doivent :
+OBJECTIF : générer 5-8 lessons concrètes pour DOPER l'apprentissage du Trader Agent. Les lessons doivent :
 1. Identifier ce que LE TRADER AGENT a fait de BIEN (à reproduire)
 2. Identifier ce que LE TRADER AGENT a fait de MAL (à éviter)
 3. **Apprendre des AUTRES portfolios** : "shadow_X a fait +$Y avec stratégie Z, le trader agent aurait dû..."
 4. Référencer les market_close_reports (Asia/EU/US sessions) pour contextualiser
 5. Être actionable : "Quand le contexte est X, fais Y" (pas "il faut être prudent")
+6. **PRIORITÉ ABSOLUE : USER PATTERNS** — voir section dédiée ci-dessous
+
+═══ TAXONOMY exit_reason — DISTINCTION CRITIQUE ═══
+- closed_user         → 🟢 ACTION HUMAINE (intent volontaire, intuition, info contextuelle hors-modèle).
+                        AUTORITÉ MAXIMALE. À traiter comme signal humain de plus haute confiance.
+                        Inclut les take-profits manuels ET les stop-out volontaires (cut loss vite).
+- closed_target       → TP auto déclenché (mécanique). Standard.
+- closed_stop         → SL auto déclenché (mécanique). Standard.
+- closed_invalidated  → trader-agent LLM décide close (machine). Standard.
+- closed_orphan       → système ferme avant fin session (preflight). Standard.
+
+═══ USER PATTERNS — INSTRUCTION SPÉCIALE ═══
+L'utilisateur humain ferme MANUELLEMENT certaines positions (closed_user). Ces actions reflètent :
+- Son intuition (info hors-modèle : news lue, sentiment marché, contexte invisible)
+- Sa STRATÉGIE EXPLICITE : target $15-60/trade, intraday only, EU AM session
+- Sa discipline (manual stop-out si setup cassé, même en perte petite)
+
+DÉTECTION OBLIGATOIRE des USER PATTERNS :
+- Cherche TOUS les trades closed_user dans la fenêtre d'analyse
+- Identifie patterns récurrents : "USER a closed_user N fois sur <asset_class> à <PnL_bucket> en <session>"
+- Pour CHAQUE pattern user récurrent (≥2 occurrences), génère 1 lesson avec :
+  - lesson_kind = "user_pattern"
+  - confidence = 0.90 (PRIORITÉ HAUTE — l'humain est l'autorité)
+  - lesson_text DOIT contenir "USER" explicite + comportement + setup + cible
+  - Exemple : "USER lock à +1% sur EU small cap AM session (3/3 fois) → reproduire trail_stop à +1% sur même setup"
+  - Exemple : "USER stop-out à -0.5% sur LIN.PA (drift news) → 1× observé, à confirmer"
+
+Les user_pattern lessons sont EXEMPTÉES de la clause macro-condition obligatoire (acceptées même sans VIX/DXY/etc.) car l'autorité humaine prévaut sur la condition macro.
 
 LECTURE MACRO OBLIGATOIRE (input \`macro_snapshot_eod\`) :
 Tu DOIS conditionner chaque lesson au régime macro du jour. Une lesson "ouvrir
@@ -1169,10 +1239,10 @@ RÉPONSE JSON OBLIGATOIRE :
   },
   "new_lessons": [
     {
-      "lesson_kind": "winning_pattern|losing_pattern|risk_observation|market_regime_rule|sizing_rule|cross_portfolio_insight|autonomy_calibration",
-      "lesson_text": "Quand <condition macro>, alors <action> (référence: Z trades observés)",
+      "lesson_kind": "user_pattern|winning_pattern|losing_pattern|risk_observation|market_regime_rule|sizing_rule|cross_portfolio_insight|autonomy_calibration|exit_rule",
+      "lesson_text": "Quand <condition macro>, alors <action> (référence: Z trades observés). Pour user_pattern : 'USER <action> sur <setup>'",
       "confidence": 0.0-1.0,
-      "macro_condition": "VIX>25|US10Y>4.5|DXY>103|GOLD+DXY-|BRENT+5%|HY_OAS>500|USDJPY<145|REGIME_CALME|REGIME_MIXED"
+      "macro_condition": "VIX>25|US10Y>4.5|DXY>103|GOLD+DXY-|BRENT+5%|HY_OAS>500|USDJPY<145|REGIME_CALME|REGIME_MIXED|USER_AUTHORITY"
     }
   ]
 }
@@ -1198,6 +1268,7 @@ Recommendation rules :
         trader_agent_positions: positions ?? [],
         cross_portfolio_daily_summary: dailyByPortfolio,
         market_close_reports_today: closeReports ?? [],
+        user_close_stats_30d: userStats30d,
       }, null, 2);
 
       // Post-mortem = raisonnement sur 24h × 5 portfolios → Pro requis (qualité d'analyse).
@@ -1228,10 +1299,20 @@ Recommendation rules :
         // explicite (la grille interdit les lessons "macro-blind"). On accepte aussi
         // les lessons qui contiennent "Quand" + un mot macro (VIX|DXY|10Y|HY|OAS|GOLD|BRENT|USDJPY|REGIME)
         // dans le texte si macro_condition n'est pas fourni.
+        // EXCEPTION : user_pattern lessons sont exemptées (autorité humaine prévaut
+        // sur la condition macro — la décision user reflète intent/intuition au-delà
+        // du modèle macro).
+        const isUserPattern = l.lesson_kind === 'user_pattern';
         const hasExplicitMacroCondition = !!l.macro_condition && l.macro_condition.length > 0;
         const hasInlineMacroClause = /quand\b.*\b(vix|dxy|10y|hy|oas|gold|brent|usdjpy|regime|us10y)\b/i.test(l.lesson_text);
-        if (!hasExplicitMacroCondition && !hasInlineMacroClause) {
+        const hasUserKeyword = /\bUSER\b/.test(l.lesson_text);
+        if (!isUserPattern && !hasExplicitMacroCondition && !hasInlineMacroClause) {
           this.logger.warn(`[trader-agent:post-mortem] reject macro-blind lesson: ${l.lesson_text.slice(0, 80)}`);
+          rejectedMacroBlind++;
+          continue;
+        }
+        if (isUserPattern && !hasUserKeyword) {
+          this.logger.warn(`[trader-agent:post-mortem] reject user_pattern lesson sans 'USER' keyword: ${l.lesson_text.slice(0, 80)}`);
           rejectedMacroBlind++;
           continue;
         }
@@ -1994,8 +2075,13 @@ Recommendation rules :
       .eq('portfolio_id', TRADER_AGENT_PORTFOLIO_ID)
       .eq('is_active', true)
       .order('confidence', { ascending: false })
-      .limit(n);
-    return (data ?? []) as Array<{ lesson_kind: string; lesson_text: string; confidence: number }>;
+      .limit(n * 2); // overfetch pour permettre remontée user_pattern
+    const all = (data ?? []) as Array<{ lesson_kind: string; lesson_text: string; confidence: number }>;
+    // PRIORITÉ : user_pattern lessons remontées en tête (autorité humaine prévaut),
+    // puis le reste par confidence décroissante. Cap à n.
+    const userPatterns = all.filter(l => l.lesson_kind === 'user_pattern');
+    const others = all.filter(l => l.lesson_kind !== 'user_pattern');
+    return [...userPatterns, ...others].slice(0, n);
   }
 
   /**
@@ -2144,9 +2230,22 @@ Recommendation rules :
       prompt += `\n\n${formatBlowOffPreambleBlock()}`;
     }
 
+    // Bloc 0 : USER PATTERNS — autorité humaine prioritaire
+    // Ces lessons reflètent les actions manuelles de l'utilisateur (closed_user),
+    // qui ont une autorité maximale (intent volontaire, info hors-modèle).
+    // Présentées en TÊTE avec instruction "REPRODUIS ces patterns en priorité".
+    const userPatterns = memory.filter(l => l.lesson_kind === 'user_pattern');
+    const otherMemory = memory.filter(l => l.lesson_kind !== 'user_pattern');
+    if (userPatterns.length > 0) {
+      const userBlock = userPatterns
+        .map((l, i) => `${i + 1}. ${l.lesson_text} (conf=${l.confidence})`)
+        .join('\n');
+      prompt += `\n\n═══ USER PATTERNS (AUTORITÉ HUMAINE — PRIORITÉ ABSOLUE) ═══\n${userBlock}\n\nCes patterns reflètent les ACTIONS MANUELLES de l'utilisateur. L'humain a accès à des informations contextuelles hors-modèle (intuition, news lue, sentiment marché). REPRODUIS ces comportements en priorité quand tu rencontres un setup similaire.`;
+    }
+
     // Bloc 1 : memory trader-spécifique (post-mortems Trader Agent)
-    if (memory.length > 0) {
-      const memoryBlock = memory
+    if (otherMemory.length > 0) {
+      const memoryBlock = otherMemory
         .map((l, i) => `${i + 1}. [${l.lesson_kind}] ${l.lesson_text} (conf=${l.confidence})`)
         .join('\n');
       prompt += `\n\nLESSONS APPRISES TRADER AGENT (post-mortems précédents, ordre confidence descendant) :\n${memoryBlock}`;
