@@ -208,30 +208,39 @@ export class OversoldScannerService {
     const cfg = this.resolveConfig(row);
     const portfolioId = row.portfolio_id;
 
-    // Gate régime macro (VIX + SPY) — calibré sur backtest 04/06 vs 05/06.
-    // 04/06 régime calme (VIX=15.40, SPY 5d=+0.33%) → 48 positions, 35W/2L, +$761.
-    // 05/06 régime hostile (VIX=17.14, SPY 5d=-1.09%) → 11 positions toutes rouges.
-    const regime = await this.checkRegimeGate();
+    // Gate régime macro région-aware — VIX+SPY (US) ou V2TX+SX5E (EU).
+    // US calibration 04/06 vs 05/06 :
+    //   04/06 (VIX=15.40, SPY 5d=+0.33%) → 48 positions, 35W/2L, +$761.
+    //   05/06 (VIX=17.14, SPY 5d=-1.09%) → 11 positions toutes rouges.
+    // EU seuils initiaux V2TX>22, ΔV2TX>+10%, SX5E 5d<-1.5% (à backtester).
+    const regime = await this.checkRegimeGate(cfg.universe);
     if (regime.block) {
+      const vixLabel = regime.region === 'EU' ? 'V2TX' : 'VIX';
+      const idxLabel = regime.region === 'EU' ? 'SX5E' : 'SPY';
+      const market = regime.region === 'EU' ? 'eu_equity' : 'us_equity';
       await this.decisionLog
         .append({
           portfolioId,
           kind: 'oversold_scan_blocked_regime',
-          summary: `Oversold scan bloqué (régime hostile): ${regime.reason}`,
-          rationale: `VIX=${regime.vix?.toFixed(2) ?? 'n/a'} (Δ1d ${regime.vixChg?.toFixed(1) ?? 'n/a'}%), SPY 5d=${regime.spy5d?.toFixed(2) ?? 'n/a'}%`,
+          summary: `Oversold scan bloqué (régime ${regime.region} hostile): ${regime.reason}`,
+          rationale: `${vixLabel}=${regime.vix?.toFixed(2) ?? 'n/a'} (Δ1d ${regime.vixChg?.toFixed(1) ?? 'n/a'}%), ${idxLabel} 5d=${regime.idx5d?.toFixed(2) ?? 'n/a'}%`,
           payload: {
+            region: regime.region,
+            universe: cfg.universe,
             vix: regime.vix,
             vix_chg_pct: regime.vixChg,
-            spy_5d_pct: regime.spy5d,
+            idx_5d_pct: regime.idx5d,
             reason: regime.reason,
             thresholds: regime.thresholds,
           },
           triggeredBy: 'autopilot_cron',
           watchlistSource: 'mechanical',
-          market: 'us_equity',
+          market,
         })
         .catch((e) => this.logger.warn(`[oversold] decision_log append failed: ${String(e).slice(0, 160)}`));
-      this.logger.log(`[oversold] portfolio=${portfolioId.slice(0, 8)} BLOCKED by regime gate: ${regime.reason}`);
+      this.logger.log(
+        `[oversold] portfolio=${portfolioId.slice(0, 8)} universe=${cfg.universe} region=${regime.region} BLOCKED: ${regime.reason}`,
+      );
       return;
     }
 
@@ -312,7 +321,7 @@ export class OversoldScannerService {
           skipped_sector_cap: skippedSector,
           sector_cap_enabled: sectorCapEnabled,
           sector_cap: sectorCap,
-          regime: { vix: regime.vix, vix_chg_pct: regime.vixChg, spy_5d_pct: regime.spy5d },
+          regime: { region: regime.region, vix: regime.vix, vix_chg_pct: regime.vixChg, idx_5d_pct: regime.idx5d },
           open_errors: errors.length,
           top_candidates: candidates.slice(0, 10).map((c) => ({
             symbol: c.symbol,
@@ -409,6 +418,36 @@ export class OversoldScannerService {
     const reboundCfg = this.intradayConfig();
     const maxOpensPerDay = this.intradayMaxOpensPerDay();
     const notionalRatio = this.intradayNotionalRatio();
+
+    // Regime gate aussi appliqué à l'intraday (sinon le filet du daily 21:15
+    // est contourné par les opens 15-19 UTC en plein régime hostile).
+    const regime = await this.checkRegimeGate(cfg.universe);
+    if (regime.block) {
+      this.logger.log(
+        `[oversold-intraday] portfolio=${portfolioId.slice(0, 8)} universe=${cfg.universe} region=${regime.region} BLOCKED: ${regime.reason}`,
+      );
+      await this.decisionLog
+        .append({
+          portfolioId,
+          kind: 'oversold_scan_blocked_regime',
+          summary: `Oversold intraday bloqué (régime ${regime.region}): ${regime.reason}`,
+          rationale: `intraday cron ${new Date().toISOString().slice(11, 16)} UTC, gate macro tire`,
+          payload: {
+            phase: 'intraday',
+            region: regime.region,
+            universe: cfg.universe,
+            vix: regime.vix,
+            vix_chg_pct: regime.vixChg,
+            idx_5d_pct: regime.idx5d,
+            reason: regime.reason,
+          },
+          triggeredBy: 'autopilot_cron',
+          watchlistSource: 'mechanical',
+          market: regime.region === 'EU' ? 'eu_equity' : 'us_equity',
+        })
+        .catch((e) => this.logger.warn(`[oversold-intraday] decision_log failed: ${String(e).slice(0, 160)}`));
+      return;
+    }
 
     const tickers = await this.loadUniverse(cfg.universe);
     if (tickers.length === 0) return;
@@ -547,38 +586,69 @@ export class OversoldScannerService {
   }
 
   /**
-   * Gate régime macro — VIX (level + spike 1d) + SPY 5d return.
-   *
-   * Calibration data-driven (backtest 04/06 vs 05/06) :
-   *   - VIX > 17        bloque 05/06 (17.14), passe 04/06 (15.40)
-   *   - ΔVIX 1d > +10%  capture le shift de 05/06 (+11.3%)
-   *   - SPY 5d < -1%    bloque 05/06 (-1.09%), passe 04/06 (+0.33%)
-   *
-   * Désactivable via OVERSOLD_REGIME_GATE_ENABLED=false. Seuils tunables via
-   * OVERSOLD_VIX_MAX / OVERSOLD_VIX_DELTA_MAX_PCT / OVERSOLD_SPY_5D_MIN_PCT.
+   * Détermine la région macro à partir du nom d'univers.
+   * - russell1000 / sp500 / nasdaq100 / mega12 → US (VIX + SPY)
+   * - stoxx600 / cac40 / dax40                 → EU (V2TX + SX5E)
+   * - autres → US par défaut (conservateur)
    */
-  private async checkRegimeGate(): Promise<{
+  private regionOfUniverse(universe: string): 'US' | 'EU' {
+    const eu = ['stoxx600', 'cac40', 'dax40'];
+    return eu.includes(universe.toLowerCase()) ? 'EU' : 'US';
+  }
+
+  /**
+   * Gate régime macro — région-aware.
+   *
+   * US (russell1000) : VIX + SPY. Calibration 04/06 vs 05/06 :
+   *   VIX > 17 ; ΔVIX 1d > +10% ; SPY 5d < -1%
+   *
+   * EU (stoxx600) : V2TX (VSTOXX) + SX5E (Euro Stoxx 50). Seuils initiaux :
+   *   V2TX > 22 ; ΔV2TX 1d > +10% ; SX5E 5d < -1.5%
+   *
+   * Désactivable via OVERSOLD_REGIME_GATE_ENABLED=false. Tous les seuils
+   * sont individuellement tunables via secret env (cf. ci-dessous).
+   */
+  private async checkRegimeGate(universe: string): Promise<{
     block: boolean;
     reason: string;
+    region: 'US' | 'EU';
     vix: number | null;
     vixChg: number | null;
-    spy5d: number | null;
-    thresholds: { vixMax: number; vixDeltaMax: number; spy5dMin: number };
+    idx5d: number | null;
+    thresholds: { vixMax: number; vixDeltaMax: number; idx5dMin: number };
   }> {
     const enabled =
       (this.config.get<string>('OVERSOLD_REGIME_GATE_ENABLED') ?? 'true').toLowerCase() === 'true';
-    const vixMax = parseFloat(this.config.get<string>('OVERSOLD_VIX_MAX') ?? '17');
-    const vixDeltaMax = parseFloat(this.config.get<string>('OVERSOLD_VIX_DELTA_MAX_PCT') ?? '10');
-    const spy5dMin = parseFloat(this.config.get<string>('OVERSOLD_SPY_5D_MIN_PCT') ?? '-1');
-    const thresholds = { vixMax, vixDeltaMax, spy5dMin };
+    const region = this.regionOfUniverse(universe);
+
+    let vixSym: string;
+    let idxSym: string;
+    let vixMax: number;
+    let vixDeltaMax: number;
+    let idx5dMin: number;
+
+    if (region === 'EU') {
+      vixSym = 'V2TX.INDX';
+      idxSym = 'SX5E.INDX';
+      vixMax = parseFloat(this.config.get<string>('OVERSOLD_V2TX_MAX') ?? '22');
+      vixDeltaMax = parseFloat(this.config.get<string>('OVERSOLD_V2TX_DELTA_MAX_PCT') ?? '10');
+      idx5dMin = parseFloat(this.config.get<string>('OVERSOLD_SX5E_5D_MIN_PCT') ?? '-1.5');
+    } else {
+      vixSym = 'VIX.INDX';
+      idxSym = 'SPY.US';
+      vixMax = parseFloat(this.config.get<string>('OVERSOLD_VIX_MAX') ?? '17');
+      vixDeltaMax = parseFloat(this.config.get<string>('OVERSOLD_VIX_DELTA_MAX_PCT') ?? '10');
+      idx5dMin = parseFloat(this.config.get<string>('OVERSOLD_SPY_5D_MIN_PCT') ?? '-1');
+    }
+    const thresholds = { vixMax, vixDeltaMax, idx5dMin };
 
     if (!enabled) {
-      return { block: false, reason: 'gate disabled', vix: null, vixChg: null, spy5d: null, thresholds };
+      return { block: false, reason: 'gate disabled', region, vix: null, vixChg: null, idx5d: null, thresholds };
     }
 
-    const [vixBars, spyBars] = await Promise.all([
-      this.fetchEodBars('VIX.INDX').catch(() => [] as EodBar[]),
-      this.fetchEodBars('SPY.US').catch(() => [] as EodBar[]),
+    const [vixBars, idxBars] = await Promise.all([
+      this.fetchEodBars(vixSym).catch(() => [] as EodBar[]),
+      this.fetchEodBars(idxSym).catch(() => [] as EodBar[]),
     ]);
 
     let vix: number | null = null;
@@ -589,30 +659,34 @@ export class OversoldScannerService {
       vixChg = prev > 0 ? (vix / prev - 1) * 100 : null;
     }
 
-    let spy5d: number | null = null;
-    if (spyBars.length >= 6) {
-      const last = spyBars[spyBars.length - 1].close;
-      const fiveBack = spyBars[spyBars.length - 6].close;
-      spy5d = fiveBack > 0 ? (last / fiveBack - 1) * 100 : null;
+    let idx5d: number | null = null;
+    if (idxBars.length >= 6) {
+      const last = idxBars[idxBars.length - 1].close;
+      const fiveBack = idxBars[idxBars.length - 6].close;
+      idx5d = fiveBack > 0 ? (last / fiveBack - 1) * 100 : null;
     }
 
+    const vixLabel = region === 'EU' ? 'V2TX' : 'VIX';
+    const idxLabel = region === 'EU' ? 'SX5E' : 'SPY';
+
     if (vix !== null && vix > vixMax) {
-      return { block: true, reason: `VIX ${vix.toFixed(2)} > ${vixMax}`, vix, vixChg, spy5d, thresholds };
+      return { block: true, reason: `${vixLabel} ${vix.toFixed(2)} > ${vixMax}`, region, vix, vixChg, idx5d, thresholds };
     }
     if (vixChg !== null && vixChg > vixDeltaMax) {
       return {
         block: true,
-        reason: `ΔVIX 1d ${vixChg.toFixed(1)}% > +${vixDeltaMax}%`,
+        reason: `Δ${vixLabel} 1d ${vixChg.toFixed(1)}% > +${vixDeltaMax}%`,
+        region,
         vix,
         vixChg,
-        spy5d,
+        idx5d,
         thresholds,
       };
     }
-    if (spy5d !== null && spy5d < spy5dMin) {
-      return { block: true, reason: `SPY 5d ${spy5d.toFixed(2)}% < ${spy5dMin}%`, vix, vixChg, spy5d, thresholds };
+    if (idx5d !== null && idx5d < idx5dMin) {
+      return { block: true, reason: `${idxLabel} 5d ${idx5d.toFixed(2)}% < ${idx5dMin}%`, region, vix, vixChg, idx5d, thresholds };
     }
-    return { block: false, reason: 'pass', vix, vixChg, spy5d, thresholds };
+    return { block: false, reason: 'pass', region, vix, vixChg, idx5d, thresholds };
   }
 
   /**
