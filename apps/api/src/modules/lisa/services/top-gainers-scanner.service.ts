@@ -2060,8 +2060,20 @@ export class TopGainersScannerService implements OnModuleInit {
           break; // stop pagination sur erreur, retour ce qu'on a déjà
         }
         const json = (await res.json()) as { data?: EodhdScreenerRow[] } | EodhdScreenerRow[];
-        const rows: EodhdScreenerRow[] = Array.isArray(json) ? json : (json.data ?? []);
-        totalRowsReturned += rows.length;
+        const rawRows: EodhdScreenerRow[] = Array.isArray(json) ? json : (json.data ?? []);
+        totalRowsReturned += rawRows.length;
+        // 05/06/2026 — PRE-FILTER FANTOMES EODHD :
+        // Le screener EODHD LSE/XETRA retourne des depository receipts (0XXX.LSE)
+        // avec refund_1d_p aberrant (110-466%), valeurs périmées last_day_data_date.
+        // Ex confirmé live : 0QN3 +466%, 0A0F +176%, 0QG9 +110%, 0P4G +109%.
+        // Filtre client-side amont : refund_1d_p > 50% → aberrant.
+        // (Un vrai pump blue chip ne dépasse pratiquement jamais 30%/jour sans
+        // halted/restructuration majeure.) Économie ~5 fetches/cycle + UI nettoyée.
+        const rows = rawRows.filter((r) => {
+          const change = Number(r.refund_1d_p ?? r.change_p ?? 0);
+          if (Number.isFinite(change) && change > 50) return false;
+          return true;
+        });
         let pageMapped = rows
           .map((r) => this.mapEodhdRow(r, exUpper))
           .filter((c): c is TopGainerCandidate => c !== null);
