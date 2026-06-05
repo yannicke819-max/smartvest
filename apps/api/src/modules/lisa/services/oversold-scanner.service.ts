@@ -781,4 +781,185 @@ export class OversoldScannerService {
       maxOpenPositions: cfg.maxOpenPositions,
     });
   }
+
+  /**
+   * 05/06/2026 — OVERNIGHT PROTECTION (option A + nuance user-validated).
+   * Cron 20:45 UTC weekdays (15min avant NYSE close 21:00).
+   * Pour chaque position oversold US open :
+   *   - PnL >= -OVERSOLD_TOLERABLE_LOSS_PCT (default 3%) → force close
+   *   - PnL < seuil → enter EXTENDED mode (deadline J+OVERSOLD_EXTENDED_DEADLINE_DAYS)
+   * Évite les "claques overnight" comme celle observée 04/06 → 05/06 (-$418).
+   * Opt-in via OVERSOLD_FORCE_CLOSE_ENABLED=true.
+   */
+  @Cron('0 45 20 * * 1-5', { name: 'oversold-overnight-protection', timeZone: 'UTC' })
+  async runOvernightProtection(): Promise<void> {
+    try {
+      if (!this.isEnabled()) return;
+      const enabled = (this.config.get<string>('OVERSOLD_FORCE_CLOSE_ENABLED') ?? 'false').toLowerCase() === 'true';
+      if (!enabled) {
+        this.logger.debug('[oversold-overnight] OVERSOLD_FORCE_CLOSE_ENABLED=false → skip');
+        return;
+      }
+      const tolerableLossPct = parseFloat(this.config.get<string>('OVERSOLD_TOLERABLE_LOSS_PCT') ?? '3.0');
+      const deadlineDays = parseInt(this.config.get<string>('OVERSOLD_EXTENDED_DEADLINE_DAYS') ?? '10', 10);
+
+      const { data: positions } = await this.supabase.getClient()
+        .from('lisa_positions')
+        .select('id, portfolio_id, symbol, asset_class, entry_price, entry_notional_usd, source')
+        .eq('status', 'open')
+        .in('source', ['scanner_oversold', 'scanner_oversold_intraday'])
+        .like('asset_class', 'us_%')
+        .is('extended_deadline_at', null);
+
+      if (!positions || positions.length === 0) {
+        this.logger.log('[oversold-overnight] no eligible positions to protect');
+        return;
+      }
+
+      let closedCount = 0;
+      let extendedCount = 0;
+      for (const pos of positions) {
+        try {
+          const quote = await this.lisa.getLivePrice(pos.symbol).catch(() => null);
+          if (!quote || !quote.price) continue;
+          const livePrice = Number(quote.price);
+          const entryPrice = Number(pos.entry_price);
+          if (!Number.isFinite(livePrice) || livePrice <= 0 || !Number.isFinite(entryPrice) || entryPrice <= 0) continue;
+          const pnlPct = ((livePrice - entryPrice) / entryPrice) * 100;
+
+          if (pnlPct >= -tolerableLossPct) {
+            try {
+              await this.lisa.closeForOpportunityScout({
+                positionId: pos.id,
+                symbol: pos.symbol,
+                livePrice,
+                livePriceSource: quote.source,
+                reason: 'closed_invalidated',
+                rationale: `[OVERSOLD_OVERNIGHT] Force close 20:45 UTC (PnL ${pnlPct.toFixed(2)}% >= -${tolerableLossPct}% seuil)`,
+              });
+              closedCount++;
+            } catch (e) {
+              this.logger.warn(`[oversold-overnight] ${pos.symbol} close failed: ${String(e).slice(0, 100)}`);
+            }
+          } else {
+            const deadlineAt = new Date(Date.now() + deadlineDays * 24 * 3600 * 1000).toISOString();
+            try {
+              await this.supabase.getClient()
+                .from('lisa_positions')
+                .update({
+                  extended_deadline_at: deadlineAt,
+                  extended_entered_at: new Date().toISOString(),
+                  manual_control: true,
+                })
+                .eq('id', pos.id);
+              await this.decisionLog.append({
+                portfolioId: pos.portfolio_id,
+                kind: 'oversold_extended_entered',
+                summary: `[OVERSOLD_EXTENDED] ${pos.symbol} entered J+${deadlineDays} mode (PnL ${pnlPct.toFixed(2)}% < -${tolerableLossPct}%)`,
+                rationale: `Position trop perdante pour force close à 20:45 UTC. Recovery monitor cherche window de close (breakeven < seuil, PnL positif, ou deadline ${deadlineAt}). manual_control activé pour bloquer SL/TP auto pendant extended.`,
+                payload: { symbol: pos.symbol, pnl_pct: pnlPct, deadline_at: deadlineAt },
+                triggeredBy: 'autopilot_cron',
+              }).catch(() => null);
+              extendedCount++;
+            } catch (e) {
+              this.logger.warn(`[oversold-overnight] ${pos.symbol} extended-set failed: ${String(e).slice(0, 100)}`);
+            }
+          }
+        } catch (e) {
+          this.logger.warn(`[oversold-overnight] ${pos.symbol} eval failed: ${String(e).slice(0, 150)}`);
+        }
+      }
+
+      this.logger.log(`[oversold-overnight] processed ${positions.length} positions: ${closedCount} closed, ${extendedCount} extended`);
+    } catch (err) {
+      this.logger.error(`[oversold-overnight] cron crashed: ${String(err).slice(0, 300)}`);
+    }
+  }
+
+  /**
+   * 05/06/2026 — RECOVERY MONITOR pour positions OVERSOLD_EXTENDED.
+   * Cron 1min : check chaque position en mode extended et close si :
+   *   - PnL_usd >= -OVERSOLD_BREAKEVEN_THRESHOLD_USD (default $10) → breakeven approx
+   *   - PnL_usd > 0 → rebond, lock dès que positif
+   *   - now > extended_deadline_at → force close (deadline J+10)
+   */
+  @Cron('0 */1 * * * *', { name: 'oversold-recovery-monitor', timeZone: 'UTC' })
+  async runRecoveryMonitor(): Promise<void> {
+    try {
+      if (!this.isEnabled()) return;
+      const enabled = (this.config.get<string>('OVERSOLD_FORCE_CLOSE_ENABLED') ?? 'false').toLowerCase() === 'true';
+      if (!enabled) return;
+
+      const breakevenUsd = parseFloat(this.config.get<string>('OVERSOLD_BREAKEVEN_THRESHOLD_USD') ?? '10');
+
+      const { data: positions } = await this.supabase.getClient()
+        .from('lisa_positions')
+        .select('id, portfolio_id, symbol, entry_price, entry_notional_usd, extended_deadline_at')
+        .eq('status', 'open')
+        .not('extended_deadline_at', 'is', null);
+
+      if (!positions || positions.length === 0) return;
+
+      const now = Date.now();
+      for (const pos of positions) {
+        try {
+          const deadline = pos.extended_deadline_at ? new Date(pos.extended_deadline_at).getTime() : null;
+          const quote = await this.lisa.getLivePrice(pos.symbol).catch(() => null);
+          if (!quote || !quote.price) continue;
+          const livePrice = Number(quote.price);
+          const entryPrice = Number(pos.entry_price);
+          if (!Number.isFinite(livePrice) || livePrice <= 0 || !Number.isFinite(entryPrice) || entryPrice <= 0) continue;
+          const pnlPct = ((livePrice - entryPrice) / entryPrice) * 100;
+          const notional = Number(pos.entry_notional_usd ?? 0);
+          const pnlUsd = (notional * pnlPct) / 100;
+
+          let shouldClose = false;
+          let reason = '';
+
+          if (deadline && now > deadline) {
+            shouldClose = true;
+            reason = `[OVERSOLD_EXTENDED] deadline atteinte (PnL final ${pnlPct.toFixed(2)}% / $${pnlUsd.toFixed(2)})`;
+          } else if (pnlUsd > 0) {
+            shouldClose = true;
+            reason = `[OVERSOLD_EXTENDED] PnL passé positif (+$${pnlUsd.toFixed(2)}) — lock`;
+          } else if (pnlUsd >= -breakevenUsd) {
+            shouldClose = true;
+            reason = `[OVERSOLD_EXTENDED] breakeven approx (PnL $${pnlUsd.toFixed(2)} >= -$${breakevenUsd})`;
+          }
+
+          if (shouldClose) {
+            try {
+              await this.lisa.closeForOpportunityScout({
+                positionId: pos.id,
+                symbol: pos.symbol,
+                livePrice,
+                livePriceSource: quote.source,
+                reason: 'closed_invalidated',
+                rationale: reason,
+              });
+              await this.decisionLog.append({
+                portfolioId: pos.portfolio_id,
+                kind: 'oversold_extended_closed',
+                summary: `[OVERSOLD_EXTENDED] ${pos.symbol} closed (PnL ${pnlPct.toFixed(2)}% / $${pnlUsd.toFixed(2)})`,
+                rationale: reason,
+                payload: {
+                  symbol: pos.symbol,
+                  pnl_pct: pnlPct,
+                  pnl_usd: pnlUsd,
+                  deadline_reached: !!(deadline && now > deadline),
+                },
+                triggeredBy: 'autopilot_cron',
+              }).catch(() => null);
+            } catch (e) {
+              this.logger.warn(`[oversold-recovery] ${pos.symbol} close failed: ${String(e).slice(0, 100)}`);
+            }
+          }
+        } catch (e) {
+          this.logger.warn(`[oversold-recovery] ${pos.symbol} eval failed: ${String(e).slice(0, 150)}`);
+        }
+      }
+    } catch (err) {
+      this.logger.error(`[oversold-recovery] cron crashed: ${String(err).slice(0, 300)}`);
+    }
+  }
 }
