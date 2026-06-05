@@ -803,11 +803,14 @@ export class OversoldScannerService {
       const tolerableLossPct = parseFloat(this.config.get<string>('OVERSOLD_TOLERABLE_LOSS_PCT') ?? '3.0');
       const deadlineDays = parseInt(this.config.get<string>('OVERSOLD_EXTENDED_DEADLINE_DAYS') ?? '10', 10);
 
+      // 05/06/2026 HOTFIX : la colonne `source` est 'lisa' (writer LisaService),
+      // la vraie source oversold est dans venue_fee_detail->>source. Cf audit
+      // open positions HIGH 12/12 ont source='lisa' + venue_fee_detail.source=scanner_oversold.
       const { data: positions } = await this.supabase.getClient()
         .from('lisa_positions')
-        .select('id, portfolio_id, symbol, asset_class, entry_price, entry_notional_usd, source')
+        .select('id, portfolio_id, symbol, asset_class, entry_price, entry_notional_usd, source, venue_fee_detail')
         .eq('status', 'open')
-        .in('source', ['scanner_oversold', 'scanner_oversold_intraday'])
+        .in('venue_fee_detail->>source', ['scanner_oversold', 'scanner_oversold_intraday'])
         .like('asset_class', 'us_%')
         .is('extended_deadline_at', null);
 
