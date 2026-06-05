@@ -378,9 +378,39 @@ export class MultiTimeframePersistenceService {
     const eodhdTicker = this.toEodhdTicker(c);
     const cacheKey = c.symbol.toUpperCase();
 
+    // 05/06/2026 — STALE CANDLE GUARD : si la dernière candle disponible est
+    // plus vieille que GAINERS_PERSISTENCE_MAX_CANDLE_AGE_MIN (default 30min),
+    // skip pour éviter de calculer tfXm sur des prix obsolètes. Bug observé
+    // sur LSE depository receipts 0P4G/0ROY (illiquides) : EODHD intraday 5m
+    // retournait des candles de la veille → tf1m/tf5m/.../tf1h affichaient
+    // +106% / +87% sur tous les TF identiques (currentPrice live ÷ open
+    // ancien × 100). Le check ci-dessous filtre proprement ces cas.
+    const maxAgeMin = (() => {
+      const v = parseFloat(this.config.get<string>('GAINERS_PERSISTENCE_MAX_CANDLE_AGE_MIN') ?? '30');
+      return Number.isFinite(v) && v > 0 ? v : 30;
+    })();
+    const isLastCandleStale = (candles: Array<{ timestamp?: number; datetime?: string }>): boolean => {
+      if (candles.length === 0) return true;
+      const last = candles[candles.length - 1];
+      let lastUnixSec: number | null = null;
+      if (typeof last.timestamp === 'number' && Number.isFinite(last.timestamp)) {
+        lastUnixSec = last.timestamp;
+      } else if (typeof last.datetime === 'string') {
+        const ms = new Date(last.datetime).getTime();
+        if (Number.isFinite(ms) && ms > 0) lastUnixSec = ms / 1000;
+      }
+      if (lastUnixSec == null) return false; // pas de ts → ne pas bloquer (back-compat)
+      const ageMin = (Date.now() / 1000 - lastUnixSec) / 60;
+      if (ageMin > maxAgeMin) {
+        this.logger.warn(`[provider-router] ${eodhdTicker} last candle ${ageMin.toFixed(0)}min ago > ${maxAgeMin}min → skip persistence (illiquide / market closed)`);
+        return true;
+      }
+      return false;
+    };
+
     // 1. Yahoo Finance (primaire gratuit, P19h circuit breaker protège)
     const yahooCandles = await this.yahoo.getCandles(eodhdTicker, '5m').catch(() => null);
-    if (yahooCandles && yahooCandles.length > 0) {
+    if (yahooCandles && yahooCandles.length > 0 && !isLastCandleStale(yahooCandles)) {
       const prices = extractPricesFromFiveMinSeries(yahooCandles);
       const persistence = evaluatePersistence(c.currentPrice, prices);
       const pathQuality = computePathQualityForTfsFromFiveMin(yahooCandles);
@@ -418,7 +448,7 @@ export class MultiTimeframePersistenceService {
     // Flag OFF (défaut) → passthrough EODHD identique. Flag ON → TD avec
     // fallback EODHD automatique.
     const oneMinSeries = await this.intradayRouter.getCandles(eodhdTicker, '1m', 65).catch(() => null);
-    if (oneMinSeries && oneMinSeries.candles.length >= 60) {
+    if (oneMinSeries && oneMinSeries.candles.length >= 60 && !isLastCandleStale(oneMinSeries.candles)) {
       const prices = extractPricesFromOneMinSeries(oneMinSeries.candles);
       const persistence = evaluatePersistence(c.currentPrice, prices);
       const pathQuality = computePathQualityForTfsFromOneMin(oneMinSeries.candles);
@@ -441,7 +471,7 @@ export class MultiTimeframePersistenceService {
     // 2bis. EODHD intraday 5m (fallback dégradé — tf1m=null mais 5 TFs OK)
     // PR #352 — routé via IntradayProviderRouter (TD-first si flag ON)
     const series = await this.intradayRouter.getCandles(eodhdTicker, '5m', 13).catch(() => null);
-    if (series && series.candles.length > 0) {
+    if (series && series.candles.length > 0 && !isLastCandleStale(series.candles)) {
       const prices = extractPricesFromFiveMinSeries(series.candles);
       const persistence = evaluatePersistence(c.currentPrice, prices);
       const pathQuality = computePathQualityForTfsFromFiveMin(series.candles);

@@ -31,7 +31,13 @@ beforeEach(() => {
   mockCache.write.mockReset().mockResolvedValue(true);
 });
 
-const mockConfig = { get: jest.fn().mockReturnValue(undefined) } as any;
+const mockConfig = {
+  get: jest.fn().mockImplementation((key: string) => {
+    // 05/06/2026 — neutralise stale candle guard pour fixtures p19i (datetime passé).
+    if (key === 'GAINERS_PERSISTENCE_MAX_CANDLE_AGE_MIN') return '99999999';
+    return undefined;
+  })
+} as any;
 
 function makeService() {
   // PR #352 — IntradayProviderRouter ajouté au constructor. Mock passthrough
