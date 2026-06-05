@@ -3956,7 +3956,22 @@ export class TopGainersScannerService implements OnModuleInit {
 
           const climaxGateOn = (this.config.get<string>('GAINERS_CLIMAX_RUN_GATE_ENABLED') ?? 'true').toLowerCase() === 'true';
           if (climaxGateOn) {
-            const climaxHit = evaluateClimaxRun(persistence.tf5m, persistence.tf30m);
+            // 05/06/2026 — env tunables suite rollback EODHD NYSE 04/06 :
+            // CLIMAX_RUN bloquait 77% de pumps réels (avg +4.24%). POET.US rejeté
+            // 4× malgré pump prolongé +9%. Defaults conservés pour back-compat,
+            // tunable Fly secrets pour relâcher.
+            //   GAINERS_CLIMAX_MIN_TF5M_PCT        default 5  (raise à 8-10 = plus permissif)
+            //   GAINERS_CLIMAX_MAX_PLATEAU_GAP_PCT default 1.5 (lower à 0.5 = plus permissif)
+            const climaxOpts: { minTf5mPct?: number; maxPlateauGapPct?: number } = {};
+            const climaxMinTf5m = parseFloat(this.config.get<string>('GAINERS_CLIMAX_MIN_TF5M_PCT') ?? '');
+            if (Number.isFinite(climaxMinTf5m) && climaxMinTf5m > 0) climaxOpts.minTf5mPct = climaxMinTf5m;
+            const climaxMaxGap = parseFloat(this.config.get<string>('GAINERS_CLIMAX_MAX_PLATEAU_GAP_PCT') ?? '');
+            if (Number.isFinite(climaxMaxGap) && climaxMaxGap > 0) climaxOpts.maxPlateauGapPct = climaxMaxGap;
+            const climaxHit = evaluateClimaxRun(
+              persistence.tf5m,
+              persistence.tf30m,
+              Object.keys(climaxOpts).length > 0 ? climaxOpts : undefined,
+            );
             if (climaxHit) {
               this.logger.log(
                 `[top-gainers] ${cand.symbol} CLIMAX_RUN: tf5m=${climaxHit.tf5m.toFixed(2)}% tf30m=${climaxHit.tf30m.toFixed(2)}% (plateau, |∆|=${climaxHit.gapPct.toFixed(2)}pt) → skip [blow-off]`,
@@ -3977,8 +3992,22 @@ export class TopGainersScannerService implements OnModuleInit {
 
           const verticalGateOn = (this.config.get<string>('GAINERS_VERTICAL_PUMP_GATE_ENABLED') ?? 'true').toLowerCase() === 'true';
           if (verticalGateOn) {
+            // 05/06/2026 — env tunables suite rollback EODHD NYSE 04/06 :
+            // VERTICAL_PUMP bloquait 75% de pumps réels (avg +4.52%). POET/NVTS
+            // rejetés malgré uptrend prolongé. Defaults conservés pour back-compat.
+            //   GAINERS_VERTICAL_PUMP_MAX_RATIO    default 0.5 (raise à 0.8-1.0 = plus permissif)
+            //   GAINERS_VERTICAL_PUMP_MIN_TF5M_PCT default 5   (raise à 8-10 = plus permissif)
+            const verticalOpts: { minTf5mPct?: number; maxRatio?: number } = {};
+            const verticalMaxRatio = parseFloat(this.config.get<string>('GAINERS_VERTICAL_PUMP_MAX_RATIO') ?? '');
+            if (Number.isFinite(verticalMaxRatio) && verticalMaxRatio > 0) verticalOpts.maxRatio = verticalMaxRatio;
+            const verticalMinTf5m = parseFloat(this.config.get<string>('GAINERS_VERTICAL_PUMP_MIN_TF5M_PCT') ?? '');
+            if (Number.isFinite(verticalMinTf5m) && verticalMinTf5m > 0) verticalOpts.minTf5mPct = verticalMinTf5m;
             const ch1m = typeof cand.changePct === 'number' && Number.isFinite(cand.changePct) ? cand.changePct : null;
-            const verticalHit = evaluateVerticalPump(ch1m, persistence.tf5m);
+            const verticalHit = evaluateVerticalPump(
+              ch1m,
+              persistence.tf5m,
+              Object.keys(verticalOpts).length > 0 ? verticalOpts : undefined,
+            );
             if (verticalHit) {
               this.logger.log(
                 `[top-gainers] ${cand.symbol} VERTICAL_PUMP: ch1m=${verticalHit.ch1m.toFixed(2)}% / tf5m=${verticalHit.tf5m.toFixed(2)}% = ${verticalHit.ratio.toFixed(2)} → skip [last-minute concentration]`,
@@ -5122,7 +5151,20 @@ export class TopGainersScannerService implements OnModuleInit {
       // P19-staleness-OPEN (25/05) : étend le check au stale_* (TwelveData
       // LSE/Euronext/SIX figé vendredi → prix de 3j → on ne doit JAMAIS
       // ouvrir sur ce prix, même si le ticker semble être un top gainer).
-      if (typeof quote.source === 'string' && (quote.source.startsWith('fallback') || quote.source.startsWith('stale_'))) {
+      //
+      // 05/06/2026 — env tunable suite rollback EODHD NYSE 04/06 :
+      // StaleOrFallbackSource bloquait 58% de pumps réels (avg +3.17%) sur
+      // small caps US (ALOY/SYRE/ABVX). TwelveData renvoie stale_twelvedata
+      // pendant pump (pas une vraie indisponibilité). Sanity bound 30% + fallback
+      // 'fallback_unknown' restent toujours actifs comme dernier filet.
+      //   GAINERS_STALE_SOURCE_GUARD_ENABLED  default true (set à false = bypass stale_*)
+      // ATTENTION : ne bypass JAMAIS 'fallback_unknown' (prix sentinel $0, garde-fou
+      // immuable du LMT incident 27/04). On filtre uniquement 'stale_*' et 'fallback'
+      // génériques sur small caps US où TwelveData a un comportement connu fragile.
+      const staleGuardEnabled = (this.config.get<string>('GAINERS_STALE_SOURCE_GUARD_ENABLED') ?? 'true').toLowerCase() !== 'false';
+      const isUnknownFallback = quote.source === 'fallback_unknown';
+      const isStaleOrFallback = typeof quote.source === 'string' && (quote.source.startsWith('fallback') || quote.source.startsWith('stale_'));
+      if (isUnknownFallback || (staleGuardEnabled && isStaleOrFallback)) {
         this.logger.warn(`[top-gainers] ${cand.symbol}: unreliable source ${quote.source} → skip open (cycle suivant)`);
         // Fix 26/05 : trace en decision_log pour observabilité (incident nuit 25→26/05,
         // 67 ACCEPT shadow Asia / 0 open / 0 event decision_log — skip invisible).

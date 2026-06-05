@@ -29,6 +29,7 @@ import { ConfigService } from '@nestjs/config';
 import {
   type ConsensusVerdict,
   type DebateInput,
+  type ResolveDebateOptions,
   buildSignal,
   resolveDebate,
   type TradingDecision,
@@ -98,6 +99,36 @@ export class DebateGateService {
   }
 
   /**
+   * Lit les overrides env-tunables pour resolveDebate. Default = constantes
+   * globales (back-compat). Utile pour TRADER mode où on accepte un consensus
+   * plus mou (data-driven 05/06/2026 : DebateGate WAIT bloquait 44% de pumps
+   * réels sur NYSE session, edge raté +67%).
+   *
+   *   GAINERS_DEBATE_MIN_QUORUM           default 2  (set à 1 = solo allowed)
+   *   GAINERS_DEBATE_MIN_CONSENSUS_RATIO  default 0.5
+   *   GAINERS_DEBATE_MIN_WINNER_CONF      default 0.5
+   */
+  private readResolveOptions(): ResolveDebateOptions | undefined {
+    const opts: ResolveDebateOptions = {};
+    const q = this.config.get<string>('GAINERS_DEBATE_MIN_QUORUM');
+    if (q) {
+      const n = parseInt(q, 10);
+      if (Number.isFinite(n) && n >= 1) opts.minQuorum = n;
+    }
+    const cr = this.config.get<string>('GAINERS_DEBATE_MIN_CONSENSUS_RATIO');
+    if (cr) {
+      const n = parseFloat(cr);
+      if (Number.isFinite(n) && n > 0 && n <= 1) opts.minConsensusRatio = n;
+    }
+    const wc = this.config.get<string>('GAINERS_DEBATE_MIN_WINNER_CONF');
+    if (wc) {
+      const n = parseFloat(wc);
+      if (Number.isFinite(n) && n > 0 && n <= 1) opts.minWinnerConfidence = n;
+    }
+    return Object.keys(opts).length > 0 ? opts : undefined;
+  }
+
+  /**
    * Évalue un candidat. Pure fn sauf logger — pas d'I/O DB.
    *
    * Fail-safe : si une exception remonte, retourne `allow=true` (no regression).
@@ -107,7 +138,7 @@ export class DebateGateService {
     const shadowMode = !this.isActive();
     try {
       const inputs = this.buildAgentInputs(scores, now);
-      const verdict = resolveDebate(inputs, now);
+      const verdict = resolveDebate(inputs, now, this.readResolveOptions());
       const debateAllows = verdict.decision === 'BUY';
       const allow = shadowMode ? true : debateAllows;
 
