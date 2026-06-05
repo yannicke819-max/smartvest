@@ -2013,6 +2013,46 @@ export class MechanicalTradingService {
     // Avant : `=== 'long'` strict → options gérées comme SHORT → stop/target inversés.
     const isLong = isLongPosition(pos.direction);
 
+    // 05/06/2026 — LOCK_PROFIT_USD : close auto si PnL_usd >= seuil.
+    // User feedback : "trader pas suffisamment hyper réactif". Capture petits
+    // gains rapides ($15-30) sans attendre TP %. Cible CLAUDE.md : 15-60€/trade.
+    // Opt-in via GAINERS_LOCK_PROFIT_USD_ENABLED=true. Default $15.
+    const lockProfitEnabled = (process.env.GAINERS_LOCK_PROFIT_USD_ENABLED ?? 'false').toLowerCase() === 'true';
+    if (lockProfitEnabled && entryPx.gt(0) && livePx.gt(0)) {
+      const lockProfitUsd = parseFloat(process.env.GAINERS_LOCK_PROFIT_USD ?? '15');
+      const notional = Number(pos.entryNotionalUsd ?? 0);
+      if (Number.isFinite(lockProfitUsd) && lockProfitUsd > 0 && notional > 0) {
+        const pnlPct = livePx.minus(entryPx).div(entryPx).mul(isLong ? 1 : -1).toNumber();
+        const pnlUsd = notional * pnlPct;
+        if (Number.isFinite(pnlUsd) && pnlUsd >= lockProfitUsd) {
+          this.logger.log(
+            `[LOCK_PROFIT] ${pos.symbol} PnL $${pnlUsd.toFixed(2)} >= $${lockProfitUsd} threshold → close auto`,
+          );
+          try {
+            await this.closePosition(pos.id, quote.price, 'closed_target', `[LOCK_PROFIT_USD] PnL $${pnlUsd.toFixed(2)} >= $${lockProfitUsd}`);
+            await this.decisionLog.append({
+              portfolioId: String((pos as unknown as Record<string, unknown>)['portfolio_id'] ?? ''),
+              kind: 'mechanical_close_target',
+              summary: `[LOCK_PROFIT_USD] ${pos.symbol} closed at PnL +$${pnlUsd.toFixed(2)}`,
+              rationale: `Lock profit triggered : PnL $${pnlUsd.toFixed(2)} >= seuil $${lockProfitUsd}. Hyper réactivité scalping intraday.`,
+              payload: {
+                symbol: pos.symbol,
+                pnl_usd: pnlUsd,
+                pnl_pct: pnlPct * 100,
+                threshold_usd: lockProfitUsd,
+                entry_price: pos.entryPrice,
+                live_price: quote.price,
+              },
+              triggeredBy: 'mechanical_cron',
+            }).catch(() => null);
+            return;
+          } catch (e) {
+            this.logger.warn(`[LOCK_PROFIT] ${pos.symbol} close failed: ${String(e).slice(0, 120)}`);
+          }
+        }
+      }
+    }
+
     // 05/06/2026 — DANGER ZONE LLM (option C validée user) :
     // Quand position atteint X% du SL, set manual_control=true ET appelle Mistral
     // pour décider close_now / widen_sl / set_tp_breakeven / wait_user.
@@ -3952,10 +3992,12 @@ OUTPUT JSON OBLIGATOIRE — choisis 1 action :
 }
 
 Critères de décision :
-- close_now : momentum perdu, news bearish fraîche, PnL fortement négatif sans support technique proche. Safe default si doute.
+- close_now : momentum perdu CONFIRMÉ + news bearish fraîche + PnL fortement négatif + AUCUN support technique proche. Tous ces critères doivent être réunis.
 - widen_sl : choppy normal, support technique proche, macro stable. Relax SL pour respirer (typiquement -2.5% à -3% du nouvel entry).
 - set_tp_breakeven : recovery probable, prix proche entry (< 0.5% en dessous), pas de news négative. TP = entry pour sortir au rebond.
-- wait_user : ambigu, signal mixte, position acceptable mais incertaine. Garde manual_control true, user décide manuellement.
+- wait_user : SAFE DEFAULT — ticker inconnu, signal mixte, position ambiguë, ou tu n'as pas assez de certitude. Garde manual_control true, user décide manuellement.
+
+IMPORTANT : si le ticker ne te semble pas connu OU si tu n'as PAS de conviction forte sur l'action à prendre → CHOISIS wait_user (PAS close_now). L'utilisateur préfère décider manuellement plutôt que subir un cut loss prématuré sur une mauvaise lecture IA.
 
 Pas d'autres champs. JSON valide strict.`;
 
