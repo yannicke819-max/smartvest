@@ -2013,6 +2013,68 @@ export class MechanicalTradingService {
     // Avant : `=== 'long'` strict → options gérées comme SHORT → stop/target inversés.
     const isLong = isLongPosition(pos.direction);
 
+    // 05/06/2026 — DANGER ZONE LLM (option C validée user) :
+    // Quand position atteint X% du SL, set manual_control=true ET appelle Mistral
+    // pour décider close_now / widen_sl / set_tp_breakeven / wait_user.
+    // Évite que SL hard se déclenche sur prix stale (PR #608 EU 30min lag) tout
+    // en gardant un filet machine si user absent.
+    //
+    // Per-asset class thresholds tunables :
+    //   MECHANICAL_DANGER_ZONE_ENABLED            default false
+    //   MECHANICAL_DANGER_ZONE_PCT_US             default 0.80 (TwelveData live 3min)
+    //   MECHANICAL_DANGER_ZONE_PCT_EU             default 0.75 (EODHD stale 30min)
+    //   MECHANICAL_DANGER_ZONE_PCT_CRYPTO         default 0.85 (Binance WS sub-second)
+    const dangerZoneEnabled = (process.env.MECHANICAL_DANGER_ZONE_ENABLED ?? 'false').toLowerCase() === 'true';
+    if (dangerZoneEnabled && stopPrice && stopPrice.gt(0) && entryPx.gt(0)) {
+      const directionMultiplier = isLong ? 1 : -1;
+      const distanceTraveled = entryPx.minus(livePx).mul(directionMultiplier);
+      const totalDistanceToSl = entryPx.minus(stopPrice).mul(directionMultiplier);
+      if (totalDistanceToSl.gt(0)) {
+        const ratioToSl = distanceTraveled.div(totalDistanceToSl).toNumber();
+        const ac = pos.assetClass;
+        const threshold = (() => {
+          if (ac === 'eu_equity') return parseFloat(process.env.MECHANICAL_DANGER_ZONE_PCT_EU ?? '0.75');
+          if (ac.startsWith('crypto_')) return parseFloat(process.env.MECHANICAL_DANGER_ZONE_PCT_CRYPTO ?? '0.85');
+          if (ac.startsWith('us_')) return parseFloat(process.env.MECHANICAL_DANGER_ZONE_PCT_US ?? '0.80');
+          return 0.80;
+        })();
+        if (Number.isFinite(ratioToSl) && ratioToSl >= threshold) {
+          this.logger.warn(
+            `[DANGER_ZONE] ${pos.symbol} at ${(ratioToSl * 100).toFixed(0)}% of SL (>= ${(threshold * 100).toFixed(0)}% threshold for ${ac}) → set manual_control + trigger LLM`,
+          );
+          // Set manual_control = true (DB update)
+          try {
+            await this.supabase.getClient()
+              .from('lisa_positions')
+              .update({ manual_control: true })
+              .eq('id', pos.id);
+          } catch (e) {
+            this.logger.warn(`[DANGER_ZONE] ${pos.symbol} manual_control DB update failed: ${String(e).slice(0, 100)}`);
+          }
+          // Trigger LLM decision async (fire-and-forget pour ne pas bloquer le cron)
+          void this.triggerDangerZoneLlm(pos, livePx.toNumber(), entryPx.toNumber(), stopPrice.toNumber(), ratioToSl, isLong);
+          // Log decision_log
+          await this.decisionLog.append({
+            portfolioId: String((pos as unknown as Record<string, unknown>)['portfolio_id'] ?? ''),
+            kind: 'danger_zone_triggered',
+            summary: `[DANGER_ZONE] ${pos.symbol} at ${(ratioToSl * 100).toFixed(0)}% of SL → manual_control activé, LLM consulté`,
+            rationale: `Position ${pos.symbol} a atteint ${(ratioToSl * 100).toFixed(0)}% du chemin vers SL (seuil ${(threshold * 100).toFixed(0)}% pour ${ac}). manual_control activé pour bloquer SL auto, Mistral consulté pour décider close/widen/breakeven/wait.`,
+            payload: {
+              symbol: pos.symbol,
+              asset_class: ac,
+              entry_price: entryPx.toNumber(),
+              live_price: livePx.toNumber(),
+              stop_loss_price: stopPrice.toNumber(),
+              ratio_to_sl: ratioToSl,
+              threshold,
+            },
+            triggeredBy: 'mechanical_cron',
+          }).catch(() => null);
+          return; // Skip standard SL check, manual_control prend le relais
+        }
+      }
+    }
+
     // PR #369 — Instrumentation MFE (Max Favorable Excursion). Enregistre le
     // pic de prix favorable atteint avant la sortie, dans peak_pre_exit (jusqu'à
     // présent jamais peuplé). Permet de mesurer a posteriori si les positions
@@ -3854,5 +3916,168 @@ Réponds JSON STRICT : {"decision": "approve" | "reject", "reason": "raison < 10
       this.logger.warn(`[risk-manager-v2] closeForRiskManager ${symbol} failed: ${String(e).slice(0, 200)}`);
       return false;
     }
+  }
+
+  /**
+   * 05/06/2026 — DANGER ZONE LLM trigger (option C user-validated).
+   * Appelle Mistral via llmRouter.callWithPro avec prompt structuré pour décider
+   * close_now / widen_sl / set_tp_breakeven / wait_user.
+   * Fire-and-forget : appelé depuis checkStopTarget, ne bloque pas le cron.
+   * Default safe : si LLM fail/parse error → wait_user (manual_control reste true,
+   * user décide manuellement, position non-fermée auto).
+   */
+  private async triggerDangerZoneLlm(
+    pos: OpenPosition,
+    livePrice: number,
+    entryPrice: number,
+    slPrice: number,
+    ratioToSl: number,
+    isLong: boolean,
+  ): Promise<void> {
+    if (!this.llmRouter) {
+      this.logger.warn(`[DANGER_ZONE_LLM] ${pos.symbol} llmRouter not available → wait_user fallback`);
+      return;
+    }
+    const pnlPct = ((livePrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
+    const notional = Number(pos.entryNotionalUsd ?? 0);
+    const pnlUsd = (notional * pnlPct) / 100;
+
+    const systemPrompt = `Tu es un trader senior qui décide du sort d'une position en zone de danger (${(ratioToSl * 100).toFixed(0)}% du chemin vers SL atteint).
+
+OUTPUT JSON OBLIGATOIRE — choisis 1 action :
+{
+  "action": "close_now" | "widen_sl" | "set_tp_breakeven" | "wait_user",
+  "rationale": "raison courte 1-2 phrases",
+  "widened_sl_price": <number si action=widen_sl, sinon null>
+}
+
+Critères de décision :
+- close_now : momentum perdu, news bearish fraîche, PnL fortement négatif sans support technique proche. Safe default si doute.
+- widen_sl : choppy normal, support technique proche, macro stable. Relax SL pour respirer (typiquement -2.5% à -3% du nouvel entry).
+- set_tp_breakeven : recovery probable, prix proche entry (< 0.5% en dessous), pas de news négative. TP = entry pour sortir au rebond.
+- wait_user : ambigu, signal mixte, position acceptable mais incertaine. Garde manual_control true, user décide manuellement.
+
+Pas d'autres champs. JSON valide strict.`;
+
+    const userPayload = JSON.stringify({
+      symbol: pos.symbol,
+      asset_class: pos.assetClass,
+      direction: pos.direction,
+      entry_price: entryPrice,
+      current_price: livePrice,
+      stop_loss_price: slPrice,
+      take_profit_price: pos.takeProfitPrice ? Number(pos.takeProfitPrice) : null,
+      pnl_pct: pnlPct.toFixed(2),
+      pnl_usd: pnlUsd.toFixed(2),
+      ratio_to_sl: ratioToSl.toFixed(2),
+      notional_usd: notional,
+    }, null, 2);
+
+    try {
+      const response = await this.llmRouter.callWithPro({
+        system: systemPrompt,
+        user: userPayload,
+        temperature: 0.3,
+        maxTokens: 500,
+        timeoutMs: 15_000,
+      });
+      const cleaned = response.content.trim().replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
+      const parsed = JSON.parse(cleaned) as { action: string; rationale: string; widened_sl_price?: number | null };
+      this.logger.log(`[DANGER_ZONE_LLM] ${pos.symbol} decision: ${parsed.action} — ${parsed.rationale}`);
+      await this.applyDangerZoneDecision(pos, parsed.action, parsed.rationale, parsed.widened_sl_price ?? null);
+    } catch (e) {
+      this.logger.warn(`[DANGER_ZONE_LLM] ${pos.symbol} LLM call failed (${String(e).slice(0, 150)}) → wait_user fallback`);
+      await this.decisionLog.append({
+        portfolioId: String((pos as unknown as Record<string, unknown>)['portfolio_id'] ?? ''),
+        kind: 'danger_zone_decision_applied',
+        summary: `[DANGER_ZONE_LLM] ${pos.symbol} action=wait_user (LLM call failed)`,
+        rationale: `Mistral call ou parse failed → fallback wait_user, manual_control reste true.`,
+        payload: { symbol: pos.symbol, action: 'wait_user', error: String(e).slice(0, 200) },
+        triggeredBy: 'mechanical_cron',
+      }).catch(() => null);
+    }
+  }
+
+  /**
+   * Apply danger zone LLM decision.
+   * close_now → ferme la position (close_invalidated)
+   * widen_sl → update stop_loss_price + désactive manual_control (LLM reprend)
+   * set_tp_breakeven → take_profit_price = entry + désactive manual_control
+   * wait_user → manual_control reste true, user décide
+   */
+  private async applyDangerZoneDecision(
+    pos: OpenPosition,
+    action: string,
+    rationale: string,
+    widenedSl: number | null,
+  ): Promise<void> {
+    const portfolioId = String((pos as unknown as Record<string, unknown>)['portfolio_id'] ?? '');
+    let appliedAction = action;
+    let applyError: string | null = null;
+
+    switch (action) {
+      case 'close_now': {
+        try {
+          const quote = await this.lisa.getLivePrice(pos.symbol);
+          if (quote && Number(quote.price) > 0) {
+            await this.closePosition(pos.id, quote.price, 'closed_invalidated', `[DANGER_ZONE_LLM] ${rationale}`);
+          } else {
+            applyError = 'no valid live price for close_now';
+            appliedAction = 'wait_user';
+          }
+        } catch (e) {
+          applyError = String(e).slice(0, 150);
+          appliedAction = 'wait_user';
+        }
+        break;
+      }
+      case 'widen_sl': {
+        if (widenedSl && widenedSl > 0) {
+          try {
+            await this.supabase.getClient()
+              .from('lisa_positions')
+              .update({ stop_loss_price: widenedSl, manual_control: false })
+              .eq('id', pos.id);
+          } catch (e) {
+            applyError = String(e).slice(0, 150);
+            appliedAction = 'wait_user';
+          }
+        } else {
+          applyError = 'widen_sl requires widened_sl_price > 0';
+          appliedAction = 'wait_user';
+        }
+        break;
+      }
+      case 'set_tp_breakeven': {
+        try {
+          await this.supabase.getClient()
+            .from('lisa_positions')
+            .update({ take_profit_price: Number(pos.entryPrice), manual_control: false })
+            .eq('id', pos.id);
+        } catch (e) {
+          applyError = String(e).slice(0, 150);
+          appliedAction = 'wait_user';
+        }
+        break;
+      }
+      case 'wait_user':
+      default:
+        // manual_control reste true, user décide
+        break;
+    }
+    await this.decisionLog.append({
+      portfolioId,
+      kind: 'danger_zone_decision_applied',
+      summary: `[DANGER_ZONE_LLM] ${pos.symbol} action=${appliedAction}${applyError ? ' (apply_error)' : ''}`,
+      rationale,
+      payload: {
+        symbol: pos.symbol,
+        action: appliedAction,
+        original_action: action,
+        widened_sl_price: widenedSl ?? null,
+        apply_error: applyError,
+      },
+      triggeredBy: 'mechanical_cron',
+    }).catch(() => null);
   }
 }
