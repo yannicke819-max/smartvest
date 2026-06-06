@@ -4,6 +4,8 @@ import { SupabaseService } from '../../supabase/supabase.service';
 import { TickerBlacklistService } from './ticker-blacklist.service';
 // PR #339 — Weekend / session-closed filter sur getCandles (couche basse).
 import { isMarketOpenForClass, marketForSymbol } from '@smartvest/ai-analyst';
+// PR #635 — Fériés par bourse (US/EU), additif aux gardes week-end/horaires.
+import { isKnownMarketHoliday } from './exchange-sessions.helper';
 
 /**
  * EodhdIntradayService — récupère les bougies intraday OHLCV depuis EODHD
@@ -257,14 +259,17 @@ export class EodhdIntradayService {
     // Crypto exempté (24/7). Unknown market = passe (conservateur, on ne casse
     // rien pour forex/commodities/indices futurs).
     if (this.weekendFilterEnabled) {
+      const now = new Date();
       const cls = marketForSymbol(eodhdTicker);
-      if (cls && cls !== 'crypto' && !isMarketOpenForClass(cls, new Date())) {
-        this.logger.debug(`[eodhd] ${eodhdTicker} skipped (session closed for ${cls})`);
+      const sessionClosed = cls != null && cls !== 'crypto' && !isMarketOpenForClass(cls, now);
+      const holiday = isKnownMarketHoliday(eodhdTicker, now); // PR #635 — férié bourse US/EU
+      if (sessionClosed || holiday) {
+        this.logger.debug(`[eodhd] ${eodhdTicker} skipped (${holiday ? 'market holiday' : `session closed for ${cls}`})`);
         this.logCall({
           ticker: eodhdTicker,
           success: false,
           statusCode: 0,
-          errorMessage: 'SKIP_SESSION_CLOSED',
+          errorMessage: holiday ? 'SKIP_MARKET_HOLIDAY' : 'SKIP_SESSION_CLOSED',
         });
         return null;
       }
@@ -423,14 +428,17 @@ export class EodhdIntradayService {
     // Crypto exempté (24/7). Marché inconnu (forex/commodities/indices) = passe.
     // Partage le kill-switch EODHD_WEEKEND_FILTER_ENABLED avec getCandles.
     if (this.weekendFilterEnabled) {
+      const now = new Date();
       const cls = marketForSymbol(eodhdTicker);
-      if (cls && cls !== 'crypto' && !isMarketOpenForClass(cls, new Date())) {
-        this.logger.debug(`[eodhd:real-time] ${eodhdTicker} skipped (session closed for ${cls})`);
+      const sessionClosed = cls != null && cls !== 'crypto' && !isMarketOpenForClass(cls, now);
+      const holiday = isKnownMarketHoliday(eodhdTicker, now); // PR #635 — férié bourse US/EU
+      if (sessionClosed || holiday) {
+        this.logger.debug(`[eodhd:real-time] ${eodhdTicker} skipped (${holiday ? 'market holiday' : `session closed for ${cls}`})`);
         this.logCall({
           ticker: eodhdTicker,
           success: false,
           statusCode: 0,
-          errorMessage: 'SKIP_SESSION_CLOSED',
+          errorMessage: holiday ? 'SKIP_MARKET_HOLIDAY' : 'SKIP_SESSION_CLOSED',
         });
         return null;
       }

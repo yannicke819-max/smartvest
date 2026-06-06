@@ -192,6 +192,34 @@ export function isKnownMarketClosed(symbol: string, at: Date | string | number):
 }
 
 /**
+ * PR #635 — Détecte UNIQUEMENT le cas "jour férié de la bourse du ticker"
+ * (≠ week-end, ≠ hors-horaires). Complément ADDITIF aux gardes week-end/horaires
+ * existantes (isMarketOpenForClass dans getCandles/getQuote, isMarketOpen dans
+ * fetchLivePriceInner) : ces gardes ignorent les fériés → un jour férié EN
+ * SÉANCE, l'appel EODHD passait (close EOD figé = gaspillage). Ce helper le
+ * coupe SANS toucher au comportement horaire existant.
+ *
+ * Fail-open : suffixe sans calendrier (Asia/.TO/.NSE, inconnu), crypto/fx/
+ * commodity, sans suffixe → false (ne PAS skip). Couvre US (NYSE) + EU
+ * (LSE/Euronext/SIX/XETRA) via HOLIDAYS_BY_SUFFIX.
+ */
+export function isKnownMarketHoliday(symbol: string, at: Date | string | number): boolean {
+  if (!symbol) return false;
+  const suffix = extractSuffix(symbol);
+  if (suffix === null) return false;
+  const holidaySet = HOLIDAYS_BY_SUFFIX.get(suffix);
+  if (!holidaySet) return false;            // pas de calendrier pour cette bourse → fail-open
+  const session = EXCHANGE_SESSIONS[suffix];
+  if (!session) return false;
+  let date: Date;
+  if (at instanceof Date) date = at;
+  else if (typeof at === 'number') date = new Date(at < 1e10 ? at * 1000 : at);
+  else date = new Date(at);
+  if (Number.isNaN(date.getTime())) return false;
+  return holidaySet.has(getLocalDateString(date, session.tz));
+}
+
+/**
  * P19-EXT (25/05/2026) — Détecte si TOUTES les bourses majeures (US + UK + EU
  * + CH + DE) sont fermées pour férié à l'instant donné.
  *

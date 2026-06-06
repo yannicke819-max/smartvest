@@ -73,7 +73,7 @@ import {
   fetchWithRetry,
 } from '../helpers/macro-fallback.helper';
 import { assertRegimeInputsHealthy } from '../helpers/regime-healthcheck.helper';
-import { isInExchangeSession } from './exchange-sessions.helper';
+import { isInExchangeSession, isKnownMarketHoliday } from './exchange-sessions.helper';
 
 /**
  * LisaService — orchestrateur principal du module AI analyst.
@@ -3779,7 +3779,12 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     // ou isMarketOpen=true → inchangés. Réversible via LIVE_PRICE_SKIP_CLOSED_MARKET.
     if ((this.config.get<string>('LIVE_PRICE_SKIP_CLOSED_MARKET') ?? 'true').toLowerCase() === 'true') {
       const sess = sessionClassForSymbol(symbol);
-      if (sess && !isMarketOpen(sess, new Date())) {
+      // PR #635 — ajoute les fériés (par bourse, US/EU) à la garde week-end/horaires.
+      // Un jour férié EN séance, isMarketOpen=true → l'appel EODHD passait sur un
+      // close EOD figé (gaspillage). Même traitement que marché fermé : cache/fallback stale.
+      const closedOrHoliday =
+        (sess != null && !isMarketOpen(sess, new Date())) || isKnownMarketHoliday(symbol, new Date());
+      if (closedOrHoliday) {
         const anyCached = this.realtimePrice
           .snapshot()
           .find((s) => s.symbol.toUpperCase() === symbol.toUpperCase());
