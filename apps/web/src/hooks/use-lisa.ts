@@ -234,7 +234,18 @@ export function useLisaConfig(portfolioId: string | null) {
     queryKey: ['lisa', 'config', portfolioId],
     queryFn: () => apiFetch<LisaSessionConfigRow | null>(`/lisa/config/${portfolioId}`),
     enabled: !!portfolioId,
-    ...LISA_QUERY_OPTIONS,
+    // 06/06 — anti alerte fantôme kill-switch. Le bandeau kill-switch lit
+    // kill_switch_active depuis ce query. useLisaConfigRealtime n'invalide que
+    // pendant que la page est ouverte ; un changement DB survenu page fermée
+    // (ex : reset kill-switch côté serveur) n'est jamais livré → un cache
+    // persisté (Vercel CDN / React Query) ressort un `true` périmé au prochain
+    // chargement et déclenche une fausse alarme. On NE spread donc PAS
+    // LISA_QUERY_OPTIONS ici : on force refetch au mount + focus + staleTime 0
+    // pour toujours recharger la vérité DB. Calqué sur le fix chart #619.
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: true,
+    staleTime: 0,
+    retry: false,
   });
 }
 
