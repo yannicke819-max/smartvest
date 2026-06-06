@@ -738,9 +738,12 @@ export class OversoldScannerService {
     // US 79→59% / EU 69→59%, vol future +35-90%), on DURCIT le seuil VIX/V2TX d'une
     // pénalité. Modulateur de PRUDENCE uniquement (signal modeste + biais bull) —
     // JAMAIS un assouplissement. Modes : off / shadow (log only) / active.
-    // Default shadow → valide en live (out-of-sample) avant d'agir, cf. discipline
-    // anti-overfit. Fail-open : rotation indispo (null) → aucune modulation.
-    const rotMode = (this.config.get<string>('OVERSOLD_ROTATION_GATE_MODE') ?? 'shadow').toLowerCase();
+    // Default ACTIVE : modulateur qui ne fait que DURCIR le seuil → risque
+    // asymétrique (au pire trop prudent, jamais plus exposé), et mesure backtest
+    // 3 ans déjà disponible. Effet analysé en réel après ~1 semaine via les logs
+    // [oversold-rotation:active]. Repli : OVERSOLD_ROTATION_GATE_MODE=off|shadow.
+    // Fail-open : rotation indispo (null) → aucune modulation (gate inchangé).
+    const rotMode = (this.config.get<string>('OVERSOLD_ROTATION_GATE_MODE') ?? 'active').toLowerCase();
     let effThresholds = thresholds;
     let rotation: (RotationRegime & { mode: string; appliedVixPenalty: number }) | null = null;
     if (rotMode !== 'off') {
