@@ -45,6 +45,10 @@ beforeEach(() => {
 function makeService(): TopGainersScannerService {
   mockConfig.get.mockImplementation((key: string) => {
     if (key === 'SCAN_INTERVAL_MINUTES') return '15';
+    // PR #638 — désactive le gate fenêtre [open+buffer/close-buffer] pour rester
+    // déterministe : les tests tournent à une heure CI quelconque avec des
+    // candidats US equity → sinon le gate viderait filteredTop hors séance US.
+    if (key === 'GAINERS_OPEN_BUFFER_MIN' || key === 'GAINERS_CLOSE_BUFFER_MIN') return '0';
     return undefined;
   });
   return new TopGainersScannerService(

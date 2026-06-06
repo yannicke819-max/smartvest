@@ -2836,7 +2836,7 @@ export class TopGainersScannerService implements OnModuleInit {
     );
 
     // P18 — LLM re-ranking (inert when SCANNER_LLM_ROUTER_ENABLED=false)
-    const filteredTop = await this.rankCandidates(top);
+    let filteredTop = await this.rankCandidates(top);
 
     // Garde-fou : count current open positions (utilise maxOpen depuis config)
     const { data: openPositions } = await this.supabase
@@ -2950,6 +2950,32 @@ export class TopGainersScannerService implements OnModuleInit {
       `[top-gainers] ${portfolioId.slice(0, 8)}: capacity check — deployed=$${deployedNotional.toFixed(2)}/${availableCapital.toFixed(2)} ` +
       `(${budgetBasedSlots} budget slots, ${slotsAvailable} pos slots, max-per-cycle=${maxPerCycle}) → up to ${effectiveMaxThisCycle} this cycle`,
     );
+
+    // PR #638 — Fenêtre de trading par place [ouverture +openBuffer, clôture
+    // -closeBuffer], DST-aware, AVANT le fetch persistence (analyzeBatch). On ne
+    // consomme AUCUN appel EODHD pendant le buffer d'ouverture ni dans la
+    // dernière heure avant la clôture, et on n'ouvre pas hors fenêtre. Crypto
+    // exempt (24/7). Même logique que l'oversold (#637). DST géré par IANA TZ
+    // (minutesSinceExchangeOpen/ToClose). Réversible : GAINERS_OPEN_BUFFER_MIN /
+    // GAINERS_CLOSE_BUFFER_MIN. ⚠️ secret prod GAINERS_OPEN_BUFFER_MIN=15 →
+    // à passer à 60 (Fly UI) pour appliquer le choix +60min.
+    const openBufMin = Number(this.config.get<string>('GAINERS_OPEN_BUFFER_MIN') ?? '60');
+    const closeBufMin = Number(this.config.get<string>('GAINERS_CLOSE_BUFFER_MIN') ?? '60');
+    if (openBufMin > 0 || closeBufMin > 0) {
+      const nowWin = new Date();
+      const beforeWin = filteredTop.length;
+      filteredTop = filteredTop.filter((c) => {
+        if (c.assetClass === 'crypto_major' || c.assetClass === 'crypto_alt') return true; // 24/7
+        const sinceOpen = minutesSinceExchangeOpen(c.symbol, nowWin);
+        const toClose = minutesToExchangeClose(c.symbol, nowWin);
+        return sinceOpen != null && sinceOpen >= openBufMin && toClose != null && toClose >= closeBufMin;
+      });
+      if (filteredTop.length < beforeWin) {
+        this.logger.log(
+          `[top-gainers] ${portfolioId.slice(0, 8)}: trading-window gate [open+${openBufMin}/close-${closeBufMin}min] ${beforeWin}→${filteredTop.length} (skip buffer ouverture + dernière heure → 0 fetch EODHD)`,
+        );
+      }
+    }
 
     // P8 — Calcule la persistance multi-TF pour les top candidats (parallèle)
     // PR #3 — utilise filteredTop (universe toggles per-portfolio)
@@ -3785,7 +3811,7 @@ export class TopGainersScannerService implements OnModuleInit {
       // open du marché concerné. Justification : volatilité/slippage gap-fill,
       // faux signaux de momentum sur premier tick. Crypto exempt (24/7, no open).
       // Configurable via env GAINERS_OPEN_BUFFER_MIN (default 0 = disabled).
-      const openBufferMin = Number(this.config.get<string>('GAINERS_OPEN_BUFFER_MIN') ?? '0');
+      const openBufferMin = Number(this.config.get<string>('GAINERS_OPEN_BUFFER_MIN') ?? '60');
       if (openBufferMin > 0 && cand.assetClass !== 'crypto_major' && cand.assetClass !== 'crypto_alt') {
         // Minutes depuis l'open RÉEL de la bourse (DST-safe, par exchange). Le bloc
         // agrégé MARKET_SESSION_HOURS est l'horaire d'hiver → en été l'EU ouvrait
