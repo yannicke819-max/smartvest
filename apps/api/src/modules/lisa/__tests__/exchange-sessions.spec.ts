@@ -14,6 +14,7 @@
 import {
   isInExchangeSession,
   isKnownMarketClosed,
+  isKnownMarketHoliday,
   extractSuffix,
   minutesToExchangeClose,
   minutesSinceExchangeOpen,
@@ -705,6 +706,55 @@ describe('isKnownMarketClosed — garde anti-gaspillage EODHD (PR #634)', () => 
 
   it('symbole sans point (AAPL legacy) → false (fail-open)', () => {
     expect(isKnownMarketClosed('AAPL', '2026-05-15T17:00:00Z')).toBe(false);
+  });
+});
+
+describe('isKnownMarketHoliday — fériés additifs pour getCandles/getQuote/livePrice (PR #635)', () => {
+  // Détecte UNIQUEMENT les jours fériés de la bourse (≠ week-end, ≠ horaires,
+  // gérés ailleurs). Couvre US + EU. Fail-open partout ailleurs.
+
+  it('US Christmas 25/12/2026 → true', () => {
+    expect(isKnownMarketHoliday('AAPL.US', '2026-12-25T17:00:00Z')).toBe(true);
+  });
+
+  it('US Memorial Day 25/05/2026 → true', () => {
+    expect(isKnownMarketHoliday('NVDA.US', '2026-05-25T15:00:00Z')).toBe(true);
+  });
+
+  it('US jour ouvré normal (15/05/2026) → false', () => {
+    expect(isKnownMarketHoliday('AAPL.US', '2026-05-15T17:00:00Z')).toBe(false);
+  });
+
+  it('US week-end (samedi, PAS un férié) → false (le week-end est géré ailleurs)', () => {
+    expect(isKnownMarketHoliday('AAPL.US', '2026-05-09T17:00:00Z')).toBe(false);
+  });
+
+  it('EU Whit Monday 25/05/2026 (Paris) → true', () => {
+    expect(isKnownMarketHoliday('NANO.PA', '2026-05-25T10:00:00Z')).toBe(true);
+  });
+
+  it('EU Good Friday 03/04/2026 (XETRA + LSE) → true', () => {
+    expect(isKnownMarketHoliday('SAP.XETRA', '2026-04-03T10:00:00Z')).toBe(true);
+    expect(isKnownMarketHoliday('VOD.L', '2026-04-03T10:00:00Z')).toBe(true);
+  });
+
+  // --- FAIL-OPEN : pas de calendrier → false (ne pas couper) ---
+  it('crypto .CC → false (fail-open)', () => {
+    expect(isKnownMarketHoliday('BTC-USD.CC', '2026-12-25T12:00:00Z')).toBe(false);
+  });
+
+  it('Asia Tokyo (pas de calendrier férié) → false (fail-open) même un 1er janvier', () => {
+    expect(isKnownMarketHoliday('7203.T', '2026-01-01T02:00:00Z')).toBe(false);
+  });
+
+  it('suffixe inconnu → false (fail-open)', () => {
+    expect(isKnownMarketHoliday('FOO.ZZZ', '2026-12-25T17:00:00Z')).toBe(false);
+  });
+
+  it('sans suffixe / vide / date invalide → false', () => {
+    expect(isKnownMarketHoliday('BTCUSDT', '2026-12-25T12:00:00Z')).toBe(false);
+    expect(isKnownMarketHoliday('', '2026-12-25T12:00:00Z')).toBe(false);
+    expect(isKnownMarketHoliday('AAPL.US', 'not-a-date')).toBe(false);
   });
 });
 
