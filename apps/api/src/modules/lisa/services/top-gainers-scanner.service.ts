@@ -4193,14 +4193,15 @@ export class TopGainersScannerService implements OnModuleInit {
             (this.config.get<string>('TWELVEDATA_FILTER_ASIA_SUPERTREND_ENABLED') ?? 'false') === 'true';
           const liveEu =
             (this.config.get<string>('TWELVEDATA_FILTER_EU_SUPERTREND_ENABLED') ?? 'false') === 'true';
-          const shadowUs =
-            (this.config.get<string>('TWELVEDATA_FILTER_US_SUPERTREND_SHADOW') ?? 'false') === 'true';
+          // PR #641 — supertrend shadow US/EU/ASIA TUÉ (inventaire 06/06 : pas de
+          // verdict d'amélioration, ne sert que si on active le filtre live). Hard-off :
+          // flags TWELVEDATA_FILTER_*_SUPERTREND_SHADOW ignorés (secrets orphelins).
+          // Le live (TWELVEDATA_FILTER_*_SUPERTREND_ENABLED) reste intact s'il est activé.
+          const shadowUs = false;
           const shadowCrypto =
             (this.config.get<string>('TWELVEDATA_FILTER_CRYPTO_RSI_SHADOW') ?? 'false') === 'true';
-          const shadowAsia =
-            (this.config.get<string>('TWELVEDATA_FILTER_ASIA_SUPERTREND_SHADOW') ?? 'false') === 'true';
-          const shadowEu =
-            (this.config.get<string>('TWELVEDATA_FILTER_EU_SUPERTREND_SHADOW') ?? 'false') === 'true';
+          const shadowAsia = false;
+          const shadowEu = false;
           const supertrendEnabled = liveUs || shadowUs;
           const cryptoRsiEnabled = liveCrypto || shadowCrypto;
           const asiaSupertrendEnabled = liveAsia || shadowAsia;

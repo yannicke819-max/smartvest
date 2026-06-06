@@ -47,7 +47,10 @@ export class FeatureABTuningService {
   ) {}
 
   onModuleInit(): void {
-    this.enabled = (this.config.get<string>('FEATURE_AB_TUNING_ENABLED') ?? 'false').toLowerCase() === 'true';
+    // PR #641 — Feature A/B tuning TUÉ (inventaire 06/06 : 98% no-op sur 1000
+    // décisions, 1.8% d'actions à impact non démontré = bruit). Hard-off : le flag
+    // FEATURE_AB_TUNING_ENABLED est ignoré (secret Fly orphelin → à supprimer).
+    this.enabled = false;
     const wdRaw = Number.parseInt(this.config.get<string>('FEATURE_AB_WINDOW_DAYS') ?? '', 10);
     this.windowDays = Number.isFinite(wdRaw) && wdRaw >= 3 && wdRaw <= 90 ? wdRaw : 14;
     if (this.enabled) {
