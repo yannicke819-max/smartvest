@@ -151,3 +151,55 @@ export function businessDaysSince(from: Date | string, to: Date | string): numbe
   }
   return count;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Gate régime macro — décision PURE (extraite pour testabilité).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Seuils du gate régime (région-aware : VIX/SPY US ou V2TX/SX5E EU). */
+export interface RegimeThresholds {
+  vixMax: number; // ex 17 (US) / 22 (EU)
+  vixDeltaMax: number; // ex +10% — spike de volatilité 1 jour
+  idx5dMin: number; // ex -1% (US) / -1.5% (EU) — momentum index 5 jours
+}
+
+/** Indicateurs observés (null = indisponible → la condition est ignorée). */
+export interface RegimeInputs {
+  vix: number | null;
+  vixChg: number | null; // Δ 1 jour en %
+  idx5d: number | null; // perf index 5 jours en %
+}
+
+/**
+ * Décide si le régime macro BLOQUE le scan oversold.
+ *
+ * Block si AU MOINS UNE des 3 conditions est violée :
+ *   1. vix    > vixMax       (volatilité absolue trop haute)
+ *   2. vixChg > vixDeltaMax  (spike de vol 1 jour)
+ *   3. idx5d  < idx5dMin      (index en chute sur 5 jours)
+ *
+ * Un indicateur `null` (indispo) n'enclenche jamais un block — le gate ne mord
+ * que sur une donnée présente ET hostile (fail-open par indicateur). `labels`
+ * ne sert qu'à formater `reason` (VIX/SPY ou V2TX/SX5E).
+ *
+ * Logique identique à l'ancienne version inline du service (behavior-preserving),
+ * extraite ici pour être testable sans mock réseau.
+ */
+export function decideRegimeBlock(
+  inputs: RegimeInputs,
+  thresholds: RegimeThresholds,
+  labels: { vix: string; idx: string },
+): { block: boolean; reason: string } {
+  const { vix, vixChg, idx5d } = inputs;
+  const { vixMax, vixDeltaMax, idx5dMin } = thresholds;
+  if (vix !== null && vix > vixMax) {
+    return { block: true, reason: `${labels.vix} ${vix.toFixed(2)} > ${vixMax}` };
+  }
+  if (vixChg !== null && vixChg > vixDeltaMax) {
+    return { block: true, reason: `Δ${labels.vix} 1d ${vixChg.toFixed(1)}% > +${vixDeltaMax}%` };
+  }
+  if (idx5d !== null && idx5d < idx5dMin) {
+    return { block: true, reason: `${labels.idx} 5d ${idx5d.toFixed(2)}% < ${idx5dMin}%` };
+  }
+  return { block: false, reason: 'pass' };
+}

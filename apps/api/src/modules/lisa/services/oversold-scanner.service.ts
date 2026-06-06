@@ -29,6 +29,7 @@ import {
   buildOversoldCandidates,
   selectOversoldOpens,
   businessDaysSince,
+  decideRegimeBlock,
   type OversoldConfig,
   type EodBar,
   type OversoldCandidate,
@@ -230,6 +231,7 @@ export class OversoldScannerService {
             vix: regime.vix,
             vix_chg_pct: regime.vixChg,
             idx_5d_pct: regime.idx5d,
+            vix_source: regime.vixSource,
             reason: regime.reason,
             thresholds: regime.thresholds,
           },
@@ -420,8 +422,9 @@ export class OversoldScannerService {
     const notionalRatio = this.intradayNotionalRatio();
 
     // Regime gate aussi appliqué à l'intraday (sinon le filet du daily 21:15
-    // est contourné par les opens 15-19 UTC en plein régime hostile).
-    const regime = await this.checkRegimeGate(cfg.universe);
+    // est contourné par les opens 15-19 UTC en plein régime hostile). En US,
+    // le gate lit le VIX LIVE ici (intraday) au lieu du close EOD J-1.
+    const regime = await this.checkRegimeGate(cfg.universe, { intraday: true });
     if (regime.block) {
       this.logger.log(
         `[oversold-intraday] portfolio=${portfolioId.slice(0, 8)} universe=${cfg.universe} region=${regime.region} BLOCKED: ${regime.reason}`,
@@ -431,7 +434,7 @@ export class OversoldScannerService {
           portfolioId,
           kind: 'oversold_scan_blocked_regime',
           summary: `Oversold intraday bloqué (régime ${regime.region}): ${regime.reason}`,
-          rationale: `intraday cron ${new Date().toISOString().slice(11, 16)} UTC, gate macro tire`,
+          rationale: `intraday cron ${new Date().toISOString().slice(11, 16)} UTC — ${regime.reason} (VIX ${regime.vixSource})`,
           payload: {
             phase: 'intraday',
             region: regime.region,
@@ -439,6 +442,7 @@ export class OversoldScannerService {
             vix: regime.vix,
             vix_chg_pct: regime.vixChg,
             idx_5d_pct: regime.idx5d,
+            vix_source: regime.vixSource,
             reason: regime.reason,
           },
           triggeredBy: 'autopilot_cron',
@@ -608,13 +612,17 @@ export class OversoldScannerService {
    * Désactivable via OVERSOLD_REGIME_GATE_ENABLED=false. Tous les seuils
    * sont individuellement tunables via secret env (cf. ci-dessous).
    */
-  private async checkRegimeGate(universe: string): Promise<{
+  private async checkRegimeGate(
+    universe: string,
+    opts?: { intraday?: boolean },
+  ): Promise<{
     block: boolean;
     reason: string;
     region: 'US' | 'EU';
     vix: number | null;
     vixChg: number | null;
     idx5d: number | null;
+    vixSource: 'live' | 'eod';
     thresholds: { vixMax: number; vixDeltaMax: number; idx5dMin: number };
   }> {
     const enabled =
@@ -643,17 +651,45 @@ export class OversoldScannerService {
     const thresholds = { vixMax, vixDeltaMax, idx5dMin };
 
     if (!enabled) {
-      return { block: false, reason: 'gate disabled', region, vix: null, vixChg: null, idx5d: null, thresholds };
+      return { block: false, reason: 'gate disabled', region, vix: null, vixChg: null, idx5d: null, vixSource: 'eod', thresholds };
     }
 
-    const [vixBars, idxBars] = await Promise.all([
-      this.fetchEodBars(vixSym).catch(() => [] as EodBar[]),
-      this.fetchEodBars(idxSym).catch(() => [] as EodBar[]),
-    ]);
+    const labels = { vix: region === 'EU' ? 'V2TX' : 'VIX', idx: region === 'EU' ? 'SX5E' : 'SPY' };
+
+    // Intraday US : on lit le VIX LIVE (real-time EODHD) au lieu du close EOD
+    // J-1. Sinon un spike intraday (ex 05/06 : VIX 15.40 → 21.51) n'est vu qu'au
+    // scan EOD de 21:15, après que l'intraday ait pu ouvrir en plein régime
+    // hostile. EODHD ne sert PAS le live des indices EU (V2TX/SX5E = "NA") →
+    // l'EU reste sur EOD. Tout échec live → fallback EOD (jamais de bypass).
+    const liveIntraday =
+      opts?.intraday === true &&
+      region === 'US' &&
+      (this.config.get<string>('OVERSOLD_REGIME_GATE_INTRADAY_LIVE') ?? 'true').toLowerCase() === 'true';
 
     let vix: number | null = null;
     let vixChg: number | null = null;
-    if (vixBars.length >= 2) {
+    let vixSource: 'live' | 'eod' = 'eod';
+
+    if (liveIntraday) {
+      const q = await this.fetchLiveIndexQuote(vixSym).catch(() => null);
+      if (q) {
+        vix = q.live;
+        vixChg = Number.isFinite(q.changePct) ? q.changePct : null;
+        vixSource = 'live';
+      }
+    }
+
+    // VIX EOD : seulement si le live n'a pas fourni (gate EOD, EU, ou échec live).
+    // SPY/SX5E 5j : TOUJOURS EOD (signal lent, drift intraday négligeable).
+    const needVixEod = vixSource === 'eod';
+    const [vixBars, idxBars] = await Promise.all([
+      needVixEod
+        ? this.fetchEodBars(vixSym).catch(() => [] as EodBar[])
+        : Promise.resolve([] as EodBar[]),
+      this.fetchEodBars(idxSym).catch(() => [] as EodBar[]),
+    ]);
+
+    if (needVixEod && vixBars.length >= 2) {
       vix = vixBars[vixBars.length - 1].close;
       const prev = vixBars[vixBars.length - 2].close;
       vixChg = prev > 0 ? (vix / prev - 1) * 100 : null;
@@ -666,27 +702,44 @@ export class OversoldScannerService {
       idx5d = fiveBack > 0 ? (last / fiveBack - 1) * 100 : null;
     }
 
-    const vixLabel = region === 'EU' ? 'V2TX' : 'VIX';
-    const idxLabel = region === 'EU' ? 'SX5E' : 'SPY';
+    const decision = decideRegimeBlock({ vix, vixChg, idx5d }, thresholds, labels);
+    return { ...decision, region, vix, vixChg, idx5d, vixSource, thresholds };
+  }
 
-    if (vix !== null && vix > vixMax) {
-      return { block: true, reason: `${vixLabel} ${vix.toFixed(2)} > ${vixMax}`, region, vix, vixChg, idx5d, thresholds };
-    }
-    if (vixChg !== null && vixChg > vixDeltaMax) {
+  /**
+   * Quote temps réel EODHD pour un indice/ETF (endpoint real-time).
+   * Retourne { live, prevClose, changePct } ou null si indispo ("NA") / échec.
+   *
+   * Utilisé par le gate régime INTRADAY US (VIX live). EODHD ne sert PAS le live
+   * des indices EU (V2TX/SX5E renvoient "NA" → Number("NA")=NaN → null), d'où le
+   * fallback EOD côté caller.
+   */
+  private async fetchLiveIndexQuote(
+    symbol: string,
+  ): Promise<{ live: number; prevClose: number; changePct: number } | null> {
+    const apiKey = this.config.get<string>('EODHD_API_KEY');
+    if (!apiKey) return null;
+    const url =
+      `https://eodhd.com/api/real-time/${encodeURIComponent(symbol)}` +
+      `?api_token=${apiKey}&fmt=json`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.FETCH_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, { signal: controller.signal });
+      if (!res.ok) return null;
+      const j = (await res.json()) as Record<string, unknown>;
+      const live = Number(j.close);
+      if (!Number.isFinite(live) || live <= 0) return null;
+      const prevClose = Number(j.previousClose);
+      const changePct = Number(j.change_p);
       return {
-        block: true,
-        reason: `Δ${vixLabel} 1d ${vixChg.toFixed(1)}% > +${vixDeltaMax}%`,
-        region,
-        vix,
-        vixChg,
-        idx5d,
-        thresholds,
+        live,
+        prevClose: Number.isFinite(prevClose) ? prevClose : NaN,
+        changePct: Number.isFinite(changePct) ? changePct : NaN,
       };
+    } finally {
+      clearTimeout(timer);
     }
-    if (idx5d !== null && idx5d < idx5dMin) {
-      return { block: true, reason: `${idxLabel} 5d ${idx5d.toFixed(2)}% < ${idx5dMin}%`, region, vix, vixChg, idx5d, thresholds };
-    }
-    return { block: false, reason: 'pass', region, vix, vixChg, idx5d, thresholds };
   }
 
   /**
