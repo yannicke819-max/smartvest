@@ -126,10 +126,14 @@ export class OversoldScannerService {
   }
 
   /**
-   * Cron quotidien 21:15 UTC.
+   * Cron 21:15 UTC, LUN-VEN uniquement (06/06). Le scan EOD agit sur la dernière
+   * barre de clôture, qui ne se met à jour qu'après une vraie séance. Sam+dim =
+   * marchés fermés → barre = vendredi (stale) → 0 nouvelle opportunité + burst
+   * EODHD inutile sur tout l'univers. Vendredi (jour 5) reste inclus : les chutes
+   * du vendredi sont achetées et tenues le weekend (hold J+10, weekends exclus).
    * Format crontab nestjs (6 champs) : sec min hour day month weekday.
    */
-  @Cron('0 15 21 * * *', { name: 'oversold-daily-scan', timeZone: 'UTC' })
+  @Cron('0 15 21 * * 1-5', { name: 'oversold-daily-scan', timeZone: 'UTC' })
   async runDailyScan(): Promise<void> {
     // Fail-safe global : jamais throw qui crashe le cron NestJS.
     try {
