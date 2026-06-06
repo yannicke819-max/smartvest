@@ -110,7 +110,7 @@ export function MacroModeSelector({ portfolioId }: { portfolioId: string }) {
         <ModeCard
           icon={Rocket}
           title="🚀 Gainers"
-          subtitle="Scanner momentum 24/7 · 100% autonome · zero LLM"
+          subtitle="Scanner momentum cross-asset · agent LLM Mistral · autonome"
           description={gainersDescription}
           isActive={currentMode === 'gainers'}
           onClick={() => handleSelect('gainers')}
@@ -119,7 +119,7 @@ export function MacroModeSelector({ portfolioId }: { portfolioId: string }) {
         <ModeCard
           icon={TrendingDown}
           title="📉 Oversold"
-          subtitle="Mean-reversion swing · achète les chutes · scan 1×/jour"
+          subtitle="Mean-reversion swing · achète les chutes · scan EOD + intraday"
           description="Inverse du momentum : achète les titres ayant chuté de -5 à -12% sur 1J (sur-réaction), exclut les falling-knife (<-12%). Hold J+10 ouvrés, stop catastrophe -15% par position, book diversifié (~150 lignes). Edge mean-reversion validé 3-fold (alpha +1.4% vs SPY, N=1416)."
           isActive={currentMode === 'oversold'}
           onClick={() => handleSelect('oversold')}
@@ -145,7 +145,7 @@ export function MacroModeSelector({ portfolioId }: { portfolioId: string }) {
                 {confirmMode === 'gainers'
                   ? 'Active le scanner Gainers (24/7 cross-asset). Autopilot activé, kill-switch désarmé. Profile et capital_discipline_mode actuels préservés.'
                   : confirmMode === 'oversold'
-                  ? 'Active le scanner Oversold (mean-reversion swing, 1 scan/jour post-close US). Achète les titres ayant chuté de -5 à -12%, hold J+10, stop catastrophe -15%/position. Autopilot activé, kill-switch désarmé. Exige capital ≥ $5000. Profile et capital_discipline_mode préservés.'
+                  ? 'Active le scanner Oversold (mean-reversion swing, scan EOD post-close + intraday horaire EU + US). Achète les titres ayant chuté de -5 à -12%, hold J+10, stop catastrophe -15%/position. Autopilot activé, kill-switch désarmé. Exige capital ≥ $5000. Profile et capital_discipline_mode préservés.'
                   : 'Cette action écrase les paramètres suivants : profile, capital_discipline_mode, risk_constraints (caps, stops, leverage), autopilot_aggressive, cycle_minutes. Capital, objectifs, kill-switch préservés.'}
               </p>
               {applyError && (
