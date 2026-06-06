@@ -55,6 +55,7 @@ import { ShadowSizingOrchestratorService } from './services/shadow-sizing-orches
 import { LiveTraderAgentService } from './services/live-trader-agent.service';
 import { MistralShadowService } from './services/mistral-shadow.service';
 import { MistralLargeShadowService } from './services/mistral-large-shadow.service';
+import { MistralSmallService } from './services/mistral-small.service';
 import { LlmABShadowService } from './services/llm-ab-shadow.service';
 import { LlmAccuracyService } from './services/llm-accuracy.service';
 import { MainScannerPostMortemService } from './services/main-scanner-postmortem.service';
@@ -229,8 +230,11 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     // concordance avant migration éventuelle TRADER vers Mistral Large 3 (74%
     // moins cher que Gemini Pro). Activation MISTRAL_API_KEY + MISTRAL_SHADOW_ENABLED.
     MistralShadowService,
-    // PR #521 — 2e instance dédiée Mistral Large 3 (cheap tier) pour 4-way A/B
+    // PR #521 — 2e instance dédiée Mistral Large 3 (FLAGSHIP $2/$6, PAS cheap) pour 4-way A/B
     MistralLargeShadowService,
+    // 06/06 — Mistral Small (tier rapide cheap ~$0.10/$0.30, 20.83 RPS) pour le
+    // tier simple/fréquent quand LLM_FAST_PROVIDER=mistral-small.
+    MistralSmallService,
     // PR #523 — LlmABShadowService générique pour 4 call sites peripheriques
     // (scanner_postmortem, strategy_coach, daily_brief, risk_monitor)
     LlmABShadowService,

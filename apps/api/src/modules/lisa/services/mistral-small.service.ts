@@ -1,39 +1,30 @@
 /**
- * MistralLargeShadowService — 2e adapter Mistral dédié au tier "Large 3"
- * (FLAGSHIP — le modèle Mistral le PLUS cher et le plus capable, PAS un cheap
- * tier malgré l'ancien libellé erroné corrigé le 06/06).
+ * MistralSmallService — adapter Mistral "Small" dédié au TIER RAPIDE (tâches
+ * simples & fréquentes : scanner signal gate, risk_monitor scoring, daily brief,
+ * retrospective…).
  *
- * Complémente MistralShadowService (Medium = mid-tier) en ajoutant un shadow sur
- * le flagship Mistral pour comparer simultanément :
- *   - Pro (decision réelle appliquée)
- *   - Flash (shadow Gemini cheap tier)
- *   - Medium (shadow Mistral mid-tier)
- *   - Large 3 (shadow Mistral FLAGSHIP, ce service)
+ * Rationale (06/06/2026) : ne PLUS payer du Mistral Medium ($0.40/$2.00 par MTok,
+ * throttlé 0.42 RPS) sur des tâches simples à fort volume. Mistral Small 2506 =
+ * ~$0.10/$0.30 par MTok ET 20.83 RPS / 5M TPM → cheap ET sans goulot. Le tier
+ * RAISONNEMENT (callWithPro : décisions trader, post-mortem, lessons, coach) reste
+ * sur Mistral Medium — seul le tier rapide bascule ici.
  *
- * Pourquoi un service séparé plutôt qu'instance multiple de MistralShadowService :
- * NestJS DI inject la même instance partout par défaut. Pour avoir 2 instances
- * Mistral avec configs différentes (Medium vs Large), le plus clean est 2 classes
- * dédiées qui partagent le même fetch logic mais hardcodent leur model.
- *
- * Pricing officiel (recalibré 03/06/2026, mistral.ai/pricing) :
- *   - Mistral Large : $2.00 / MTok input, $6.00 / MTok output (≈ 7× Mistral Medium)
- *
- * Activation :
- *   - MISTRAL_API_KEY (partagé avec MistralShadowService)
- *   - MISTRAL_LARGE_SHADOW_ENABLED=true (flag dédié, default false)
+ * Activé par ScannerLlmRouterService.call() quand LLM_FAST_PROVIDER=mistral-small.
+ * Modèle override via MISTRAL_SMALL_MODEL. Partage MISTRAL_API_KEY + MISTRAL_FREE_TIER
+ * avec les autres adapters Mistral (Medium/Large).
  */
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 const MISTRAL_API_URL = 'https://api.mistral.ai/v1/chat/completions';
-const MODEL_LARGE_LATEST = 'mistral-large-latest';
-// Recalibré 03/06/2026 (mistral.ai/pricing) — mistral-large-2.x facturé
-// $2.00/$6.00 par MTok (anciennes valeurs 0.50/1.50 sous-estimaient × 4).
-const PRICE_INPUT_PER_M = 2.00;
-const PRICE_OUTPUT_PER_M = 6.00;
-const PRICE_CACHED_PER_M = 0.50; // ~25% du fresh input
+const MODEL_SMALL_DEFAULT = 'mistral-small-2506';
+// Pricing officiel Mistral Small (mistral.ai/pricing, ~2026). Sert au TRACKING
+// du coût, pas à la facturation — ajuster si le tarif dérive durablement.
+const PRICE_INPUT_PER_M = 0.1;
+const PRICE_OUTPUT_PER_M = 0.3;
+const PRICE_CACHED_PER_M = 0.025; // ~25% du fresh input
 
-export interface MistralLargeShadowResult {
+export interface MistralSmallResult {
   content: string | null;
   inputTokens: number;
   outputTokens: number;
@@ -45,25 +36,22 @@ export interface MistralLargeShadowResult {
 }
 
 @Injectable()
-export class MistralLargeShadowService {
-  private readonly logger = new Logger(MistralLargeShadowService.name);
+export class MistralSmallService {
+  private readonly logger = new Logger(MistralSmallService.name);
   private readonly apiKey: string | undefined;
-  private readonly enabled: boolean;
+  private readonly model: string;
   private readonly freeTier: boolean;
 
   constructor(private readonly config: ConfigService) {
     this.apiKey = this.config.get<string>('MISTRAL_API_KEY');
-    this.enabled = (this.config.get<string>('MISTRAL_LARGE_SHADOW_ENABLED') ?? 'false').toLowerCase() === 'true';
+    this.model = this.config.get<string>('MISTRAL_SMALL_MODEL') ?? MODEL_SMALL_DEFAULT;
     this.freeTier = (this.config.get<string>('MISTRAL_FREE_TIER') ?? 'true').toLowerCase() === 'true';
-    if (this.enabled && !this.apiKey) {
-      this.logger.warn('[mistral-large-shadow] ENABLED=true mais MISTRAL_API_KEY absent → service inerte');
-    } else if (this.enabled) {
-      this.logger.log(`[mistral-large-shadow] ENABLED — model=${MODEL_LARGE_LATEST} freeTier=${this.freeTier}`);
-    }
   }
 
+  /** Configuré dès que la clé Mistral partagée est présente. L'activation runtime
+   *  est gouvernée par LLM_FAST_PROVIDER=mistral-small côté router. */
   isConfigured(): boolean {
-    return this.enabled && !!this.apiKey;
+    return !!this.apiKey;
   }
 
   async call(params: {
@@ -72,16 +60,16 @@ export class MistralLargeShadowService {
     temperature?: number;
     maxTokens?: number;
     timeoutMs?: number;
-  }): Promise<MistralLargeShadowResult> {
+  }): Promise<MistralSmallResult> {
     const t0 = Date.now();
-    const result: MistralLargeShadowResult = {
+    const result: MistralSmallResult = {
       content: null,
       inputTokens: 0,
       outputTokens: 0,
       costUsd: 0,
       latencyMs: 0,
-      providerId: 'mistral-large',
-      model: MODEL_LARGE_LATEST,
+      providerId: 'mistral-small',
+      model: this.model,
       error: null,
     };
 
@@ -99,7 +87,7 @@ export class MistralLargeShadowService {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: MODEL_LARGE_LATEST,
+          model: this.model,
           messages: [
             { role: 'system', content: params.system },
             { role: 'user', content: params.user },
@@ -132,8 +120,6 @@ export class MistralLargeShadowService {
       result.outputTokens = data.usage?.completion_tokens ?? 0;
       const cachedTokens = data.usage?.prompt_tokens_details?.cached_tokens ?? 0;
       const freshInputTokens = Math.max(0, result.inputTokens - cachedTokens);
-      // En free tier (default), coût réel = 0 (Experiment plan Mistral 1B tok/mois).
-      // Cf. mistral-shadow.service.ts pour la rationale et MISTRAL_FREE_TIER env.
       if (this.freeTier) {
         result.costUsd = 0;
       } else {
