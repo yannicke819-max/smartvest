@@ -7,6 +7,7 @@ import { PerformanceService } from '../../performance/performance.service';
 import { LisaService } from './lisa.service';
 import { DecisionLogService } from './decision-log.service';
 import { RealtimePriceService } from './realtime-price.service';
+import { isMarketOpen, sessionClassForSymbol } from './market-session.helper';
 import { MaterialChangeDetectorService } from './material-change-detector.service';
 import { DailyProfitGovernor } from './daily-profit-governor.service';
 import { LisaReplayConnectorService } from '../../bot-lab/services/lisa-replay-connector.service';
@@ -889,7 +890,16 @@ export class LisaAutopilotService implements OnApplicationBootstrap {
     //    refetch pas si un ticker a déjà un prix de <30s).
     // Serrer à 15s (avec cron à 30s → refresh chaque tick = max age 30s)
     const STALE_MS = 15_000;
+    // 06/06 — skip les equities dont le marché est FERMÉ : leur quote EOD est
+    // gelée → re-fetch EODHD inutile (cf. fix LIVE_PRICE_SKIP_CLOSED_MARKET côté
+    // fetchLivePriceInner). Crypto déjà géré via WS plus haut. Suffixe inconnu
+    // (forex, indices…) → sessionClassForSymbol=null → non gaté (fail-open).
+    const skipClosed = (this.config.get<string>('LIVE_PRICE_SKIP_CLOSED_MARKET') ?? 'true').toLowerCase() === 'true';
     const toRefresh = Array.from(otherSymbols).filter((s) => {
+      if (skipClosed) {
+        const sess = sessionClassForSymbol(s);
+        if (sess && !isMarketOpen(sess)) return false;
+      }
       const cached = this.realtimePrice.getCached(s);
       if (!cached) return true;
       return (Date.now() - new Date(cached.asOf).getTime()) > STALE_MS;

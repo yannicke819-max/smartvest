@@ -27,6 +27,7 @@ import { BinanceAdapter } from '@smartvest/brokers';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { DecisionLogService } from './decision-log.service';
 import { RealtimePriceService } from './realtime-price.service';
+import { isMarketOpen, sessionClassForSymbol } from './market-session.helper';
 import { EodhdEnrichmentService } from './eodhd-enrichment.service';
 import { EodhdCalendarService } from './eodhd-calendar.service';
 import { NewsRankerService } from './news-ranker.service';
@@ -3766,6 +3767,36 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       // Si symbole inconnu de la table fallback : marqué 'fallback_unknown'
       // → garde-fou consumer DOIT skipper toute action destructive.
       return { symbol, price: fb ?? '0', asOf: now, source: fb ? 'fallback_quota_cap' : 'fallback_unknown' };
+    }
+
+    // 06/06 — Skip EODHD real-time si le marché EQUITY est FERMÉ. La quote serait
+    // l'EOD close gelé (~15h stale) ; la re-tirer en boucle = gaspillage pur
+    // (constaté : ~6k calls EODHD/h le weekend sur des positions equity figées).
+    // On renvoie le dernier prix connu (cache même périmé via snapshot(), sinon
+    // fallback statique) marqué '*_market_closed' → stale → les garde-fous stop/TP
+    // ne déclenchent pas sur un prix figé (correct : marché fermé = 0 mouvement).
+    // Crypto (24/7), forex, indices et marchés OUVERTS : sessionClassForSymbol=null
+    // ou isMarketOpen=true → inchangés. Réversible via LIVE_PRICE_SKIP_CLOSED_MARKET.
+    if ((this.config.get<string>('LIVE_PRICE_SKIP_CLOSED_MARKET') ?? 'true').toLowerCase() === 'true') {
+      const sess = sessionClassForSymbol(symbol);
+      if (sess && !isMarketOpen(sess, new Date())) {
+        const anyCached = this.realtimePrice
+          .snapshot()
+          .find((s) => s.symbol.toUpperCase() === symbol.toUpperCase());
+        if (anyCached) {
+          return {
+            symbol,
+            price: anyCached.price,
+            asOf: new Date(Date.now() - anyCached.ageMs).toISOString(),
+            source: `${anyCached.source}_market_closed`,
+          };
+        }
+        const fbClosed = this.getFallbackPrice(symbol);
+        if (fbClosed) {
+          return { symbol, price: fbClosed, asOf: now, source: 'fallback_market_closed' };
+        }
+        // Ni cache ni fallback → on laisse la cascade EODHD seeder 1× (rare).
+      }
     }
 
     // 1. Try EODHD real-time endpoint
