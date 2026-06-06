@@ -82,7 +82,7 @@ import { SymbolAtrCacheService } from './symbol-atr-cache.service';
 import { MacroVetoService } from './macro-veto.service';
 import { GainersUserShadowService, type ShadowDecision } from './gainers-user-shadow.service';
 import { dollarVolumeUsd, passesLiquidityFloor } from './gainers-liquidity.helper';
-import { isInExchangeSession, minutesToExchangeClose, minutesSinceExchangeOpen } from './exchange-sessions.helper';
+import { isInExchangeSession, isKnownMarketClosed, minutesToExchangeClose, minutesSinceExchangeOpen } from './exchange-sessions.helper';
 import { ScannerLlmRouterService } from './scanner-llm-router.service';
 import { parseLlmJson } from './llm-json-parser.helper';
 // PR6.3 — Shadow wiring (LisaModule import GainersModule pour résolution DI)
@@ -2350,6 +2350,20 @@ export class TopGainersScannerService implements OnModuleInit {
     const leveragedOn = (this.config.get<string>('GAINERS_LEVERAGED_PROXIES_ENABLED') ?? 'false').toLowerCase() === 'true';
     const basket = leveragedOn ? [...GAINERS_FIXED_BASKET, ...GAINERS_LEVERAGED_PROXIES] : GAINERS_FIXED_BASKET;
     if (!enabled || basket.length === 0) return [];
+
+    // PR #636 — skip le batch real-time si TOUT le panier est sur marché connu+
+    // fermé (week-end, hors session, férié US/EU). Panier 100% .US (ETF GLD/XLE/
+    // GDX… + majors XOM/CVX) → close EOD figé hors séance = gaspillage pur. Un
+    // seul appel HTTP batch → gating tout-ou-rien (si ≥1 symbole tradable on
+    // garde l'appel). Réversible via GAINERS_FIXED_BASKET_SKIP_CLOSED (default true).
+    const skipClosed = (this.config.get<string>('GAINERS_FIXED_BASKET_SKIP_CLOSED') ?? 'true').toLowerCase() !== 'false';
+    if (skipClosed) {
+      const now = new Date();
+      if (basket.every((e) => isKnownMarketClosed(e.symbol, now))) {
+        this.logger.debug('[top-gainers] fixed-basket skip — panier entièrement sur marché fermé (économie EODHD)');
+        return [];
+      }
+    }
 
     const capBySymbol = new Map(basket.map((e) => [e.symbol.toUpperCase(), e]));
     const symbols = basket.map((e) => e.symbol);

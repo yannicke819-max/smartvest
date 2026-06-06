@@ -4117,6 +4117,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     // US equities (.US) : lun-ven 13h-21h UTC (tolère pre/post market étendu)
     if (ticker.endsWith('.US')) {
       if (day === 0 || day === 6) return false; // weekend
+      if (isKnownMarketHoliday(ticker, now)) return false; // PR #636 — férié NYSE (proxies macro figés)
       if (minuteOfDay < 13 * 60 || minuteOfDay >= 21 * 60) return false;
       return true;
     }
