@@ -758,6 +758,66 @@ describe('isKnownMarketHoliday — fériés additifs pour getCandles/getQuote/li
   });
 });
 
+describe('Fenêtre oversold intraday [ouverture +1h, clôture -1h] DST-aware (PR #637)', () => {
+  // Reproduit le gate scanPortfolioIntraday : on ne scanne qu'entre +1h après
+  // l'ouverture et -1h avant la clôture de la bourse. Même logique US et EU ;
+  // le DST décale la séance EU d'1h (été 07:00-15:30 vs hiver 08:00-16:30 UTC).
+  const inWindow = (sym: string, at: string): boolean => {
+    const so = minutesSinceExchangeOpen(sym, at);
+    const tc = minutesToExchangeClose(sym, at);
+    return so != null && so >= 60 && tc != null && tc >= 60;
+  };
+
+  // --- EU Euronext (.PA) ÉTÉ : séance 07:00-15:30 UTC → fenêtre [08:00, 14:30] ---
+  it('EU été : 07:30 UTC (30min après open) → hors fenêtre', () => {
+    expect(inWindow('MC.PA', '2026-06-08T07:30:00Z')).toBe(false);
+  });
+  it('EU été : 08:00 UTC (1h après open) → dans la fenêtre', () => {
+    expect(inWindow('MC.PA', '2026-06-08T08:00:00Z')).toBe(true);
+  });
+  it('EU été : 14:30 UTC (1h avant close 15:30) → dans la fenêtre (limite)', () => {
+    expect(inWindow('MC.PA', '2026-06-08T14:30:00Z')).toBe(true);
+  });
+  it('EU été : 15:00 UTC (30min avant close) → hors fenêtre', () => {
+    expect(inWindow('MC.PA', '2026-06-08T15:00:00Z')).toBe(false);
+  });
+
+  // --- EU Euronext (.PA) HIVER : séance 08:00-16:30 UTC → fenêtre [09:00, 15:30] ---
+  // Preuve du DST : 08:00 UTC est DANS la fenêtre l'été mais HORS l'hiver.
+  it('EU hiver : 08:00 UTC (= open, 0min) → hors fenêtre (≠ été)', () => {
+    expect(inWindow('MC.PA', '2026-01-12T08:00:00Z')).toBe(false);
+  });
+  it('EU hiver : 09:00 UTC (1h après open) → dans la fenêtre', () => {
+    expect(inWindow('MC.PA', '2026-01-12T09:00:00Z')).toBe(true);
+  });
+  it('EU hiver : 15:30 UTC (1h avant close 16:30) → dans la fenêtre', () => {
+    expect(inWindow('MC.PA', '2026-01-12T15:30:00Z')).toBe(true);
+  });
+  it('EU hiver : 16:00 UTC (30min avant close) → hors fenêtre', () => {
+    expect(inWindow('MC.PA', '2026-01-12T16:00:00Z')).toBe(false);
+  });
+
+  // --- US (.US) ÉTÉ : séance 13:30-20:00 UTC → fenêtre [14:30, 19:00] ---
+  it('US été : 14:00 UTC (30min après open) → hors fenêtre', () => {
+    expect(inWindow('AAPL.US', '2026-06-08T14:00:00Z')).toBe(false);
+  });
+  it('US été : 14:30 UTC (1h après open) → dans la fenêtre', () => {
+    expect(inWindow('AAPL.US', '2026-06-08T14:30:00Z')).toBe(true);
+  });
+  it('US été : 19:00 UTC (1h avant close 20:00) → dans la fenêtre', () => {
+    expect(inWindow('AAPL.US', '2026-06-08T19:00:00Z')).toBe(true);
+  });
+  it('US été : 19:30 UTC (30min avant close) → hors fenêtre', () => {
+    expect(inWindow('AAPL.US', '2026-06-08T19:30:00Z')).toBe(false);
+  });
+
+  // --- Hors séance / week-end → toujours hors fenêtre ---
+  it('week-end → hors fenêtre (EU et US)', () => {
+    expect(inWindow('MC.PA', '2026-06-06T10:00:00Z')).toBe(false);  // samedi
+    expect(inWindow('AAPL.US', '2026-06-06T17:00:00Z')).toBe(false);
+  });
+});
+
 describe('isInExchangeSession — couverture EU étendue (Milan/Madrid/Amsterdam)', () => {
   // été : CET/CEST → 09:00 local = 07:00 UTC. Mi-séance 09:06 UTC = 11:06 local → ouvert.
   it.each(['FCA.MI', 'SAN.MC', 'SAN.BME', 'INGA.AMS'])('%s ouvert mi-séance (09:06 UTC été)', (sym) => {

@@ -41,6 +41,7 @@ import {
   type IntradayReboundConfig,
 } from './oversold-intraday.helper';
 import { IntradayProviderRouter } from './intraday-provider-router.service';
+import { minutesSinceExchangeOpen, minutesToExchangeClose } from './exchange-sessions.helper';
 
 /** Une position oversold enrichie pour l'UI dédiée (book summary). */
 export interface OversoldBookPosition {
@@ -389,10 +390,16 @@ export class OversoldScannerService {
   }
 
   /**
-   * Cron horaire pendant session US — 15:00 à 19:00 UTC, weekdays only.
-   * Skip 14:30 (ouverture turbulente) et 20:00 (dernière heure, gamma/EOD prep).
+   * Cron horaire couvrant les séances EU + US (08:00-20:00 UTC, weekdays).
+   * Le créneau réel par portfolio est borné DST-aware à [ouverture +1h,
+   * clôture -1h] de SA bourse (cf. scanPortfolioIntraday) — MÊME logique US et
+   * EU : on saute la 1ère heure (ouverture turbulente) et la dernière heure
+   * (EOD prep). Un cron UTC fixe ne suffisait pas pour l'EU dont la séance
+   * décale d'1h été/hiver (07:00-15:30 vs 08:00-16:30 UTC). Les gardes
+   * marché-fermé skippent les fetchs hors-séance → élargir le cron ne gaspille
+   * aucun appel EODHD.
    */
-  @Cron('0 0 15,16,17,18,19 * * 1-5', { name: 'oversold-intraday-scan', timeZone: 'UTC' })
+  @Cron('0 0 8-20 * * 1-5', { name: 'oversold-intraday-scan', timeZone: 'UTC' })
   async runIntradayScan(): Promise<void> {
     try {
       if (!this.isEnabled() || !this.intradayEnabled()) {
@@ -421,6 +428,23 @@ export class OversoldScannerService {
   private async scanPortfolioIntraday(row: OversoldPortfolioRow): Promise<void> {
     const portfolioId = row.portfolio_id;
     const cfg = this.resolveConfig(row);
+
+    // Fenêtre intraday = [ouverture +1h, clôture -1h] de la bourse de l'univers,
+    // DST-aware (même logique US et EU). On saute la 1ère heure (ouverture
+    // turbulente) et la dernière heure (EOD prep). La séance EU décale d'1h
+    // été/hiver → minutesSinceExchangeOpen/ToClose lisent l'horaire réel par
+    // IANA TZ. refSym = bourse représentative (Euronext .PA pour l'EU, .US sinon).
+    const nowWindow = new Date();
+    const refSym = this.regionOfUniverse(cfg.universe) === 'EU' ? 'MC.PA' : 'AAPL.US';
+    const sinceOpen = minutesSinceExchangeOpen(refSym, nowWindow);
+    const toClose = minutesToExchangeClose(refSym, nowWindow);
+    if (sinceOpen == null || sinceOpen < 60 || toClose == null || toClose < 60) {
+      this.logger.debug(
+        `[oversold-intraday] ${portfolioId.slice(0, 8)} ${cfg.universe} hors fenêtre [open+1h,close-1h] (sinceOpen=${sinceOpen ?? 'closed'} toClose=${toClose ?? 'closed'}) → skip`,
+      );
+      return;
+    }
+
     const reboundCfg = this.intradayConfig();
     const maxOpensPerDay = this.intradayMaxOpensPerDay();
     const notionalRatio = this.intradayNotionalRatio();
