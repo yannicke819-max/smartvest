@@ -35,6 +35,7 @@ import { OversoldExitPolicyService } from './research/oversold-exit-policy.servi
 import { IntradayProviderRouter } from './intraday-provider-router.service';
 import { computeIndicatorSnapshot, type IndicatorCandle } from './position-indicators.helper';
 import { businessDaysSince } from './oversold.helper';
+import { isKnownMarketClosed } from './exchange-sessions.helper';
 
 interface OpenOversoldRow {
   id: string;
@@ -163,6 +164,12 @@ export class OversoldMistralExitService {
     return Number(this.config.get<string>('OVERSOLD_MISTRAL_HARD_CLOSE_UTC_HOUR') ?? '20.5');
   }
 
+  /** PR #634 — skip le fetch EODHD quand le marché du ticker est connu+fermé.
+   * Réversible via OVERSOLD_MISTRAL_EXIT_SKIP_MARKET_CLOSED (default true). */
+  private skipWhenClosed(): boolean {
+    return (this.config.get<string>('OVERSOLD_MISTRAL_EXIT_SKIP_MARKET_CLOSED') ?? 'true').toLowerCase() === 'true';
+  }
+
   /**
    * Cron toutes les 15 minutes. Plus réactif que l'OversoldExitService déterministe
    * (30min) pour capter les rebonds intelligents en cours de journée. Coût LLM
@@ -182,6 +189,7 @@ export class OversoldMistralExitService {
       let evaluated = 0;
       let closed = 0;
       let skippedMfe = 0;
+      let skippedClosed = 0;
 
       for (const pos of positions) {
         try {
@@ -189,6 +197,7 @@ export class OversoldMistralExitService {
           if (result === 'closed') closed++;
           else if (result === 'evaluated') evaluated++;
           else if (result === 'skipped_mfe') skippedMfe++;
+          else if (result === 'skipped_market_closed') skippedClosed++;
         } catch (err) {
           this.logger.warn(
             `[oversold-mistral-exit] ${pos.symbol} (${pos.id.slice(0, 8)}) échoué: ${String(err).slice(0, 200)}`,
@@ -197,7 +206,7 @@ export class OversoldMistralExitService {
       }
 
       this.logger.log(
-        `[oversold-mistral-exit] cycle done — positions=${positions.length} evaluated=${evaluated} closed=${closed} skipped_mfe=${skippedMfe}`,
+        `[oversold-mistral-exit] cycle done — positions=${positions.length} evaluated=${evaluated} closed=${closed} skipped_mfe=${skippedMfe} skipped_closed=${skippedClosed}`,
       );
     } catch (err) {
       this.logger.error(`[oversold-mistral-exit] runExitCycle exception: ${String(err).slice(0, 300)}`);
@@ -207,7 +216,13 @@ export class OversoldMistralExitService {
   private async evaluatePosition(
     pos: OpenOversoldRow,
     policyCache: Map<string, string>,
-  ): Promise<'closed' | 'evaluated' | 'skipped_mfe' | 'skipped_no_price'> {
+  ): Promise<'closed' | 'evaluated' | 'skipped_mfe' | 'skipped_no_price' | 'skipped_market_closed'> {
+    // PR #634 — service intraday-only (hard-close 20:30 UTC, jamais overnight) :
+    // hors séance US le marché est fermé → rien à faire. Skip avant tout fetch
+    // EODHD/LLM (économie quota + appels Mistral inutiles le week-end/férié).
+    if (this.skipWhenClosed() && isKnownMarketClosed(pos.symbol, new Date())) {
+      return 'skipped_market_closed';
+    }
     const price = await this.fetchLastClose(pos.symbol);
     if (price == null) return 'skipped_no_price';
 

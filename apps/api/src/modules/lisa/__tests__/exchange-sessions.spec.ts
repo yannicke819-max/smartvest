@@ -13,6 +13,7 @@
 
 import {
   isInExchangeSession,
+  isKnownMarketClosed,
   extractSuffix,
   minutesToExchangeClose,
   minutesSinceExchangeOpen,
@@ -633,6 +634,77 @@ describe('minutesSinceExchangeOpen — opening buffer (DST-safe)', () => {
     expect(minutesSinceExchangeOpen('MC.PA', '2026-05-23T09:00:00Z')).toBeNull(); // samedi
     expect(minutesSinceExchangeOpen('BTCUSDT', '2026-05-22T09:00:00Z')).toBeNull();
     expect(minutesSinceExchangeOpen('X.ZZZ', '2026-05-22T09:00:00Z')).toBeNull();
+  });
+});
+
+describe('isKnownMarketClosed — garde anti-gaspillage EODHD (PR #634)', () => {
+  // Skip un appel UNIQUEMENT si le marché est connu ET fermé. Fail-open partout
+  // ailleurs (invariant "100% fonctionnel" : jamais couper sur un actif non classé).
+
+  // --- Equity connu OUVERT → false (ne pas skip) ---
+  it('US en séance (17:00 UTC = 13:00 EDT) → false (ouvert, ne pas skip)', () => {
+    expect(isKnownMarketClosed('AAPL.US', '2026-05-15T17:00:00Z')).toBe(false);
+  });
+
+  it('EU Paris en séance (08:00 UTC été = 10:00 CEST) → false', () => {
+    expect(isKnownMarketClosed('MC.PA', '2026-07-15T08:00:00Z')).toBe(false);
+  });
+
+  // --- Equity connu FERMÉ → true (skip OK) ---
+  it('US week-end (samedi 17:00 UTC) → true (skip)', () => {
+    expect(isKnownMarketClosed('AAPL.US', '2026-05-09T17:00:00Z')).toBe(true);
+  });
+
+  it('US after-hours (22:00 UTC = 18:00 EDT) → true (skip)', () => {
+    expect(isKnownMarketClosed('AAPL.US', '2026-05-15T22:00:00Z')).toBe(true);
+  });
+
+  it('US férié Memorial Day 25/05/2026 en heures RTH → true (skip)', () => {
+    expect(isKnownMarketClosed('AAPL.US', '2026-05-25T15:00:00Z')).toBe(true);
+  });
+
+  it('US férié Christmas 25/12/2026 en heures RTH → true (skip)', () => {
+    expect(isKnownMarketClosed('AAPL.US', '2026-12-25T17:00:00Z')).toBe(true);
+  });
+
+  it('EU férié Whit Monday 25/05/2026 (Paris) → true (skip)', () => {
+    expect(isKnownMarketClosed('NANO.PA', '2026-05-25T10:00:00Z')).toBe(true);
+  });
+
+  it('EU férié Good Friday 03/04/2026 (XETRA) → true (skip)', () => {
+    expect(isKnownMarketClosed('SAP.XETRA', '2026-04-03T10:00:00Z')).toBe(true);
+  });
+
+  it('Asia Tokyo hors séance (10:00 UTC = 19:00 JST) → true (week-end+horaires gardés)', () => {
+    expect(isKnownMarketClosed('7203.T', '2026-05-15T10:00:00Z')).toBe(true);
+  });
+
+  // --- FAIL-OPEN : jamais skip (invariant "100% fonctionnel") ---
+  it('crypto .CC → false (24/7, fail-open) même un samedi', () => {
+    expect(isKnownMarketClosed('BTC-USD.CC', '2026-05-09T03:00:00Z')).toBe(false);
+  });
+
+  it('Binance pair sans suffixe (BTCUSDT) → false (fail-open)', () => {
+    expect(isKnownMarketClosed('BTCUSDT', '2026-05-09T03:00:00Z')).toBe(false);
+  });
+
+  it('forex .FOREX → false (fail-open)', () => {
+    expect(isKnownMarketClosed('EURUSD.FOREX', '2026-05-09T03:00:00Z')).toBe(false);
+  });
+
+  it('CRITIQUE — suffixe equity INCONNU → false (fail-open, ≠ isInExchangeSession)', () => {
+    // isInExchangeSession('FOO.ZZZ') = false (fermé/inconnu) MAIS isKnownMarketClosed
+    // = false aussi (ne PAS skip) → on préfère un appel de trop qu'un prix manquant.
+    expect(isInExchangeSession('FOO.ZZZ', '2026-05-15T17:00:00Z')).toBe(false);
+    expect(isKnownMarketClosed('FOO.ZZZ', '2026-05-15T17:00:00Z')).toBe(false);
+  });
+
+  it('symbole vide → false (fail-open)', () => {
+    expect(isKnownMarketClosed('', '2026-05-15T17:00:00Z')).toBe(false);
+  });
+
+  it('symbole sans point (AAPL legacy) → false (fail-open)', () => {
+    expect(isKnownMarketClosed('AAPL', '2026-05-15T17:00:00Z')).toBe(false);
   });
 });
 

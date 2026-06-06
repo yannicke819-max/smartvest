@@ -31,6 +31,7 @@ import { SupabaseService } from '../../supabase/supabase.service';
 import { LisaService } from './lisa.service';
 import { DecisionLogService } from './decision-log.service';
 import { businessDaysSince } from './oversold.helper';
+import { isKnownMarketClosed } from './exchange-sessions.helper';
 
 interface OpenOversoldPosition {
   id: string;
@@ -62,6 +63,12 @@ export class OversoldExitService {
 
   private isEnabled(): boolean {
     return (this.config.get<string>('OVERSOLD_EXIT_ENABLED') ?? 'true').toLowerCase() === 'true';
+  }
+
+  /** PR #634 — garde anti-gaspillage : skip le fetch EODHD quand le marché du
+   * ticker est connu+fermé. Réversible via OVERSOLD_EXIT_SKIP_MARKET_CLOSED. */
+  private skipWhenClosed(): boolean {
+    return (this.config.get<string>('OVERSOLD_EXIT_SKIP_MARKET_CLOSED') ?? 'true').toLowerCase() === 'true';
   }
 
   /**
@@ -111,6 +118,15 @@ export class OversoldExitService {
     cfg: OversoldExitCfg,
     now: Date,
   ): Promise<void> {
+    // PR #634 — skip si le marché du ticker est connu ET fermé (week-end, hors
+    // session DST-aware, férié bourse). Le close EOD serait figé → ni stop
+    // catastrophe (0 mouvement marché fermé) ni nouvelle info ; le hold J+10 se
+    // ferme à la prochaine séance (swing, retard de quelques h négligeable).
+    if (this.skipWhenClosed() && isKnownMarketClosed(pos.symbol, now)) {
+      this.logger.debug(`[oversold-exit] ${pos.symbol} marché fermé → skip ce cycle (économie EODHD)`);
+      return;
+    }
+
     const heldDays = businessDaysSince(pos.entry_timestamp, now);
     const holdExpired = heldDays >= cfg.holdDays;
 
