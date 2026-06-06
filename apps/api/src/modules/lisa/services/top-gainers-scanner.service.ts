@@ -3236,6 +3236,29 @@ export class TopGainersScannerService implements OnModuleInit {
         continue;
       }
 
+      // PLANCHER MARKET-CAP — Piste B (chiffrage 06/06/2026, backtest n=360 us+eu).
+      // Données : les small/micro-caps saignent (<$5B : fwd -0.1 à -0.8%, MAE jusqu'à
+      // -2.2%) ; l'edge est dans les large-caps liquides ($10-50B : +0.44%, WR 50%).
+      // Floor $5B = breakeven expectancy + drift +0.25%, volume préservé (~7.5/j).
+      //
+      // SCOPE us_/eu_equity UNIQUEMENT (seules classes mesurées). Asia EXEMPTE
+      // (veine KOSDAQ .KQ 75% WR = small-caps prouvées, ne pas tuer) ; crypto/commodity
+      // EXEMPTES (mcap non comparable). Fail-open si mcap inconnu (0) → ne jamais
+      // bloquer une large-cap sans donnée. Rejet logué reject_liquidity (small = illiquide).
+      //
+      // Réversible : GAINERS_MIN_MARKET_CAP_USD=0 désactive. Default $5B (actif).
+      if (/^(us|eu)_equity/.test(String(cand.assetClass))) {
+        const mcapFloor = Number(this.config.get<string>('GAINERS_MIN_MARKET_CAP_USD') ?? '5000000000');
+        const candMcap = Number(cand.marketCap ?? 0);
+        if (mcapFloor > 0 && candMcap > 0 && candMcap < mcapFloor) {
+          this.logger.log(
+            `[top-gainers] ${cand.symbol} MCAP_FLOOR [${cand.assetClass}] (mcap=$${(candMcap / 1e9).toFixed(2)}B < $${(mcapFloor / 1e9).toFixed(1)}B) → skip long (Piste B 06/06 : small-cap saigne)`,
+          );
+          recordShadowDecision(cand, 'reject_liquidity', undefined);
+          continue;
+        }
+      }
+
       // Venue blacklist (analyse 27/05/2026, n=112 winners vs 234 losers) :
       //   - .KO Korea large caps : WR 20%, sumPnl très négatif
       //   - Configurable via `GAINERS_VENUE_BLACKLIST=KO,XYZ` (vide = pas de filtre).
