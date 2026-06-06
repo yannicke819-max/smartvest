@@ -9,8 +9,10 @@ import {
   passesLiquidity,
   buildOversoldCandidates,
   selectOversoldOpens,
+  decideRegimeBlock,
   type EodBar,
   type OversoldConfig,
+  type RegimeThresholds,
 } from '../oversold.helper';
 
 const CFG: OversoldConfig = {
@@ -144,5 +146,62 @@ describe('selectOversoldOpens (anti-doublon)', () => {
     const cands = buildOversoldCandidates(map, CFG);
     const toOpen = selectOversoldOpens(cands, new Set());
     expect(toOpen.map((c) => c.symbol)).toEqual(['BBB.US', 'AAA.US', 'CCC.US']);
+  });
+});
+
+// US : vixMax 17, ΔVIX 10%, SPY 5d -1%. EU : V2TX 22, ΔV2TX 10%, SX5E 5d -1.5%.
+const US_THRESH: RegimeThresholds = { vixMax: 17, vixDeltaMax: 10, idx5dMin: -1 };
+const US_LABELS = { vix: 'VIX', idx: 'SPY' };
+
+describe('decideRegimeBlock', () => {
+  it('bloque si VIX > vixMax (cas 05/06 : VIX 21.51)', () => {
+    const r = decideRegimeBlock({ vix: 21.51, vixChg: 39.7, idx5d: -2.5 }, US_THRESH, US_LABELS);
+    expect(r.block).toBe(true);
+    expect(r.reason).toBe('VIX 21.51 > 17');
+  });
+
+  it('bloque sur un spike ΔVIX > max même si le niveau VIX est OK', () => {
+    const r = decideRegimeBlock({ vix: 16, vixChg: 12.5, idx5d: 0.5 }, US_THRESH, US_LABELS);
+    expect(r.block).toBe(true);
+    expect(r.reason).toBe('ΔVIX 1d 12.5% > +10%');
+  });
+
+  it('bloque si index 5j < idx5dMin', () => {
+    const r = decideRegimeBlock({ vix: 15, vixChg: 2, idx5d: -1.4 }, US_THRESH, US_LABELS);
+    expect(r.block).toBe(true);
+    expect(r.reason).toBe('SPY 5d -1.40% < -1%');
+  });
+
+  it('passe en régime calme (cas 04/06)', () => {
+    const r = decideRegimeBlock({ vix: 15.4, vixChg: 0.5, idx5d: 0.33 }, US_THRESH, US_LABELS);
+    expect(r.block).toBe(false);
+    expect(r.reason).toBe('pass');
+  });
+
+  it('un indicateur null n’enclenche jamais un block (fail-open par indicateur)', () => {
+    expect(decideRegimeBlock({ vix: null, vixChg: null, idx5d: null }, US_THRESH, US_LABELS).block).toBe(false);
+    // VIX null mais ΔVIX hostile → bloque quand même sur ΔVIX présent
+    expect(decideRegimeBlock({ vix: null, vixChg: 20, idx5d: null }, US_THRESH, US_LABELS).block).toBe(true);
+    // VIX null + reste sain → pass
+    expect(decideRegimeBlock({ vix: null, vixChg: 1, idx5d: 0 }, US_THRESH, US_LABELS).block).toBe(false);
+  });
+
+  it('priorité : niveau VIX testé avant ΔVIX avant index', () => {
+    // VIX>max ET idx5d<min → la raison citée est le VIX (premier check)
+    const r = decideRegimeBlock({ vix: 18, vixChg: 0, idx5d: -5 }, US_THRESH, US_LABELS);
+    expect(r.reason).toBe('VIX 18.00 > 17');
+  });
+
+  it('formate les labels EU (V2TX / SX5E)', () => {
+    const euThresh: RegimeThresholds = { vixMax: 22, vixDeltaMax: 10, idx5dMin: -1.5 };
+    const r = decideRegimeBlock({ vix: 24, vixChg: 1, idx5d: 0 }, euThresh, { vix: 'V2TX', idx: 'SX5E' });
+    expect(r.reason).toBe('V2TX 24.00 > 22');
+  });
+
+  it('bornes strictes : égalité au seuil ne bloque pas', () => {
+    // VIX == max : 17 > 17 est faux → pas de block
+    expect(decideRegimeBlock({ vix: 17, vixChg: 0, idx5d: 0 }, US_THRESH, US_LABELS).block).toBe(false);
+    // idx5d == min : -1 < -1 est faux → pas de block
+    expect(decideRegimeBlock({ vix: 15, vixChg: 0, idx5d: -1 }, US_THRESH, US_LABELS).block).toBe(false);
   });
 });
