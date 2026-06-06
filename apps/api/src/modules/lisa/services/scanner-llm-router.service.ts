@@ -26,6 +26,7 @@ import {
 } from '@smartvest/ai-analyst';
 import { GeminiBudgetGuardService } from './gemini-budget-guard.service';
 import { MistralShadowService } from './mistral-shadow.service';
+import { MistralSmallService } from './mistral-small.service';
 
 @Injectable()
 export class ScannerLlmRouterService {
@@ -43,6 +44,13 @@ export class ScannerLlmRouterService {
    * Si Mistral fail (rate limit, API down), fallback automatique vers Gemini Pro.
    */
   private readonly primaryProvider: string;
+  /**
+   * 06/06 — Tier RAPIDE switchable. LLM_FAST_PROVIDER='mistral-small' route les
+   * tâches simples (call()) vers Mistral Small 2506 (cheap + 20.83 RPS) au lieu
+   * de Mistral Medium. Le tier RAISONNEMENT (callWithPro) reste sur Medium.
+   * Vide/unset → comportement historique (call() suit primaryProvider).
+   */
+  private readonly fastProvider: string;
 
   constructor(
     private readonly config: ConfigService,
@@ -51,11 +59,16 @@ export class ScannerLlmRouterService {
     // injecté.
     @Optional() @Inject(GeminiBudgetGuardService) private readonly budgetGuard?: GeminiBudgetGuardService,
     @Optional() private readonly mistralShadow?: MistralShadowService,
+    @Optional() private readonly mistralSmall?: MistralSmallService,
   ) {
     this.enabled = (this.config.get<string>('SCANNER_LLM_ROUTER_ENABLED') ?? 'false').toLowerCase() === 'true';
     this.primaryProvider = (this.config.get<string>('LLM_PRIMARY_PROVIDER') ?? 'gemini-pro').toLowerCase();
     if (this.primaryProvider === 'mistral-medium') {
       this.logger.log('[scanner-llm] LLM_PRIMARY_PROVIDER=mistral-medium → Mistral Medium 3.5 décideur principal, Gemini Pro en fallback automatique');
+    }
+    this.fastProvider = (this.config.get<string>('LLM_FAST_PROVIDER') ?? '').toLowerCase();
+    if (this.fastProvider === 'mistral-small') {
+      this.logger.log('[scanner-llm] LLM_FAST_PROVIDER=mistral-small → tier rapide (call) sur Mistral Small, fallback Medium/Gemini');
     }
 
     if (!this.enabled) {
@@ -133,6 +146,37 @@ export class ScannerLlmRouterService {
    * post-mortem, Strategy Coach) passe par Mistral en primary quand activé.
    */
   async call(params: LlmCallParams): Promise<{ content: string; providerId: string; costUsd: number; latencyMs: number; fallbackUsed: boolean }> {
+    // Tier RAPIDE cheap : Mistral Small 2506 en tête (06/06). Tâches simples &
+    // fréquentes (scanner gate, risk_monitor, daily brief). Si fail (empty,
+    // timeout, 429), on retombe sur le chemin existant (Mistral Medium si primary,
+    // sinon Gemini Flash-Lite) → jamais de tâche skipée.
+    if (this.fastProvider === 'mistral-small' && this.mistralSmall?.isConfigured()) {
+      try {
+        const res = await this.mistralSmall.call({
+          system: params.system,
+          user: params.user,
+          temperature: params.temperature ?? 0.3,
+          maxTokens: params.maxTokens ?? 1500,
+          timeoutMs: params.timeoutMs ?? 30_000,
+        });
+        if (!res.content) {
+          throw new Error(`Mistral Small returned empty content (error=${res.error ?? 'unknown'})`);
+        }
+        return {
+          content: res.content,
+          providerId: res.providerId,
+          costUsd: res.costUsd,
+          latencyMs: res.latencyMs,
+          fallbackUsed: false,
+        };
+      } catch (e) {
+        this.logger.debug(
+          `[scanner-llm] Mistral Small (fast) failed → fallback. err=${String(e).slice(0, 150)}`,
+        );
+        // tombe sur le chemin existant ci-dessous
+      }
+    }
+
     // Mistral primary path (gated par env)
     if (this.primaryProvider === 'mistral-medium' && this.mistralShadow) {
       try {
