@@ -901,7 +901,12 @@ export class LiveTraderAgentService {
       // décisions dans gemini_ab_decisions pour analyse comparative ultérieure.
       // Best-effort : n'augmente pas la latence du cycle (fire-and-forget),
       // catch toutes les erreurs (n'altère jamais le comportement TRADER).
-      const abEnabled = (this.config.get<string>('GEMINI_AB_PRO_VS_FLASH_ENABLED') ?? 'true').toLowerCase() === 'true';
+      // 06/06 — PAUSE DÉFINITIVE du shadow A/B (default basculé 'true' → 'false').
+      // Le shadow lançait Gemini Flash + Mistral Medium + Mistral Large 3 à CHAQUE
+      // cycle (Mistral Large = 72% du coût LLM, ~$9.50/j) pour une comparaison
+      // jamais appliquée à un trade. Prod (Mistral Medium primary) inchangée.
+      // Réactivable explicitement via le secret GEMINI_AB_PRO_VS_FLASH_ENABLED=true.
+      const abEnabled = (this.config.get<string>('GEMINI_AB_PRO_VS_FLASH_ENABLED') ?? 'false').toLowerCase() === 'true';
       if (abEnabled) {
         void this.recordAbShadow({
           cycleStartedAt,

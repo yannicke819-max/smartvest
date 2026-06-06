@@ -104,10 +104,6 @@ const RETIRED_SHADOW_IDS = new Set<string>([
   'a0000003-0000-0000-0000-000000000003', // SMALL
 ]);
 
-// HIGH recyclé en mode oversold (mean-reversion swing, $150k paper) — gardé
-// visible avec un libellé dédié dans le sélecteur.
-const HIGH_OVERSOLD_PORTFOLIO_ID = 'a0000001-0000-0000-0000-000000000001';
-
 export default function LisaPage() {
   const portfoliosQuery = usePortfolios();
   const qc = useQueryClient();
@@ -643,13 +639,13 @@ export default function LisaPage() {
               className="h-9 flex-1 min-w-[200px] rounded-md border bg-background px-3 text-sm"
             >
               {simulationPortfolios.map((p) => {
+                // Noms DB nettoyés (06/06) : "Trader Agent", "US Oversold
+                // (Russell 1000 mean-rev)", "EU Oversold (stoxx600 mean-rev)".
+                // Plus de suffixe modèle ("(Gemini Pro)") ni de redite oversold.
                 const isTrader = p.id === TRADER_PORTFOLIO_ID;
-                const isOversold = p.id === HIGH_OVERSOLD_PORTFOLIO_ID;
                 const label = isTrader
                   ? `🤖 ${p.name} (agent autonome LISA)`
-                  : isOversold
-                  ? `📉 ${p.name} (mean-reversion oversold)`
-                  : `🎯 ${p.name}`;
+                  : `📉 ${p.name}`;
                 return (
                   <option key={p.id} value={p.id}>{label}</option>
                 );
@@ -667,7 +663,7 @@ export default function LisaPage() {
               )}
           </div>
           <p className="text-[11px] text-muted-foreground">
-            TRADER = agent LLM autonome (Mistral primary, Gemini fallback) + scanner Gainers d&apos;observation. HIGH = mode Oversold (mean-reversion swing, $150k paper). Shadows MIDDLE/SMALL retirés (momentum sans edge, prouvé 3-fold).
+            TRADER = agent LLM autonome (Mistral primary, Gemini fallback) + scanner Gainers d&apos;observation. US / EU Oversold = mean-reversion swing (achat -5 à -12%, hold J+10). Shadows MIDDLE/SMALL retirés (momentum sans edge, prouvé 3-fold).
           </p>
         </div>
       )}

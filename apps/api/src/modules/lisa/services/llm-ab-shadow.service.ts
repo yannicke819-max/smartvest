@@ -98,7 +98,11 @@ export class LlmABShadowService {
     @Optional() private readonly mistralShadow?: MistralShadowService,
     @Optional() private readonly mistralLargeShadow?: MistralLargeShadowService,
   ) {
-    this.enabled = (this.config.get<string>('LLM_AB_SHADOW_ENABLED') ?? 'true').toLowerCase() === 'true';
+    // 06/06 — PAUSE DÉFINITIVE (default basculé 'true' → 'false'). Ce shadow
+    // faisait tourner Gemini Flash + Mistral Medium + Mistral Large sur les call
+    // sites cron (risk_monitor, scanner_postmortem, strategy_coach, daily_brief)
+    // pour comparaison jamais appliquée. Réactivable via LLM_AB_SHADOW_ENABLED=true.
+    this.enabled = (this.config.get<string>('LLM_AB_SHADOW_ENABLED') ?? 'false').toLowerCase() === 'true';
     if (!this.enabled) {
       this.logger.warn('[llm-ab-shadow] DISABLED (LLM_AB_SHADOW_ENABLED=false) — no shadow calls will fire');
     }
