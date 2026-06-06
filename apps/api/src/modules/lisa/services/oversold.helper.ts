@@ -203,3 +203,49 @@ export function decideRegimeBlock(
   }
   return { block: false, reason: 'pass' };
 }
+
+/** Régime de rotation sectorielle offensif/défensif (cf. computeRotationRegime). */
+export interface RotationRegime {
+  regime: 'offensive' | 'defensive' | null;
+  ratio: number | null; // dernier ratio offensif/défensif
+  ma: number | null; // MM(maLen) du ratio
+  spreadPct: number | null; // (ratio/ma - 1)*100 — distance au seuil
+  n: number; // nb de points alignés par date
+}
+
+/**
+ * Régime de rotation sectorielle offensif/défensif.
+ *
+ * ratio = close(secteur offensif) / close(secteur défensif), aligné par date.
+ * regime = 'offensive' si dernier ratio ≥ MM(maLen) du ratio, sinon 'defensive'.
+ * `null` (fail-open) si < maLen+1 points alignés — le caller ne module alors rien.
+ *
+ * Paires validées sur 3 ans (juin 2023→2026) :
+ *   US : SMH/XLP (semis vs staples)         — régime DEF → fwd20j %pos 79→59%, vol +56%
+ *   EU : EXV3/EXH3 (STOXX tech vs food&bev) — régime DEF → fwd20j %pos 69→59%, vol +36%
+ * Signal MODESTE, surtout utile combiné au VIX/V2TX (désambiguïse le régime
+ * vol-élevé : rebond vs vrai risk-off). Biais bull market (corrections rachetées
+ * sur la période) → modulateur de PRUDENCE, jamais feu vert agressif.
+ */
+export function computeRotationRegime(
+  offBars: EodBar[],
+  defBars: EodBar[],
+  maLen = 50,
+): RotationRegime {
+  const defByDate = new Map(defBars.map((b) => [b.date, b.close]));
+  const ratios: number[] = [];
+  for (const b of offBars) {
+    const d = defByDate.get(b.date);
+    if (d != null && d > 0 && b.close > 0) ratios.push(b.close / d);
+  }
+  const lastRatio = ratios.length > 0 ? ratios[ratios.length - 1] : null;
+  if (ratios.length < maLen + 1) {
+    return { regime: null, ratio: lastRatio, ma: null, spreadPct: null, n: ratios.length };
+  }
+  const last = ratios[ratios.length - 1];
+  const window = ratios.slice(ratios.length - maLen);
+  const ma = window.reduce((s, x) => s + x, 0) / maLen;
+  const regime: 'offensive' | 'defensive' = last >= ma ? 'offensive' : 'defensive';
+  const spreadPct = ma > 0 ? (last / ma - 1) * 100 : null;
+  return { regime, ratio: last, ma, spreadPct, n: ratios.length };
+}

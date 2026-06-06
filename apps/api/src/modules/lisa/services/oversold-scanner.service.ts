@@ -30,9 +30,11 @@ import {
   selectOversoldOpens,
   businessDaysSince,
   decideRegimeBlock,
+  computeRotationRegime,
   type OversoldConfig,
   type EodBar,
   type OversoldCandidate,
+  type RotationRegime,
 } from './oversold.helper';
 import {
   analyzeIntradayRebound,
@@ -652,6 +654,7 @@ export class OversoldScannerService {
     idx5d: number | null;
     vixSource: 'live' | 'eod';
     thresholds: { vixMax: number; vixDeltaMax: number; idx5dMin: number };
+    rotation: (RotationRegime & { mode: string; appliedVixPenalty: number }) | null;
   }> {
     const enabled =
       (this.config.get<string>('OVERSOLD_REGIME_GATE_ENABLED') ?? 'true').toLowerCase() === 'true';
@@ -679,7 +682,7 @@ export class OversoldScannerService {
     const thresholds = { vixMax, vixDeltaMax, idx5dMin };
 
     if (!enabled) {
-      return { block: false, reason: 'gate disabled', region, vix: null, vixChg: null, idx5d: null, vixSource: 'eod', thresholds };
+      return { block: false, reason: 'gate disabled', region, vix: null, vixChg: null, idx5d: null, vixSource: 'eod', thresholds, rotation: null };
     }
 
     const labels = { vix: region === 'EU' ? 'V2TX' : 'VIX', idx: region === 'EU' ? 'SX5E' : 'SPY' };
@@ -730,8 +733,71 @@ export class OversoldScannerService {
       idx5d = fiveBack > 0 ? (last / fiveBack - 1) * 100 : null;
     }
 
-    const decision = decideRegimeBlock({ vix, vixChg, idx5d }, thresholds, labels);
-    return { ...decision, region, vix, vixChg, idx5d, vixSource, thresholds };
+    // PR #639 — Modulateur de rotation sectorielle (offensif/défensif), par région.
+    // Quand la rotation est DÉFENSIVE (data 3 ans : %positif forward 20j en baisse
+    // US 79→59% / EU 69→59%, vol future +35-90%), on DURCIT le seuil VIX/V2TX d'une
+    // pénalité. Modulateur de PRUDENCE uniquement (signal modeste + biais bull) —
+    // JAMAIS un assouplissement. Modes : off / shadow (log only) / active.
+    // Default shadow → valide en live (out-of-sample) avant d'agir, cf. discipline
+    // anti-overfit. Fail-open : rotation indispo (null) → aucune modulation.
+    const rotMode = (this.config.get<string>('OVERSOLD_ROTATION_GATE_MODE') ?? 'shadow').toLowerCase();
+    let effThresholds = thresholds;
+    let rotation: (RotationRegime & { mode: string; appliedVixPenalty: number }) | null = null;
+    if (rotMode !== 'off') {
+      const rot = await this.fetchRotationRegime(region).catch(() => null);
+      if (rot) {
+        const penalty = parseFloat(this.config.get<string>('OVERSOLD_ROTATION_VIX_PENALTY') ?? '2');
+        const wouldApply = rot.regime === 'defensive' && penalty > 0;
+        const applied = wouldApply && rotMode === 'active';
+        if (applied) {
+          effThresholds = { ...thresholds, vixMax: thresholds.vixMax - penalty };
+        }
+        rotation = { ...rot, mode: rotMode, appliedVixPenalty: applied ? penalty : 0 };
+        if (wouldApply) {
+          this.logger.log(
+            `[oversold-rotation:${rotMode}] ${region} régime=DÉFENSIF ratio=${rot.ratio?.toFixed(3)} ma50=${rot.ma?.toFixed(3)} (spread ${rot.spreadPct?.toFixed(1)}%) → ` +
+              (applied
+                ? `vixMax durci ${thresholds.vixMax}→${effThresholds.vixMax}`
+                : `aurait durci vixMax ${thresholds.vixMax}→${thresholds.vixMax - penalty} (shadow, non appliqué)`),
+          );
+        }
+      }
+    }
+
+    const decision = decideRegimeBlock({ vix, vixChg, idx5d }, effThresholds, labels);
+    return { ...decision, region, vix, vixChg, idx5d, vixSource, thresholds: effThresholds, rotation };
+  }
+
+  // ─── PR #639 — Rotation sectorielle offensif/défensif (cache + fetch par région) ───
+  private rotationCache = new Map<'US' | 'EU', { at: number; data: RotationRegime }>();
+  private readonly ROTATION_TTL_MS = 60 * 60 * 1000; // EOD change 1×/jour → 1h suffit
+
+  /** Paire offensif/défensif par région (override possible via env). */
+  private rotationSymbols(region: 'US' | 'EU'): { off: string; def: string } {
+    if (region === 'EU') {
+      return {
+        off: this.config.get<string>('OVERSOLD_ROTATION_EU_OFF') ?? 'EXV3.XETRA', // STOXX600 Tech
+        def: this.config.get<string>('OVERSOLD_ROTATION_EU_DEF') ?? 'EXH3.XETRA', // STOXX600 Food&Bev
+      };
+    }
+    return {
+      off: this.config.get<string>('OVERSOLD_ROTATION_US_OFF') ?? 'SMH.US', // Semis/IA
+      def: this.config.get<string>('OVERSOLD_ROTATION_US_DEF') ?? 'XLP.US', // Consumer staples
+    };
+  }
+
+  /** Régime de rotation offensif/défensif de la région (cache 1h, fail-open). */
+  private async fetchRotationRegime(region: 'US' | 'EU'): Promise<RotationRegime> {
+    const cached = this.rotationCache.get(region);
+    if (cached && Date.now() - cached.at < this.ROTATION_TTL_MS) return cached.data;
+    const { off, def } = this.rotationSymbols(region);
+    const [offBars, defBars] = await Promise.all([
+      this.fetchEodBars(off, 80).catch(() => [] as EodBar[]), // ~80j calendaires ⊇ 55 ouvrés (MM50)
+      this.fetchEodBars(def, 80).catch(() => [] as EodBar[]),
+    ]);
+    const data = computeRotationRegime(offBars, defBars, 50);
+    this.rotationCache.set(region, { at: Date.now(), data });
+    return data;
   }
 
   /**
@@ -1036,12 +1102,12 @@ export class OversoldScannerService {
    * Fetch direct EODHD EOD sur la fenêtre des ~5 derniers jours pour 1 symbole.
    * 1 call EOD = 1 quota. La clé n'est JAMAIS loggée.
    */
-  private async fetchEodBars(symbol: string): Promise<EodBar[]> {
+  private async fetchEodBars(symbol: string, calendarDays = 8): Promise<EodBar[]> {
     const apiKey = this.config.get<string>('EODHD_API_KEY');
     if (!apiKey) return [];
 
     const to = new Date();
-    const from = new Date(to.getTime() - 8 * 86_400_000); // 8 jours calendaires ⊇ 5 jours ouvrés
+    const from = new Date(to.getTime() - calendarDays * 86_400_000); // 8j ⊇ 5 ouvrés ; ~80j ⊇ 55 ouvrés (MM50)
     const fromStr = from.toISOString().slice(0, 10);
     const toStr = to.toISOString().slice(0, 10);
 

@@ -10,6 +10,7 @@ import {
   buildOversoldCandidates,
   selectOversoldOpens,
   decideRegimeBlock,
+  computeRotationRegime,
   type EodBar,
   type OversoldConfig,
   type RegimeThresholds,
@@ -203,5 +204,55 @@ describe('decideRegimeBlock', () => {
     expect(decideRegimeBlock({ vix: 17, vixChg: 0, idx5d: 0 }, US_THRESH, US_LABELS).block).toBe(false);
     // idx5d == min : -1 < -1 est faux → pas de block
     expect(decideRegimeBlock({ vix: 15, vixChg: 0, idx5d: -1 }, US_THRESH, US_LABELS).block).toBe(false);
+  });
+});
+
+describe('computeRotationRegime (rotation offensif/défensif, PR #639)', () => {
+  const mkBars = (closes: number[]): EodBar[] => {
+    const base = Date.UTC(2026, 0, 1);
+    return closes.map((c, i) => ({
+      date: new Date(base + i * 86_400_000).toISOString().slice(0, 10),
+      close: c,
+      volume: 1,
+    }));
+  };
+  const inc = Array.from({ length: 60 }, (_, i) => 100 + i); // 100→159 croissant
+  const dec = Array.from({ length: 60 }, (_, i) => 159 - i); // 159→100 décroissant
+  const flat = Array.from({ length: 60 }, () => 50);
+
+  it('offensif : numérateur monte vs dénominateur plat → ratio > MM50', () => {
+    const r = computeRotationRegime(mkBars(inc), mkBars(flat), 50);
+    expect(r.regime).toBe('offensive');
+    expect(r.ratio! > r.ma!).toBe(true);
+    expect(r.n).toBe(60);
+  });
+
+  it('défensif : numérateur baisse vs dénominateur plat → ratio < MM50', () => {
+    const r = computeRotationRegime(mkBars(dec), mkBars(flat), 50);
+    expect(r.regime).toBe('defensive');
+    expect(r.ratio! < r.ma!).toBe(true);
+  });
+
+  it('données insuffisantes (< maLen+1 points) → null (fail-open)', () => {
+    const r = computeRotationRegime(mkBars(inc.slice(0, 30)), mkBars(flat.slice(0, 30)), 50);
+    expect(r.regime).toBeNull();
+    expect(r.ma).toBeNull();
+  });
+
+  it('aligne par date : dates manquantes dans le dénominateur sont ignorées', () => {
+    const off = mkBars(inc); // 60 dates
+    const def = mkBars(flat).filter((_, i) => i % 2 === 0); // 1 date sur 2
+    const r = computeRotationRegime(off, def, 50);
+    expect(r.n).toBe(30); // seules les dates communes comptent
+    expect(r.regime).toBeNull(); // 30 < 51 → fail-open
+  });
+
+  it('ignore les closes invalides (0 / négatif) dans les deux séries', () => {
+    const off = mkBars(inc);
+    off[5].close = 0; // ignoré
+    const def = mkBars(flat);
+    def[10].close = -1; // ignoré
+    const r = computeRotationRegime(off, def, 50);
+    expect(r.n).toBe(58); // 60 − 2 dates invalides
   });
 });
