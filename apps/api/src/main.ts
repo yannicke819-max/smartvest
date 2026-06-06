@@ -33,8 +33,9 @@ function installEodhdTracer(): void {
   const origFetch = globalThis.fetch;
 
   const record = (caller: string, endpoint: string, ticker: string, ok: boolean, status: number): void => {
+    // NB: ne PAS insérer `provider` — colonne générée (dérivée de `source`),
+    // un insert explicite échoue ("cannot insert a non-DEFAULT value").
     void sb.from('eodhd_request_log').insert({
-      provider: 'eodhd',
       source: 'eodhd',
       called_by: `trace:${caller}`,
       endpoint,
