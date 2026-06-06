@@ -414,6 +414,28 @@ export class EodhdIntradayService {
   ): Promise<{ price: number; changePct: number; timestamp: number } | null> {
     const key = this.apiKey();
     if (!key) return null;
+
+    // PR #632 — Même garde session-closed que getCandles (lignes 259-271).
+    // getQuote est le fallback de getCandles : quand getCandles skip un marché
+    // fermé (return null), le caller retombe ici et martelait /api/real-time
+    // sans aucun filtre. Trace 06/06 : EodhdIntradayService.getQuote = ~50/min
+    // = ~3000/h, LE résiduel EODHD invisible (weekend + sessions fermées).
+    // Crypto exempté (24/7). Marché inconnu (forex/commodities/indices) = passe.
+    // Partage le kill-switch EODHD_WEEKEND_FILTER_ENABLED avec getCandles.
+    if (this.weekendFilterEnabled) {
+      const cls = marketForSymbol(eodhdTicker);
+      if (cls && cls !== 'crypto' && !isMarketOpenForClass(cls, new Date())) {
+        this.logger.debug(`[eodhd:real-time] ${eodhdTicker} skipped (session closed for ${cls})`);
+        this.logCall({
+          ticker: eodhdTicker,
+          success: false,
+          statusCode: 0,
+          errorMessage: 'SKIP_SESSION_CLOSED',
+        });
+        return null;
+      }
+    }
+
     const normalized = this.normalizeForEodhdIntraday(eodhdTicker);
     const tStart = Date.now();
     try {
