@@ -159,6 +159,39 @@ export function isInExchangeSession(symbol: string, at: Date | string | number):
 }
 
 /**
+ * PR #634 — Garde "skip appel EODHD" SÛRE pour gater les consommateurs de prix.
+ *
+ * Retourne `true` UNIQUEMENT quand le marché du ticker est **connu ET fermé**
+ * (week-end, hors horaires de session DST-aware, OU jour férié de SA bourse).
+ *
+ * FAIL-OPEN volontaire (≠ isInExchangeSession qui est fail-closed) : tout ce
+ * qu'on ne classe pas avec certitude comme equity-fermé renvoie `false` (= NE
+ * PAS skip). Cela préserve l'invariant "100% fonctionnel" : on ne coupe jamais
+ * un appel sur un actif always-on, un suffixe inconnu, ou un symbole sans
+ * suffixe — on préfère un appel EODHD de trop qu'un prix manquant sur position.
+ *
+ *   - sans suffixe (BTCUSDT, AAPL legacy)      → false (fail-open)
+ *   - always-on (.CC/.FOREX/.COMM/.INDX)       → false (24/7)
+ *   - suffixe equity inconnu (pas dans EXCHANGE_SESSIONS) → false (fail-open)
+ *   - equity connu en session                  → false (ouvert, ne pas skip)
+ *   - equity connu hors session / WE / férié   → true  (fermé, skip OK)
+ *
+ * Fériés couverts : US (NYSE) + EU (LSE, Euronext, SIX, XETRA) via
+ * HOLIDAYS_BY_SUFFIX. Asia/.TO/.NSE : week-end + horaires gardés, fériés non
+ * couverts (fail-open sur leurs fériés → appel de trop ces jours-là, sans
+ * risque de blocage). Cf. HOLIDAYS_BY_SUFFIX (follow-up calendriers Asia).
+ */
+export function isKnownMarketClosed(symbol: string, at: Date | string | number): boolean {
+  if (!symbol) return false;
+  const suffix = extractSuffix(symbol);
+  if (suffix === null) return false;             // crypto Binance / legacy no-suffix → fail-open
+  if (ALWAYS_ON_SUFFIXES.has(suffix)) return false; // crypto/fx/commodity/index → 24/7
+  if (!EXCHANGE_SESSIONS[suffix]) return false;  // equity à suffixe inconnu → fail-open
+  // Equity à suffixe CONNU : fermé = hors session (week-end + horaires + férié bourse).
+  return !isInExchangeSession(symbol, at);
+}
+
+/**
  * P19-EXT (25/05/2026) — Détecte si TOUTES les bourses majeures (US + UK + EU
  * + CH + DE) sont fermées pour férié à l'instant donné.
  *
