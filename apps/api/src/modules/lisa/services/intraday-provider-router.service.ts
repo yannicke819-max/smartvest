@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TwelveDataService } from './twelve-data.service';
 import { EodhdIntradayService, type CandleSeries } from './eodhd-intraday.service';
+import { isMarketOpen, sessionClassForSymbol } from './market-session.helper';
 import { TickerBlacklistService } from './ticker-blacklist.service';
 import { eodhdToTdSymbol, eodhdToCboeEuropeSymbol, isIntradayEodOnly } from './td-symbol-mapper';
 import { SupabaseService } from '../../supabase/supabase.service';
@@ -223,13 +224,33 @@ export class IntradayProviderRouter implements OnModuleInit {
    * Quote temps réel. Caller passe un ticker EODHD-style (ex `AAPL.US`,
    * `005930.KO`). Dual-call EODHD+TD si éligible.
    */
+  /**
+   * 06/06 — Skip la jambe EODHD du dual-call quand le marché equity est FERMÉ.
+   * EODHD intraday échoue systématiquement marché fermé (constaté 229/229 dans
+   * eodhd_request_log) mais compte dans le quota (~6k calls EODHD/h gaspillés le
+   * weekend). On ne skip QUE si TD peut servir (tdEligible) → jamais de perte de
+   * source. Marché ouvert / crypto / forex / TD inéligible → dual-call inchangé
+   * (contrainte "ZERO offload" préservée en séance). Réversible via
+   * INTRADAY_SKIP_EODHD_WHEN_CLOSED=false.
+   */
+  private shouldSkipEodhdClosed(eodhdTicker: string, tdEligible: boolean): boolean {
+    if ((this.config.get<string>('INTRADAY_SKIP_EODHD_WHEN_CLOSED') ?? 'true').toLowerCase() !== 'true') {
+      return false;
+    }
+    if (!tdEligible) return false;
+    const sess = sessionClassForSymbol(eodhdTicker);
+    return sess !== null && !isMarketOpen(sess);
+  }
+
   async getQuote(eodhdTicker: string, calledBy = 'intraday_router'): Promise<IntradayQuote | null> {
     this.logFirstCallOnce('quote', eodhdTicker, calledBy);
     const tdSkipReason = this.computeTdSkipReason(eodhdTicker, false);
     const tdSymbol = tdSkipReason === null ? this.convertToTdSymbol(eodhdTicker) : null;
     const tdEligible = tdSymbol !== null && this.td !== null;
 
-    const eodhdPromise = this.eodhd.getQuote(eodhdTicker);
+    const eodhdPromise = this.shouldSkipEodhdClosed(eodhdTicker, tdEligible)
+      ? Promise.resolve(null)
+      : this.eodhd.getQuote(eodhdTicker);
     const tdPromise = tdEligible
       ? this.td!.getQuote(tdSymbol!, calledBy)
       : Promise.resolve(null);
@@ -284,17 +305,19 @@ export class IntradayProviderRouter implements OnModuleInit {
     const tdSymbol = tdSkipReason === null ? this.convertToTdSymbol(eodhdTicker) : null;
     const tdEligible = tdSymbol !== null && this.td !== null;
 
-    const eodhdPromise = this.eodhd.getCandles(
-      eodhdTicker,
-      interval,
-      count,
-      hasTimeWindow
-        ? {
-            ...(options.fromTs != null ? { fromTs: options.fromTs } : {}),
-            ...(options.toTs != null ? { toTs: options.toTs } : {}),
-          }
-        : undefined,
-    );
+    const eodhdPromise = this.shouldSkipEodhdClosed(eodhdTicker, tdEligible)
+      ? Promise.resolve(null)
+      : this.eodhd.getCandles(
+          eodhdTicker,
+          interval,
+          count,
+          hasTimeWindow
+            ? {
+                ...(options.fromTs != null ? { fromTs: options.fromTs } : {}),
+                ...(options.toTs != null ? { toTs: options.toTs } : {}),
+              }
+            : undefined,
+        );
     const tdPromise = tdEligible
       ? this.td!.getCandles(
           tdSymbol!,

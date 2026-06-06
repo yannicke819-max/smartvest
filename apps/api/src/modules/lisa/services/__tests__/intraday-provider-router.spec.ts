@@ -25,7 +25,11 @@ jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
 jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
 
 function makeConfig(env: Record<string, string>): ConfigService {
-  return { get: jest.fn((k: string) => env[k]) } as unknown as ConfigService;
+  // 06/06 — skip EODHD-when-closed OFF par défaut dans les tests : les cas
+  // dual-call assument EODHD appelé, on ne veut pas dépendre de l'heure réelle
+  // (weekend → marchés fermés). Un test peut l'override en passant la clé.
+  const merged: Record<string, string> = { INTRADAY_SKIP_EODHD_WHEN_CLOSED: 'false', ...env };
+  return { get: jest.fn((k: string) => merged[k]) } as unknown as ConfigService;
 }
 
 function makeEodhdMock(opts?: {
