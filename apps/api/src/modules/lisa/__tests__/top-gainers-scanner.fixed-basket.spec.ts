@@ -9,6 +9,7 @@
 
 import { Logger } from '@nestjs/common';
 import { TopGainersScannerService, GAINERS_FIXED_BASKET, GAINERS_LEVERAGED_PROXIES } from '../services/top-gainers-scanner.service';
+import { isKnownMarketClosed } from '../services/exchange-sessions.helper';
 
 const mockSupabase = { getClient: jest.fn() } as any;
 const mockLisa = {} as any;
@@ -28,7 +29,16 @@ jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
 jest.spyOn(Logger.prototype, 'debug').mockImplementation(() => undefined);
 
 function makeService(configImpl?: (key: string) => unknown): TopGainersScannerService {
-  mockConfig.get.mockImplementation(configImpl ?? ((key: string) => (key === 'SCAN_INTERVAL_MINUTES' ? '15' : undefined)));
+  const baseImpl = configImpl ?? ((key: string) => (key === 'SCAN_INTERVAL_MINUTES' ? '15' : undefined));
+  // PR #636 — défaut 'false' pour GAINERS_FIXED_BASKET_SKIP_CLOSED UNIQUEMENT si
+  // le configImpl ne le fournit pas : rend les tests de fetch déterministes
+  // (sinon un run le week-end skip le fetch et casse les assertions), tout en
+  // laissant les tests de gating activer explicitement le gate via 'true'.
+  mockConfig.get.mockImplementation((key: string) => {
+    const v = baseImpl(key);
+    if (key === 'GAINERS_FIXED_BASKET_SKIP_CLOSED' && v === undefined) return 'false';
+    return v;
+  });
   return new TopGainersScannerService(
     mockSupabase, mockLisa, mockDecisionLog, mockConfig, mockBinance, mockScheduler, mockMtf, mockLlmRouter, { isShadowEnabled: () => false } as any, { evaluate: () => ({ raw: {} as any, compositeScore: null, decision: 'REJECT', rejectReason: null, spreadProxy: null, spreadProxySource: null, trendFilter: null, rvolIntraday: null }) } as any,
     { estimateProbability: async () => ({ pWin: 0.5, confidence: 0, sampleSize: 0, modelVersion: 'none', fallback: true }) } as any,
@@ -149,5 +159,50 @@ describe('fetchFixedBasket — gold/energy proxies', () => {
     expect(decoded).toContain('NUGT.US');
     expect(decoded).toContain('GUSH.US');
     expect(candidates.find((c: any) => c.symbol === 'NUGT.US')).toBeDefined();
+  });
+
+  // PR #636 — skip le batch quand TOUT le panier est sur marché connu+fermé.
+  it('skips the batch entirely when GAINERS_FIXED_BASKET_SKIP_CLOSED actif et panier fermé', async () => {
+    // Samedi 2026-05-09 17:00 UTC → tout le panier .US fermé (week-end).
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-09T17:00:00Z'));
+    try {
+      // configImpl vide → GAINERS_FIXED_BASKET_SKIP_CLOSED défaut 'true' (gating actif)
+      const svc = makeService((key: string) => (key === 'GAINERS_FIXED_BASKET_SKIP_CLOSED' ? 'true' : undefined));
+      const candidates = await (svc as any).fetchFixedBasket('test-key');
+      expect(candidates).toEqual([]);
+      expect((global.fetch as jest.Mock)).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('fetche normalement en séance US même avec le gating actif', async () => {
+    // Vendredi 2026-05-15 17:00 UTC = 13:00 EDT → US en séance.
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-15T17:00:00Z'));
+    try {
+      const svc = makeService((key: string) => (key === 'GAINERS_FIXED_BASKET_SKIP_CLOSED' ? 'true' : undefined));
+      const candidates = await (svc as any).fetchFixedBasket('test-key');
+      expect(candidates).toHaveLength(GAINERS_FIXED_BASKET.length);
+      expect((global.fetch as jest.Mock)).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
+describe('GAINERS_FIXED_BASKET — couverture du gate marché-fermé (PR #636)', () => {
+  it('tout le panier est "connu+fermé" un samedi (le skip se déclenchera)', () => {
+    const sat = new Date('2026-05-09T17:00:00Z'); // samedi
+    expect(GAINERS_FIXED_BASKET.every((e) => isKnownMarketClosed(e.symbol, sat))).toBe(true);
+  });
+
+  it('aucun symbole "fermé" en séance US (vendredi 13:00 EDT) → le fetch passe', () => {
+    const fri = new Date('2026-05-15T17:00:00Z'); // vendredi 13:00 EDT
+    expect(GAINERS_FIXED_BASKET.some((e) => isKnownMarketClosed(e.symbol, fri))).toBe(false);
+  });
+
+  it('tout le panier fermé un jour férié US (Memorial Day 25/05/2026)', () => {
+    const memorial = new Date('2026-05-25T15:00:00Z');
+    expect(GAINERS_FIXED_BASKET.every((e) => isKnownMarketClosed(e.symbol, memorial))).toBe(true);
   });
 });
