@@ -77,6 +77,9 @@ function makeService(): TopGainersScannerService {
     // Sinon isInExchangeSession bloque les opens des symboles equity selon l'heure
     // du run CI → tests non-déterministes (mêmes raison que sessionFilterEnabled=false).
     if (key === 'GAINERS_OPEN_SESSION_GUARD') return 'false';
+    // PR #638 — désactive le gate fenêtre [open+buffer/close-buffer] (même
+    // raison : déterminisme hors séance US au moment du run CI).
+    if (key === 'GAINERS_OPEN_BUFFER_MIN' || key === 'GAINERS_CLOSE_BUFFER_MIN') return '0';
     return undefined;
   });
   return new TopGainersScannerService(
