@@ -1616,6 +1616,19 @@ export class LisaController {
   }
 
   /**
+   * PR-2 (widget loi empirique) — loi empirique oversold par bande de drop :
+   * realized (clôturés, dispo) + forwardJ10 (qualité d'entrée isolée, ~18/06).
+   */
+  @Get('oversold-empirical-law/:portfolioId')
+  async getOversoldEmpiricalLaw(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    extractUserId(headers);
+    return this.oversoldScanner.getEmpiricalLaw(portfolioId);
+  }
+
+  /**
    * 04/06 — Boucles d'apprentissage SÉPARÉES (user request). Chacune lit
    * uniquement les closes labellisés de SA source pour ne pas mixer les
    * patterns scalp gainers (5-60min) avec swing oversold (J+10).

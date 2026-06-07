@@ -39,6 +39,7 @@ import { GainsTracker } from '@/components/lisa/gains-tracker';
 import { OversoldPanel } from '@/components/lisa/oversold-panel';
 import { OversoldRegimePanel } from '@/components/lisa/oversold-regime-panel';
 import { OversoldNewsWatchPanel } from '@/components/lisa/oversold-news-watch-panel';
+import { OversoldEmpiricalLawPanel } from '@/components/lisa/oversold-empirical-law-panel';
 import { LessonsImpactPanel } from '@/components/lisa/lessons-impact-panel';
 import { LearningLoopAuditPanel } from '@/components/lisa/learning-loop-audit-panel';
 import { LisaConfigPanel } from '@/components/lisa/lisa-config-panel';
@@ -759,6 +760,11 @@ export default function LisaPage() {
           (visibilité, pas un trigger d'exit). */}
       {selectedPortfolioId && currentMode === 'oversold' && (
         <OversoldNewsWatchPanel portfolioId={selectedPortfolioId} />
+      )}
+
+      {/* 07/06 — Loi empirique par bande de drop : réalisé (dispo) + J+10 (~18/06). */}
+      {selectedPortfolioId && currentMode === 'oversold' && (
+        <OversoldEmpiricalLawPanel portfolioId={selectedPortfolioId} />
       )}
 
       {/* Shadow Sizing — RETIRÉ 04/06. Les shadows MIDDLE/SMALL sont figés et
