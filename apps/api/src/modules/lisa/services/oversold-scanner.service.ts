@@ -127,6 +127,28 @@ export interface OversoldRegimeStatus {
   asOf: string;
 }
 
+/**
+ * PR-2 (widget 3) — Veille news contraires sur une position oversold ouverte.
+ * Lecture seule (visibilité), jamais un déclencheur d'exit.
+ */
+export interface OversoldNewsAlert {
+  symbol: string;
+  articleCount: number; // articles dans la fenêtre
+  minSentiment: number; // polarité la plus négative [-1..1]
+  latestTitle: string | null;
+  latestUrl: string | null;
+  latestAgeHours: number | null;
+  level: 'shock' | 'watch'; // ≤ -0.6 (shock, réf checkNewsShockClose) / ≤ -0.3 (veille)
+}
+
+export interface OversoldNewsWatch {
+  portfolioId: string;
+  openPositions: number; // nb positions oversold ouvertes (dénominateur)
+  windowHours: number;
+  alerts: OversoldNewsAlert[]; // uniquement les positions à sentiment contraire, plus négatif d'abord
+  asOf: string;
+}
+
 /** Row config oversold lue depuis lisa_session_configs. */
 interface OversoldPortfolioRow {
   portfolio_id: string;
@@ -1317,6 +1339,84 @@ export class OversoldScannerService {
       }
     }
     return { iso: now.toISOString(), kind: 'intraday' };
+  }
+
+  /**
+   * PR-2 (widget 3) — Veille news contraires sur les positions oversold OUVERTES.
+   *
+   * Lecture seule (zéro fetch EODHD live, zéro LLM, zéro close) : interroge les
+   * news déjà persistées (eodhd_news_articles) sur les symboles tenus, sur une
+   * fenêtre récente (48h), et remonte celles à sentiment négatif. C'est une
+   * VISIBILITÉ pour l'utilisateur — PAS un déclencheur d'exit : le mean-reversion
+   * tient délibérément à travers le bruit (la chute initiale est souvent due à
+   * une mauvaise news ; auto-fermer dessus couperait l'edge). Le seuil -0.6
+   * reprend la référence checkNewsShockClose pour la cohérence visuelle.
+   * Une seule requête DB (.in sur les tickers), agrégation en mémoire.
+   */
+  async getNewsWatch(portfolioId: string): Promise<OversoldNewsWatch> {
+    const client = this.supabase.getClient();
+    const WINDOW_HOURS = 48;
+    const nowMs = Date.now();
+    const fromIso = new Date(nowMs - WINDOW_HOURS * 3_600_000).toISOString();
+
+    const { data: openRows } = await client
+      .from('lisa_positions')
+      .select('symbol')
+      .eq('portfolio_id', portfolioId)
+      .eq('venue_fee_detail->>source', 'scanner_oversold')
+      .eq('status', 'open');
+    const symbols = Array.from(new Set((openRows ?? []).map((r) => String(r.symbol))));
+    const openPositions = symbols.length;
+
+    if (openPositions === 0) {
+      return { portfolioId, openPositions: 0, windowHours: WINDOW_HOURS, alerts: [], asOf: new Date().toISOString() };
+    }
+
+    const { data: news } = await client
+      .from('eodhd_news_articles')
+      .select('ticker, published_at, title, sentiment_polarity, source_url')
+      .in('ticker', symbols)
+      .gte('published_at', fromIso)
+      .lte('published_at', new Date(nowMs).toISOString())
+      .order('published_at', { ascending: false })
+      .limit(500);
+
+    // Agrège par symbole : min sentiment + article le plus récent (news triées DESC).
+    const bySym = new Map<
+      string,
+      { count: number; min: number; latestTitle: string | null; latestUrl: string | null; latestAt: string | null }
+    >();
+    for (const a of news ?? []) {
+      const sym = String(a.ticker);
+      const sent = typeof a.sentiment_polarity === 'number' ? a.sentiment_polarity : null;
+      const cur = bySym.get(sym) ?? { count: 0, min: 1, latestTitle: null, latestUrl: null, latestAt: null };
+      cur.count += 1;
+      if (sent != null && sent < cur.min) cur.min = sent;
+      if (cur.latestAt === null) {
+        cur.latestTitle = (a.title as string | null) ?? null;
+        cur.latestUrl = (a.source_url as string | null) ?? null;
+        cur.latestAt = (a.published_at as string | null) ?? null;
+      }
+      bySym.set(sym, cur);
+    }
+
+    const alerts: OversoldNewsAlert[] = [];
+    for (const [sym, v] of bySym.entries()) {
+      if (!(v.min <= -0.3)) continue; // garde uniquement le sentiment contraire
+      alerts.push({
+        symbol: sym,
+        articleCount: v.count,
+        minSentiment: v.min,
+        latestTitle: v.latestTitle,
+        latestUrl: v.latestUrl,
+        latestAgeHours: v.latestAt ? Math.max(0, (nowMs - new Date(v.latestAt).getTime()) / 3_600_000) : null,
+        level: v.min <= -0.6 ? 'shock' : 'watch',
+      });
+    }
+    // shock d'abord, du plus négatif au moins négatif.
+    alerts.sort((a, b) => a.minSentiment - b.minSentiment);
+
+    return { portfolioId, openPositions, windowHours: WINDOW_HOURS, alerts, asOf: new Date().toISOString() };
   }
 
   /**

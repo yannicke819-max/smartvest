@@ -38,6 +38,7 @@ import { LisaStickyHeader } from '@/components/lisa/lisa-sticky-header';
 import { GainsTracker } from '@/components/lisa/gains-tracker';
 import { OversoldPanel } from '@/components/lisa/oversold-panel';
 import { OversoldRegimePanel } from '@/components/lisa/oversold-regime-panel';
+import { OversoldNewsWatchPanel } from '@/components/lisa/oversold-news-watch-panel';
 import { LessonsImpactPanel } from '@/components/lisa/lessons-impact-panel';
 import { LearningLoopAuditPanel } from '@/components/lisa/learning-loop-audit-panel';
 import { LisaConfigPanel } from '@/components/lisa/lisa-config-panel';
@@ -752,6 +753,12 @@ export default function LisaPage() {
           book value, P&L réalisé vs latent, positions + drop% + compte à rebours J+10. */}
       {selectedPortfolioId && currentMode === 'oversold' && (
         <OversoldPanel portfolioId={selectedPortfolioId} />
+      )}
+
+      {/* 07/06 PR-2 (widget 3) — Veille news contraires sur les positions tenues
+          (visibilité, pas un trigger d'exit). */}
+      {selectedPortfolioId && currentMode === 'oversold' && (
+        <OversoldNewsWatchPanel portfolioId={selectedPortfolioId} />
       )}
 
       {/* Shadow Sizing — RETIRÉ 04/06. Les shadows MIDDLE/SMALL sont figés et

@@ -1603,6 +1603,19 @@ export class LisaController {
   }
 
   /**
+   * PR-2 (widget 3) — Veille news contraires (sentiment négatif récent) sur les
+   * positions oversold ouvertes. Lecture seule (visibilité), pas un trigger d'exit.
+   */
+  @Get('oversold-news-watch/:portfolioId')
+  async getOversoldNewsWatch(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    extractUserId(headers);
+    return this.oversoldScanner.getNewsWatch(portfolioId);
+  }
+
+  /**
    * 04/06 — Boucles d'apprentissage SÉPARÉES (user request). Chacune lit
    * uniquement les closes labellisés de SA source pour ne pas mixer les
    * patterns scalp gainers (5-60min) avec swing oversold (J+10).
