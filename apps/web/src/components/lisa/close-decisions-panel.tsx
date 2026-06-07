@@ -31,7 +31,9 @@ export function CloseDecisionsPanel({ portfolioId }: { portfolioId: string }) {
           <Brain className="h-4 w-4 text-purple-600" />
           <h2 className="text-sm font-medium">🧠 Décisions de close (apprentissage)</h2>
         </div>
-        <span className="text-[11px] text-muted-foreground">{s.total} closes</span>
+        <span className="text-[11px] text-muted-foreground">
+          {s.total} closes{s.total > 10 ? ' · défilez pour voir les plus anciens' : ''}
+        </span>
       </div>
 
       {s.total > 0 && (
@@ -49,9 +51,9 @@ export function CloseDecisionsPanel({ portfolioId }: { portfolioId: string }) {
           alimente cette table ; les verdicts se peuplent à +60min puis à l&apos;échéance J+10.
         </p>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto overflow-y-auto max-h-80">
           <table className="w-full text-[11px]">
-            <thead>
+            <thead className="sticky top-0 bg-background z-10">
               <tr className="text-left text-muted-foreground border-b">
                 <th className="py-1.5 pr-2">Symbole</th>
                 <th className="py-1.5 px-2">Contexte</th>
