@@ -89,6 +89,7 @@ Règles :
 interface PortfolioConfig {
   portfolio_id: string;
   user_id: string;
+  strategy_mode: string | null;
   lisa_initial_capital_usd: number;
   lisa_compound_pnl_enabled: boolean;
   kill_switch_active: boolean;
@@ -274,7 +275,7 @@ export class StrategyCoachService {
     const client = this.supabase.getClient();
     const { data: configs, error } = await client
       .from('lisa_session_configs')
-      .select('portfolio_id, user_id, lisa_initial_capital_usd, lisa_compound_pnl_enabled, kill_switch_active, autopilot_enabled, lisa_target_daily_usd, lisa_target_daily_pct, lisa_target_monthly_usd, lisa_target_monthly_pct, lisa_target_annual_usd, lisa_target_annual_pct')
+      .select('portfolio_id, user_id, strategy_mode, lisa_initial_capital_usd, lisa_compound_pnl_enabled, kill_switch_active, autopilot_enabled, lisa_target_daily_usd, lisa_target_daily_pct, lisa_target_monthly_usd, lisa_target_monthly_pct, lisa_target_annual_usd, lisa_target_annual_pct')
       .eq('lisa_strategy_coach_enabled', true)
       .gt('lisa_initial_capital_usd', 0);
     if (error) {
@@ -286,6 +287,12 @@ export class StrategyCoachService {
     let proposalsCreated = 0;
     let errors = 0;
     for (const cfg of (configs ?? []) as unknown as PortfolioConfig[]) {
+      // 07/06 — Skip les portfolios en mode oversold : le scanner mean-reversion
+      // est DÉTERMINISTE et n'utilise NI les lessons NI les paramètres LLM que le
+      // coach propose. Générer des propositions dessus = bruit pur (constaté :
+      // 59 pending sur EU oversold) + coût Gemini inutile. Le coach reste actif
+      // sur les portfolios LLM (TRADER / investment / harvest).
+      if (cfg.strategy_mode === 'oversold') continue;
       processed++;
       try {
         const proposalId = await this.runForPortfolio(cfg);

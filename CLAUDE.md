@@ -190,6 +190,99 @@ Cf. `docs/adr/ADR-002-grand-public-ready.md` pour le plan 8 sprints complet.
 
 ---
 
+## RÈGLE OPÉRATIONNELLE — UI MODE OVERSOLD (PR #653-#656, 07/06/2026)
+
+La page `/lisa` a été nettoyée pour les 2 portfolios **Oversold** (US `a0000001`,
+EU `a0000003`). Le mode oversold est un scanner **mean-reversion déterministe**
+(cron 21:15 UTC + intraday horaire) — il **n'utilise NI le LLM Lisa, NI les
+gates gainers, NI les lessons, NI le cycle autopilot**. Tout l'historique UI
+gainers/trader/harvest est donc de la **pollution** sur cette vue.
+
+### Source de vérité du rendu : `currentMode` (`useOperatingMode`)
+
+`apps/web/src/app/lisa/page.tsx` rend conditionnellement via
+`currentMode === 'oversold'` / `currentMode !== 'oversold'`. **Ne JAMAIS ajouter
+un widget gainers/trader/harvest sans le gater** `currentMode !== 'oversold'`.
+
+**Masqué en oversold** (`currentMode !== 'oversold'`) :
+- Bloc « Cockpit LLM Lisa » (un seul `<>…</>` enveloppant) : carte **Configuration
+  de session** (profile/cadence, anti-consensus, objectifs trajectoire, autopilot,
+  persona, contraintes risque, presets, levier, derivatives), **Générer une
+  proposition Lisa** + scénarios, **liste des propositions**, dernier trigger +
+  countdown cycle, **Agent mécanique** (`MechanicalAgentCard`).
+- Bandeau « Statut mode autonome » (cadence cycle Lisa).
+- PR-1 (#653) : `GainersStatusTile`, `CoachProposalsPanel`, `LessonsImpactPanel`,
+  `LearningLoopAuditPanel`, `DailyHarvestTracker`, `DailyHarvestPanel`,
+  `OptionPositionsCard`, `LiveTradingWizard`, bloc « Paramètres adaptatifs ».
+
+**Affiché uniquement en oversold** (`currentMode === 'oversold'`) :
+- `OversoldRegimePanel` (🌡️ thermomètre VIX/indice + verdict gate + countdown scan, PR #654)
+- `OversoldPanel` (book mean-reversion), `OversoldNewsWatchPanel` (veille news, PR #655),
+  `OversoldEmpiricalLawPanel` (loi empirique par bande de drop, PR #656), `OversoldMindPanel`.
+
+**Conservé dans tous les modes** : `AutopilotBudgetBadge`, `RiskStateBanner`,
+`MacroModeSelector` (bascule de mode), `GeminiCostPanel`/`LlmCostLivePanel`,
+`LisaPortfolioSummary`, `LisaPortfolioChart`, `LisaPositionsTable` (filtrée
+`scanner_oversold` en oversold), `LisaDecisionLog` (l'oversold y écrit ses
+décisions de scan), `LisaConfigPanel` (kill-switch/reset/capital — moins lessons),
+carte **Kill switch** (pause + reset).
+
+### Défaut d'ouverture
+
+`DEFAULT_PORTFOLIO_ID = a0000001` (US Oversold, vivant) au lieu du `TRADER_PORTFOLIO_ID`
+(`b0000001`, gelé kill-switch). Évite la bannière kill-switch rouge au chargement.
+
+### Lessons & oversold — section visible mais FILTRÉE par scope
+
+Le corpus `scanner_lessons` (251, scopes `trader_agent_only`/`asia_only`/`eu_only`/
+`us_only`/…) est **gainers/trader**. Le pipeline oversold n'a **aucun
+`getLessonsBlock`** → il ne les lit jamais.
+
+Demande user (07/06) : « continuer à voir les NOUVELLES lessons à venir, plus les
+anciennes de gainers/TRADER ». → La section Lessons de `LisaConfigPanel` reste
+**visible** en oversold mais est **filtrée par préfixe de scope** : en oversold,
+`lessonsScopePrefix='oversold'` → seules les lessons de scope `oversold*`
+s'affichent (vide aujourd'hui, se peuple quand de nouvelles lessons oversold
+arrivent). L'ancien corpus gainers/trader disparaît de la vue.
+
+**Convention à respecter** : tout futur générateur de lessons oversold DOIT écrire
+`scope` préfixé `oversold` (`'oversold'`, `'oversold_us_equity'`, `'oversold_eu_equity'`…)
+pour que la section UI les capte. Ne pas re-câbler les lessons gainers sur oversold
+sans calibration dédiée mean-reversion (patterns scalp 5-60min ≠ swing J+10).
+
+### Strategy Coach & cloche de notifications — skip oversold
+
+Le `StrategyCoachService` (Gemini hourly) propose des **lessons + changements de
+paramètres LLM** — inutiles pour l'oversold déterministe. Il tournait sur TOUS les
+portfolios → backlog de bruit (constaté 07/06 : 1 pending US, **59 pending EU**).
+Corrigé :
+- **Coach** : `runCycle` skippe `strategy_mode === 'oversold'` (pas de génération,
+  pas de coût Gemini).
+- **Cloche** (`getNotifications`) : n'expose PAS `coach_proposal_pending` quand le
+  portfolio est en oversold (couvre aussi le backlog déjà accumulé). Le panneau
+  actionnable `CoachProposalsPanel` est de toute façon masqué en oversold (PR-1).
+- Le backlog `coach_proposals` pending sur les portfolios oversold reste en DB
+  (invisible) — purgeable via `status='dismissed'` si besoin, non bloquant.
+
+### Params oversold = DB only
+
+Les réglages de la stratégie oversold (`oversold_drop_min_pct`, `_drop_max_pct`,
+`_hold_days`, `_stop_catastrophe_pct`, `_tp_pct`, `_position_notional_usd`,
+`_max_open_positions`, `_universe`) vivent dans `lisa_session_configs` (migration
+0191). **Il n'existe pas encore d'éditeur UI** pour ces champs (la carte
+Configuration de session ne pilote QUE le LLM Lisa). Follow-up possible : carte de
+config oversold dédiée si l'utilisateur veut tuner la stratégie depuis l'UI.
+
+### Endpoints UI oversold (lecture seule)
+
+- `GET /lisa/oversold-summary/:portfolioId` — book valorisé EOD
+- `GET /lisa/oversold-regime/:portfolioId` — régime live + prochain scan
+- `GET /lisa/oversold-news-watch/:portfolioId` — veille news contraires (48h)
+- `GET /lisa/oversold-empirical-law/:portfolioId` — loi empirique par bande de drop (realized + J+10)
+- `GET /lisa/oversold-mind/:portfolioId` — feed décisions scan/exits
+
+---
+
 ## EODHD API Reference (OFFICIAL SKILL — vendor/eodhd-claude-skills)
 
 P19k.2 — Le skill officiel EODHD `eodhd-claude-skills` est vendoré dans

@@ -262,6 +262,33 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
   const winMarkers = useMemo(() => tradeMarkers.filter((m) => m.win), [tradeMarkers]);
   const lossMarkers = useMemo(() => tradeMarkers.filter((m) => !m.win), [tradeMarkers]);
 
+  // Fix courbe 07/06 — Liste DÉTERMINISTE des trades clôturés de la fenêtre,
+  // construite directement depuis les positions (PAS depuis l'interpolation des
+  // markers). Sur un portefeuille à equity quasi-plate (ex a0000001 ≈ 150k), tous
+  // les markers s'empilent sur la ligne et le tooltip recharts vise la courbe
+  // (même valeur/date pour tous → bug signalé). Cette liste affiche la date/heure
+  // exacte + le P&L réel de CHAQUE trade, sans dépendre du hover ni de recharts.
+  const closedTrades = useMemo(() => {
+    const positions = positionsQuery.data ?? [];
+    const cutoff = Date.now() - WINDOW_DAYS[window] * 86_400_000;
+    return positions
+      .filter(
+        (p) => p.status !== 'open' && p.exitTimestamp && new Date(p.exitTimestamp).getTime() >= cutoff,
+      )
+      .map((p) => {
+        const pnlUsd = parseFloat(p.realizedPnlUsd ?? '0') || 0;
+        return {
+          t: new Date(p.exitTimestamp!).getTime(),
+          symbol: p.symbol,
+          pnlUsd,
+          pnlPct: p.realizedPnlPct ?? 0,
+          exitReason: (p.exitReason ?? p.status ?? '').slice(0, 40),
+          win: pnlUsd > 0,
+        };
+      })
+      .sort((a, b) => b.t - a.t);
+  }, [positionsQuery.data, window]);
+
   const hasData = chartData.length > 1;
   const latestValue = chartData[chartData.length - 1]?.value ?? 0;
   // Baseline = capital initial (inception) si dispo, sinon fallback sur le
@@ -468,6 +495,58 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
           <span className="flex items-center gap-1">
             <span className="inline-block w-2 h-2 rounded-full bg-rose-500" /> Trade perdant ({lossMarkers.length})
           </span>
+        </div>
+      )}
+
+      {/* Fix 07/06 — Liste des trades clôturés : date/heure exacte + P&L réel par
+          trade. Fiable même quand l'equity est plate et que les markers se
+          superposent sur la courbe (le hover recharts ne suffisait pas). */}
+      {closedTrades.length > 0 && (
+        <div>
+          <div className="text-xs font-medium text-muted-foreground mb-1">
+            Trades clôturés ({closedTrades.length}) · {WINDOW_LABELS[window]}
+          </div>
+          <div className="max-h-48 overflow-y-auto rounded-md border">
+            <table className="w-full text-[11px]">
+              <thead className="sticky top-0 bg-card">
+                <tr className="text-left text-muted-foreground border-b">
+                  <th className="py-1 px-2 w-5" />
+                  <th className="py-1 px-2">Symbole</th>
+                  <th className="py-1 px-2">Sortie (date &amp; heure)</th>
+                  <th className="py-1 px-2 text-right">P&amp;L</th>
+                  <th className="py-1 px-2">Motif</th>
+                </tr>
+              </thead>
+              <tbody>
+                {closedTrades.map((t, i) => (
+                  <tr key={`${t.symbol}-${t.t}-${i}`} className="border-b last:border-0">
+                    <td className="py-1 px-2">{t.win ? '🟢' : '🔴'}</td>
+                    <td className="py-1 px-2 font-medium">{t.symbol.replace('.US', '')}</td>
+                    <td className="py-1 px-2 tabular-nums text-muted-foreground whitespace-nowrap">
+                      {new Date(t.t).toLocaleString('fr-FR', {
+                        day: '2-digit',
+                        month: 'short',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </td>
+                    <td
+                      className={`py-1 px-2 text-right tabular-nums whitespace-nowrap ${
+                        t.win ? 'text-emerald-600' : 'text-rose-500'
+                      }`}
+                    >
+                      {t.pnlUsd >= 0 ? '+' : ''}
+                      {t.pnlUsd.toFixed(2)}$ ({t.pnlPct >= 0 ? '+' : ''}
+                      {t.pnlPct.toFixed(2)}%)
+                    </td>
+                    <td className="py-1 px-2 text-muted-foreground truncate max-w-[140px]">
+                      {t.exitReason}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 

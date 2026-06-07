@@ -26,9 +26,15 @@ import { usePushSubscription } from '@/hooks/use-push-subscription';
 
 interface Props {
   portfolioId: string;
+  // 07/06 — filtre les lessons affichées par préfixe de scope. En mode oversold,
+  // on passe 'oversold' : le corpus historique (251 lessons gainers/trader, scopes
+  // trader_agent_only / asia_only / eu_only / us_only…) disparaît, et SEULES les
+  // nouvelles lessons oversold (scope 'oversold*') s'afficheront à mesure qu'elles
+  // sont générées. undefined = pas de filtre (tous les scopes, modes LLM).
+  lessonsScopePrefix?: string;
 }
 
-export function LisaConfigPanel({ portfolioId }: Props) {
+export function LisaConfigPanel({ portfolioId, lessonsScopePrefix }: Props) {
   const configQuery = useLisaConfig(portfolioId);
   const upsert = useUpsertLisaConfig(portfolioId);
   const resetKill = useResetKillSwitch(portfolioId);
@@ -192,8 +198,8 @@ export function LisaConfigPanel({ portfolioId }: Props) {
       {/* 4. Push notifications */}
       <PushNotificationsSection />
 
-      {/* 5. Lessons management */}
-      <LessonsManagementSection />
+      {/* 5. Lessons management — filtré par scope (oversold = nouvelles lessons only) */}
+      <LessonsManagementSection scopePrefix={lessonsScopePrefix} />
     </Card>
   );
 }
@@ -241,7 +247,7 @@ function PushNotificationsSection() {
   );
 }
 
-function LessonsManagementSection() {
+function LessonsManagementSection({ scopePrefix }: { scopePrefix?: string }) {
   const [search, setSearch] = useState('');
   const [activeFilter, setActiveFilter] = useState<'all' | 'active' | 'inactive'>('all');
   const lessonsQuery = useScannerLessons({
@@ -251,13 +257,22 @@ function LessonsManagementSection() {
   });
   const toggle = useToggleScannerLesson();
 
-  const counts = useMemo(() => {
-    const rows = lessonsQuery.data ?? [];
-    return {
-      total: rows.length,
-      active: rows.filter((r) => r.is_active).length,
-    };
-  }, [lessonsQuery.data]);
+  // 07/06 — Filtre client par préfixe de scope. En oversold (scopePrefix='oversold'),
+  // on n'affiche QUE les lessons oversold : le corpus gainers/trader (scopes
+  // trader_agent_only/asia_only/eu_only/us_only/…) disparaît de la vue. Les
+  // nouvelles lessons oversold (scope 'oversold*') apparaîtront ici à mesure
+  // qu'elles sont générées. (Le pipeline oversold ne LIT pas ces lessons ; cette
+  // section sert à les inspecter/désactiver à la main.)
+  const rows = useMemo(() => {
+    const all = lessonsQuery.data ?? [];
+    if (!scopePrefix) return all;
+    return all.filter((r) => (r.scope ?? '').toLowerCase().startsWith(scopePrefix.toLowerCase()));
+  }, [lessonsQuery.data, scopePrefix]);
+
+  const counts = useMemo(
+    () => ({ total: rows.length, active: rows.filter((r) => r.is_active).length }),
+    [rows],
+  );
 
   return (
     <div>
@@ -291,15 +306,17 @@ function LessonsManagementSection() {
         </div>
       )}
 
-      {!lessonsQuery.isLoading && (lessonsQuery.data ?? []).length === 0 && (
+      {!lessonsQuery.isLoading && rows.length === 0 && (
         <div className="text-xs text-muted-foreground py-4 text-center">
-          Aucune lesson.
+          {scopePrefix
+            ? `Aucune lesson « ${scopePrefix} » pour l'instant — les nouvelles lessons de ce mode apparaîtront ici (l'ancien corpus gainers/TRADER est masqué).`
+            : 'Aucune lesson.'}
         </div>
       )}
 
-      {!lessonsQuery.isLoading && (lessonsQuery.data ?? []).length > 0 && (
+      {!lessonsQuery.isLoading && rows.length > 0 && (
         <div className="space-y-1 max-h-[420px] overflow-y-auto">
-          {(lessonsQuery.data ?? []).map((l) => (
+          {rows.map((l) => (
             <div
               key={l.id}
               className={`rounded border p-2 flex items-start gap-2 ${

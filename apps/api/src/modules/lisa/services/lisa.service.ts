@@ -3195,7 +3195,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     const [cfgRes, propRes] = await Promise.all([
       client
         .from('lisa_session_configs')
-        .select('kill_switch_active, updated_at')
+        .select('kill_switch_active, updated_at, strategy_mode')
         .eq('portfolio_id', portfolioId)
         .maybeSingle(),
       client
@@ -3206,6 +3206,14 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
         .order('created_at', { ascending: false })
         .limit(50),
     ]);
+
+    // 07/06 — En mode oversold, on n'expose PAS les propositions du Strategy Coach
+    // dans la cloche : elles tunent la config LLM/lessons que le scanner
+    // déterministe ignore, et le panneau d'application est masqué sur cette vue
+    // (cf. RÈGLE OPÉRATIONNELLE — UI MODE OVERSOLD). Le coach skippe désormais
+    // l'oversold en amont, mais ce garde-fou couvre le backlog déjà accumulé.
+    const isOversold =
+      (cfgRes.data as { strategy_mode?: string | null } | null)?.strategy_mode === 'oversold';
 
     type Item = {
       id: string;
@@ -3231,7 +3239,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       });
     }
 
-    for (const p of (propRes.data ?? []) as Array<Record<string, unknown>>) {
+    for (const p of (isOversold ? [] : ((propRes.data ?? []) as Array<Record<string, unknown>>))) {
       const lessons = Array.isArray(p.proposed_lessons) ? p.proposed_lessons.length : 0;
       const params = Array.isArray(p.proposed_parameter_changes) ? p.proposed_parameter_changes.length : 0;
       const verdict = String(p.feasibility_verdict ?? 'UNKNOWN');

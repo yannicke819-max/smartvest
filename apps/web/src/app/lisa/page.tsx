@@ -799,7 +799,14 @@ export default function LisaPage() {
       {currentMode !== 'oversold' && <LearningLoopAuditPanel />}
 
       {/* LISA refonte B.3 — Config LISA simplifiée (kill-switch reset, capital, digest, lessons mgmt) */}
-      {selectedPortfolioId && <LisaConfigPanel portfolioId={selectedPortfolioId} />}
+      {selectedPortfolioId && (
+        <LisaConfigPanel
+          portfolioId={selectedPortfolioId}
+          // En oversold : n'affiche QUE les lessons de scope 'oversold*' (nouvelles
+          // à venir) — masque l'ancien corpus gainers/TRADER. Autres modes : tout.
+          lessonsScopePrefix={currentMode === 'oversold' ? 'oversold' : undefined}
+        />
+      )}
 
       {/* LISA refonte A.2 — Mini-tile temps réel scanner LISA (ex-Gainers).
           Renommé côté composant interne, mais portfolio_id=TRADER force le scope.
@@ -849,6 +856,17 @@ export default function LisaPage() {
         />
       )}
 
+      {/* 07/06 — Cockpit LLM Lisa : config de session (profile/cadence,
+          anti-consensus, objectifs trajectoire, autopilot, persona, contraintes
+          risque, levier, derivatives), génération de propositions + scénarios,
+          liste des propositions, dernier trigger + countdown cycle, agent
+          mécanique. TOUT ce bloc est masqué en mode oversold : le scanner
+          mean-reversion est DÉTERMINISTE (cron 21:15 + intraday horaire) et
+          n'utilise aucun de ces réglages — ses params vivent en DB
+          (lisa_session_configs.oversold_*, migration 0191). Le kill-switch + le
+          reset restent disponibles plus bas (carte Kill switch). */}
+      {currentMode !== 'oversold' && (
+      <>
       {/* Config card */}
       <div className="rounded-lg border p-5 space-y-4">
         <div className="flex items-center gap-2">
@@ -1352,10 +1370,8 @@ export default function LisaPage() {
       </div>
 
       {/* Daily Harvest config panel — orthogonal au DelegationMode/OperatingTempo.
-          07/06 — masqué en mode oversold (réglage scalping harvest sans objet). */}
-      {selectedPortfolioId && currentMode !== 'oversold' && (
-        <DailyHarvestPanel portfolioId={selectedPortfolioId} />
-      )}
+          (déjà dans le bloc masqué en oversold ci-dessus). */}
+      {selectedPortfolioId && <DailyHarvestPanel portfolioId={selectedPortfolioId} />}
 
       {/* Generate proposal card */}
       <div className="rounded-lg border p-5 space-y-4">
@@ -1572,6 +1588,8 @@ export default function LisaPage() {
         data={agentStatusQuery.data}
         isLoading={agentStatusQuery.isLoading}
       />
+      </>
+      )}
 
       {/* Options ouvertes (long calls/puts via OptionBrokerService).
           07/06 — masqué en mode oversold : le scanner mean-reversion ne trade
@@ -1583,8 +1601,8 @@ export default function LisaPage() {
       {/* Decision log */}
       {selectedPortfolioId && <LisaDecisionLog portfolioId={selectedPortfolioId} />}
 
-      {/* Statut mode autonome */}
-      {autopilotEnabled && autopilotAutoApprove && (() => {
+      {/* Statut mode autonome — Lisa LLM uniquement (cadence cycle), masqué en oversold */}
+      {currentMode !== 'oversold' && autopilotEnabled && autopilotAutoApprove && (() => {
         const utcHour = new Date().getUTCHours();
         const inMarketHours = utcHour >= 7 && utcHour < 20;
         const isPausedByMarketHours = autopilotMarketHoursOnly && !inMarketHours;
