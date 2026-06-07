@@ -161,11 +161,6 @@ export class OversoldScannerService {
         return;
       }
 
-      // PR-1 — collecte features/outcomes pour la boucle d'apprentissage (best-effort).
-      await this.reconcileOversoldFeatures().catch((e) =>
-        this.logger.warn(`[oversold-features] reconcile failed: ${String(e).slice(0, 200)}`),
-      );
-
       const portfolios = await this.loadOversoldPortfolios();
       if (portfolios.length === 0) {
         this.logger.debug('[oversold] aucun portfolio en mode oversold actif → skip');
@@ -429,11 +424,6 @@ export class OversoldScannerService {
         this.logger.debug('[oversold-intraday] disabled (OVERSOLD_SCANNER_ENABLED or OVERSOLD_INTRADAY_ENABLED off)');
         return;
       }
-
-      // PR-1 — collecte features/outcomes (best-effort, idempotent via scanner_position_id).
-      await this.reconcileOversoldFeatures().catch((e) =>
-        this.logger.warn(`[oversold-features] reconcile failed: ${String(e).slice(0, 200)}`),
-      );
 
       const portfolios = await this.loadOversoldPortfolios();
       if (portfolios.length === 0) {
@@ -1270,6 +1260,22 @@ export class OversoldScannerService {
     }
     if (idx < 0) return null;
     return computeForwardOutcome(bars, idx, horizon);
+  }
+
+  /**
+   * PR-4 (fix) — Réconciliation features/outcomes en cron DÉDIÉ 7j/7.
+   *
+   * Avant : la collecte était câblée en tête des scans (runDailyScan 21:15 +
+   * runIntradayScan 08-20h), TOUS DEUX Mon-Fri → aucune collecte le week-end et
+   * backfill retardé au lundi. La collecte est du housekeeping data : elle ne
+   * doit PAS dépendre des jours de marché. Cron autonome toutes les 30 min,
+   * self-gated par OVERSOLD_FEATURE_COLLECTION_ENABLED dans reconcile. Best-effort.
+   */
+  @Cron('0 */30 * * * *', { name: 'oversold-feature-reconcile', timeZone: 'UTC' })
+  async runFeatureReconcile(): Promise<void> {
+    await this.reconcileOversoldFeatures().catch((err) =>
+      this.logger.warn(`[oversold-features] reconcile cron failed: ${String(err).slice(0, 200)}`),
+    );
   }
 
   /**
