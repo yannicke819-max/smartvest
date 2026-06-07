@@ -1045,6 +1045,25 @@ ratio sain, passer à `active`. Si ratio toxique, monter `TRADER_BYPASS_MIN_SCOR
 
 ---
 
+## RÈGLE OPÉRATIONNELLE — CLÉ MISTRAL = `MISTRAL_SMARTVEST_API_KEY` (07/06/2026)
+
+La clé Mistral **valide** est le secret Fly **`MISTRAL_SMARTVEST_API_KEY`**.
+`MISTRAL_API_KEY` est l'**ANCIENNE clé révoquée** (laissée en place). Bug constaté
+07/06 : les 3 services Mistral (`MistralSmallService`, `MistralShadowService`,
+`MistralLargeShadowService`) lisaient `MISTRAL_API_KEY` → ancienne clé → échec
+d'auth → `fetch` qui hang jusqu'au timeout 30 s → fallback Gemini systématique
+(faux « Mistral down »).
+
+**Fix** : les 3 services lisent `MISTRAL_SMARTVEST_API_KEY` en priorité (fallback
+`MISTRAL_API_KEY` pour back-compat tests) + nettoient espaces et **virgule de fin**
+(un secret collé avec une virgule cassait l'auth). Vérifié direct : la nouvelle clé
+répond `HTTP 200` en ~0,9 s.
+
+**Procédure** : la clé Mistral va TOUJOURS dans `MISTRAL_SMARTVEST_API_KEY` (Fly UI),
+valeur brute **sans virgule ni espace**. Rotater toute clé partagée en chat.
+
+---
+
 ## 1. Positionnement produit (non négociable)
 
 SmartVest est une **plateforme d'investissement personnel** opérant selon un modèle de **délégation contrôlée**.

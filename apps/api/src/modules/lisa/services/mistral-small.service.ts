@@ -43,7 +43,14 @@ export class MistralSmallService {
   private readonly freeTier: boolean;
 
   constructor(private readonly config: ConfigService) {
-    this.apiKey = this.config.get<string>('MISTRAL_API_KEY');
+    // 07/06 — La clé Fly est nommée MISTRAL_SMARTVEST_API_KEY (pas MISTRAL_API_KEY).
+    // Nouveau nom prioritaire (fallback ancien) + nettoyage espaces/virgule de fin
+    // (un secret collé avec une virgule cassait l'auth → fetch qui hang jusqu'au
+    // timeout 30s, faux « Mistral down »).
+    this.apiKey = (
+      this.config.get<string>('MISTRAL_SMARTVEST_API_KEY') ??
+      this.config.get<string>('MISTRAL_API_KEY')
+    )?.trim().replace(/,+\s*$/, '').trim();
     this.model = this.config.get<string>('MISTRAL_SMALL_MODEL') ?? MODEL_SMALL_DEFAULT;
     this.freeTier = (this.config.get<string>('MISTRAL_FREE_TIER') ?? 'true').toLowerCase() === 'true';
   }

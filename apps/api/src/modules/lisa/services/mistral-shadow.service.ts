@@ -114,7 +114,13 @@ export class MistralShadowService {
   private lastCallAt = 0;
 
   constructor(private readonly config: ConfigService) {
-    this.apiKey = this.config.get<string>('MISTRAL_API_KEY');
+    // 07/06 — Clé Fly = MISTRAL_SMARTVEST_API_KEY (pas MISTRAL_API_KEY). Nouveau nom
+    // prioritaire (fallback ancien) + nettoyage espaces/virgule de fin (secret collé
+    // avec une virgule → auth cassée → fetch hang jusqu'au timeout 30s).
+    this.apiKey = (
+      this.config.get<string>('MISTRAL_SMARTVEST_API_KEY') ??
+      this.config.get<string>('MISTRAL_API_KEY')
+    )?.trim().replace(/,+\s*$/, '').trim();
     this.enabled = (this.config.get<string>('MISTRAL_SHADOW_ENABLED') ?? 'false').toLowerCase() === 'true';
     this.model = this.config.get<string>('MISTRAL_SHADOW_MODEL') ?? MODEL_MEDIUM_LATEST;
     this.freeTier = (this.config.get<string>('MISTRAL_FREE_TIER') ?? 'true').toLowerCase() === 'true';

@@ -52,7 +52,13 @@ export class MistralLargeShadowService {
   private readonly freeTier: boolean;
 
   constructor(private readonly config: ConfigService) {
-    this.apiKey = this.config.get<string>('MISTRAL_API_KEY');
+    // 07/06 — Clé Fly = MISTRAL_SMARTVEST_API_KEY (la nouvelle valide). MISTRAL_API_KEY
+    // = ancienne clé révoquée → on lit le nouveau nom en priorité (fallback ancien)
+    // + nettoyage espaces/virgule de fin.
+    this.apiKey = (
+      this.config.get<string>('MISTRAL_SMARTVEST_API_KEY') ??
+      this.config.get<string>('MISTRAL_API_KEY')
+    )?.trim().replace(/,+\s*$/, '').trim();
     this.enabled = (this.config.get<string>('MISTRAL_LARGE_SHADOW_ENABLED') ?? 'false').toLowerCase() === 'true';
     this.freeTier = (this.config.get<string>('MISTRAL_FREE_TIER') ?? 'true').toLowerCase() === 'true';
     if (this.enabled && !this.apiKey) {
