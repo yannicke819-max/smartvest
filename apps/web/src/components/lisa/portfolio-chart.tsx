@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import {
   ResponsiveContainer,
   ComposedChart,
@@ -129,6 +129,16 @@ const WINDOW_LABELS: Record<TimeWindow, string> = {
 
 export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
   const [window, setWindow] = useState<TimeWindow>('1m');
+  // Chart freeze fix 07/06 — Garde client-only. recharts <ResponsiveContainer>
+  // mesure son parent via ResizeObserver ; au render SSR/première hydratation le
+  // parent n'a pas encore de taille → recharts log `width(-1) height(-1)` et
+  // rabat TOUS les points (ligne + scatter markers) sur l'origine → les markers
+  // de trades s'empilent au même (x,y) et affichent la même valeur/date (bug
+  // signalé : tous les dots taggés 150124,53 @ 4 juin 16:27). On ne monte le
+  // graphe qu'après le 1er paint, quand le div parent (h-72 w-full) a sa taille
+  // réelle. Le div conteneur reste rendu pour réserver l'espace (pas de layout shift).
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
   const historyQuery = useLisaSnapshotHistory(portfolioId, WINDOW_DAYS[window]);
   // Live snapshot pour ajouter un point virtuel à droite du graph en
   // fallback du cron 5min. Garantit que le graph reflète TOUJOURS la
@@ -359,6 +369,7 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
           role="img"
           aria-label={`Évolution du capital sur ${WINDOW_LABELS[window]} : départ ${baselineValue.toFixed(0)} USD, valeur courante ${latestValue.toFixed(0)} USD, ${periodReturn >= 0 ? 'gain' : 'perte'} de ${Math.abs(periodReturn).toFixed(2)}%`}
         >
+          {mounted && (
           <ResponsiveContainer width="100%" height="100%">
             <ComposedChart data={chartData} margin={{ top: 8, right: 12, bottom: 8, left: 8 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="currentColor" opacity={0.1} />
@@ -445,6 +456,7 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
               )}
             </ComposedChart>
           </ResponsiveContainer>
+          )}
         </div>
       )}
 

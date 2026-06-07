@@ -94,6 +94,13 @@ const profileLabelOf = (
 // (= scanners Gainers déterministes) sont visibles séparément en bas (chunk A.2.5).
 const TRADER_PORTFOLIO_ID = 'b0000001-0000-0000-0000-000000000001';
 
+// 07/06/2026 — Défaut d'ouverture = US Oversold (mode mean-reversion ACTIF) et
+// non plus le TRADER gelé. Le TRADER (gainers/LLM) a été mis hors-service
+// (kill_switch armé + LIVE_TRADER_AGENT_ENABLED=false) : ouvrir la page dessus
+// affichait une bannière kill-switch rouge sur un portfolio mort. On ouvre
+// désormais sur un portfolio vivant ; le TRADER reste accessible au dropdown.
+const DEFAULT_PORTFOLIO_ID = 'a0000001-0000-0000-0000-000000000001'; // US Oversold
+
 // 04/06/2026 — Shadows MIDDLE + SMALL retirés (option douce : autopilot off,
 // kill armé, historique conservé en DB). Les 9 backtests prix réels ont prouvé
 // que le scalp momentum n'a pas d'edge ; on ne garde qu'UN portfolio gainers
@@ -140,19 +147,21 @@ export default function LisaPage() {
     return list;
   }, [rawSimPortfolios, portfoliosQuery.data]);
 
-  // Find TRADER specifically (fallback first simulation portfolio si introuvable).
-  const traderPortfolio = simulationPortfolios.find((p) => p.id === TRADER_PORTFOLIO_ID);
+  // Défaut = US Oversold (vivant) → fallback TRADER → fallback null.
+  const defaultPortfolio =
+    simulationPortfolios.find((p) => p.id === DEFAULT_PORTFOLIO_ID) ??
+    simulationPortfolios.find((p) => p.id === TRADER_PORTFOLIO_ID);
 
   const [selectedPortfolioId, setSelectedPortfolioId] = useState<string | null>(
-    traderPortfolio?.id ?? null,
+    defaultPortfolio?.id ?? null,
   );
 
-  // Initialise la sélection : TRADER par défaut (refonte A.2), fallback 1er
-  // simulation portfolio. Une fois sélectionné, on respecte le choix user
-  // (le sélecteur dropdown permet de switch vers MAIN/HIGH/MIDDLE/SMALL).
+  // Initialise la sélection : US Oversold par défaut (07/06), fallback TRADER,
+  // puis 1er simulation portfolio. Une fois sélectionné, on respecte le choix
+  // user (le dropdown permet de switch vers TRADER / EU Oversold).
   //
   // 31/05/2026 — Defensive : si l'ID sélectionné n'est plus dans la liste
-  // (portfolio supprimé / renommé / user_id mismatch), reset à TRADER puis
+  // (portfolio supprimé / renommé / user_id mismatch), reset au défaut puis
   // fallback 1er dispo. Sinon l'UI poll en boucle une 404 (incident observé :
   // 7 req/s × 4 hooks × stack trace = pollution Fly logs massive).
   useEffect(() => {
@@ -161,8 +170,11 @@ export default function LisaPage() {
       ? simulationPortfolios.some((p) => p.id === selectedPortfolioId)
       : false;
     if (exists) return;
+    const defaultId = simulationPortfolios.find((p) => p.id === DEFAULT_PORTFOLIO_ID)?.id;
     const traderId = simulationPortfolios.find((p) => p.id === TRADER_PORTFOLIO_ID)?.id;
-    if (traderId) {
+    if (defaultId) {
+      setSelectedPortfolioId(defaultId);
+    } else if (traderId) {
       setSelectedPortfolioId(traderId);
     } else if (simulationPortfolios[0]?.id) {
       setSelectedPortfolioId(simulationPortfolios[0].id);
@@ -664,7 +676,7 @@ export default function LisaPage() {
               )}
           </div>
           <p className="text-[11px] text-muted-foreground">
-            TRADER = agent LLM autonome (Mistral primary, Gemini fallback) + scanner Gainers d&apos;observation. US / EU Oversold = mean-reversion swing (achat -5 à -12%, hold J+10). Shadows MIDDLE/SMALL retirés (momentum sans edge, prouvé 3-fold).
+            US / EU Oversold = mean-reversion swing déterministe (achat -5 à -12%, hold J+10, stop catastrophe -15%) — modes actifs. TRADER = ancien agent LLM gainers, gelé (kill-switch armé), conservé en observation seule.
           </p>
         </div>
       )}
@@ -676,21 +688,26 @@ export default function LisaPage() {
         </div>
       )}
 
-      {/* PR #340 — Lien permanent vers la page Paramètres adaptatifs (Phase 5 N1+N2) */}
-      <div className="flex items-center justify-between rounded-md border bg-muted/30 px-4 py-2">
-        <div className="flex items-center gap-2 text-sm">
-          <SlidersHorizontal className="h-4 w-4 text-muted-foreground" />
-          <span className="text-muted-foreground">
-            Matrice TP/SL par classe d&apos;actif, dashboard Quick Wins, état Risk en temps réel
-          </span>
+      {/* PR #340 — Lien permanent vers la page Paramètres adaptatifs (Phase 5 N1+N2).
+          07/06 — masqué en mode oversold : matrice TP/SL par classe, Quick Wins et
+          Risk temps réel sont des réglages gainers/trader sans objet pour le swing
+          mean-reversion déterministe. */}
+      {currentMode !== 'oversold' && (
+        <div className="flex items-center justify-between rounded-md border bg-muted/30 px-4 py-2">
+          <div className="flex items-center gap-2 text-sm">
+            <SlidersHorizontal className="h-4 w-4 text-muted-foreground" />
+            <span className="text-muted-foreground">
+              Matrice TP/SL par classe d&apos;actif, dashboard Quick Wins, état Risk en temps réel
+            </span>
+          </div>
+          <Link
+            href="/lisa/parameters"
+            className="text-sm font-medium text-primary hover:underline"
+          >
+            Paramètres adaptatifs →
+          </Link>
         </div>
-        <Link
-          href="/lisa/parameters"
-          className="text-sm font-medium text-primary hover:underline"
-        >
-          Paramètres adaptatifs →
-        </Link>
-      </div>
+      )}
 
       {/* PR #338 — bandeau état de risque (circuit breaker + sanity rejections + flags Fly) */}
       {selectedPortfolioId && <RiskStateBanner portfolioId={selectedPortfolioId} />}
@@ -698,8 +715,11 @@ export default function LisaPage() {
       {/* Phase G LIVE — Status panel (auto-shown si LIVE flags activés) */}
       <LiveTradingStatusPanel />
 
-      {/* PR Wizard.3 — Installer LIVE Trading 6 steps (visible quand portfolio sélectionné) */}
-      {selectedPortfolioId && <LiveTradingWizard portfolioId={selectedPortfolioId} />}
+      {/* PR Wizard.3 — Installer LIVE Trading 6 steps (visible quand portfolio sélectionné).
+          07/06 — masqué en mode oversold (sim paper mean-reversion, pas de wiring broker live). */}
+      {selectedPortfolioId && currentMode !== 'oversold' && (
+        <LiveTradingWizard portfolioId={selectedPortfolioId} />
+      )}
 
       {/* P7 — Mode opératoire 3-way (Investment / Harvest / Gainers) */}
       {selectedPortfolioId && <MacroModeSelector portfolioId={selectedPortfolioId} />}
@@ -739,21 +759,34 @@ export default function LisaPage() {
         <TraderMindPanel portfolioId={selectedPortfolioId} />
       )}
 
-      {/* LISA refonte C.2 — Strategy Coach proposals (Gemini hourly + review modal) */}
-      {selectedPortfolioId && <CoachProposalsPanel portfolioId={selectedPortfolioId} />}
+      {/* LISA refonte C.2 — Strategy Coach proposals (Gemini hourly + review modal).
+          07/06 — masqué en mode oversold : le coach raisonne sur les décisions LLM
+          du TRADER, pas sur le scanner mean-reversion déterministe. */}
+      {selectedPortfolioId && currentMode !== 'oversold' && (
+        <CoachProposalsPanel portfolioId={selectedPortfolioId} />
+      )}
 
-      {/* LISA refonte B.2 — Lessons Impact Tracker (citations agrégées TRADER) */}
-      {selectedPortfolioId && <LessonsImpactPanel portfolioId={selectedPortfolioId} />}
+      {/* LISA refonte B.2 — Lessons Impact Tracker (citations agrégées TRADER).
+          07/06 — masqué en mode oversold : les lessons (corpus gainers) ne sont
+          PAS consommées par le pipeline oversold (vérifié : aucun getLessonsBlock). */}
+      {selectedPortfolioId && currentMode !== 'oversold' && (
+        <LessonsImpactPanel portfolioId={selectedPortfolioId} />
+      )}
 
-      {/* 01/06 — Audit boucle d'auto-apprentissage (bouton + 8 checks) */}
-      <LearningLoopAuditPanel />
+      {/* 01/06 — Audit boucle d'auto-apprentissage (bouton + 8 checks).
+          07/06 — masqué en mode oversold (audite la boucle gainers/lessons). */}
+      {currentMode !== 'oversold' && <LearningLoopAuditPanel />}
 
       {/* LISA refonte B.3 — Config LISA simplifiée (kill-switch reset, capital, digest, lessons mgmt) */}
       {selectedPortfolioId && <LisaConfigPanel portfolioId={selectedPortfolioId} />}
 
       {/* LISA refonte A.2 — Mini-tile temps réel scanner LISA (ex-Gainers).
-          Renommé côté composant interne, mais portfolio_id=TRADER force le scope. */}
-      {selectedPortfolioId && <GainersStatusTile portfolioId={selectedPortfolioId} />}
+          Renommé côté composant interne, mais portfolio_id=TRADER force le scope.
+          07/06 — masqué en mode oversold : ce tile (countdown cycle gainers,
+          candidats momentum 1min) n'a aucun sens pour le swing mean-reversion. */}
+      {selectedPortfolioId && currentMode !== 'oversold' && (
+        <GainersStatusTile portfolioId={selectedPortfolioId} />
+      )}
 
       {/* LISA refonte A.2 — Panel "Configuration scanner Gainers" CACHÉ sur /lisa.
           Le panel paramètre MAIN/HIGH/MIDDLE/SMALL (= scanners déterministes).
@@ -778,8 +811,11 @@ export default function LisaPage() {
       {/* Chart 1d/1w/1m/1y */}
       {selectedPortfolioId && <LisaPortfolioChart portfolioId={selectedPortfolioId} />}
 
-      {/* DAILY_HARVEST tracker — visible uniquement si mode actif */}
-      {selectedPortfolioId && <DailyHarvestTracker portfolioId={selectedPortfolioId} />}
+      {/* DAILY_HARVEST tracker — visible uniquement si mode actif.
+          07/06 — masqué en mode oversold (compteurs de session scalp harvest). */}
+      {selectedPortfolioId && currentMode !== 'oversold' && (
+        <DailyHarvestTracker portfolioId={selectedPortfolioId} />
+      )}
 
       {/* Positions */}
       {selectedPortfolioId && (
@@ -1294,8 +1330,11 @@ export default function LisaPage() {
         </div>
       </div>
 
-      {/* Daily Harvest config panel — orthogonal au DelegationMode/OperatingTempo */}
-      {selectedPortfolioId && <DailyHarvestPanel portfolioId={selectedPortfolioId} />}
+      {/* Daily Harvest config panel — orthogonal au DelegationMode/OperatingTempo.
+          07/06 — masqué en mode oversold (réglage scalping harvest sans objet). */}
+      {selectedPortfolioId && currentMode !== 'oversold' && (
+        <DailyHarvestPanel portfolioId={selectedPortfolioId} />
+      )}
 
       {/* Generate proposal card */}
       <div className="rounded-lg border p-5 space-y-4">
@@ -1513,8 +1552,12 @@ export default function LisaPage() {
         isLoading={agentStatusQuery.isLoading}
       />
 
-      {/* Options ouvertes (long calls/puts via OptionBrokerService) */}
-      <OptionPositionsCard portfolioId={selectedPortfolioId} />
+      {/* Options ouvertes (long calls/puts via OptionBrokerService).
+          07/06 — masqué en mode oversold : le scanner mean-reversion ne trade
+          que des actions cash, jamais d'options. */}
+      {selectedPortfolioId && currentMode !== 'oversold' && (
+        <OptionPositionsCard portfolioId={selectedPortfolioId} />
+      )}
 
       {/* Decision log */}
       {selectedPortfolioId && <LisaDecisionLog portfolioId={selectedPortfolioId} />}
