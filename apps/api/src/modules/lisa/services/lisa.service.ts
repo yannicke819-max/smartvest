@@ -2565,20 +2565,54 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
   async getSnapshotHistory(userId: string, portfolioId: string, windowDays: number) {
     await this.assertPortfolioOwner(userId, portfolioId);
     const since = new Date(Date.now() - windowDays * 86_400_000).toISOString();
-    const { data, error } = await this.supabase.getClient()
-      .from('lisa_portfolio_snapshots')
-      .select('*')
-      .eq('portfolio_id', portfolioId)
-      .gte('timestamp', since)
-      .order('timestamp', { ascending: true });
-    if (error) throw new BadRequestException(error.message);
+    // Fix 07/06 — Le cap PostgREST est DUR à 1000 lignes/requête. Avant :
+    // `ascending: true` SANS limite explicite → on récupérait les 1000 snapshots
+    // les PLUS ANCIENS de la fenêtre. Pour un portfolio dense (a0000001 génère
+    // ~2150 snap/jour) la courbe se figeait au 1000e point (≈ 04/06 21:27) et
+    // tous les marqueurs de trades s'effondraient dessus. « Jour 1 OK » car
+    // < 1000 snapshots ce jour-là.
+    //
+    // On pagine désormais en DESC (plus récents d'abord) pour dépasser le cap
+    // dur, on re-trie chronologiquement, puis on downsample. Couvre la fenêtre
+    // entière pour les portfolios normaux ; pour les très denses, montre la
+    // tranche récente (live, incluant les trades récents) — un downsample
+    // server-side (RPC bucket) couvrira le plein 30j en suivi si besoin.
+    const PAGE = 1000;
+    const MAX_PAGES = 12; // borne latence (≤ 12k lignes fetchées)
+    const client = this.supabase.getClient();
+    const collected: Record<string, unknown>[] = [];
+    for (let p = 0; p < MAX_PAGES; p++) {
+      const { data, error } = await client
+        .from('lisa_portfolio_snapshots')
+        .select('*')
+        .eq('portfolio_id', portfolioId)
+        .gte('timestamp', since)
+        .order('timestamp', { ascending: false })
+        .range(p * PAGE, p * PAGE + PAGE - 1);
+      if (error) throw new BadRequestException(error.message);
+      if (!data || data.length === 0) break;
+      collected.push(...(data as Record<string, unknown>[]));
+      if (data.length < PAGE) break; // dernière page de la fenêtre
+    }
+    // Re-tri chronologique ASC (on a fetché DESC).
+    let rows = collected.reverse();
+    // Downsample uniforme à ≤ MAX_POINTS en gardant le tout dernier point
+    // (cohérence avec la valeur live affichée en haut de page).
+    const MAX_POINTS = 2000;
+    if (rows.length > MAX_POINTS) {
+      const step = Math.ceil(rows.length / MAX_POINTS);
+      const sampled = rows.filter((_, i) => i % step === 0);
+      const last = rows[rows.length - 1];
+      if (sampled[sampled.length - 1] !== last) sampled.push(last);
+      rows = sampled;
+    }
     // P0 hotfix — Postgres numeric() columns are serialized as STRINGS by
     // supabase-js (precision-preserving). The frontend `LisaSnapshot` type
     // expects `return_from_inception_pct: number` and `drawdown_from_peak_pct: number`
     // and components call `.toFixed()` on them → crash if string.
     // We coerce to numbers here for these two fields, while keeping money
     // columns (cash_usd, total_value_usd, etc.) as strings (Decimal-safe).
-    return (data ?? []).map((row) => ({
+    return rows.map((row) => ({
       ...row,
       return_from_inception_pct: parseFloat(String(row.return_from_inception_pct ?? 0)) || 0,
       drawdown_from_peak_pct: parseFloat(String(row.drawdown_from_peak_pct ?? 0)) || 0,

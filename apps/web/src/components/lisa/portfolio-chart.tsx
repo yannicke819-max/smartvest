@@ -203,13 +203,13 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
     const positions = positionsQuery.data ?? [];
     const minT = chartData[0].t;
     const maxT = chartData[chartData.length - 1].t;
-    // PR #541 fix — Skip markers qui tombent dans un GAP de snapshots > 30 min.
-    // Sans ce guard, le fallback `chartData[last].value` faisait que tous les
-    // trades dans un gap (e.g. 32h sans snapshot entre 30/05 23:50 et 01/06 06:55
-    // suite à redémarrage Fly cette nuit) prenaient TOUS la même valeur Y, ce qui
-    // empilait visuellement les 6 dots au même point sur le graph "Évolution
-    // capital" (bug constaté 01/06 matin).
-    const MAX_INTERPOLATION_GAP_MS = 30 * 60 * 1000;
+    // PR #541 fix — Skip markers qui tombent dans un GAP de snapshots réel.
+    // Le seuil tolère désormais le downsample server-side (getSnapshotHistory
+    // échantillonne jusqu'à ~2000 pts → l'espacement peut atteindre ~29 min sur
+    // une fenêtre 30j). 90 min laisse passer ces espacements légitimes tout en
+    // continuant de skipper les vrais trous (redémarrage Fly, gap > 1h) qui
+    // empilaient les markers au même Y (bug 01/06).
+    const MAX_INTERPOLATION_GAP_MS = 90 * 60 * 1000;
     const closed = positions.filter((p) => {
       if (p.status === 'open' || !p.exitTimestamp) return false;
       const t = new Date(p.exitTimestamp).getTime();
