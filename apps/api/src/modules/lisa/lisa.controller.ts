@@ -152,6 +152,14 @@ export class LisaController {
     total_cycles: number;
     providers: Record<string, { calls: number; cost_usd: number; avg_latency_ms: number | null }>;
     by_site: Array<{ call_site: string; cycles: number; cost_usd: number }>;
+    ledger: {
+      today_date: string;
+      today_cost_usd: number;
+      today_by_model: Record<string, number>;
+      last_date: string | null;
+      last_cost_usd: number;
+      last_by_model: Record<string, number>;
+    };
   }> {
     extractUserId(headers);
 
@@ -259,6 +267,25 @@ export class LisaController {
       totalCost += s.sum_cost;
     }
 
+    // 07/06 — Vrai registre de coût LLM = api_costs_daily (écrit par le tracker de
+    // coût réel). Les tables A/B agrégées ci-dessus sont GELÉES depuis le retrait du
+    // gainers (31/05) → d'où le faux $0. On expose le coût RÉEL du jour + la dernière
+    // journée non nulle (preuve que le LLM a consommé), pour que le card ne mente plus.
+    const todayDate = now.toISOString().slice(0, 10);
+    const { data: ledgerRows } = await this.supabase
+      .getClient()
+      .from('api_costs_daily')
+      .select('date,total_usd,by_model')
+      .order('date', { ascending: false })
+      .limit(31);
+    const ledgerArr = (ledgerRows ?? []) as Array<{
+      date: string;
+      total_usd: number | string;
+      by_model: Record<string, number> | null;
+    }>;
+    const todayRow = ledgerArr.find((r) => r.date === todayDate) ?? null;
+    const lastRow = ledgerArr.find((r) => Number(r.total_usd ?? 0) > 0) ?? null;
+
     return {
       since: since.toISOString(),
       until: now.toISOString(),
@@ -270,6 +297,14 @@ export class LisaController {
         cycles: v.cycles,
         cost_usd: Math.round(v.cost * 10000) / 10000,
       })),
+      ledger: {
+        today_date: todayDate,
+        today_cost_usd: todayRow ? Math.round(Number(todayRow.total_usd ?? 0) * 10000) / 10000 : 0,
+        today_by_model: (todayRow?.by_model ?? {}) as Record<string, number>,
+        last_date: lastRow?.date ?? null,
+        last_cost_usd: lastRow ? Math.round(Number(lastRow.total_usd ?? 0) * 10000) / 10000 : 0,
+        last_by_model: (lastRow?.by_model ?? {}) as Record<string, number>,
+      },
     };
   }
 

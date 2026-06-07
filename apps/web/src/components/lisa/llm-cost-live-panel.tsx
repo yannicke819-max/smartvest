@@ -29,6 +29,15 @@ interface LlmCostLiveResponse {
   total_cycles: number;
   providers: Record<string, ProviderStats>;
   by_site: SiteStats[];
+  // 07/06 — Vrai registre api_costs_daily (le compteur A/B ci-dessus est gelé).
+  ledger: {
+    today_date: string;
+    today_cost_usd: number;
+    today_by_model: Record<string, number>;
+    last_date: string | null;
+    last_cost_usd: number;
+    last_by_model: Record<string, number>;
+  };
 }
 
 const PROVIDER_LABELS: Record<string, { label: string; color: string }> = {
@@ -86,14 +95,43 @@ export function LlmCostLivePanel() {
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
       <div className="mb-3 flex items-baseline justify-between">
-        <h3 className="text-sm font-semibold text-gray-700">Coût LLM temps réel</h3>
-        <span className="text-xs text-gray-500">depuis {fmtSince}</span>
+        <h3 className="text-sm font-semibold text-gray-700">Coût LLM réel (registre)</h3>
+        <span className="text-xs text-gray-500">{data.ledger.today_date}</span>
       </div>
 
-      <div className="mb-4 flex items-baseline justify-between border-b border-gray-100 pb-3">
-        <span className="text-2xl font-bold text-gray-900">${data.total_cost_usd.toFixed(2)}</span>
-        <span className="text-xs text-gray-500">{data.total_cycles} cycles</span>
+      {/* Headline = vrai coût du jour (api_costs_daily), pas les tables A/B gelées. */}
+      <div className="mb-4 border-b border-gray-100 pb-3">
+        <div className="flex items-baseline justify-between">
+          <span className="text-2xl font-bold text-gray-900">${data.ledger.today_cost_usd.toFixed(2)}</span>
+          <span className="text-xs text-gray-500">coût réel aujourd&apos;hui</span>
+        </div>
+        {data.ledger.today_cost_usd === 0 && data.ledger.last_date && (
+          <p className="mt-1 text-[11px] text-gray-500">
+            Dernière conso enregistrée : <span className="font-medium">{data.ledger.last_date}</span> — $
+            {data.ledger.last_cost_usd.toFixed(2)}
+            {Object.keys(data.ledger.last_by_model).length > 0 && (
+              <>
+                {' '}
+                ({Object.entries(data.ledger.last_by_model)
+                  .map(([m, c]) => `${m} $${Number(c).toFixed(2)}`)
+                  .join(' · ')})
+              </>
+            )}
+          </p>
+        )}
+        <p className="mt-1 text-[10px] text-gray-400">
+          $0 aujourd&apos;hui = aucune dépense LLM (mode oversold déterministe). Le LLM
+          n&apos;est pas « off » — cf. dernière conso ci-dessus.
+        </p>
       </div>
+
+      {/* Détail A/B shadow (framework gelé depuis 31/05 — informatif) */}
+      {data.total_cost_usd > 0 && (
+        <div className="mb-2 flex items-baseline justify-between text-xs text-gray-500">
+          <span>Comparateur A/B (depuis {fmtSince})</span>
+          <span>${data.total_cost_usd.toFixed(2)} · {data.total_cycles} cycles</span>
+        </div>
+      )}
 
       <div className="space-y-2">
         {Object.entries(data.providers).map(([key, p]) => {
@@ -146,7 +184,8 @@ export function LlmCostLivePanel() {
       )}
 
       <p className="mt-3 text-[10px] text-gray-400">
-        Refresh 30s — source : gemini_ab_decisions + llm_ab_shadow_decisions (vs api_costs_daily figé EOD)
+        Refresh 30s — headline = api_costs_daily (registre réel). Détail providers ci-dessus =
+        comparateur A/B (gemini_ab_decisions + llm_ab_shadow_decisions), gelé depuis le retrait du gainers.
       </p>
     </div>
   );
