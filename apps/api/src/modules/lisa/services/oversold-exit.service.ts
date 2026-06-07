@@ -39,6 +39,8 @@ interface OpenOversoldPosition {
   symbol: string;
   entry_price: string;
   entry_timestamp: string;
+  manual_control: boolean | null;
+  manual_control_since: string | null;
 }
 
 interface OversoldExitCfg {
@@ -142,6 +144,64 @@ export class OversoldExitService {
     const entry = parseFloat(pos.entry_price);
     const stopThreshold = entry * (1 + cfg.stopCatastrophePct / 100);
 
+    // ─── DANGER-ZONE OVERSOLD → MISE EN MANU (demande user 07/06) ─────────────
+    // À l'APPROCHE du stop catastrophe, on bascule la position en manual_control
+    // (l'humain décide : tenir le rebond ou couper) AU LIEU de couper auto.
+    // Filet : re-arm après MANUAL_CONTROL_REARM_MIN (20min) → le stop auto reprend.
+    let rearmedThisCycle = false;
+    if (Number.isFinite(entry) && entry > 0) {
+      const rearmMin = Number(this.config.get<string>('MANUAL_CONTROL_REARM_MIN') ?? '20');
+
+      // A. Déjà en Manu : re-arm si périmé, sinon l'humain garde la main (0 close auto).
+      if (pos.manual_control === true) {
+        const since = pos.manual_control_since ? new Date(pos.manual_control_since).getTime() : null;
+        if (since == null) {
+          await this.supabase.getClient().from('lisa_positions')
+            .update({ manual_control_since: new Date().toISOString() }).eq('id', pos.id)
+            .then(() => undefined, () => undefined);
+          return; // chrono démarré, on attend
+        }
+        const stuckMin = (now.getTime() - since) / 60_000;
+        if (stuckMin < rearmMin) {
+          this.logger.debug(`[oversold-exit] ${pos.symbol} manual_control ${stuckMin.toFixed(0)}min → humain décide, pas de close auto`);
+          return; // dans la fenêtre → ni catastrophe ni hold
+        }
+        // périmé → on rend la main au stop auto CE cycle
+        await this.supabase.getClient().from('lisa_positions')
+          .update({ manual_control: false, manual_control_since: null, manual_control_reason: null }).eq('id', pos.id)
+          .then(() => undefined, () => undefined);
+        await this.decisionLog.append({
+          portfolioId: pos.portfolio_id,
+          kind: 'manual_control_rearmed',
+          summary: `[OVERSOLD_REARM] ${pos.symbol} stop auto ré-armé après ${stuckMin.toFixed(0)}min sans résolution`,
+          rationale: `manual_control oversold non résolu depuis ${stuckMin.toFixed(0)}min (≥ ${rearmMin}min). Le stop catastrophe ${cfg.stopCatastrophePct}% / hold J+${cfg.holdDays} reprend la main ce cycle.`,
+          payload: { symbol: pos.symbol, stuck_minutes: Math.round(stuckMin), rearm_min: rearmMin },
+          triggeredBy: 'autopilot_cron',
+        }).catch(() => null);
+        rearmedThisCycle = true; // bloque la re-bascule immédiate ci-dessous
+      }
+
+      // B. Approche du stop → bascule en Manu (sauf si on vient de re-armer).
+      const dangerRatio = Number(this.config.get<string>('OVERSOLD_DANGER_ZONE_RATIO') ?? '0.80');
+      const dangerThreshold = entry * (1 + (cfg.stopCatastrophePct * dangerRatio) / 100);
+      if (!rearmedThisCycle && pos.manual_control !== true && price <= dangerThreshold && price > stopThreshold) {
+        const lossPct = ((price - entry) / entry) * 100;
+        await this.supabase.getClient().from('lisa_positions')
+          .update({ manual_control: true, manual_control_since: new Date().toISOString(), manual_control_reason: 'oversold_danger_zone' }).eq('id', pos.id)
+          .then(() => undefined, () => undefined);
+        this.logger.warn(`[oversold-exit] ${pos.symbol} DANGER-ZONE (${lossPct.toFixed(1)}%, ≥${(dangerRatio * 100).toFixed(0)}% du chemin vers stop ${cfg.stopCatastrophePct}%) → mise en MANU`);
+        await this.decisionLog.append({
+          portfolioId: pos.portfolio_id,
+          kind: 'oversold_danger_zone_manual',
+          summary: `[OVERSOLD_DANGER_ZONE] ${pos.symbol} → mise en Manu (${lossPct.toFixed(1)}%)`,
+          rationale: `Position à ${lossPct.toFixed(1)}% (≥ ${(dangerRatio * 100).toFixed(0)}% du chemin vers le stop ${cfg.stopCatastrophePct}%). Bascule en manual_control : 0 close auto, l'humain décide (tenir le rebond ou couper). Re-arm auto après ${rearmMin}min si non résolu.`,
+          payload: { symbol: pos.symbol, loss_pct: Number(lossPct.toFixed(2)), danger_threshold: dangerThreshold, stop_threshold: stopThreshold },
+          triggeredBy: 'autopilot_cron',
+        }).catch(() => null);
+        return; // basculé en Manu, pas de close ce cycle
+      }
+    }
+
     // 1. Stop catastrophe prioritaire (coupe une 2e jambe avant le hold).
     if (Number.isFinite(entry) && entry > 0 && price <= stopThreshold) {
       await this.closePosition(
@@ -224,7 +284,7 @@ export class OversoldExitService {
     const { data, error } = await this.supabase
       .getClient()
       .from('lisa_positions')
-      .select('id, portfolio_id, symbol, entry_price, entry_timestamp')
+      .select('id, portfolio_id, symbol, entry_price, entry_timestamp, manual_control, manual_control_since')
       .eq('venue_fee_detail->>source', 'scanner_oversold')
       .eq('status', 'open');
     if (error) {
