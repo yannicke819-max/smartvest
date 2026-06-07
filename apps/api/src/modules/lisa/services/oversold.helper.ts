@@ -331,3 +331,43 @@ export function computeEntryFeatures(bars: EodBar[], entryIdx: number): Oversold
 
   return { drop1d, drop3d, trend20, distMa20, distMa50, rsi14, vol14, relVol20 };
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Features news pour la boucle d'apprentissage (PR-3). Résumé des articles
+// persistés (eodhd_news_articles) dans la fenêtre AVANT l'entrée — sert à
+// MESURER si le sentiment news autour du drop prédit l'outcome (catalyseur
+// structurel vs bruit). Étape déterministe/cheap (lecture DB, pas de LLM) :
+// si le sentiment brut porte du signal, un classifieur LLM nuancé viendra
+// après. Aucun filtre — feature loggée uniquement.
+// ─────────────────────────────────────────────────────────────────────────
+
+export interface OversoldNewsFeatures {
+  newsCount: number; // nb d'articles dans la fenêtre [entry-72h, entry]
+  newsMinSentiment: number | null; // sentiment le PLUS négatif (catalyseur structurel ?)
+  newsAvgSentiment: number | null; // sentiment moyen
+  newsAgeHours: number | null; // ancienneté du plus récent article vs entrée (h)
+}
+
+/**
+ * Résume les articles news (déjà filtrés ≤ entrée) en features. Pur/testable.
+ * `articles` : sentiment_polarity ∈ [-1, 1] (EODHD), publishedAt ISO-8601.
+ */
+export function summarizeEntryNews(
+  articles: { publishedAt: string; sentiment: number | null }[],
+  entryIso: string,
+): OversoldNewsFeatures {
+  const entryMs = new Date(entryIso).getTime();
+  const inWindow = articles.filter((a) => {
+    const t = new Date(a.publishedAt).getTime();
+    return Number.isFinite(t) && t <= entryMs && t >= entryMs - 72 * 3600_000;
+  });
+  if (inWindow.length === 0) {
+    return { newsCount: 0, newsMinSentiment: null, newsAvgSentiment: null, newsAgeHours: null };
+  }
+  const sents = inWindow.map((a) => a.sentiment).filter((s): s is number => s != null && Number.isFinite(s));
+  const newsMinSentiment = sents.length ? Math.min(...sents) : null;
+  const newsAvgSentiment = sents.length ? sents.reduce((s, x) => s + x, 0) / sents.length : null;
+  const latestMs = Math.max(...inWindow.map((a) => new Date(a.publishedAt).getTime()));
+  const newsAgeHours = (entryMs - latestMs) / 3600_000;
+  return { newsCount: inWindow.length, newsMinSentiment, newsAvgSentiment, newsAgeHours };
+}

@@ -32,6 +32,7 @@ import {
   decideRegimeBlock,
   computeRotationRegime,
   computeEntryFeatures,
+  summarizeEntryNews,
   type OversoldConfig,
   type EodBar,
   type OversoldCandidate,
@@ -1221,6 +1222,33 @@ export class OversoldScannerService {
   }
 
   /**
+   * PR-3 — Résume les news persistées (eodhd_news_articles) dans [entry-72h,
+   * entry] pour un symbole. Lecture DB pure (zéro fetch EODHD, zéro LLM),
+   * fail-soft : aucune news / erreur → features news à 0/null.
+   */
+  private async summarizeNewsForEntry(symbol: string, entryIso: string) {
+    const empty = { newsCount: 0, newsMinSentiment: null, newsAvgSentiment: null, newsAgeHours: null };
+    if (!entryIso) return empty;
+    try {
+      const from = new Date(new Date(entryIso).getTime() - 72 * 3600_000).toISOString();
+      const { data } = await this.supabase.getClient()
+        .from('eodhd_news_articles')
+        .select('published_at, sentiment_polarity')
+        .eq('ticker', symbol)
+        .lte('published_at', entryIso)
+        .gte('published_at', from)
+        .order('published_at', { ascending: false })
+        .limit(50);
+      return summarizeEntryNews(
+        (data ?? []).map((a) => ({ publishedAt: a.published_at as string, sentiment: a.sentiment_polarity as number | null })),
+        entryIso,
+      );
+    } catch {
+      return empty;
+    }
+  }
+
+  /**
    * PR-1 — Fondation boucle d'apprentissage oversold.
    *
    * Réconcilie les positions oversold (lisa_positions, source dans
@@ -1316,7 +1344,9 @@ export class OversoldScannerService {
       if (!feat) continue;
       // Merge contexte régime as-of entrée (champs null si indispo).
       const reg = this.regimeAsOf(regimeByDate, bars[idx].date);
-      const featPlus = reg ? { ...feat, ...reg } : feat;
+      // PR-3 — features news persistées as-of entrée (fail-soft, lecture DB).
+      const news = await this.summarizeNewsForEntry(p.symbol as string, String(p.entry_timestamp ?? ''));
+      const featPlus = { ...feat, ...(reg ?? {}), ...news };
 
       const row: Record<string, unknown> = {
         user_id: userByPf.get(p.portfolio_id as string) ?? null,
