@@ -1408,8 +1408,11 @@ export class OversoldScannerService {
         asset_class: p.asset_class ?? 'us_equity',
         entry_price: p.entry_price != null ? String(p.entry_price) : null,
         size_usd: p.entry_notional_usd != null ? String(p.entry_notional_usd) : null,
-        stop_loss: p.stop_loss_price != null ? String(p.stop_loss_price) : null,
-        take_profit: p.take_profit_price != null ? String(p.take_profit_price) : null,
+        // paper_trades.stop_loss / take_profit sont NOT NULL → fallback '0' quand
+        // la position n'a pas de stop/TP enregistré (sinon l'INSERT échoue et la
+        // collecte ne produit aucune ligne — bug constaté 07/06).
+        stop_loss: String(p.stop_loss_price ?? 0),
+        take_profit: String(p.take_profit_price ?? 0),
         status: closed ? 'closed' : 'open',
         strategy: 'oversold',
         scanner_position_id: posId,
