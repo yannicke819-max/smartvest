@@ -40,6 +40,11 @@ export interface CloseDecisionInput {
   ageMinutes: number;
   takeProfitPrice?: number | null;
   stopLossPrice?: number | null;
+  // 07/06 — Imitation learning étendu : contexte + échéance (J+10 oversold) pour
+  // le contrefactuel à horizon long + cause→effet news.
+  context?: 'danger_zone' | 'oversold_early' | 'manual_other';
+  wasManualControl?: boolean | null;
+  deadlineAt?: string | null; // ISO échéance initiale (J+10 oversold), null sinon
 }
 
 @Injectable()
@@ -114,6 +119,13 @@ export class CloseDecisionCaptureService {
     const distTp = tp !== null && exit > 0 ? ((tp - exit) / exit) * 100 * sign : null;
     const distSl = sl !== null && exit > 0 ? ((exit - sl) / exit) * 100 * sign : null;
 
+    // 07/06 — Échéance (oversold J+10) + news cause→effet pour le contrefactuel long.
+    const deadlineAt = input.deadlineAt ?? null;
+    const hoursToDeadline = deadlineAt ? (new Date(deadlineAt).getTime() - Date.now()) / 3600_000 : null;
+    const news = await this.fetchNewsSnapshot(input.symbol).catch(
+      () => ({ count: 0, minSentiment: null as number | null, snapshot: [] as unknown[] }),
+    );
+
     const { error } = await this.supabase.getClient()
       .from('position_close_decisions')
       .insert({
@@ -144,6 +156,13 @@ export class CloseDecisionCaptureService {
         dist_to_sl_pct: distSl !== null ? round2(distSl) : null,
         take_profit_price: tp,
         stop_loss_price: sl,
+        context: input.context ?? (input.closerType === 'user_manual' ? 'manual_other' : null),
+        was_manual_control: input.wasManualControl ?? null,
+        deadline_at: deadlineAt,
+        hours_to_deadline: hoursToDeadline !== null ? round2(hoursToDeadline) : null,
+        news_count: news.count,
+        news_min_sentiment: news.minSentiment,
+        news_snapshot: news.snapshot,
         raw_payload: { candle_count: candles.length },
       });
     if (error) this.logger.debug(`[close-capture] insert ${input.symbol}: ${error.message}`);
@@ -254,6 +273,129 @@ export class CloseDecisionCaptureService {
     return s?.candles?.length
       ? s.candles.map((c: { timestamp: number; high: number; low: number; close: number }) => ({ ts: c.timestamp * 1000, high: c.high, low: c.low, close: c.close })).filter((c) => c.ts > afterTs)
       : [];
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // 07/06 — Imitation learning étendu : news cause→effet + contrefactuel J+10
+  // ─────────────────────────────────────────────────────────────────
+
+  /** Snapshot des news persistées [close-72h, close] pour la causalité du close. */
+  private async fetchNewsSnapshot(
+    symbol: string,
+  ): Promise<{ count: number; minSentiment: number | null; snapshot: Array<{ title: string; sentiment: number | null; ageHours: number; source: string | null }> }> {
+    const now = Date.now();
+    const from = new Date(now - 72 * 3600_000).toISOString();
+    const { data } = await this.supabase.getClient()
+      .from('eodhd_news_articles')
+      .select('title, sentiment_polarity, source_url, published_at')
+      .eq('ticker', symbol)
+      .gte('published_at', from)
+      .lte('published_at', new Date(now).toISOString())
+      .order('published_at', { ascending: false })
+      .limit(50);
+    const rows = (data ?? []) as Array<{ title?: string; sentiment_polarity?: number | null; source_url?: string | null; published_at?: string }>;
+    let minSent: number | null = null;
+    for (const r of rows) {
+      const s = typeof r.sentiment_polarity === 'number' ? r.sentiment_polarity : null;
+      if (s != null && (minSent === null || s < minSent)) minSent = s;
+    }
+    const snapshot = rows.slice(0, 5).map((r) => ({
+      title: (r.title ?? '').slice(0, 200),
+      sentiment: typeof r.sentiment_polarity === 'number' ? r.sentiment_polarity : null,
+      ageHours: r.published_at ? round2((now - new Date(r.published_at).getTime()) / 3600_000) : 0,
+      source: r.source_url ?? null,
+    }));
+    return { count: rows.length, minSentiment: minSent, snapshot };
+  }
+
+  /**
+   * Cron quotidien — contrefactuel à l'échéance (J+10 oversold). Pour les closes
+   * avec deadline_at atteinte et pas encore labellisés : compare "tenir jusqu'à
+   * l'échéance" vs "le close réel". Verdict CLOSE_BETTER / HELD_BETTER / NEUTRAL.
+   */
+  @Cron('0 30 22 * * *', { name: 'close-decision-deadline-labeler', timeZone: 'UTC' })
+  async labelDeadlineCounterfactuals(): Promise<void> {
+    if (!this.labelerEnabled || !this.supabase.isReady()) return;
+    try {
+      const { data: rows } = await this.supabase.getClient()
+        .from('position_close_decisions')
+        .select('id, symbol, direction, entry_price, exit_price, pnl_pct, closed_at, deadline_at')
+        .not('deadline_at', 'is', null)
+        .is('deadline_verdict', null)
+        .lte('deadline_at', new Date().toISOString())
+        .limit(50);
+      if (!rows || rows.length === 0) return;
+      let labeled = 0;
+      for (const r of rows) {
+        if (await this.labelDeadlineOne(r as Record<string, unknown>).catch(() => false)) labeled++;
+      }
+      if (labeled > 0) this.logger.log(`[close-deadline-labeler] ${labeled}/${rows.length} closes labellisés à l'échéance`);
+    } catch (e) {
+      this.logger.warn(`[close-deadline-labeler] ${String(e).slice(0, 150)}`);
+    }
+  }
+
+  private async labelDeadlineOne(r: Record<string, unknown>): Promise<boolean> {
+    const symbol = String(r.symbol);
+    const entry = Number(r.entry_price);
+    const pnlAtClose = r.pnl_pct != null ? Number(r.pnl_pct) : null;
+    const sign = String(r.direction) === 'short' ? -1 : 1;
+    const closedAt = new Date(String(r.closed_at));
+    if (!(entry > 0)) {
+      await this.markDeadlineNoData(String(r.id));
+      return true;
+    }
+    const closes = await this.fetchDailyCloses(symbol, closedAt).catch(() => [] as Array<{ date: string; close: number }>);
+    if (closes.length === 0) {
+      await this.markDeadlineNoData(String(r.id));
+      return true;
+    }
+    // closes ascendant à partir de J+1 ouvré ; J+N = N-ème close.
+    const pick = (n: number): number | null => (closes[n - 1] ? closes[n - 1].close : null);
+    const pJ10 = pick(10) ?? closes[closes.length - 1].close;
+    const pnlIfHeld = pJ10 != null && entry > 0 ? ((pJ10 - entry) / entry) * 100 * sign : null;
+    let verdict: 'CLOSE_BETTER' | 'HELD_BETTER' | 'NEUTRAL' = 'NEUTRAL';
+    if (pnlIfHeld != null && pnlAtClose != null) {
+      if (pnlIfHeld > pnlAtClose + 0.5) verdict = 'HELD_BETTER'; // tenir aurait mieux valu → close prématuré
+      else if (pnlIfHeld < pnlAtClose - 0.5) verdict = 'CLOSE_BETTER'; // bien fermé
+    }
+    await this.supabase.getClient().from('position_close_decisions').update({
+      price_j1: pick(1),
+      price_j3: pick(3),
+      price_j5: pick(5),
+      price_j10: pJ10,
+      pnl_if_held_to_deadline_pct: pnlIfHeld != null ? round2(pnlIfHeld) : null,
+      deadline_verdict: verdict,
+      deadline_labeled_at: new Date().toISOString(),
+    }).eq('id', String(r.id));
+    return true;
+  }
+
+  private async markDeadlineNoData(id: string): Promise<void> {
+    await this.supabase.getClient().from('position_close_decisions')
+      .update({ deadline_verdict: 'NEUTRAL', deadline_labeled_at: new Date().toISOString() })
+      .eq('id', id)
+      .then(() => undefined, () => undefined);
+  }
+
+  /** Closes EOD quotidiens depuis J+1 (EODHD eod, ascendant). Equities uniquement. */
+  private async fetchDailyCloses(symbol: string, afterDate: Date): Promise<Array<{ date: string; close: number }>> {
+    const apiKey = this.config.get<string>('EODHD_API_KEY');
+    if (!apiKey) return [];
+    const from = new Date(afterDate.getTime() + 24 * 3600_000).toISOString().slice(0, 10);
+    const url = `https://eodhd.com/api/eod/${encodeURIComponent(symbol)}?api_token=${apiKey}&fmt=json&from=${from}&order=a&period=d`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    try {
+      const res = await fetch(url, { signal: controller.signal });
+      if (!res.ok) return [];
+      const j = (await res.json()) as Array<{ date?: string; close?: number }>;
+      return (Array.isArray(j) ? j : [])
+        .filter((b) => b && typeof b.close === 'number' && b.date)
+        .map((b) => ({ date: b.date as string, close: b.close as number }));
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
 

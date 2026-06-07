@@ -3380,7 +3380,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
 
     const { data: row, error } = await this.supabase.getClient()
       .from('lisa_positions')
-      .select('id, symbol, status, entry_price, portfolio_id')
+      .select('id, symbol, status, entry_price, portfolio_id, entry_timestamp, manual_control, venue_fee_detail')
       .eq('id', positionId)
       .maybeSingle();
     if (error || !row) throw new NotFoundException(`Position ${positionId} introuvable`);
@@ -3434,7 +3434,29 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     // (fire-and-forget). Le cron counterfactuel labellisera GOOD/EARLY/OK +60min.
     if (this.closeDecisionCapture) {
       const ageMin = (Date.now() - new Date(String((result as { entryTimestamp?: string }).entryTimestamp ?? Date.now())).getTime()) / 60_000;
+      // 07/06 — contexte + échéance pour l'imitation learning étendu (J+10 oversold).
+      const ovSource = (row as { venue_fee_detail?: { source?: string } | null }).venue_fee_detail?.source;
+      const isOversold = ovSource === 'scanner_oversold';
+      const wasManualControl = (row as { manual_control?: boolean | null }).manual_control === true;
+      const closeContext: 'danger_zone' | 'oversold_early' | 'manual_other' =
+        isOversold ? 'oversold_early' : wasManualControl ? 'danger_zone' : 'manual_other';
+      let closeDeadlineAt: string | null = null;
+      const entryTs = (row as { entry_timestamp?: string | null }).entry_timestamp;
+      if (isOversold && entryTs) {
+        // Échéance = J+10 ouvrés depuis l'entrée (hold oversold par défaut).
+        const d = new Date(String(entryTs));
+        let added = 0;
+        while (added < 10) {
+          d.setUTCDate(d.getUTCDate() + 1);
+          const dow = d.getUTCDay();
+          if (dow !== 0 && dow !== 6) added++;
+        }
+        closeDeadlineAt = d.toISOString();
+      }
       this.closeDecisionCapture.captureClose({
+        context: closeContext,
+        wasManualControl,
+        deadlineAt: closeDeadlineAt,
         positionId,
         portfolioId,
         symbol: String(row.symbol),

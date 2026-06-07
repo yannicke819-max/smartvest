@@ -29,7 +29,7 @@ export function RiskStateBanner({ portfolioId }: { portfolioId: string | null })
 
   if (!portfolioId || !q.data) return null;
 
-  const { circuit_breaker: cb, sanity_rejections: sanity, feature_flags: flags } = q.data;
+  const { circuit_breaker: cb, sanity_rejections: sanity } = q.data;
   const hasAnyAlert = cb.is_tripped || sanity.count_24h > 0;
 
   return (
@@ -116,17 +116,10 @@ export function RiskStateBanner({ portfolioId }: { portfolioId: string | null })
         </div>
       )}
 
-      <div className="flex flex-wrap gap-2 text-xs items-center">
-        <span className="text-muted-foreground">Flags Fly (read-only) :</span>
-        <FlagBadge
-          label="QUICK_WINS_PIPELINE_ENABLED"
-          enabled={flags.quick_wins_pipeline_enabled}
-        />
-        <FlagBadge
-          label="GAINERS_NSE_BLACKLIST_ENABLED"
-          enabled={flags.gainers_nse_blacklist_enabled}
-        />
-      </div>
+      {/* 07/06 — Badges « Flags Fly (read-only) » (QUICK_WINS_PIPELINE_ENABLED,
+          GAINERS_NSE_BLACKLIST_ENABLED) masqués définitivement (demande user) :
+          flags gainers de debug sans intérêt pour l'utilisateur, pollution visuelle.
+          Les valeurs restent lisibles côté admin (/admin/config-dump) si besoin. */}
 
       {!hasAnyAlert && (
         <div className="text-xs text-muted-foreground italic">
@@ -134,19 +127,5 @@ export function RiskStateBanner({ portfolioId }: { portfolioId: string | null })
         </div>
       )}
     </div>
-  );
-}
-
-function FlagBadge({ label, enabled }: { label: string; enabled: boolean }) {
-  const color = enabled
-    ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400'
-    : 'border-zinc-400 bg-zinc-50 dark:bg-zinc-900 text-zinc-600 dark:text-zinc-400';
-  return (
-    <span
-      className={`inline-block rounded border px-2 py-0.5 font-mono ${color}`}
-      title={`Toggle via : flyctl secrets set ${label}=${enabled ? 'false' : 'true'} -a smartvest`}
-    >
-      {label} : {enabled ? 'ON' : 'OFF'}
-    </span>
   );
 }
