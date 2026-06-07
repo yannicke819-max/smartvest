@@ -184,6 +184,19 @@ export default function LisaPage() {
     }
   }, [simulationPortfolios, selectedPortfolioId]);
 
+  // 07/06 — Rouvre TOUJOURS /lisa EN HAUT de page (demande user non négociable).
+  // Sans ça, le navigateur restaure la position de scroll précédente → l'user
+  // pouvait retomber au milieu de page (ou sur la bannière kill-switch d'un
+  // portfolio précédent). On désactive la restauration native + force le haut
+  // au montage. Combiné au défaut US Oversold, le refresh ouvre proprement.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if ('scrollRestoration' in window.history) {
+      window.history.scrollRestoration = 'manual';
+    }
+    window.scrollTo(0, 0);
+  }, []);
+
   // 🚨 DÉSACTIVÉ — la fonction deduplicateSimulationPortfolios garde le
   // portfolio le PLUS RÉCENT et SUPPRIME tous les autres. Sur /lisa où on
   // a TRADER + 3 Shadows par design (et pas des doublons), elle DESTRUIT
