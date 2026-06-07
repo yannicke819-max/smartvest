@@ -97,6 +97,36 @@ export interface OversoldBookSummary {
   positions: OversoldBookPosition[];
 }
 
+/**
+ * PR-2 UI — Statut de régime de marché LIVE pour le panel oversold dédié.
+ * Reflète la décision du gate régime (checkRegimeGate) à l'instant T + le
+ * prochain scan programmé. Région-aware (US : VIX+SPY ; EU : V2TX+SX5E).
+ */
+export interface OversoldRegimeStatus {
+  portfolioId: string;
+  universe: string;
+  region: 'US' | 'EU';
+  enabled: boolean; // gate régime actif (OVERSOLD_REGIME_GATE_ENABLED)
+  block: boolean; // un scan ouvert MAINTENANT serait-il bloqué ?
+  reason: string; // libellé human du verdict (ex: "VIX 21.5 > 17")
+  vixLabel: string; // 'VIX' | 'V2TX'
+  idxLabel: string; // 'SPY' | 'SX5E'
+  vix: number | null;
+  vixChgPct: number | null; // ΔVIX 1j en %
+  idx5dPct: number | null; // rendement indice 5j en %
+  vixSource: 'live' | 'eod';
+  thresholds: { vixMax: number; vixDeltaMax: number; idx5dMin: number }; // effectifs (post-pénalité rotation)
+  rotation: {
+    regime: 'offensive' | 'defensive' | null;
+    spreadPct: number | null;
+    mode: string; // off | shadow | active
+    appliedVixPenalty: number; // durcissement vixMax effectivement appliqué
+  } | null;
+  nextScanUtc: string; // ISO du prochain cron de scan
+  nextScanKind: 'intraday' | 'daily';
+  asOf: string;
+}
+
 /** Row config oversold lue depuis lisa_session_configs. */
 interface OversoldPortfolioRow {
   portfolio_id: string;
@@ -1210,6 +1240,83 @@ export class OversoldScannerService {
       if (d <= date && (best === null || d > best)) best = d;
     }
     return best ? byDate.get(best) ?? null : null;
+  }
+
+  /**
+   * PR-2 UI — Statut régime LIVE pour le panel oversold dédié.
+   *
+   * Réutilise checkRegimeGate (région-aware, VIX live intraday US) pour exposer
+   * au front la même décision que celle prise par le scan, plus le prochain
+   * créneau de scan. Lecture seule, fail-soft : toute erreur indicateur →
+   * champ null (le gate lui-même est fail-open côté scan).
+   */
+  async getRegimeStatus(portfolioId: string): Promise<OversoldRegimeStatus> {
+    const { data: cfg } = await this.supabase
+      .getClient()
+      .from('lisa_session_configs')
+      .select('oversold_universe')
+      .eq('portfolio_id', portfolioId)
+      .maybeSingle();
+    const universe = (cfg?.oversold_universe as string | null) ?? DEFAULTS.universe;
+
+    const enabled =
+      (this.config.get<string>('OVERSOLD_REGIME_GATE_ENABLED') ?? 'true').toLowerCase() === 'true';
+
+    // intraday:true → VIX live (real-time EODHD) côté US ; EU reste EOD (V2TX live = NA).
+    const gate = await this.checkRegimeGate(universe, { intraday: true });
+    const next = this.computeNextScanUtc(new Date());
+
+    return {
+      portfolioId,
+      universe,
+      region: gate.region,
+      enabled,
+      block: gate.block,
+      reason: gate.reason,
+      vixLabel: gate.region === 'EU' ? 'V2TX' : 'VIX',
+      idxLabel: gate.region === 'EU' ? 'SX5E' : 'SPY',
+      vix: gate.vix,
+      vixChgPct: gate.vixChg,
+      idx5dPct: gate.idx5d,
+      vixSource: gate.vixSource,
+      thresholds: gate.thresholds,
+      rotation: gate.rotation
+        ? {
+            regime: gate.rotation.regime,
+            spreadPct: gate.rotation.spreadPct,
+            mode: gate.rotation.mode,
+            appliedVixPenalty: gate.rotation.appliedVixPenalty,
+          }
+        : null,
+      nextScanUtc: next.iso,
+      nextScanKind: next.kind,
+      asOf: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Prochain créneau de scan oversold (UTC), aligné sur les crons :
+   *  - intraday : `0 0 8-20 * * 1-5` → 08:00..20:00 pile, lun-ven
+   *  - daily    : `0 15 21 * * 1-5` → 21:15, lun-ven
+   * On itère les créneaux d'un jour ouvré, en sautant samedi/dimanche.
+   */
+  private computeNextScanUtc(now: Date): { iso: string; kind: 'intraday' | 'daily' } {
+    const slots: Array<{ h: number; m: number; kind: 'intraday' | 'daily' }> = [];
+    for (let h = 8; h <= 20; h++) slots.push({ h, m: 0, kind: 'intraday' });
+    slots.push({ h: 21, m: 15, kind: 'daily' });
+    for (let dayOffset = 0; dayOffset <= 7; dayOffset++) {
+      const d = new Date(now);
+      d.setUTCDate(now.getUTCDate() + dayOffset);
+      const dow = d.getUTCDay(); // 0=dim, 6=sam
+      if (dow === 0 || dow === 6) continue;
+      for (const s of slots) {
+        const cand = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), s.h, s.m, 0);
+        if (cand > now.getTime()) {
+          return { iso: new Date(cand).toISOString(), kind: s.kind };
+        }
+      }
+    }
+    return { iso: now.toISOString(), kind: 'intraday' };
   }
 
   /**
