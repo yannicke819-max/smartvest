@@ -1,6 +1,7 @@
 import {
   computeRsi,
   computeEntryFeatures,
+  summarizeEntryNews,
   type EodBar,
 } from '../oversold.helper';
 
@@ -72,5 +73,45 @@ describe('computeEntryFeatures', () => {
     expect(f.trend20).toBeNull();
     expect(f.distMa50).toBeNull();
     expect(f.drop1d).toBeCloseTo(-8, 5); // le drop 1j reste calculable
+  });
+});
+
+describe('summarizeEntryNews', () => {
+  const entry = '2026-06-04T20:00:00.000Z';
+
+  it('renvoie 0/null sans article', () => {
+    const f = summarizeEntryNews([], entry);
+    expect(f.newsCount).toBe(0);
+    expect(f.newsMinSentiment).toBeNull();
+    expect(f.newsAvgSentiment).toBeNull();
+    expect(f.newsAgeHours).toBeNull();
+  });
+
+  it('ignore les articles hors fenêtre [entry-72h, entry] (pas de look-ahead)', () => {
+    const f = summarizeEntryNews([
+      { publishedAt: '2026-06-04T21:00:00.000Z', sentiment: -0.9 }, // APRÈS l'entrée → exclu
+      { publishedAt: '2026-05-01T10:00:00.000Z', sentiment: -0.8 }, // > 72h avant → exclu
+    ], entry);
+    expect(f.newsCount).toBe(0);
+  });
+
+  it('agrège count/min/avg/age sur la fenêtre', () => {
+    const f = summarizeEntryNews([
+      { publishedAt: '2026-06-04T18:00:00.000Z', sentiment: -0.6 }, // 2h avant
+      { publishedAt: '2026-06-03T20:00:00.000Z', sentiment: 0.2 }, // 24h avant
+    ], entry);
+    expect(f.newsCount).toBe(2);
+    expect(f.newsMinSentiment).toBeCloseTo(-0.6, 5);
+    expect(f.newsAvgSentiment).toBeCloseTo(-0.2, 5);
+    expect(f.newsAgeHours).toBeCloseTo(2, 1); // plus récent = 2h avant l'entrée
+  });
+
+  it('gère les sentiments null sans casser count', () => {
+    const f = summarizeEntryNews([
+      { publishedAt: '2026-06-04T18:00:00.000Z', sentiment: null },
+      { publishedAt: '2026-06-04T17:00:00.000Z', sentiment: -0.4 },
+    ], entry);
+    expect(f.newsCount).toBe(2);
+    expect(f.newsMinSentiment).toBeCloseTo(-0.4, 5);
   });
 });
