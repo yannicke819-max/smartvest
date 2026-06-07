@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { Sparkles, Target, ShieldAlert, TrendingUp, Activity, ChevronDown, ChevronUp, SlidersHorizontal } from 'lucide-react';
 import { usePortfolios } from '@/hooks/use-portfolio';
@@ -150,38 +150,37 @@ export default function LisaPage() {
     return list;
   }, [rawSimPortfolios, portfoliosQuery.data]);
 
-  // Défaut = US Oversold (vivant) → fallback TRADER → fallback null.
-  const defaultPortfolio =
-    simulationPortfolios.find((p) => p.id === DEFAULT_PORTFOLIO_ID) ??
-    simulationPortfolios.find((p) => p.id === TRADER_PORTFOLIO_ID);
+  const [selectedPortfolioId, setSelectedPortfolioId] = useState<string | null>(null);
 
-  const [selectedPortfolioId, setSelectedPortfolioId] = useState<string | null>(
-    defaultPortfolio?.id ?? null,
-  );
-
-  // Initialise la sélection : US Oversold par défaut (07/06), fallback TRADER,
-  // puis 1er simulation portfolio. Une fois sélectionné, on respecte le choix
-  // user (le dropdown permet de switch vers TRADER / EU Oversold).
-  //
-  // 31/05/2026 — Defensive : si l'ID sélectionné n'est plus dans la liste
-  // (portfolio supprimé / renommé / user_id mismatch), reset au défaut puis
-  // fallback 1er dispo. Sinon l'UI poll en boucle une 404 (incident observé :
-  // 7 req/s × 4 hooks × stack trace = pollution Fly logs massive).
+  // 07/06 (FIX) — Ouverture par défaut sur US Oversold.
+  // ⚠ BUG corrigé : `simulationPortfolios` insère un TRADER SYNTHÉTIQUE au tout
+  // premier render (avant que portfoliosQuery.data soit chargé). L'ancienne init
+  // prenait donc TRADER, puis le garde « si la sélection existe → on garde »
+  // figeait dessus à VIE (TRADER est toujours dans la liste) → le défaut US
+  // Oversold ne s'appliquait jamais, d'où le « hard refresh → TRADER kill-switch ».
+  // Fix : on gate l'init sur portfoliosQuery.data RÉELLEMENT chargé (≥1 row, donc
+  // plus le seul TRADER synthétique), 1 seule fois via ref. Chaque refresh =
+  // nouveau mount → ref reset → rouvre bien sur US Oversold.
+  const didInitSelectionRef = useRef(false);
   useEffect(() => {
-    if (simulationPortfolios.length === 0) return;
-    const exists = selectedPortfolioId
-      ? simulationPortfolios.some((p) => p.id === selectedPortfolioId)
-      : false;
-    if (exists) return;
+    if (didInitSelectionRef.current) return;
+    const realData = portfoliosQuery.data ?? [];
+    if (realData.length === 0) return; // attendre les portfolios réels
     const defaultId = simulationPortfolios.find((p) => p.id === DEFAULT_PORTFOLIO_ID)?.id;
     const traderId = simulationPortfolios.find((p) => p.id === TRADER_PORTFOLIO_ID)?.id;
-    if (defaultId) {
-      setSelectedPortfolioId(defaultId);
-    } else if (traderId) {
-      setSelectedPortfolioId(traderId);
-    } else if (simulationPortfolios[0]?.id) {
-      setSelectedPortfolioId(simulationPortfolios[0].id);
-    }
+    setSelectedPortfolioId(defaultId ?? traderId ?? simulationPortfolios[0]?.id ?? null);
+    didInitSelectionRef.current = true;
+  }, [portfoliosQuery.data, simulationPortfolios]);
+
+  // Defensive : si la sélection courante disparaît de la liste (404 / suppression /
+  // user_id mismatch), reset au défaut US Oversold puis 1er dispo. Ne se déclenche
+  // QUE si une sélection non-null est devenue invalide → n'interfère pas avec l'init.
+  useEffect(() => {
+    if (!selectedPortfolioId) return;
+    if (simulationPortfolios.length === 0) return;
+    if (simulationPortfolios.some((p) => p.id === selectedPortfolioId)) return;
+    const defaultId = simulationPortfolios.find((p) => p.id === DEFAULT_PORTFOLIO_ID)?.id;
+    setSelectedPortfolioId(defaultId ?? simulationPortfolios[0]?.id ?? null);
   }, [simulationPortfolios, selectedPortfolioId]);
 
   // 07/06 — Rouvre TOUJOURS /lisa EN HAUT de page (demande user non négociable).
@@ -680,16 +679,8 @@ export default function LisaPage() {
                 );
               })}
             </select>
-            {selectedPortfolioId !== TRADER_PORTFOLIO_ID &&
-              simulationPortfolios.some((p) => p.id === TRADER_PORTFOLIO_ID) && (
-                <button
-                  type="button"
-                  onClick={() => setSelectedPortfolioId(TRADER_PORTFOLIO_ID)}
-                  className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 whitespace-nowrap"
-                >
-                  🤖 Retour TRADER
-                </button>
-              )}
+            {/* 07/06 — Bouton « Retour TRADER » retiré (user). Le TRADER est gelé ;
+                il reste sélectionnable dans le dropdown mais n'est plus mis en avant. */}
           </div>
           <p className="text-[11px] text-muted-foreground">
             US / EU Oversold = mean-reversion swing déterministe (achat -5 à -12%, hold J+10, stop catastrophe -15%) — modes actifs. TRADER = ancien agent LLM gainers, gelé (kill-switch armé), conservé en observation seule.
