@@ -2142,14 +2142,17 @@ export class MechanicalTradingService {
     // expiré ≥ 20min), NE PAS re-déclencher le DANGER_ZONE immédiatement (sinon
     // boucle re-trigger → manual_control re-armé en boucle). Le stop normal joue
     // ce cycle ; le DANGER_ZONE pourra re-jouer aux cycles suivants si pertinent.
-    const dangerZoneEnabled = (process.env.MECHANICAL_DANGER_ZONE_ENABLED ?? 'false').toLowerCase() === 'true' && !isOversoldByHeuristic && !rearmedThisCycle;
+    // 07/06 — DÉFAUT = ON (demande user : "quand on s'approche de la danger-zone,
+    // mise en Manu SYSTÉMATIQUE"). Sûr maintenant que le filet re-arm 20min existe
+    // (si Mistral échoue, le SL auto reprend). Réversible : MECHANICAL_DANGER_ZONE_ENABLED=false.
+    const dangerZoneEnabled = (process.env.MECHANICAL_DANGER_ZONE_ENABLED ?? 'true').toLowerCase() === 'true' && !isOversoldByHeuristic && !rearmedThisCycle;
     if (dangerZoneEnabled && stopPrice && stopPrice.gt(0) && entryPx.gt(0)) {
       const directionMultiplier = isLong ? 1 : -1;
       const distanceTraveled = entryPx.minus(livePx).mul(directionMultiplier);
       const totalDistanceToSl = entryPx.minus(stopPrice).mul(directionMultiplier);
       if (totalDistanceToSl.gt(0)) {
         const ratioToSl = distanceTraveled.div(totalDistanceToSl).toNumber();
-        const ac = pos.assetClass;
+        const ac = pos.assetClass ?? ''; // garde anti-undefined (défaut ON oblige la robustesse)
         const threshold = (() => {
           if (ac === 'eu_equity') return parseFloat(process.env.MECHANICAL_DANGER_ZONE_PCT_EU ?? '0.75');
           if (ac.startsWith('crypto_')) return parseFloat(process.env.MECHANICAL_DANGER_ZONE_PCT_CRYPTO ?? '0.85');
