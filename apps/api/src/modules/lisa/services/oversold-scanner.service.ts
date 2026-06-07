@@ -46,6 +46,19 @@ import {
 import { IntradayProviderRouter } from './intraday-provider-router.service';
 import { minutesSinceExchangeOpen, minutesToExchangeClose } from './exchange-sessions.helper';
 
+/**
+ * Contexte de régime marché capturé AS-OF l'entrée (PR-2 — features régime).
+ * Indicateurs globaux de risque (VIX/VIX3M term structure + SPY 5j + crédit HYG).
+ * Loggés dans features_at_entry pour que l'empirical law mesure — sur trades
+ * RÉELS, sans biais de survivance — l'effet réel du régime sur l'outcome.
+ */
+interface OversoldRegimeCtx {
+  vix: number | null;
+  vix3mRatio: number | null; // VIX/VIX3M ; >1 = backwardation (stress aigu)
+  spy5d: number | null; // rendement SPY 5j en %
+  hyg5d: number | null; // rendement HYG 5j en % (proxy stress crédit)
+}
+
 /** Une position oversold enrichie pour l'UI dédiée (book summary). */
 export interface OversoldBookPosition {
   symbol: string;
@@ -1152,6 +1165,61 @@ export class OversoldScannerService {
     }
   }
 
+  // ─── PR-2 — Contexte de régime as-of entrée (cache 6h, fail-open) ───
+  private regimeCtxCache: { at: number; byDate: Map<string, OversoldRegimeCtx> } | null = null;
+  private readonly REGIME_CTX_TTL_MS = 6 * 60 * 60 * 1000;
+
+  /**
+   * Charge VIX + VIX3M + SPY + HYG (1 fetch chacun, cache 6h) et construit une
+   * map date → contexte régime. Fail-open : tout indicateur indispo → champ null,
+   * jamais d'exception (la collecte de features ne doit pas casser dessus).
+   */
+  private async loadRegimeContext(): Promise<Map<string, OversoldRegimeCtx>> {
+    if (this.regimeCtxCache && Date.now() - this.regimeCtxCache.at < this.REGIME_CTX_TTL_MS) {
+      return this.regimeCtxCache.byDate;
+    }
+    const [vix, vix3m, spy, hyg] = await Promise.all([
+      this.fetchEodBars('VIX.INDX', 220).catch(() => [] as EodBar[]),
+      this.fetchEodBars('VIX3M.INDX', 220).catch(() => [] as EodBar[]),
+      this.fetchEodBars('SPY.US', 220).catch(() => [] as EodBar[]),
+      this.fetchEodBars('HYG.US', 220).catch(() => [] as EodBar[]),
+    ]);
+    const v3ByDate = new Map(vix3m.map((b) => [b.date, b.close]));
+    const ret5 = (bars: EodBar[]): Map<string, number> => {
+      const m = new Map<string, number>();
+      for (let i = 5; i < bars.length; i++) {
+        const prev = bars[i - 5].close;
+        if (prev > 0) m.set(bars[i].date, (bars[i].close / prev - 1) * 100);
+      }
+      return m;
+    };
+    const spy5 = ret5(spy);
+    const hyg5 = ret5(hyg);
+    const byDate = new Map<string, OversoldRegimeCtx>();
+    for (const b of vix) {
+      const v3 = v3ByDate.get(b.date);
+      byDate.set(b.date, {
+        vix: b.close,
+        vix3mRatio: v3 && v3 > 0 ? b.close / v3 : null,
+        spy5d: spy5.get(b.date) ?? null,
+        hyg5d: hyg5.get(b.date) ?? null,
+      });
+    }
+    this.regimeCtxCache = { at: Date.now(), byDate };
+    return byDate;
+  }
+
+  /** Contexte régime à la date d'entrée (exacte, sinon dernière date <= entrée). */
+  private regimeAsOf(byDate: Map<string, OversoldRegimeCtx>, date: string): OversoldRegimeCtx | null {
+    const exact = byDate.get(date);
+    if (exact) return exact;
+    let best: string | null = null;
+    for (const d of byDate.keys()) {
+      if (d <= date && (best === null || d > best)) best = d;
+    }
+    return best ? byDate.get(best) ?? null : null;
+  }
+
   /**
    * PR-1 — Fondation boucle d'apprentissage oversold.
    *
@@ -1204,6 +1272,9 @@ export class OversoldScannerService {
     const { data: pf } = await client.from('portfolios').select('id, user_id').in('id', pids);
     const userByPf = new Map((pf ?? []).map((p) => [p.id as string, p.user_id as string]));
 
+    // PR-2 — contexte régime (VIX/VIX3M/SPY5d/HYG5d) mergé dans features_at_entry.
+    const regimeByDate = await this.loadRegimeContext().catch(() => new Map<string, OversoldRegimeCtx>());
+
     let inserted = 0;
     let updated = 0;
     for (const p of oversold) {
@@ -1243,6 +1314,9 @@ export class OversoldScannerService {
       if (idx < 1) continue;
       const feat = computeEntryFeatures(bars, idx);
       if (!feat) continue;
+      // Merge contexte régime as-of entrée (champs null si indispo).
+      const reg = this.regimeAsOf(regimeByDate, bars[idx].date);
+      const featPlus = reg ? { ...feat, ...reg } : feat;
 
       const row: Record<string, unknown> = {
         user_id: userByPf.get(p.portfolio_id as string) ?? null,
@@ -1257,7 +1331,7 @@ export class OversoldScannerService {
         strategy: 'oversold',
         scanner_position_id: posId,
         setup_kind: 'OVERSOLD_DIP',
-        features_at_entry: feat,
+        features_at_entry: featPlus,
         opened_at: p.entry_timestamp,
       };
       if (closed) {
