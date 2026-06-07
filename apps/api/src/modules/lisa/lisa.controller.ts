@@ -1590,6 +1590,19 @@ export class LisaController {
   }
 
   /**
+   * PR-2 UI — Statut régime de marché LIVE (thermomètre VIX/indice + verdict du
+   * gate) + prochain scan programmé. Région-aware selon oversold_universe.
+   */
+  @Get('oversold-regime/:portfolioId')
+  async getOversoldRegime(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    extractUserId(headers);
+    return this.oversoldScanner.getRegimeStatus(portfolioId);
+  }
+
+  /**
    * 04/06 — Boucles d'apprentissage SÉPARÉES (user request). Chacune lit
    * uniquement les closes labellisés de SA source pour ne pas mixer les
    * patterns scalp gainers (5-60min) avec swing oversold (J+10).
