@@ -1,11 +1,10 @@
 'use client';
 
 import { useState } from 'react';
-import { TrendingUp, Wheat, Rocket, TrendingDown, Settings, AlertCircle } from 'lucide-react';
+import { TrendingUp, Wheat, TrendingDown, Settings, AlertCircle } from 'lucide-react';
 import {
   useOperatingMode,
   useApplyOperatingMode,
-  useGainersConfig,
   type OperatingMode,
 } from '@/hooks/use-operating-mode';
 
@@ -30,38 +29,6 @@ export function MacroModeSelector({ portfolioId }: { portfolioId: string }) {
   const [applyError, setApplyError] = useState<string | null>(null);
 
   const currentMode: OperatingMode = modeQuery.data?.mode ?? 'investment';
-
-  // PR Carte dynamique — la description Gainers reflète la vraie config user
-  // au lieu de chiffres hardcodés obsolètes ("max 5 × $200, SL -3% TP +8%"
-  // n'a jamais été le code réel post PR #2).
-  const gainersCfg = useGainersConfig(portfolioId);
-  const gainersDescription = (() => {
-    const cfg = gainersCfg.data;
-    if (!cfg) {
-      return 'Scanner momentum déterministe cross-asset. Configuration et univers personnalisables ci-dessous.';
-    }
-    const cycle = cfg.gainers_cycle_minutes ?? 15;
-    const maxOpen = cfg.gainers_max_open_positions ?? 5;
-    const positionPct = cfg.gainers_position_pct ?? 20;
-    const capital = cfg.capital_simulation ?? 10000;
-    const notional = capital * (positionPct / 100);
-    const tp = cfg.gainers_default_tp_pct ?? 1.5;
-    const sl = cfg.gainers_default_sl_pct ?? 1.0;
-    const persScore = cfg.gainers_min_persistence_score ?? 0.67;
-    const pathEff = cfg.gainers_min_path_efficiency ?? 0.5;
-    const universes: string[] = [];
-    if (cfg.gainers_universe_us !== false) universes.push('US');
-    if (cfg.gainers_universe_eu !== false) universes.push('EU');
-    if (cfg.gainers_universe_asia !== false) universes.push('Asia');
-    if (cfg.gainers_universe_crypto !== false) universes.push('Crypto');
-    return (
-      `Cron ${cycle} min · ${universes.join(' + ') || 'aucun univers'}. ` +
-      `Max ${maxOpen} positions × ${positionPct}% (${notional.toFixed(0)} USD/pos), ` +
-      `SL ${sl}% / TP ${tp}%. ` +
-      `Gates : persistence ≥ ${persScore.toFixed(2)}, path eff ≥ ${pathEff.toFixed(2)}, ` +
-      `fees-aware buffer ${(cfg.gainers_fees_aware_buffer ?? 2.0).toFixed(1)}×.`
-    );
-  })();
 
   const handleSelect = (newMode: OperatingMode) => {
     if (currentMode === newMode) return;
@@ -88,7 +55,7 @@ export function MacroModeSelector({ portfolioId }: { portfolioId: string }) {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <ModeCard
           icon={TrendingUp}
           title="📈 Investment"
@@ -106,15 +73,6 @@ export function MacroModeSelector({ portfolioId }: { portfolioId: string }) {
           isActive={currentMode === 'harvest'}
           onClick={() => handleSelect('harvest')}
           color="emerald"
-        />
-        <ModeCard
-          icon={Rocket}
-          title="🚀 Gainers"
-          subtitle="Scanner momentum cross-asset · agent LLM Mistral · autonome"
-          description={gainersDescription}
-          isActive={currentMode === 'gainers'}
-          onClick={() => handleSelect('gainers')}
-          color="orange"
         />
         <ModeCard
           icon={TrendingDown}
