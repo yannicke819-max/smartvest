@@ -151,6 +151,7 @@ interface OpenPosition {
   autonomy_rules?: AutonomyRuleDb[] | null;
   conviction_score?: number | null;
   manual_control?: boolean | null;
+  manual_control_since?: string | null;
 }
 
 interface AutonomyRuleDb {
@@ -1912,7 +1913,49 @@ export class MechanicalTradingService {
     // reste stocké/affiché comme repère visuel non-déclencheur ; seule la close
     // manuelle utilisateur ferme la position. Early-return ici évite d'atteindre
     // closePosition (qui re-bloquerait + loggerait une erreur à chaque cycle).
-    if (pos.manual_control === true) return;
+    //
+    // 07/06/2026 — FILET "machine si user absent" (validé user). Si manual_control
+    // dure ≥ MANUAL_CONTROL_REARM_MIN (default 20) sans résolution (DANGER_ZONE
+    // wait_user, LLM muet, user absent), on RÉ-ARME le SL auto : manual_control=false
+    // + on laisse checkStopTarget reprendre la main CE cycle (rearmedThisCycle bloque
+    // le re-trigger DANGER_ZONE plus bas). EXCLUT l'oversold (SL large > 8% = hold
+    // overnight volontaire, géré par OversoldExitService — jamais ce stop gainers).
+    // Preuve du besoin : GNFT.PA gelée à -5.56% sur SL -1.5%, manual_control=true.
+    let rearmedThisCycle = false;
+    if (pos.manual_control === true) {
+      const entryN = Number(pos.entryPrice);
+      const slDistPct = pos.stopLossPrice && entryN > 0
+        ? Math.abs((entryN - Number(pos.stopLossPrice)) / entryN) * 100
+        : 0;
+      const isOversold = slDistPct > 8;
+      const sinceIso = pos.manual_control_since ?? null;
+      const stuckMin = sinceIso ? (Date.now() - new Date(sinceIso).getTime()) / 60_000 : null;
+      const rearmMin = Number(process.env.MANUAL_CONTROL_REARM_MIN ?? '20');
+      if (isOversold || stuckMin === null || stuckMin < rearmMin) {
+        return; // oversold OU fenêtre pas écoulée → ne pas toucher au stop
+      }
+      this.logger.warn(
+        `[MANUAL_CONTROL_REARM] ${pos.symbol} en manual_control depuis ${stuckMin.toFixed(0)}min (≥${rearmMin}) sans résolution → ré-arme le SL auto`,
+      );
+      try {
+        await this.supabase.getClient().from('lisa_positions')
+          .update({ manual_control: false, manual_control_since: null })
+          .eq('id', pos.id);
+      } catch (e) {
+        this.logger.warn(`[MANUAL_CONTROL_REARM] ${pos.symbol} update failed: ${String(e).slice(0, 100)}`);
+        return; // si l'update échoue, on ne touche pas au stop ce cycle
+      }
+      await this.decisionLog.append({
+        portfolioId: String((pos as unknown as Record<string, unknown>)['portfolio_id'] ?? ''),
+        kind: 'manual_control_rearmed',
+        summary: `[MANUAL_CONTROL_REARM] ${pos.symbol} SL auto ré-armé après ${stuckMin.toFixed(0)}min sans résolution`,
+        rationale: `manual_control non résolu depuis ${stuckMin.toFixed(0)}min (≥ ${rearmMin}min). Filet machine : réactivation du SL/TP automatique (DANGER_ZONE wait_user / LLM muet / user absent). La position reprend la protection mécanique standard ce cycle.`,
+        payload: { symbol: pos.symbol, stuck_minutes: Math.round(stuckMin), rearm_min: rearmMin },
+        triggeredBy: 'mechanical_cron',
+      }).catch(() => null);
+      pos.manual_control = false; // local : laisse le reste du check tourner ce cycle
+      rearmedThisCycle = true;
+    }
     if (!pos.stopLossPrice && !pos.takeProfitPrice) return;
 
     const quote = await this.lisa.getLivePrice(pos.symbol).catch(() => null);
@@ -2076,7 +2119,11 @@ export class MechanicalTradingService {
       ? entryPx.minus(stopPrice).div(entryPx).mul(isLong ? 1 : -1).abs().mul(100).toNumber()
       : 0;
     const isOversoldByHeuristic = slDistancePct > 8;
-    const dangerZoneEnabled = (process.env.MECHANICAL_DANGER_ZONE_ENABLED ?? 'false').toLowerCase() === 'true' && !isOversoldByHeuristic;
+    // !rearmedThisCycle : si on vient de ré-armer le SL ce cycle (manual_control
+    // expiré ≥ 20min), NE PAS re-déclencher le DANGER_ZONE immédiatement (sinon
+    // boucle re-trigger → manual_control re-armé en boucle). Le stop normal joue
+    // ce cycle ; le DANGER_ZONE pourra re-jouer aux cycles suivants si pertinent.
+    const dangerZoneEnabled = (process.env.MECHANICAL_DANGER_ZONE_ENABLED ?? 'false').toLowerCase() === 'true' && !isOversoldByHeuristic && !rearmedThisCycle;
     if (dangerZoneEnabled && stopPrice && stopPrice.gt(0) && entryPx.gt(0)) {
       const directionMultiplier = isLong ? 1 : -1;
       const distanceTraveled = entryPx.minus(livePx).mul(directionMultiplier);
@@ -2098,7 +2145,8 @@ export class MechanicalTradingService {
           try {
             await this.supabase.getClient()
               .from('lisa_positions')
-              .update({ manual_control: true })
+              // manual_control_since = horodatage pour le filet de ré-armement 20min.
+              .update({ manual_control: true, manual_control_since: new Date().toISOString() })
               .eq('id', pos.id);
           } catch (e) {
             this.logger.warn(`[DANGER_ZONE] ${pos.symbol} manual_control DB update failed: ${String(e).slice(0, 100)}`);
@@ -4090,7 +4138,7 @@ Pas d'autres champs. JSON valide strict.`;
           try {
             await this.supabase.getClient()
               .from('lisa_positions')
-              .update({ stop_loss_price: widenedSl, manual_control: false })
+              .update({ stop_loss_price: widenedSl, manual_control: false, manual_control_since: null })
               .eq('id', pos.id);
           } catch (e) {
             applyError = String(e).slice(0, 150);
@@ -4106,7 +4154,7 @@ Pas d'autres champs. JSON valide strict.`;
         try {
           await this.supabase.getClient()
             .from('lisa_positions')
-            .update({ take_profit_price: Number(pos.entryPrice), manual_control: false })
+            .update({ take_profit_price: Number(pos.entryPrice), manual_control: false, manual_control_since: null })
             .eq('id', pos.id);
         } catch (e) {
           applyError = String(e).slice(0, 150);
