@@ -149,6 +149,34 @@ export interface OversoldNewsWatch {
   asOf: string;
 }
 
+/**
+ * PR-2 (widget loi empirique) — un bucket de la loi empirique oversold,
+ * segmenté par bande de drop 1j à l'entrée.
+ */
+export interface OversoldLawBucket {
+  label: string; // ex: "-10 à -8%"
+  n: number;
+  wins: number;
+  winRatePct: number | null;
+  avgPct: number | null; // PnL réalisé moyen, ou rendement J+10 moyen selon la loi
+  ciLowPct: number | null; // borne basse Wilson 95% (sur le winRate)
+  ciHighPct: number | null;
+}
+
+export interface OversoldLawTable {
+  sampleSize: number;
+  overallWinRatePct: number | null;
+  overallAvgPct: number | null;
+  byDropBand: OversoldLawBucket[];
+}
+
+export interface OversoldEmpiricalLaw {
+  portfolioId: string;
+  realized: OversoldLawTable; // pnl_pct des trades clôturés (entrée+sortie mêlées)
+  forwardJ10: OversoldLawTable & { horizonDays: number }; // rendement J+10 (qualité d'entrée isolée) — se peuple ~18/06
+  asOf: string;
+}
+
 /** Row config oversold lue depuis lisa_session_configs. */
 interface OversoldPortfolioRow {
   portfolio_id: string;
@@ -1417,6 +1445,143 @@ export class OversoldScannerService {
     alerts.sort((a, b) => a.minSentiment - b.minSentiment);
 
     return { portfolioId, openPositions, windowHours: WINDOW_HOURS, alerts, asOf: new Date().toISOString() };
+  }
+
+  /**
+   * PR-2 (widget loi empirique) — loi empirique oversold segmentée par bande de
+   * drop 1j à l'entrée, calculée sur paper_trades (strategy=oversold) du portfolio.
+   *
+   * Deux lois :
+   *  - realized : winRate / PnL moyen des trades CLÔTURÉS (pnl_pct). Disponible
+   *    tout de suite. ⚠ mêle qualité d'entrée ET timing de sortie.
+   *  - forwardJ10 : winRate / rendement J+10 (fwd_outcome_10d / fwd_return_10d) =
+   *    qualité d'entrée ISOLÉE (horizon fixe). Se peuple à mesure que chaque
+   *    entrée atteint J+10 ouvré (≈ 18/06).
+   *
+   * Wilson 95% sur le winRate par bucket pour signaler les bandes à petit n.
+   * Lecture seule.
+   */
+  async getEmpiricalLaw(portfolioId: string): Promise<OversoldEmpiricalLaw> {
+    const { data } = await this.supabase
+      .getClient()
+      .from('paper_trades')
+      .select('pnl_pct, fwd_return_10d, fwd_outcome_10d, features_at_entry')
+      .eq('strategy', 'oversold')
+      .eq('portfolio_id', portfolioId)
+      .limit(2000);
+    const rows = (data ?? []) as Array<{
+      pnl_pct: number | string | null;
+      fwd_return_10d: number | string | null;
+      fwd_outcome_10d: number | string | null;
+      features_at_entry: { drop1d?: number | null } | null;
+    }>;
+
+    const realizedSamples: Array<{ drop: number; win: boolean; value: number }> = [];
+    const fwdSamples: Array<{ drop: number; win: boolean; value: number }> = [];
+    for (const r of rows) {
+      const drop = r.features_at_entry?.drop1d;
+      if (drop == null || !Number.isFinite(drop)) continue;
+      const pnl = r.pnl_pct == null ? null : Number(r.pnl_pct);
+      if (pnl != null && Number.isFinite(pnl)) {
+        realizedSamples.push({ drop, win: pnl > 0, value: pnl });
+      }
+      const fwdRet = r.fwd_return_10d == null ? null : Number(r.fwd_return_10d);
+      const fwdOut = r.fwd_outcome_10d == null ? null : Number(r.fwd_outcome_10d);
+      if (fwdRet != null && Number.isFinite(fwdRet)) {
+        fwdSamples.push({ drop, win: fwdOut != null ? fwdOut === 1 : fwdRet > 0, value: fwdRet });
+      }
+    }
+
+    return {
+      portfolioId,
+      realized: this.buildLawTable(realizedSamples),
+      forwardJ10: { ...this.buildLawTable(fwdSamples), horizonDays: 10 },
+      asOf: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Bande de drop 1j d'un échantillon (null si non fini). Bandes fines dans la
+   * zone 0..-5% car c'est là que se concentrent les entrées (la veine intraday-
+   * rebound entre souvent sur un jour déjà vert) — un découpage grossier
+   * masquerait le gradient (jour vert ≫ jour encore rouge pour le mean-reversion).
+   */
+  private static dropBandLabel(drop: number): string | null {
+    if (!Number.isFinite(drop)) return null;
+    if (drop <= -12) return '≤ -12% (knife)';
+    if (drop <= -10) return '-12 à -10%';
+    if (drop <= -8) return '-10 à -8%';
+    if (drop <= -6) return '-8 à -6%';
+    if (drop <= -5) return '-6 à -5%';
+    if (drop <= -3) return '-5 à -3%';
+    if (drop <= -1) return '-3 à -1%';
+    if (drop < 0) return '-1 à 0%';
+    return '≥ 0% (vert)';
+  }
+
+  private static readonly DROP_BAND_ORDER = [
+    '≤ -12% (knife)',
+    '-12 à -10%',
+    '-10 à -8%',
+    '-8 à -6%',
+    '-6 à -5%',
+    '-5 à -3%',
+    '-3 à -1%',
+    '-1 à 0%',
+    '≥ 0% (vert)',
+  ];
+
+  /** Intervalle de Wilson 95% pour une proportion wins/n (null si n=0). */
+  private static wilson(wins: number, n: number): { low: number; high: number } | null {
+    if (n <= 0) return null;
+    const z = 1.96;
+    const p = wins / n;
+    const z2 = z * z;
+    const denom = 1 + z2 / n;
+    const centre = (p + z2 / (2 * n)) / denom;
+    const margin = (z * Math.sqrt((p * (1 - p)) / n + z2 / (4 * n * n))) / denom;
+    return { low: Math.max(0, centre - margin), high: Math.min(1, centre + margin) };
+  }
+
+  /** Construit une table de loi (overall + buckets par bande de drop). */
+  private buildLawTable(samples: Array<{ drop: number; win: boolean; value: number }>): OversoldLawTable {
+    const byBand = new Map<string, { n: number; wins: number; sum: number }>();
+    let totN = 0;
+    let totWins = 0;
+    let totSum = 0;
+    for (const s of samples) {
+      const band = OversoldScannerService.dropBandLabel(s.drop);
+      if (!band) continue;
+      const cur = byBand.get(band) ?? { n: 0, wins: 0, sum: 0 };
+      cur.n += 1;
+      if (s.win) cur.wins += 1;
+      cur.sum += s.value;
+      byBand.set(band, cur);
+      totN += 1;
+      if (s.win) totWins += 1;
+      totSum += s.value;
+    }
+    const byDropBand: OversoldLawBucket[] = OversoldScannerService.DROP_BAND_ORDER.filter((b) =>
+      byBand.has(b),
+    ).map((b) => {
+      const v = byBand.get(b)!;
+      const ci = OversoldScannerService.wilson(v.wins, v.n);
+      return {
+        label: b,
+        n: v.n,
+        wins: v.wins,
+        winRatePct: v.n > 0 ? (v.wins / v.n) * 100 : null,
+        avgPct: v.n > 0 ? v.sum / v.n : null,
+        ciLowPct: ci ? ci.low * 100 : null,
+        ciHighPct: ci ? ci.high * 100 : null,
+      };
+    });
+    return {
+      sampleSize: totN,
+      overallWinRatePct: totN > 0 ? (totWins / totN) * 100 : null,
+      overallAvgPct: totN > 0 ? totSum / totN : null,
+      byDropBand,
+    };
   }
 
   /**
