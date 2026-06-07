@@ -31,6 +31,7 @@ import {
   businessDaysSince,
   decideRegimeBlock,
   computeRotationRegime,
+  computeEntryFeatures,
   type OversoldConfig,
   type EodBar,
   type OversoldCandidate,
@@ -144,6 +145,11 @@ export class OversoldScannerService {
         this.logger.debug('[oversold] OVERSOLD_SCANNER_ENABLED=false → skip cycle');
         return;
       }
+
+      // PR-1 — collecte features/outcomes pour la boucle d'apprentissage (best-effort).
+      await this.reconcileOversoldFeatures().catch((e) =>
+        this.logger.warn(`[oversold-features] reconcile failed: ${String(e).slice(0, 200)}`),
+      );
 
       const portfolios = await this.loadOversoldPortfolios();
       if (portfolios.length === 0) {
@@ -408,6 +414,12 @@ export class OversoldScannerService {
         this.logger.debug('[oversold-intraday] disabled (OVERSOLD_SCANNER_ENABLED or OVERSOLD_INTRADAY_ENABLED off)');
         return;
       }
+
+      // PR-1 — collecte features/outcomes (best-effort, idempotent via scanner_position_id).
+      await this.reconcileOversoldFeatures().catch((e) =>
+        this.logger.warn(`[oversold-features] reconcile failed: ${String(e).slice(0, 200)}`),
+      );
+
       const portfolios = await this.loadOversoldPortfolios();
       if (portfolios.length === 0) {
         this.logger.debug('[oversold-intraday] aucun portfolio en mode oversold → skip');
@@ -1137,6 +1149,131 @@ export class OversoldScannerService {
       return bars;
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  /**
+   * PR-1 — Fondation boucle d'apprentissage oversold.
+   *
+   * Réconcilie les positions oversold (lisa_positions, source dans
+   * venue_fee_detail) vers `paper_trades` (strategy='oversold') avec le vecteur
+   * de features calculé AS-OF l'entrée + l'outcome quand la position est fermée.
+   *
+   * Idempotent : la clé est `scanner_position_id` = id de la lisa_position.
+   *  - position sans ligne paper_trades → fetch barres profondes + INSERT (features
+   *    as-of entrée ; outcome si déjà fermée). Backfill des positions existantes.
+   *  - ligne paper_trades 'open' dont la position est désormais fermée → UPDATE
+   *    outcome uniquement (aucun fetch).
+   *
+   * NE FILTRE RIEN, NE TRADE RIEN : pure collecte pour que l'empirical law
+   * (PR ultérieur) mesure quelles features prédisent les winners. Best-effort,
+   * jamais bloquant pour le scan.
+   */
+  private async reconcileOversoldFeatures(): Promise<void> {
+    const enabled =
+      (this.config.get<string>('OVERSOLD_FEATURE_COLLECTION_ENABLED') ?? 'true').toLowerCase() === 'true';
+    if (!enabled) return;
+    const client = this.supabase.getClient();
+
+    const sinceIso = new Date(Date.now() - 120 * 86_400_000).toISOString();
+    const { data: posRows } = await client
+      .from('lisa_positions')
+      .select(
+        'id, portfolio_id, symbol, asset_class, status, entry_price, entry_timestamp, exit_timestamp, realized_pnl_usd, realized_pnl_pct, entry_notional_usd, stop_loss_price, take_profit_price, venue_fee_detail',
+      )
+      .gte('entry_timestamp', sinceIso)
+      .limit(2000);
+
+    const oversold = (posRows ?? []).filter((p) => {
+      const vfd = p.venue_fee_detail as { source?: string } | null;
+      return vfd?.source === 'scanner_oversold';
+    });
+    if (oversold.length === 0) return;
+
+    const { data: ptRows } = await client
+      .from('paper_trades')
+      .select('id, scanner_position_id, status')
+      .eq('strategy', 'oversold')
+      .limit(5000);
+    const ptByPos = new Map<string, { id: string; status: string }>();
+    for (const r of ptRows ?? []) {
+      if (r.scanner_position_id) ptByPos.set(r.scanner_position_id as string, { id: r.id as string, status: r.status as string });
+    }
+
+    const pids = [...new Set(oversold.map((p) => p.portfolio_id as string))];
+    const { data: pf } = await client.from('portfolios').select('id, user_id').in('id', pids);
+    const userByPf = new Map((pf ?? []).map((p) => [p.id as string, p.user_id as string]));
+
+    let inserted = 0;
+    let updated = 0;
+    for (const p of oversold) {
+      const posId = p.id as string;
+      const closed = p.status !== 'open';
+      const pnl = Number(p.realized_pnl_usd ?? 0);
+      const existing = ptByPos.get(posId);
+
+      if (existing) {
+        if (closed && existing.status === 'open') {
+          await client
+            .from('paper_trades')
+            .update({
+              status: 'closed',
+              closed_at: p.exit_timestamp,
+              pnl_usd: String(pnl),
+              pnl_pct: p.realized_pnl_pct != null ? String(p.realized_pnl_pct) : null,
+              outcome_label: pnl > 0 ? 1 : 0,
+            })
+            .eq('id', existing.id);
+          updated++;
+        }
+        continue;
+      }
+
+      // Nouvelle position → features as-of entrée depuis barres profondes.
+      const entryDate = String(p.entry_timestamp ?? '').slice(0, 10);
+      if (!entryDate) continue;
+      const bars = await this.fetchEodBars(p.symbol as string, 160);
+      if (bars.length < 22) continue;
+      let idx = bars.findIndex((b) => b.date === entryDate);
+      if (idx < 0) {
+        for (let i = bars.length - 1; i >= 0; i--) {
+          if (bars[i].date <= entryDate) { idx = i; break; }
+        }
+      }
+      if (idx < 1) continue;
+      const feat = computeEntryFeatures(bars, idx);
+      if (!feat) continue;
+
+      const row: Record<string, unknown> = {
+        user_id: userByPf.get(p.portfolio_id as string) ?? null,
+        portfolio_id: p.portfolio_id,
+        symbol: p.symbol,
+        asset_class: p.asset_class ?? 'us_equity',
+        entry_price: p.entry_price != null ? String(p.entry_price) : null,
+        size_usd: p.entry_notional_usd != null ? String(p.entry_notional_usd) : null,
+        stop_loss: p.stop_loss_price != null ? String(p.stop_loss_price) : null,
+        take_profit: p.take_profit_price != null ? String(p.take_profit_price) : null,
+        status: closed ? 'closed' : 'open',
+        strategy: 'oversold',
+        scanner_position_id: posId,
+        setup_kind: 'OVERSOLD_DIP',
+        features_at_entry: feat,
+        opened_at: p.entry_timestamp,
+      };
+      if (closed) {
+        row.closed_at = p.exit_timestamp;
+        row.pnl_usd = String(pnl);
+        row.pnl_pct = p.realized_pnl_pct != null ? String(p.realized_pnl_pct) : null;
+        row.outcome_label = pnl > 0 ? 1 : 0;
+      }
+      const { error } = await client.from('paper_trades').insert(row);
+      if (!error) inserted++;
+    }
+
+    if (inserted || updated) {
+      this.logger.log(
+        `[oversold-features] reconcile: +${inserted} insérés, ${updated} outcomes maj (${oversold.length} positions oversold)`,
+      );
     }
   }
 

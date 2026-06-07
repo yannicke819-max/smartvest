@@ -249,3 +249,85 @@ export function computeRotationRegime(
   const spreadPct = ma > 0 ? (last / ma - 1) * 100 : null;
   return { regime, ratio: last, ma, spreadPct, n: ratios.length };
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Features d'entrée pour la boucle d'apprentissage (PR-1 fondation oversold).
+// Calculées AS-OF l'entrée (uniquement barres jusqu'à entryIdx → pas de
+// look-ahead). EodBar n'a pas d'OHLC → "volatilité" = réalisée (stddev des
+// returns), PAS d'ATR vrai. Pures + testables, aucune dépendance réseau.
+// ⚠️ Aucune de ces features ne FILTRE l'entrée (cf. backtest n=6130 : un skip
+// par trend-20d détruit l'edge). Elles sont LOGGÉES pour que l'empirical law
+// (PR ultérieur) mesure lesquelles méritent un sizing différencié.
+// ─────────────────────────────────────────────────────────────────────────
+
+export interface OversoldEntryFeatures {
+  drop1d: number; // (close[t]/close[t-1]-1)*100 — le drop déclencheur
+  drop3d: number | null; // drop cumulé 3j
+  trend20: number | null; // (close[t-1]/close[t-21]-1)*100 — tendance AVANT le drop
+  distMa20: number | null; // distance au MA20 en % (close vs moyenne)
+  distMa50: number | null; // distance au MA50 en %
+  rsi14: number | null; // RSI Wilder simplifié 14
+  vol14: number | null; // volatilité réalisée 14j (stddev returns) en %
+  relVol20: number | null; // volume[t] / moyenne(volume, 20j)
+}
+
+/** RSI 14 (moyenne simple des gains/pertes sur la fenêtre). closes triés ASC. */
+export function computeRsi(closes: number[], period = 14): number | null {
+  if (closes.length < period + 1) return null;
+  let gain = 0;
+  let loss = 0;
+  for (let i = closes.length - period; i < closes.length; i++) {
+    const ch = closes[i] - closes[i - 1];
+    if (ch >= 0) gain += ch;
+    else loss -= ch;
+  }
+  const avgG = gain / period;
+  const avgL = loss / period;
+  if (avgL === 0) return 100;
+  return 100 - 100 / (1 + avgG / avgL);
+}
+
+/**
+ * Calcule le vecteur de features à l'index d'entrée `entryIdx` dans `bars`
+ * (triées par date ASC). Renvoie null si pas assez de barres pour le drop 1j.
+ * Chaque feature individuelle est null si la profondeur est insuffisante.
+ */
+export function computeEntryFeatures(bars: EodBar[], entryIdx: number): OversoldEntryFeatures | null {
+  if (entryIdx < 1 || entryIdx >= bars.length) return null;
+  const closes = bars.map((b) => b.close);
+  const vols = bars.map((b) => b.volume);
+  const c = closes[entryIdx];
+  if (!(c > 0)) return null;
+
+  const drop1d = (c / closes[entryIdx - 1] - 1) * 100;
+  const drop3d = entryIdx >= 3 ? (c / closes[entryIdx - 3] - 1) * 100 : null;
+  const trend20 = entryIdx >= 21 ? (closes[entryIdx - 1] / closes[entryIdx - 21] - 1) * 100 : null;
+
+  const ma = (n: number): number | null =>
+    entryIdx >= n - 1
+      ? closes.slice(entryIdx - n + 1, entryIdx + 1).reduce((s, x) => s + x, 0) / n
+      : null;
+  const ma20 = ma(20);
+  const ma50 = ma(50);
+  const distMa20 = ma20 ? (c / ma20 - 1) * 100 : null;
+  const distMa50 = ma50 ? (c / ma50 - 1) * 100 : null;
+
+  const rsi14 = computeRsi(closes.slice(0, entryIdx + 1), 14);
+
+  let vol14: number | null = null;
+  if (entryIdx >= 14) {
+    const rets: number[] = [];
+    for (let i = entryIdx - 13; i <= entryIdx; i++) rets.push(closes[i] / closes[i - 1] - 1);
+    const mean = rets.reduce((s, x) => s + x, 0) / rets.length;
+    const variance = rets.reduce((s, x) => s + (x - mean) ** 2, 0) / rets.length;
+    vol14 = Math.sqrt(variance) * 100;
+  }
+
+  let relVol20: number | null = null;
+  if (entryIdx >= 20) {
+    const avg = vols.slice(entryIdx - 20, entryIdx).reduce((s, x) => s + x, 0) / 20;
+    relVol20 = avg > 0 ? vols[entryIdx] / avg : null;
+  }
+
+  return { drop1d, drop3d, trend20, distMa20, distMa50, rsi14, vol14, relVol20 };
+}
