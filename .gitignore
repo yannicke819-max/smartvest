@@ -32,3 +32,6 @@ apps/web/content/docs/
 # SHORT-SHADOW Phase 2 local outputs (rétroactif rigoureux, local only)
 phase2-retro-results.json
 .claude/credentials.local
+
+# Scripts de diagnostic jetables (sandbox local, jamais committés)
+scripts/_tmp_*.ts
