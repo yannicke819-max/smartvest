@@ -118,14 +118,15 @@ async function main() {
     return;
   }
 
-  // 2. Régime
-  const reg = await realtimeBulk(['VIX.INDX', 'GDAXI.INDX', 'FTSE.INDX']);
+  // 2. Régime — S&P (épicentre VIX) + DAX + STOXX 600 (FTSE non servi par EODHD).
+  const reg = await realtimeBulk(['VIX.INDX', 'GSPC.INDX', 'GDAXI.INDX', 'STOXX.INDX']);
   const vix = reg.get('VIX.INDX');
+  const sp = reg.get('GSPC.INDX');
   const dax = reg.get('GDAXI.INDX');
-  const ftse = reg.get('FTSE.INDX');
+  const stoxx = reg.get('STOXX.INDX');
   const fnum = (n: number | undefined, d = 0) => (n != null && Number.isFinite(n) ? n.toFixed(d) : '?');
   const fpct = (q?: { changeP: number }) => (q && Number.isFinite(q.changeP) ? `${q.changeP >= 0 ? '+' : ''}${q.changeP.toFixed(2)}%` : '?');
-  console.log(`Régime : VIX ${fnum(vix?.close, 2)} (${fpct(vix)})  ·  DAX ${fnum(dax?.close, 0)} (${fpct(dax)})  ·  FTSE ${fnum(ftse?.close, 0)} (${fpct(ftse)})`);
+  console.log(`Régime : VIX ${fnum(vix?.close, 2)} (${fpct(vix)})  ·  S&P ${fnum(sp?.close, 0)} (${fpct(sp)})  ·  DAX ${fnum(dax?.close, 0)} (${fpct(dax)})  ·  STOXX600 ${fnum(stoxx?.close, 1)} (${fpct(stoxx)})`);
   const vixHot = vix && vix.close >= 21;
   console.log(vixHot ? '⚠️  VIX élevé (≥21) → risk-off, le bêta peut effacer l\'alpha en absolu.' : '🟢 VIX modéré → contexte favorable au rebond oversold.');
   console.log('─'.repeat(96));

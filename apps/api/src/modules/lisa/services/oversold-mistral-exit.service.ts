@@ -55,6 +55,13 @@ interface MistralExitVerdict {
   rationale: string;
 }
 
+interface RegimeCtx {
+  vix: number | null;
+  vixChangePct: number | null;
+  vixState: string;
+  indices: Map<string, { close: number; changeP: number }>;
+}
+
 const SYSTEM_PROMPT = `Tu es un trader mean-reversion intraday qui gère un livre oversold (entrées sur drop -5% à -12%). Ton SEUL rôle : décider FERMER MAINTENANT ou ATTENDRE pour CHAQUE position évaluée.
 
 CONTEXTE STRATÉGIQUE (IMPORTANT) :
@@ -103,10 +110,21 @@ CALIBRATION DATA-DRIVEN (analyse 34 closes user_manual HIGH 04/06/2026, $825.50 
   19:00-20:00 UTC : 17 closes, Σ $412 → close prioritaire sur entries fraîches en soirée
   ≥ 20:30 UTC : HARD CLOSE garanti côté code (tu n'as pas à gérer)
 
+CONTEXTE RÉGIME & LOI EMPIRIQUE (NOUVEAU 07/06 — à croiser AVEC R0-R4, jamais contre R0-R3) :
+- regime.vix = niveau de peur du marché (S&P). <15 calme · 15-20 normal · 20-30 élevé · >30 stress.
+- regime.vix_change_pct : si le VIX REFLUE (négatif) → vent arrière au rebond oversold. Si le VIX MONTE (positif fort) → risk-off persistant, rebond FRAGILE → en cas de gain, privilégie CLOSE/lock plutôt que HOLD (ne laisse pas filer un profit dans un marché qui se dégrade).
+- regime.benchmark_change_pct : direction du jour de l'indice de CE titre. Indice en baisse + ton titre en gain = sur-performance à sécuriser.
+- oversold_law.expected_alpha_pct = amplitude de rebond TYPIQUE pour la bande de drop d'entrée (-5/-8% → ~+1%, -8/-12% → ~+2,45%). C'est ta CIBLE de rebond mean-reversion.
+  • Si unrealized_pnl_pct >= expected_alpha_pct → la sur-réaction est largement corrigée → CLOSE (le reste est de la chance, pas de l'edge).
+  • Si pnl << alpha ET VIX reflue ET aucune règle R0-R3 → tu peux laisser un peu de marge (R4).
+- oversold_law.pnl_vs_expected = unrealized_pnl_pct − expected_alpha_pct (>0 = cible dépassée → CLOSE).
+
 INPUT CONTEXT que tu recevras pour chaque position :
   symbol, direction, entry_price, current_price, unrealized_pnl_pct, mfe_pct, mae_pct, give_back_pct,
   age_minutes (NOUVEAU — utilise pour R0), minutes_since_nyse_open,
   indicators : rsi14, bb_pct_b, trend_5m_pct, macd_hist, atr14_pct, roc5,
+  regime : vix, vix_change_pct, vix_state, benchmark_index, benchmark_change_pct,
+  oversold_law : entry_drop_pct, band, expected_alpha_pct, pnl_vs_expected,
   learned_policy : bloc texte distillé des closes passés labellisés (peut être minimaliste si sample < 20)
 
 FORMAT RÉPONSE OBLIGATOIRE (JSON strict, aucun markdown, rien d'autre) :
@@ -125,6 +143,8 @@ DÉFAUT EN CAS DE DOUTE : si pnl ≥ 1.5%, préfère CLOSE conf 0.70 (l'humain a
 export class OversoldMistralExitService {
   private readonly logger = new Logger(OversoldMistralExitService.name);
   private readonly FETCH_TIMEOUT_MS = 8000;
+  /** Régime VIX/indices — caché par cycle (TTL 10min) pour 1 seul fetch/cycle. */
+  private regimeCache: { at: number; data: RegimeCtx } | null = null;
 
   constructor(
     private readonly config: ConfigService,
@@ -303,6 +323,15 @@ export class OversoldMistralExitService {
     const nyseOpen = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 14, 30));
     const minutesSinceNyseOpen = Math.round((now.getTime() - nyseOpen.getTime()) / 60_000);
 
+    // 07/06 — Logique régime + loi empirique injectée dans le contexte Mistral :
+    // VIX (peur marché) + indice de référence du titre + bande de drop d'entrée →
+    // alpha attendu (cible de rebond). Fail-soft : si indispo, blocs null/partiels.
+    const regime = await this.getRegimeContext();
+    const bench = benchmarkForSymbol(pos.symbol);
+    const benchQ = regime.indices.get(bench.code) ?? null;
+    const entryDrop = await this.fetchEntryDayDrop(pos.symbol, pos.entry_timestamp).catch(() => null);
+    const law = entryDrop != null ? bandAlpha(entryDrop) : null;
+
     const userPrompt = JSON.stringify({
       symbol: pos.symbol,
       asset_class: pos.asset_class,
@@ -319,6 +348,21 @@ export class OversoldMistralExitService {
       days_remaining: Math.max(0, 10 - ageDays),
       minutes_since_nyse_open: minutesSinceNyseOpen,
       indicators,
+      regime: {
+        vix: regime.vix,
+        vix_change_pct: regime.vixChangePct,
+        vix_state: regime.vixState,
+        benchmark_index: bench.label,
+        benchmark_change_pct: benchQ ? Number(benchQ.changeP.toFixed(2)) : null,
+      },
+      oversold_law: law
+        ? {
+            entry_drop_pct: entryDrop != null ? Number(entryDrop.toFixed(1)) : null,
+            band: law.band,
+            expected_alpha_pct: law.alpha,
+            pnl_vs_expected: law.alpha != null ? Number((unrealPnlPct - law.alpha).toFixed(2)) : null,
+          }
+        : null,
       learned_policy: policyBlock || '(échantillon insuffisant — heuristique défaut)',
     });
 
@@ -486,6 +530,77 @@ export class OversoldMistralExitService {
     };
   }
 
+  /**
+   * Régime marché : VIX (peur) + indices de référence (S&P/DAX/AEX/STOXX600).
+   * 1 seul fetch bulk EODHD par cycle (cache TTL 10min). Fail-soft → blocs null.
+   */
+  private async getRegimeContext(): Promise<RegimeCtx> {
+    if (this.regimeCache && Date.now() - this.regimeCache.at < 10 * 60_000) return this.regimeCache.data;
+    const empty: RegimeCtx = { vix: null, vixChangePct: null, vixState: 'unknown', indices: new Map() };
+    const apiKey = this.config.get<string>('EODHD_API_KEY');
+    if (!apiKey) return empty;
+    const url = `https://eodhd.com/api/real-time/VIX.INDX?api_token=${apiKey}&fmt=json&s=GSPC.INDX,GDAXI.INDX,AEX.INDX,STOXX.INDX`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.FETCH_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, { signal: controller.signal });
+      if (!res.ok) return empty;
+      let j = (await res.json()) as Array<{ code?: string; close?: number; change_p?: number }>;
+      if (!Array.isArray(j)) j = [j];
+      const indices = new Map<string, { close: number; changeP: number }>();
+      let vix: number | null = null;
+      let vixChg: number | null = null;
+      for (const q of j) {
+        const c = Number(q.close);
+        const cp = Number(q.change_p);
+        if (!q.code || !Number.isFinite(c)) continue;
+        indices.set(q.code, { close: c, changeP: Number.isFinite(cp) ? cp : 0 });
+        if (q.code === 'VIX.INDX') { vix = c; vixChg = Number.isFinite(cp) ? cp : null; }
+      }
+      const vixState = vix == null ? 'unknown' : vix < 15 ? 'calme' : vix < 20 ? 'normal' : vix < 30 ? 'élevé' : 'stress';
+      const data: RegimeCtx = { vix, vixChangePct: vixChg, vixState, indices };
+      this.regimeCache = { at: Date.now(), data };
+      return data;
+    } catch {
+      return empty;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Drop du jour d'entrée (EOD close vs close précédent) → bande de la loi empirique. */
+  private async fetchEntryDayDrop(symbol: string, entryTimestamp: string): Promise<number | null> {
+    const apiKey = this.config.get<string>('EODHD_API_KEY');
+    if (!apiKey) return null;
+    const entryDate = new Date(entryTimestamp);
+    const from = new Date(entryDate.getTime() - 12 * 86_400_000).toISOString().slice(0, 10);
+    const url = `https://eodhd.com/api/eod/${encodeURIComponent(symbol)}?api_token=${apiKey}&fmt=json&from=${from}&order=a&period=d`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.FETCH_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, { signal: controller.signal });
+      if (!res.ok) return null;
+      const bars = (await res.json()) as Array<{ date?: string; close?: number }>;
+      if (!Array.isArray(bars) || bars.length < 2) return null;
+      const entryStr = entryDate.toISOString().slice(0, 10);
+      let idx = bars.findIndex((b) => b.date === entryStr);
+      if (idx < 1) {
+        for (let i = bars.length - 1; i >= 1; i--) {
+          if ((bars[i].date ?? '') <= entryStr) { idx = i; break; }
+        }
+      }
+      if (idx < 1) return null;
+      const prev = Number(bars[idx - 1].close);
+      const cur = Number(bars[idx].close);
+      if (!(prev > 0) || !Number.isFinite(cur)) return null;
+      return ((cur - prev) / prev) * 100;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private async fetchLastClose(symbol: string): Promise<number | null> {
     const apiKey = this.config.get<string>('EODHD_API_KEY');
     if (!apiKey) return null;
@@ -518,4 +633,22 @@ export class OversoldMistralExitService {
       clearTimeout(timer);
     }
   }
+}
+
+/** Bande de drop d'entrée → alpha J+10 historique (backtest fondateur oversold). */
+function bandAlpha(dropPct: number): { band: string; alpha: number | null } {
+  if (dropPct > -3) return { band: '>-3%', alpha: null };
+  if (dropPct > -5) return { band: '-3/-5%', alpha: 0 };
+  if (dropPct > -8) return { band: '-5/-8%', alpha: 1.0 };
+  if (dropPct >= -12) return { band: '-8/-12%', alpha: 2.45 };
+  return { band: '<-12% (falling-knife)', alpha: -1.97 };
+}
+
+/** Indice de référence pour mesurer la sur/sous-performance, par suffixe marché. */
+function benchmarkForSymbol(symbol: string): { code: string; label: string } {
+  const s = symbol.toUpperCase();
+  if (s.endsWith('.XETRA') || s.endsWith('.F') || s.endsWith('.DE')) return { code: 'GDAXI.INDX', label: 'DAX' };
+  if (s.endsWith('.AS')) return { code: 'AEX.INDX', label: 'AEX' };
+  if (s.endsWith('.US')) return { code: 'GSPC.INDX', label: 'S&P 500' };
+  return { code: 'STOXX.INDX', label: 'STOXX 600' };
 }
