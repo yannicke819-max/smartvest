@@ -3483,6 +3483,56 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
   }
 
   /**
+   * 07/06 — Vue UI des décisions de close labellisées (imitation learning).
+   * Lit position_close_decisions du portfolio : verdict +60min (GOOD/EARLY/OK),
+   * verdict à l'échéance J+10 (CLOSE_BETTER/HELD_BETTER/NEUTRAL), contexte, news.
+   */
+  async getCloseDecisions(userId: string, portfolioId: string, limit = 60) {
+    await this.assertPortfolioOwner(userId, portfolioId);
+    const { data } = await this.supabase.getClient()
+      .from('position_close_decisions')
+      .select(
+        'id, symbol, context, closer_type, closed_at, pnl_pct, pnl_usd, age_minutes, ' +
+          'mfe_pct, give_back_from_mfe, verdict, deadline_verdict, ' +
+          'pnl_if_held_to_deadline_pct, hours_to_deadline, deadline_at, news_count, news_min_sentiment',
+      )
+      .eq('portfolio_id', portfolioId)
+      .order('closed_at', { ascending: false })
+      .limit(Math.min(200, Math.max(1, limit)));
+    const rows = (data ?? []) as unknown as Array<Record<string, unknown>>;
+    const num = (v: unknown): number | null => (v == null ? null : Number(v));
+    const mapped = rows.map((r) => ({
+      id: String(r.id),
+      symbol: String(r.symbol),
+      context: (r.context as string | null) ?? null,
+      closerType: (r.closer_type as string | null) ?? null,
+      closedAt: String(r.closed_at),
+      pnlPct: num(r.pnl_pct),
+      pnlUsd: num(r.pnl_usd),
+      ageMinutes: num(r.age_minutes),
+      mfePct: num(r.mfe_pct),
+      giveBackFromMfe: num(r.give_back_from_mfe),
+      verdict60m: (r.verdict as string | null) ?? null,
+      deadlineVerdict: (r.deadline_verdict as string | null) ?? null,
+      pnlIfHeldToDeadlinePct: num(r.pnl_if_held_to_deadline_pct),
+      hoursToDeadline: num(r.hours_to_deadline),
+      hasDeadline: r.deadline_at != null,
+      newsCount: num(r.news_count),
+      newsMinSentiment: num(r.news_min_sentiment),
+    }));
+    return {
+      rows: mapped,
+      summary: {
+        total: mapped.length,
+        early60m: mapped.filter((m) => m.verdict60m === 'EARLY').length,
+        good60m: mapped.filter((m) => m.verdict60m === 'GOOD').length,
+        heldBetter: mapped.filter((m) => m.deadlineVerdict === 'HELD_BETTER').length,
+        closeBetter: mapped.filter((m) => m.deadlineVerdict === 'CLOSE_BETTER').length,
+      },
+    };
+  }
+
+  /**
    * Active/désactive le CONTRÔLE MANUEL sur une position. Quand `enabled=true`,
    * l'auto-trader ne ferme plus jamais cette position (SL/TP/trailing/risk-
    * monitor) — l'utilisateur a la main à 100%. Réversible (`enabled=false` rend

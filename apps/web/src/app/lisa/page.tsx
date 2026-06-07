@@ -40,6 +40,7 @@ import { OversoldPanel } from '@/components/lisa/oversold-panel';
 import { OversoldRegimePanel } from '@/components/lisa/oversold-regime-panel';
 import { OversoldNewsWatchPanel } from '@/components/lisa/oversold-news-watch-panel';
 import { OversoldEmpiricalLawPanel } from '@/components/lisa/oversold-empirical-law-panel';
+import { CloseDecisionsPanel } from '@/components/lisa/close-decisions-panel';
 import { LessonsImpactPanel } from '@/components/lisa/lessons-impact-panel';
 import { LearningLoopAuditPanel } from '@/components/lisa/learning-loop-audit-panel';
 import { LisaConfigPanel } from '@/components/lisa/lisa-config-panel';
@@ -1601,6 +1602,10 @@ export default function LisaPage() {
       {selectedPortfolioId && currentMode !== 'oversold' && (
         <OptionPositionsCard portfolioId={selectedPortfolioId} />
       )}
+
+      {/* 07/06 — Décisions de close labellisées (imitation learning) : verdicts
+          60min + J+10, contexte, news. Visible tous modes (oversold-early + danger-zone). */}
+      {selectedPortfolioId && <CloseDecisionsPanel portfolioId={selectedPortfolioId} />}
 
       {/* Decision log */}
       {selectedPortfolioId && <LisaDecisionLog portfolioId={selectedPortfolioId} />}

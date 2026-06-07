@@ -1869,6 +1869,17 @@ export class LisaController {
   // 07/06/2026 — OVERSOLD mind feed pour panel UI live (poll 60s côté front).
   // Lit lisa_decision_log filtré sur les kinds oversold (scan/exits), pas
   // trader_agent_decisions. Pendant du panel trader pour le mode swing.
+  // 07/06 — Décisions de close labellisées (imitation learning) pour vue UI.
+  @Get('close-decisions/:portfolioId')
+  getCloseDecisions(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+    @Query('limit') limit?: string,
+  ) {
+    const n = limit ? Math.min(200, Math.max(1, Number(limit))) : 60;
+    return this.lisa.getCloseDecisions(extractUserId(headers), portfolioId, n);
+  }
+
   @Get('oversold-mind/:portfolioId')
   getOversoldMind(
     @Headers() headers: Record<string, string>,
