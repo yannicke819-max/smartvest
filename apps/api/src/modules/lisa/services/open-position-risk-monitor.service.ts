@@ -150,14 +150,25 @@ export class OpenPositionRiskMonitorService {
   private async fetchEligiblePositions(): Promise<OpenPositionRow[]> {
     const { data, error } = await this.supabase.getClient()
       .from('lisa_positions')
-      .select('id, portfolio_id, symbol, asset_class, direction, entry_price, entry_timestamp, stop_loss_price, take_profit_price, path_eff_at_entry, persistence_score_at_entry, persistence_count_at_entry, market_ch1m_at_entry')
+      .select('id, portfolio_id, symbol, asset_class, direction, entry_price, entry_timestamp, stop_loss_price, take_profit_price, path_eff_at_entry, persistence_score_at_entry, persistence_count_at_entry, market_ch1m_at_entry, venue_fee_detail')
       .eq('status', 'open');
     if (error) {
       this.logger.warn(`[risk-monitor] fetch open positions: ${error.message}`);
       return [];
     }
-    const rows = (data ?? []) as OpenPositionRow[];
-    return rows.filter((p) => this.isClassEnabled(p.asset_class));
+    const rows = (data ?? []) as Array<OpenPositionRow & { venue_fee_detail?: { source?: string } | null }>;
+    return rows.filter((p) => {
+      // 07/06 — EXCLURE les positions OVERSOLD du risk-monitor Gemini. L'oversold
+      // est une stratégie DÉTERMINISTE (mean-reversion, hold J+10 ouvrés, stop
+      // catastrophe -15% mécanique). Le risk-monitor (scoring momentum Gemini →
+      // exit anticipé, voire CLOSE_NOW si composite<-0.6 en mode 'direct') est
+      // ANTITHÉTIQUE : il couperait les positions pendant le creux normal, juste
+      // avant le rebond → destruction de l'edge. Le risk-monitor ne pilote QUE
+      // les positions LLM (gainers/trader). Source via venue_fee_detail.source.
+      const source = (p.venue_fee_detail as { source?: string } | null)?.source;
+      if (source === 'scanner_oversold') return false;
+      return this.isClassEnabled(p.asset_class);
+    });
   }
 
   private isClassEnabled(assetClass: string): boolean {
