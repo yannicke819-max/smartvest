@@ -3557,7 +3557,13 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
 
     const { error: upErr } = await this.supabase.getClient()
       .from('lisa_positions')
-      .update({ manual_control: enabled })
+      // reason='user_manual' (enabled) marque un contrôle manuel VOLONTAIRE → le
+      // filet 20min ne ré-arme PAS (réservé aux échecs LLM 'llm_unresolved').
+      .update({
+        manual_control: enabled,
+        manual_control_reason: enabled ? 'user_manual' : null,
+        manual_control_since: enabled ? new Date().toISOString() : null,
+      })
       .eq('id', positionId)
       .eq('status', 'open');
     if (upErr) throw new Error(`Update manual_control failed: ${upErr.message}`);

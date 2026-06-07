@@ -152,6 +152,7 @@ interface OpenPosition {
   conviction_score?: number | null;
   manual_control?: boolean | null;
   manual_control_since?: string | null;
+  manual_control_reason?: string | null;
 }
 
 interface AutonomyRuleDb {
@@ -1914,13 +1915,18 @@ export class MechanicalTradingService {
     // manuelle utilisateur ferme la position. Early-return ici évite d'atteindre
     // closePosition (qui re-bloquerait + loggerait une erreur à chaque cycle).
     //
-    // 07/06/2026 — FILET "machine si user absent" (validé user). Si manual_control
-    // dure ≥ MANUAL_CONTROL_REARM_MIN (default 20) sans résolution (DANGER_ZONE
-    // wait_user, LLM muet, user absent), on RÉ-ARME le SL auto : manual_control=false
-    // + on laisse checkStopTarget reprendre la main CE cycle (rearmedThisCycle bloque
-    // le re-trigger DANGER_ZONE plus bas). EXCLUT l'oversold (SL large > 8% = hold
-    // overnight volontaire, géré par OversoldExitService — jamais ce stop gainers).
-    // Preuve du besoin : GNFT.PA gelée à -5.56% sur SL -1.5%, manual_control=true.
+    // 07/06/2026 — FILET "machine si LLM en échec" (validé + affiné user). Si
+    // manual_control a été posé par le DANGER_ZONE mais que le LLM N'A PAS résolu
+    // (Mistral down/muet/hung/unavailable → reason='llm_unresolved') et que ça dure
+    // ≥ MANUAL_CONTROL_REARM_MIN (default 20), on RÉ-ARME le SL auto + on reprend la
+    // main CE cycle (rearmedThisCycle bloque le re-trigger DANGER_ZONE plus bas).
+    //
+    // ON NE RÉ-ARME PAS (intention user 07/06 "re-arm seulement si problème LLM,
+    // sinon on laisse en Manu") quand :
+    //   - reason='llm_wait_user' : le LLM fonctionne et a CHOISI de déférer à l'humain
+    //   - reason='user_manual' / NULL : contrôle manuel user (ou legacy) → conservateur
+    //   - oversold (SL large > 8%) : hold overnight géré par OversoldExitService
+    // Preuve du besoin : GNFT.PA gelée à -5.56% sur SL -1.5% (Mistral mort, clé révoquée).
     let rearmedThisCycle = false;
     if (pos.manual_control === true) {
       const entryN = Number(pos.entryPrice);
@@ -1929,6 +1935,9 @@ export class MechanicalTradingService {
         : 0;
       const isOversold = slDistPct > 8;
       if (isOversold) return; // oversold = hold overnight géré par OversoldExitService
+      // RE-ARM réservé aux ÉCHECS LLM : seul 'llm_unresolved' est éligible.
+      // wait_user délibéré / contrôle manuel user / legacy (null) → on laisse en Manu.
+      if ((pos.manual_control_reason ?? null) !== 'llm_unresolved') return;
       const sinceIso = pos.manual_control_since ?? null;
       // Legacy / pré-0196 (ou user toggle) : manual_control=true SANS timestamp →
       // on démarre le chrono MAINTENANT (sinon une position déjà gelée le resterait
@@ -1949,7 +1958,7 @@ export class MechanicalTradingService {
       );
       try {
         await this.supabase.getClient().from('lisa_positions')
-          .update({ manual_control: false, manual_control_since: null })
+          .update({ manual_control: false, manual_control_since: null, manual_control_reason: null })
           .eq('id', pos.id);
       } catch (e) {
         this.logger.warn(`[MANUAL_CONTROL_REARM] ${pos.symbol} update failed: ${String(e).slice(0, 100)}`);
@@ -1959,7 +1968,7 @@ export class MechanicalTradingService {
         portfolioId: String((pos as unknown as Record<string, unknown>)['portfolio_id'] ?? ''),
         kind: 'manual_control_rearmed',
         summary: `[MANUAL_CONTROL_REARM] ${pos.symbol} SL auto ré-armé après ${stuckMin.toFixed(0)}min sans résolution`,
-        rationale: `manual_control non résolu depuis ${stuckMin.toFixed(0)}min (≥ ${rearmMin}min). Filet machine : réactivation du SL/TP automatique (DANGER_ZONE wait_user / LLM muet / user absent). La position reprend la protection mécanique standard ce cycle.`,
+        rationale: `DANGER_ZONE manual_control NON résolu par le LLM depuis ${stuckMin.toFixed(0)}min (≥ ${rearmMin}min, reason=llm_unresolved → Mistral down/muet/hung). Filet machine : réactivation du SL/TP automatique. Le wait_user délibéré et le contrôle manuel user ne sont PAS ré-armés.`,
         payload: { symbol: pos.symbol, stuck_minutes: Math.round(stuckMin), rearm_min: rearmMin },
         triggeredBy: 'mechanical_cron',
       }).catch(() => null);
@@ -2156,7 +2165,10 @@ export class MechanicalTradingService {
             await this.supabase.getClient()
               .from('lisa_positions')
               // manual_control_since = horodatage pour le filet de ré-armement 20min.
-              .update({ manual_control: true, manual_control_since: new Date().toISOString() })
+              // manual_control_reason='llm_unresolved' : tant que le LLM n'a pas
+              // résolu (close/widen/breakeven) ou explicitement choisi wait_user, on
+              // considère que c'est en attente du LLM → re-arm éligible si ça traîne.
+              .update({ manual_control: true, manual_control_since: new Date().toISOString(), manual_control_reason: 'llm_unresolved' })
               .eq('id', pos.id);
           } catch (e) {
             this.logger.warn(`[DANGER_ZONE] ${pos.symbol} manual_control DB update failed: ${String(e).slice(0, 100)}`);
@@ -4148,7 +4160,7 @@ Pas d'autres champs. JSON valide strict.`;
           try {
             await this.supabase.getClient()
               .from('lisa_positions')
-              .update({ stop_loss_price: widenedSl, manual_control: false, manual_control_since: null })
+              .update({ stop_loss_price: widenedSl, manual_control: false, manual_control_since: null, manual_control_reason: null })
               .eq('id', pos.id);
           } catch (e) {
             applyError = String(e).slice(0, 150);
@@ -4164,7 +4176,7 @@ Pas d'autres champs. JSON valide strict.`;
         try {
           await this.supabase.getClient()
             .from('lisa_positions')
-            .update({ take_profit_price: Number(pos.entryPrice), manual_control: false, manual_control_since: null })
+            .update({ take_profit_price: Number(pos.entryPrice), manual_control: false, manual_control_since: null, manual_control_reason: null })
             .eq('id', pos.id);
         } catch (e) {
           applyError = String(e).slice(0, 150);
@@ -4174,7 +4186,15 @@ Pas d'autres champs. JSON valide strict.`;
       }
       case 'wait_user':
       default:
-        // manual_control reste true, user décide
+        // LLM opérationnel mais défère DÉLIBÉRÉMENT à l'humain → manual_control
+        // reste true, et on marque reason='llm_wait_user' pour que le filet 20min
+        // NE ré-arme PAS (re-arm réservé aux ÉCHECS LLM — intention user 07/06 :
+        // "re-arm seulement si problème LLM, sinon on laisse en Manu").
+        try {
+          await this.supabase.getClient().from('lisa_positions')
+            .update({ manual_control_reason: 'llm_wait_user' })
+            .eq('id', pos.id);
+        } catch { /* best-effort */ }
         break;
     }
     await this.decisionLog.append({
