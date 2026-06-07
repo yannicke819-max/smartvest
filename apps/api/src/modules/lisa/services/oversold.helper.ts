@@ -332,6 +332,25 @@ export function computeEntryFeatures(bars: EodBar[], entryIdx: number): Oversold
   return { drop1d, drop3d, trend20, distMa20, distMa50, rsi14, vol14, relVol20 };
 }
 
+/**
+ * Label à HORIZON FIXE (PR-4a) : rendement % à entryIdx+horizon, indépendant
+ * de la sortie réelle. Neutralise la variance des sorties pour apprendre la
+ * qualité d'ENTRÉE. Renvoie null si la barre entry+horizon n'existe pas encore
+ * (position trop récente → à backfiller quand elle aura vieilli). Pur/testable.
+ */
+export function computeForwardOutcome(
+  bars: EodBar[],
+  entryIdx: number,
+  horizon = 10,
+): { fwdReturn: number; fwdOutcome: number } | null {
+  if (entryIdx < 0 || entryIdx + horizon >= bars.length) return null;
+  const entryClose = bars[entryIdx].close;
+  const fwdClose = bars[entryIdx + horizon].close;
+  if (!(entryClose > 0) || !(fwdClose > 0)) return null;
+  const fwdReturn = (fwdClose / entryClose - 1) * 100;
+  return { fwdReturn, fwdOutcome: fwdReturn > 0 ? 1 : 0 };
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Features news pour la boucle d'apprentissage (PR-3). Résumé des articles
 // persistés (eodhd_news_articles) dans la fenêtre AVANT l'entrée — sert à

@@ -32,6 +32,7 @@ import {
   decideRegimeBlock,
   computeRotationRegime,
   computeEntryFeatures,
+  computeForwardOutcome,
   summarizeEntryNews,
   type OversoldConfig,
   type EodBar,
@@ -1249,6 +1250,29 @@ export class OversoldScannerService {
   }
 
   /**
+   * PR-4a — Calcule le label J+10 d'une position (fetch barres + index entrée).
+   * Renvoie null si entry+horizon pas encore disponible (position trop récente).
+   */
+  private async computeFwdForPosition(
+    symbol: string,
+    entryIso: string,
+    horizon = 10,
+  ): Promise<{ fwdReturn: number; fwdOutcome: number } | null> {
+    const entryDate = entryIso.slice(0, 10);
+    if (!entryDate) return null;
+    const bars = await this.fetchEodBars(symbol, 160);
+    if (bars.length < 2) return null;
+    let idx = bars.findIndex((b) => b.date === entryDate);
+    if (idx < 0) {
+      for (let i = bars.length - 1; i >= 0; i--) {
+        if (bars[i].date <= entryDate) { idx = i; break; }
+      }
+    }
+    if (idx < 0) return null;
+    return computeForwardOutcome(bars, idx, horizon);
+  }
+
+  /**
    * PR-1 — Fondation boucle d'apprentissage oversold.
    *
    * Réconcilie les positions oversold (lisa_positions, source dans
@@ -1288,12 +1312,17 @@ export class OversoldScannerService {
 
     const { data: ptRows } = await client
       .from('paper_trades')
-      .select('id, scanner_position_id, status')
+      .select('id, scanner_position_id, status, fwd_return_10d')
       .eq('strategy', 'oversold')
       .limit(5000);
-    const ptByPos = new Map<string, { id: string; status: string }>();
+    const ptByPos = new Map<string, { id: string; status: string; fwdSet: boolean }>();
     for (const r of ptRows ?? []) {
-      if (r.scanner_position_id) ptByPos.set(r.scanner_position_id as string, { id: r.id as string, status: r.status as string });
+      if (r.scanner_position_id)
+        ptByPos.set(r.scanner_position_id as string, {
+          id: r.id as string,
+          status: r.status as string,
+          fwdSet: r.fwd_return_10d != null,
+        });
     }
 
     const pids = [...new Set(oversold.map((p) => p.portfolio_id as string))];
@@ -1325,6 +1354,22 @@ export class OversoldScannerService {
             .eq('id', existing.id);
           updated++;
         }
+        // PR-4a — backfill label J+10 quand la position a vieilli au-delà de
+        // l'horizon (entry+10 jours ouvrés disponible). Idempotent : une seule
+        // fois par position (fwdSet devient true ensuite).
+        if (!existing.fwdSet) {
+          const ageDays = (Date.now() - new Date(String(p.entry_timestamp ?? '')).getTime()) / 86_400_000;
+          if (Number.isFinite(ageDays) && ageDays >= 14) {
+            const fwd = await this.computeFwdForPosition(p.symbol as string, String(p.entry_timestamp ?? ''));
+            if (fwd) {
+              await client
+                .from('paper_trades')
+                .update({ fwd_return_10d: String(fwd.fwdReturn), fwd_outcome_10d: fwd.fwdOutcome, fwd_horizon_days: 10 })
+                .eq('id', existing.id);
+              updated++;
+            }
+          }
+        }
         continue;
       }
 
@@ -1347,6 +1392,8 @@ export class OversoldScannerService {
       // PR-3 — features news persistées as-of entrée (fail-soft, lecture DB).
       const news = await this.summarizeNewsForEntry(p.symbol as string, String(p.entry_timestamp ?? ''));
       const featPlus = { ...feat, ...(reg ?? {}), ...news };
+      // PR-4a — label J+10 (null si position trop récente → backfill ultérieur).
+      const fwd = computeForwardOutcome(bars, idx, 10);
 
       const row: Record<string, unknown> = {
         user_id: userByPf.get(p.portfolio_id as string) ?? null,
@@ -1369,6 +1416,11 @@ export class OversoldScannerService {
         row.pnl_usd = String(pnl);
         row.pnl_pct = p.realized_pnl_pct != null ? String(p.realized_pnl_pct) : null;
         row.outcome_label = pnl > 0 ? 1 : 0;
+      }
+      if (fwd) {
+        row.fwd_return_10d = String(fwd.fwdReturn);
+        row.fwd_outcome_10d = fwd.fwdOutcome;
+        row.fwd_horizon_days = 10;
       }
       const { error } = await client.from('paper_trades').insert(row);
       if (!error) inserted++;
