@@ -1928,12 +1928,22 @@ export class MechanicalTradingService {
         ? Math.abs((entryN - Number(pos.stopLossPrice)) / entryN) * 100
         : 0;
       const isOversold = slDistPct > 8;
+      if (isOversold) return; // oversold = hold overnight géré par OversoldExitService
       const sinceIso = pos.manual_control_since ?? null;
-      const stuckMin = sinceIso ? (Date.now() - new Date(sinceIso).getTime()) / 60_000 : null;
-      const rearmMin = Number(process.env.MANUAL_CONTROL_REARM_MIN ?? '20');
-      if (isOversold || stuckMin === null || stuckMin < rearmMin) {
-        return; // oversold OU fenêtre pas écoulée → ne pas toucher au stop
+      // Legacy / pré-0196 (ou user toggle) : manual_control=true SANS timestamp →
+      // on démarre le chrono MAINTENANT (sinon une position déjà gelée le resterait
+      // à vie sans jamais re-armer). Re-arm au passage suivant, fenêtre écoulée.
+      if (!sinceIso) {
+        try {
+          await this.supabase.getClient().from('lisa_positions')
+            .update({ manual_control_since: new Date().toISOString() })
+            .eq('id', pos.id);
+        } catch { /* best-effort : le chrono démarrera au prochain passage */ }
+        return;
       }
+      const stuckMin = (Date.now() - new Date(sinceIso).getTime()) / 60_000;
+      const rearmMin = Number(process.env.MANUAL_CONTROL_REARM_MIN ?? '20');
+      if (stuckMin < rearmMin) return; // fenêtre pas encore écoulée
       this.logger.warn(
         `[MANUAL_CONTROL_REARM] ${pos.symbol} en manual_control depuis ${stuckMin.toFixed(0)}min (≥${rearmMin}) sans résolution → ré-arme le SL auto`,
       );
