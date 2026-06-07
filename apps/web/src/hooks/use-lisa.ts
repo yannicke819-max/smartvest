@@ -275,6 +275,29 @@ export function useTraderMind(portfolioId: string | null, limit = 30) {
   });
 }
 
+// 07/06/2026 — Esprit décision OVERSOLD (lit lisa_decision_log filtré, poll 60s).
+export interface OversoldMindEvent {
+  id: string;
+  timestamp: string;
+  kind: string;
+  summary: string;
+  rationale: string | null;
+  symbol: string | null;
+  pnl_usd: number | null;
+  drop_pct: number | null;
+  opened: number | null;
+  candidates: number | null;
+}
+
+export function useOversoldMind(portfolioId: string | null, limit = 30) {
+  return useQuery({
+    queryKey: ['lisa', 'oversold-mind', portfolioId, limit],
+    queryFn: () => apiFetch<OversoldMindEvent[]>(`/lisa/oversold-mind/${portfolioId}?limit=${limit}`),
+    enabled: !!portfolioId,
+    refetchInterval: 60_000,
+  });
+}
+
 export function useUpsertLisaConfig(portfolioId: string) {
   const qc = useQueryClient();
   return useMutation({

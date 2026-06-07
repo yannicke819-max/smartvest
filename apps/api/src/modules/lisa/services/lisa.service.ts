@@ -2635,6 +2635,62 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
   }
 
   /**
+   * 07/06/2026 — OVERSOLD mind feed pour panel UI live (poll 60s côté front).
+   *
+   * Le mode oversold ne passe PAS par trader_agent_decisions (pas de cycle LLM
+   * 2 min) : ses décisions sont déjà tracées dans lisa_decision_log via
+   * DecisionLogService.append (oversold_scan_completed, blocked_regime, exits…).
+   * On filtre sur les kinds pertinents pour EXCLURE le bruit `risk_advisory`
+   * par-minute + l'historique legacy gainers/trader des portfolios migrés
+   * (rebound_scan_completed, proposal_generated, skeptic_verdict, shadow_sizing…).
+   */
+  async getOversoldMind(userId: string, portfolioId: string, limit = 30) {
+    await this.assertPortfolioOwner(userId, portfolioId);
+    const OVERSOLD_MIND_KINDS = [
+      // Entrées (scan déterministe daily 21:15 + intraday horaire)
+      'oversold_scan_completed',
+      'oversold_intraday_scan_completed',
+      'oversold_scan_blocked_regime',
+      'oversold_candidate_skip_news',
+      'scanner_candidate_skip',
+      'position_opened',
+      // Sorties (mécanique + choppy-exit LLM + thèse cassée)
+      'position_closed',
+      'position_closed_manual',
+      'mechanical_close_stop',
+      'mechanical_close_target',
+      'choppy_exit_llm_approved',
+      'choppy_exit_llm_blocked',
+      'risk_manager_thesis_broken',
+    ];
+    const { data, error } = await this.supabase.getClient()
+      .from('lisa_decision_log')
+      .select('id, timestamp, kind, summary, rationale, payload')
+      .eq('portfolio_id', portfolioId)
+      .in('kind', OVERSOLD_MIND_KINDS)
+      .order('timestamp', { ascending: false })
+      .limit(limit);
+    if (error) throw new BadRequestException(error.message);
+    return (data ?? []).map((d) => {
+      const p = (d.payload ?? {}) as Record<string, unknown>;
+      const num = (v: unknown): number | null =>
+        v == null || Number.isNaN(Number(v)) ? null : Number(v);
+      return {
+        id: d.id as string,
+        timestamp: d.timestamp as string,
+        kind: d.kind as string,
+        summary: (d.summary as string) ?? '',
+        rationale: (d.rationale as string) ?? null,
+        symbol: (p.symbol ?? p.target_symbol ?? null) as string | null,
+        pnl_usd: num(p.realized_pnl_usd ?? p.pnl_usd),
+        drop_pct: num(p.drop_pct),
+        opened: num(p.opened),
+        candidates: num(p.candidates),
+      };
+    });
+  }
+
+  /**
    * LISA refonte B.2 — Lessons Impact Tracker.
    *
    * Agrège les citations de lessons par TRADER sur une fenêtre glissante.

@@ -32,6 +32,7 @@ import { DailyHarvestPanel } from '@/components/lisa/daily-harvest-panel';
 import { MacroModeSelector } from '@/components/lisa/macro-mode-selector';
 import { GainersStatusTile } from '@/components/lisa/gainers-status-tile';
 import { TraderMindPanel } from '@/components/lisa/trader-mind-panel';
+import { OversoldMindPanel } from '@/components/lisa/oversold-mind-panel';
 import { GainersConfigPanel } from '@/components/lisa/gainers-config-panel';
 import { LisaStickyHeader } from '@/components/lisa/lisa-sticky-header';
 import { GainsTracker } from '@/components/lisa/gains-tracker';
@@ -729,8 +730,14 @@ export default function LisaPage() {
           HIGH est passé en oversold : le comparatif A/B momentum n'a plus de sens.
           Carte supprimée de l'UI dans tous les modes (historique conservé en DB). */}
 
-      {/* 05/06/2026 — TRADER mind feed live (poll 60s) */}
-      {selectedPortfolioId && <TraderMindPanel portfolioId={selectedPortfolioId} />}
+      {/* Mind feed live (poll 60s) — mode-aware : oversold lit lisa_decision_log
+          (scan swing + exits), les autres modes lisent trader_agent_decisions. */}
+      {selectedPortfolioId && currentMode === 'oversold' && (
+        <OversoldMindPanel portfolioId={selectedPortfolioId} />
+      )}
+      {selectedPortfolioId && currentMode !== 'oversold' && (
+        <TraderMindPanel portfolioId={selectedPortfolioId} />
+      )}
 
       {/* LISA refonte C.2 — Strategy Coach proposals (Gemini hourly + review modal) */}
       {selectedPortfolioId && <CoachProposalsPanel portfolioId={selectedPortfolioId} />}
