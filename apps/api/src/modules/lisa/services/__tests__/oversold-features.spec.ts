@@ -1,6 +1,7 @@
 import {
   computeRsi,
   computeEntryFeatures,
+  computeForwardOutcome,
   summarizeEntryNews,
   type EodBar,
 } from '../oversold.helper';
@@ -113,5 +114,32 @@ describe('summarizeEntryNews', () => {
     ], entry);
     expect(f.newsCount).toBe(2);
     expect(f.newsMinSentiment).toBeCloseTo(-0.4, 5);
+  });
+});
+
+describe('computeForwardOutcome', () => {
+  // 15 barres : entry à idx 2 (close 100), J+10 à idx 12.
+  const mk = (closes: number[]): EodBar[] =>
+    closes.map((c, i) => ({ date: `2026-01-${String(i + 1).padStart(2, '0')}`, close: c, volume: 1000 }));
+
+  it('null si entry+horizon hors série (position trop récente)', () => {
+    const bars = mk(Array.from({ length: 8 }, () => 100)); // 8 barres
+    expect(computeForwardOutcome(bars, 2, 10)).toBeNull(); // 2+10=12 >= 8
+  });
+
+  it('rendement positif → outcome 1', () => {
+    const closes = Array.from({ length: 15 }, () => 100);
+    closes[12] = 110; // J+10 (idx 2+10) à +10%
+    const f = computeForwardOutcome(mk(closes), 2, 10)!;
+    expect(f.fwdReturn).toBeCloseTo(10, 5);
+    expect(f.fwdOutcome).toBe(1);
+  });
+
+  it('rendement négatif → outcome 0', () => {
+    const closes = Array.from({ length: 15 }, () => 100);
+    closes[12] = 92; // J+10 à -8%
+    const f = computeForwardOutcome(mk(closes), 2, 10)!;
+    expect(f.fwdReturn).toBeCloseTo(-8, 5);
+    expect(f.fwdOutcome).toBe(0);
   });
 });
