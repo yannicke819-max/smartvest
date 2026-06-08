@@ -858,11 +858,28 @@ describe('IntradayProviderRouter — PR #352/353 dual-call', () => {
       expect(r).toEqual({ price: 1500, source: 'twelvedata', quoteTsMs: 1 });
     });
 
-    it('suffixe .US (default whitelist depuis PR #468) → TD US prioritaire (true real-time)', async () => {
-      const { router, td } = makeRouter({}, { price: 180, changePct: 1, timestamp: 1 });
+    it('suffixe .US (default whitelist depuis PR #468) → TD US prioritaire quand FRAIS (true real-time)', async () => {
+      const ts = Date.now(); // TD timestamp en ms, frais → utilisé tel quel sans appel EODHD
+      const { router, td } = makeRouter({}, { price: 180, changePct: 1, timestamp: ts });
       const r = await router.getLiveQuote('AAPL.US');
-      expect(r).toEqual({ price: 180, source: 'twelvedata', quoteTsMs: 1 });
+      expect(r).toEqual({ price: 180, source: 'twelvedata', quoteTsMs: ts });
       expect(td.quoteCalls).toBeGreaterThan(0);
+    });
+
+    it('suffixe .US — TD US PÉRIMÉ (titre thin/ADR, ex KXIAY figé au close veille) → bascule EODHD real-time (freshness-wins)', async () => {
+      // TD vieux de 4h (périmé) vs EODHD frais → on garde EODHD (le plus récent).
+      const eodhd = makeEodhdMock({ quote: { price: 47.35, changePct: 5.8, timestamp: Math.floor(Date.now() / 1000) } });
+      const td = makeTdMock({ quote: { price: 44.75, changePct: 0, timestamp: Date.now() - 4 * 3600 * 1000 } });
+      const router = new IntradayProviderRouter(
+        makeConfig({}),
+        eodhd.service,
+        td.service,
+        makeBlacklistMock(),
+        makeSupabaseMock(),
+      );
+      const r = await router.getLiveQuote('KXIAY.US');
+      expect(r?.source).toBe('eodhd');
+      expect(r?.price).toBe(47.35);
     });
 
     it('suffixe vraiment hors périmètre (.XYZ inexistant) → null sans appeler TD', async () => {

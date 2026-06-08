@@ -539,8 +539,31 @@ export class IntradayProviderRouter implements OnModuleInit {
       const tdSymUs = this.convertToTdSymbol(eodhdTicker);
       if (tdSymUs) {
         const tdUs = await this.td.getQuote(tdSymUs, 'live_price_us').catch(() => null);
+        const toMs = (ts: number): number => (ts > 1e12 ? ts : ts * 1000); // sec→ms si besoin
         if (tdUs && Number.isFinite(tdUs.price) && tdUs.price > 0 && tdUs.timestamp > 0) {
-          return { price: tdUs.price, source: 'twelvedata', quoteTsMs: tdUs.timestamp };
+          const tdTsMs = toMs(tdUs.timestamp);
+          const tdAgeMin = (Date.now() - tdTsMs) / 60_000;
+          const staleMaxMin = Number(this.config.get<string>('LIVE_PRICE_TD_STALE_MAX_MIN') ?? '15');
+          // Cas commun : TD est true real-time (< qq min) → on l'utilise tel quel,
+          // SANS appel EODHD supplémentaire (zéro impact budget sur les liquides).
+          if (tdAgeMin <= staleMaxMin) {
+            return { price: tdUs.price, source: 'twelvedata', quoteTsMs: tdTsMs };
+          }
+          // TD PÉRIMÉ (titres thin / ADR mal couverts, ex KXIAY figé au close de la
+          // veille pendant des heures) → freshness-wins : on tente EODHD real-time
+          // (délayé ~15min mais BIEN plus frais qu'un TD vieux de plusieurs heures)
+          // et on garde le plus récent. Évite qu'un quote TD figé écrase le prix
+          // réel → stops/TP/gain-picker sur prix correct.
+          const eodhdQ = await this.eodhd.getQuote(eodhdTicker).catch(() => null);
+          if (eodhdQ && Number.isFinite(eodhdQ.price) && eodhdQ.price > 0 && eodhdQ.timestamp > 0) {
+            const eodhdTsMs = toMs(eodhdQ.timestamp);
+            if (eodhdTsMs >= tdTsMs) {
+              return { price: eodhdQ.price, source: 'eodhd', quoteTsMs: eodhdTsMs };
+            }
+          }
+          // EODHD indispo ou plus vieux → on rend le TD (périmé mais seule source ;
+          // le caller tagStaleness marquera si nécessaire).
+          return { price: tdUs.price, source: 'twelvedata', quoteTsMs: tdTsMs };
         }
       }
     }
