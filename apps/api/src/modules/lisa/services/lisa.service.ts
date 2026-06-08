@@ -3436,7 +3436,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       const ageMin = (Date.now() - new Date(String((result as { entryTimestamp?: string }).entryTimestamp ?? Date.now())).getTime()) / 60_000;
       // 07/06 — contexte + échéance pour l'imitation learning étendu (J+10 oversold).
       const ovSource = (row as { venue_fee_detail?: { source?: string } | null }).venue_fee_detail?.source;
-      const isOversold = ovSource === 'scanner_oversold';
+      const isOversold = (ovSource ?? '').startsWith('scanner_oversold');
       const wasManualControl = (row as { manual_control?: boolean | null }).manual_control === true;
       const closeContext: 'danger_zone' | 'oversold_early' | 'manual_other' =
         isOversold ? 'oversold_early' : wasManualControl ? 'danger_zone' : 'manual_other';

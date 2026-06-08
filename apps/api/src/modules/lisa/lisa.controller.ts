@@ -1626,10 +1626,23 @@ export class LisaController {
    * portfolios strategy_mode='oversold' + autopilot. Idempotent (anti-doublon).
    */
   @Post('oversold/scan-now')
-  async triggerOversoldScan(@Headers() headers: Record<string, string>) {
+  async triggerOversoldScan(
+    @Headers() headers: Record<string, string>,
+    @Query('phase') phase?: string,
+  ) {
     extractUserId(headers);
-    await this.oversoldScanner.runDailyScan();
-    return { ok: true, triggeredAt: new Date().toISOString() };
+    // phase: 'daily' (EOD, défaut, back-compat) | 'intraday' (rebond confirmé,
+    // force le scan intraday en bypassant la cadence) | 'both'.
+    const ph = (phase ?? 'daily').toLowerCase();
+    if (ph === 'intraday') {
+      await this.oversoldScanner.runIntradayScan({ force: true });
+    } else if (ph === 'both') {
+      await this.oversoldScanner.runDailyScan();
+      await this.oversoldScanner.runIntradayScan({ force: true });
+    } else {
+      await this.oversoldScanner.runDailyScan();
+    }
+    return { ok: true, phase: ph, triggeredAt: new Date().toISOString() };
   }
 
   /**

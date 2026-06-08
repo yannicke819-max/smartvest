@@ -71,9 +71,10 @@ export function LisaPositionsTable({
   sourceFilter,
 }: {
   portfolioId: string;
-  /** 04/06 — Filtre l'historique sur une source précise (ex: 'scanner_oversold').
-   *  Évite que la vue oversold de HIGH expose les vieux trades shadow-gainers du
-   *  même portfolio_id (HIGH a 28 vieux gainers + 25 oversold). null = pas de filtre. */
+  /** 04/06 — Filtre l'historique sur un PRÉFIXE de source (ex: 'scanner_oversold').
+   *  Match par préfixe → 'scanner_oversold' couvre aussi 'scanner_oversold_intraday'
+   *  (les positions du scanner intraday EU). Évite que la vue oversold de HIGH
+   *  expose les vieux trades shadow-gainers du même portfolio_id. null = pas de filtre. */
   sourceFilter?: string | null;
 }) {
   // PR E — invalidation immédiate de la cache positions sur INSERT/UPDATE/DELETE
@@ -90,11 +91,12 @@ export function LisaPositionsTable({
   const openRawAll = openQuery.data ?? [];
   const allRaw = allQuery.data ?? [];
   // Filtre source si demandé (mode oversold sur HIGH : on cache les vieux gainers).
+  // Match par PRÉFIXE : 'scanner_oversold' inclut 'scanner_oversold_intraday'.
   const openRaw = sourceFilter
-    ? openRawAll.filter((p) => p.source === sourceFilter)
+    ? openRawAll.filter((p) => (p.source ?? '').startsWith(sourceFilter))
     : openRawAll;
   const all = sourceFilter
-    ? allRaw.filter((p) => p.source === sourceFilter)
+    ? allRaw.filter((p) => (p.source ?? '').startsWith(sourceFilter))
     : allRaw;
   // Tri par entry_timestamp desc (plus récente en haut) pour voir l'activité Lisa
   const open = [...openRaw].sort(
