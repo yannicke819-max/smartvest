@@ -452,6 +452,16 @@ export class OversoldMistralExitService {
     // Apprentissage long terme — closerType custom pour distinguer des user_manual
     // (= permettra plus tard d'évaluer la qualité de Mistral vs l'humain).
     const ageMin = (Date.now() - new Date(pos.entry_timestamp).getTime()) / 60_000;
+    // 08/06 — Aligne le contexte sur les closes manuels : les auto-locks oversold sont
+    // aussi des 'oversold_early' avec échéance J+10 → le contrefactuel J+10 sera calculé
+    // (tenir aurait-il battu l'auto-lock ?). Permet de comparer auto vs manuel à l'échéance.
+    const deadline = new Date(pos.entry_timestamp);
+    let bd = 0;
+    while (bd < 10) {
+      deadline.setUTCDate(deadline.getUTCDate() + 1);
+      const dow = deadline.getUTCDay();
+      if (dow !== 0 && dow !== 6) bd++;
+    }
     this.closeCapture.captureClose({
       positionId: pos.id,
       portfolioId: pos.portfolio_id,
@@ -459,6 +469,8 @@ export class OversoldMistralExitService {
       direction: pos.direction,
       assetClass: pos.asset_class,
       closerType: 'risk_monitor',
+      context: 'oversold_early',
+      deadlineAt: deadline.toISOString(),
       entryPrice: parseFloat(pos.entry_price),
       exitPrice: price,
       pnlPct: result.realizedPnlPct ?? null,
