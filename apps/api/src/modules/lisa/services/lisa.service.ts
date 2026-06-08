@@ -3540,7 +3540,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     const { data } = await this.supabase.getClient()
       .from('lisa_session_configs')
       .select(
-        'capital_usd, oversold_position_notional_usd, oversold_size_dynamic_enabled, ' +
+        'capital_usd, oversold_position_notional_usd, oversold_size_dynamic_enabled, oversold_size_base_pct_capital, ' +
           'oversold_size_band_mult_deep, oversold_size_band_mult_shallow, oversold_size_vix_damp_elevated, ' +
           'oversold_size_vix_damp_stress, oversold_size_floor_usd, oversold_size_ceiling_pct_capital',
       )
@@ -3551,6 +3551,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     return {
       enabled: r.oversold_size_dynamic_enabled == null ? true : r.oversold_size_dynamic_enabled === true,
       baseNotionalUsd: num(r.oversold_position_notional_usd, 1000),
+      basePctCapital: num(r.oversold_size_base_pct_capital, 0),
       capitalUsd: num(r.capital_usd, 10000),
       bandMultDeep: num(r.oversold_size_band_mult_deep, 2.0),
       bandMultShallow: num(r.oversold_size_band_mult_shallow, 1.0),
@@ -3579,6 +3580,8 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     };
     if (patch.enabled != null) upd.oversold_size_dynamic_enabled = patch.enabled === true;
     setNum('baseNotionalUsd', 'oversold_position_notional_usd', 50, 100_000);
+    // Base en % du capital (0 = désactivé → retombe sur le notionnel fixe ci-dessus).
+    setNum('basePctCapital', 'oversold_size_base_pct_capital', 0, 100);
     // Cohérence capital : le sizing lit capital_usd, le bandeau/targets lisent
     // lisa_initial_capital_usd → on synchronise les DEUX à chaque édition (sinon
     // divergence comme constaté 08/06 : capital_usd=20k mais bandeau affichait 10k).

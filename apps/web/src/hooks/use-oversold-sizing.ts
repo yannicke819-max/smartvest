@@ -7,6 +7,7 @@ import { apiFetch } from '@/lib/api-client';
 export interface OversoldSizing {
   enabled: boolean;
   baseNotionalUsd: number;
+  basePctCapital: number; // base = capital × ce % (prioritaire si > 0, auto-scale)
   capitalUsd: number;
   bandMultDeep: number;
   bandMultShallow: number;
