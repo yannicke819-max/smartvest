@@ -203,16 +203,27 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
     }
 
     // Trim du PLATEAU DE TÊTE : un portefeuille récent affiche souvent un long
-    // plat au capital initial (weekend / avant la 1ère activité de marché) qui
-    // écrase la partie utile de la courbe à droite. On démarre la courbe au 1er
-    // mouvement de valeur, en gardant 1 point d'ancrage juste avant pour montrer
-    // le niveau de départ. Ex EU Oversold : créé vendredi 05/06 à $10k, figé tout
-    // le weekend (marchés fermés) → la courbe démarre au 08/06 quand la valeur
-    // bouge, au lieu d'afficher 3 jours de plat inutiles.
-    if (points.length >= 3 && points[0].value > 0) {
+    // plat dormant au capital initial (weekend marchés fermés / avant la 1ère
+    // activité) qui écrase la partie utile de la courbe. On repère le 1er
+    // décollage MAJEUR de valeur (seuil relatif à l'amplitude totale → robuste
+    // aux micro-variations : frais d'ouverture, drift EOD du weekend de quelques
+    // $) et on démarre la courbe au DÉBUT de sa journée UTC (axe propre). Ex EU
+    // Oversold : créé vendredi 05/06 à $10k, figé tout le weekend, recapitalisé
+    // à $20k le 08/06 → la courbe démarre au 08/06 au lieu d'afficher 3 jours de
+    // plat suivis d'un trait vertical.
+    if (points.length >= 3) {
+      const vals = points.map((p) => p.value);
+      const range = Math.max(...vals) - Math.min(...vals);
       const v0 = points[0].value;
-      const firstMove = points.findIndex((p) => Math.abs(p.value - v0) / v0 > 0.0002);
-      if (firstMove > 1) return points.slice(firstMove - 1);
+      if (range > 0 && v0 > 0) {
+        const firstMove = points.findIndex((p) => Math.abs(p.value - v0) > range * 0.1);
+        if (firstMove > 1) {
+          const d = new Date(points[firstMove].t);
+          const dayStartMs = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+          const dayIdx = points.findIndex((p) => p.t >= dayStartMs);
+          return points.slice(dayIdx > 0 ? dayIdx : firstMove);
+        }
+      }
     }
 
     return points;
