@@ -59,6 +59,7 @@ function makeSupabaseMock(state: MockState) {
     const chain: Record<string, unknown> = {};
     chain.select = () => chain;
     chain.eq = () => chain;
+    chain.neq = () => chain;
     chain.like = () => chain;
     chain.gte = () => chain;
     chain.lt = () => chain;

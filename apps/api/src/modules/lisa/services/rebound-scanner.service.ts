@@ -91,13 +91,20 @@ export class ReboundScannerService {
   }
 
   private async runScannerInner(): Promise<void> {
-    // Charge tous les portfolios autopilot actifs (mêmes que lisa-autopilot).
+    // Charge les portfolios autopilot actifs — SAUF ceux en mode oversold.
+    // Le rebound-scanner est le pipeline gainers/momentum (ouvre des
+    // rebound_positions) ; il ne doit PAS tourner sur les portfolios oversold
+    // (mean-reversion swing J+10), sinon : (1) contamination de stratégie si un
+    // signal rebound déclenche un open gainers sur un portfolio oversold, (2)
+    // application d'un objectif jour $100 (concept scalp) à du swing J+10 →
+    // skips daily_target_hit parasites dans le decision_log oversold.
     const { data: configs, error } = await this.supabase
       .getClient()
       .from('lisa_session_configs')
       .select('user_id, portfolio_id')
       .eq('autopilot_enabled', true)
-      .eq('kill_switch_active', false);
+      .eq('kill_switch_active', false)
+      .neq('strategy_mode', 'oversold');
 
     if (error) {
       this.logger.error(`[rebound-scanner] fetch configs failed: ${error.message}`);
