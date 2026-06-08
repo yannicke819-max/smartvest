@@ -510,22 +510,60 @@ export class OversoldScannerService {
   }
 
   /**
-   * Cron horaire couvrant les séances EU + US (08:00-20:00 UTC, weekdays).
-   * Le créneau réel par portfolio est borné DST-aware à [ouverture +1h,
-   * clôture -1h] de SA bourse (cf. scanPortfolioIntraday) — MÊME logique US et
-   * EU : on saute la 1ère heure (ouverture turbulente) et la dernière heure
-   * (EOD prep). Un cron UTC fixe ne suffisait pas pour l'EU dont la séance
-   * décale d'1h été/hiver (07:00-15:30 vs 08:00-16:30 UTC). Les gardes
-   * marché-fermé skippent les fetchs hors-séance → élargir le cron ne gaspille
-   * aucun appel EODHD.
+   * Cadence effective du scan intraday en minutes (default 15, clamp 5..60).
+   * Le cron tire toutes les 5 min (base) ; ce gate throttle à la cadence
+   * configurée pour que l'utilisateur la règle sans redeploy via
+   * OVERSOLD_INTRADAY_CADENCE_MIN.
+   *
+   * Diagnostic 08/06 (logging per-candidat) : les pépites (SOI +5.9%, ADYEN
+   * +2.4%, IFX +1.9%) confirmaient leur rebond ENTRE deux scans horaires —
+   * elles ressemblaient à des falling-knives au scan de 11:00 (trend15m négatif,
+   * rebond < 1%), correctement rejetées à cet instant, puis rebondies avant le
+   * scan de 12:00. 15 min les rattrape quand le rebond se confirme, SANS toucher
+   * au seuil rebond (les 2 near-miss NEL/ETL à ~1.4% ont fadé → baisser le seuil
+   * aurait ouvert des losers).
    */
-  @Cron('0 0 8-20 * * 1-5', { name: 'oversold-intraday-scan', timeZone: 'UTC' })
+  private intradayCadenceMin(): number {
+    const v = Number(this.config.get<string>('OVERSOLD_INTRADAY_CADENCE_MIN'));
+    if (!Number.isFinite(v) || v <= 0) return 15;
+    return Math.min(60, Math.max(5, v));
+  }
+
+  /** Horodatage du dernier cycle intraday réellement exécuté (gate cadence). */
+  private lastIntradayCycleAt = 0;
+
+  /**
+   * Cron base 5 min couvrant les séances EU + US (08:00-20:00 UTC, weekdays).
+   * La cadence EFFECTIVE est throttlée par intradayCadenceMin() (default 15 min,
+   * réglable via OVERSOLD_INTRADAY_CADENCE_MIN sans redeploy). Le créneau réel
+   * par portfolio est borné DST-aware à [ouverture +1h, clôture -1h] de SA
+   * bourse (cf. scanPortfolioIntraday) — MÊME logique US et EU : on saute la
+   * 1ère heure (ouverture turbulente) et la dernière heure (EOD prep). Un cron
+   * UTC fixe ne suffisait pas pour l'EU dont la séance décale d'1h été/hiver
+   * (07:00-15:30 vs 08:00-16:30 UTC). Les gardes marché-fermé skippent les
+   * fetchs hors-séance, et le gate cadence skippe AVANT tout fetch → élargir le
+   * cron ne gaspille aucun appel EODHD.
+   */
+  @Cron('0 */5 8-20 * * 1-5', { name: 'oversold-intraday-scan', timeZone: 'UTC' })
   async runIntradayScan(): Promise<void> {
     try {
       if (!this.isEnabled() || !this.intradayEnabled()) {
         this.logger.debug('[oversold-intraday] disabled (OVERSOLD_SCANNER_ENABLED or OVERSOLD_INTRADAY_ENABLED off)');
         return;
       }
+
+      // Gate cadence : throttle la base 5 min à la cadence configurée (default
+      // 15 min). Le -30s absorbe la dérive de tick du cron (évite de sauter une
+      // fenêtre quand l'écart retombe à 14min59 au lieu de 15min pile).
+      const cadenceMin = this.intradayCadenceMin();
+      const elapsedMs = Date.now() - this.lastIntradayCycleAt;
+      if (elapsedMs < (cadenceMin * 60 - 30) * 1000) {
+        this.logger.debug(
+          `[oversold-intraday] cadence gate: ${Math.round(elapsedMs / 1000)}s < ${cadenceMin}min → skip`,
+        );
+        return;
+      }
+      this.lastIntradayCycleAt = Date.now();
 
       const portfolios = await this.loadOversoldPortfolios();
       if (portfolios.length === 0) {
