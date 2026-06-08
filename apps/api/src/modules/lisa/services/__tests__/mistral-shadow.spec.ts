@@ -104,7 +104,7 @@ describe('MistralShadowService', () => {
     expect(r.providerId).toBe('magistral-medium');
   });
 
-  it('call() free tier default — costUsd=0 même avec gros volume tokens', async () => {
+  it('call() pay-as-you-go par défaut (08/06) — costUsd computé depuis les tokens', async () => {
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
       status: 200,
@@ -113,12 +113,26 @@ describe('MistralShadowService', () => {
         usage: { prompt_tokens: 2_000_000, completion_tokens: 1_000_000 },
       }),
     });
-    // Par défaut MISTRAL_FREE_TIER=true → coût zéro malgré tokens
+    // 08/06 — défaut MISTRAL_FREE_TIER=false → le coût est désormais calculé (panel + budget).
     const svc = new MistralShadowService(mockConfig({ MISTRAL_API_KEY: 'sk-test', MISTRAL_SHADOW_ENABLED: 'true' }));
     const r = await svc.call({ system: 's', user: 'u' });
-    expect(r.costUsd).toBe(0);
+    expect(r.costUsd).toBeGreaterThan(0);
     expect(r.inputTokens).toBe(2_000_000);
     expect(r.outputTokens).toBe(1_000_000);
+  });
+
+  it('call() MISTRAL_FREE_TIER=true (opt-in crédits gratuits) → costUsd=0', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { content: '{}' } }],
+        usage: { prompt_tokens: 2_000_000, completion_tokens: 1_000_000 },
+      }),
+    });
+    const svc = new MistralShadowService(mockConfig({ MISTRAL_API_KEY: 'sk-test', MISTRAL_SHADOW_ENABLED: 'true', MISTRAL_FREE_TIER: 'true' }));
+    const r = await svc.call({ system: 's', user: 'u' });
+    expect(r.costUsd).toBe(0);
   });
 
   it('call() HTTP 429 → error capturé, pas de throw', async () => {

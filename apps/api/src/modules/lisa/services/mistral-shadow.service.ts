@@ -21,8 +21,9 @@
  *   - MISTRAL_API_KEY (Fly secret) — sans cela, isConfigured() → false
  *   - MISTRAL_SHADOW_ENABLED=true (default false par prudence) — flag explicite
  */
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ApiCostTrackerService } from './api-cost-tracker.service';
 
 const MISTRAL_API_URL = 'https://api.mistral.ai/v1/chat/completions';
 
@@ -113,7 +114,10 @@ export class MistralShadowService {
   private throttleChain: Promise<void> = Promise.resolve();
   private lastCallAt = 0;
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    @Optional() private readonly costTracker?: ApiCostTrackerService,
+  ) {
     // 07/06 — Clé Fly = MISTRAL_SMARTVEST_API_KEY (pas MISTRAL_API_KEY). Nouveau nom
     // prioritaire (fallback ancien) + nettoyage espaces/virgule de fin (secret collé
     // avec une virgule → auth cassée → fetch hang jusqu'au timeout 30s).
@@ -123,7 +127,9 @@ export class MistralShadowService {
     )?.trim().replace(/,+\s*$/, '').trim();
     this.enabled = (this.config.get<string>('MISTRAL_SHADOW_ENABLED') ?? 'false').toLowerCase() === 'true';
     this.model = this.config.get<string>('MISTRAL_SHADOW_MODEL') ?? MODEL_MEDIUM_LATEST;
-    this.freeTier = (this.config.get<string>('MISTRAL_FREE_TIER') ?? 'true').toLowerCase() === 'true';
+    // 08/06 — Défaut FALSE : Mistral Medium est le PLUS GROS poste (59,91€/mois constaté).
+    // En free tier le coût était zéroté → panel $0 trompeur. true seulement si crédits gratuits.
+    this.freeTier = (this.config.get<string>('MISTRAL_FREE_TIER') ?? 'false').toLowerCase() === 'true';
     this.minIntervalMs = Math.max(0, Number(this.config.get<string>('MISTRAL_MIN_INTERVAL_MS') ?? '2500'));
     this.maxQueueWaitMs = Math.max(1000, Number(this.config.get<string>('MISTRAL_MAX_QUEUE_WAIT_MS') ?? '15000'));
     if (this.enabled && !this.apiKey) {
@@ -272,6 +278,12 @@ export class MistralShadowService {
           (freshInputTokens / 1_000_000) * pricing.input +
           (cachedTokens / 1_000_000) * cachedPrice +
           (result.outputTokens / 1_000_000) * pricing.output;
+      }
+
+      // 08/06 — Enregistre le coût dans api_costs_daily (panel + budget). Mistral Medium
+      // est le 1er poste de coût et n'était jamais tracé. Fire-and-forget.
+      if (result.content && result.costUsd > 0 && this.costTracker) {
+        void this.costTracker.recordApiCost(this.model, result.costUsd).catch(() => undefined);
       }
 
       if (!result.content) {

@@ -22,8 +22,9 @@
  *   - MISTRAL_API_KEY (partagé avec MistralShadowService)
  *   - MISTRAL_LARGE_SHADOW_ENABLED=true (flag dédié, default false)
  */
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ApiCostTrackerService } from './api-cost-tracker.service';
 
 const MISTRAL_API_URL = 'https://api.mistral.ai/v1/chat/completions';
 const MODEL_LARGE_LATEST = 'mistral-large-latest';
@@ -51,7 +52,10 @@ export class MistralLargeShadowService {
   private readonly enabled: boolean;
   private readonly freeTier: boolean;
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    @Optional() private readonly costTracker?: ApiCostTrackerService,
+  ) {
     // 07/06 — Clé Fly = MISTRAL_SMARTVEST_API_KEY (la nouvelle valide). MISTRAL_API_KEY
     // = ancienne clé révoquée → on lit le nouveau nom en priorité (fallback ancien)
     // + nettoyage espaces/virgule de fin.
@@ -60,7 +64,9 @@ export class MistralLargeShadowService {
       this.config.get<string>('MISTRAL_API_KEY')
     )?.trim().replace(/,+\s*$/, '').trim();
     this.enabled = (this.config.get<string>('MISTRAL_LARGE_SHADOW_ENABLED') ?? 'false').toLowerCase() === 'true';
-    this.freeTier = (this.config.get<string>('MISTRAL_FREE_TIER') ?? 'true').toLowerCase() === 'true';
+    // 08/06 — Défaut FALSE : Mistral Large facturé (16,63€/mois constaté), coût zéroté en
+    // free tier → panel $0 trompeur. true seulement si crédits gratuits.
+    this.freeTier = (this.config.get<string>('MISTRAL_FREE_TIER') ?? 'false').toLowerCase() === 'true';
     if (this.enabled && !this.apiKey) {
       this.logger.warn('[mistral-large-shadow] ENABLED=true mais MISTRAL_API_KEY absent → service inerte');
     } else if (this.enabled) {
@@ -147,6 +153,11 @@ export class MistralLargeShadowService {
           (freshInputTokens / 1_000_000) * PRICE_INPUT_PER_M +
           (cachedTokens / 1_000_000) * PRICE_CACHED_PER_M +
           (result.outputTokens / 1_000_000) * PRICE_OUTPUT_PER_M;
+      }
+
+      // 08/06 — Enregistre le coût dans api_costs_daily (panel + budget). Fire-and-forget.
+      if (result.content && result.costUsd > 0 && this.costTracker) {
+        void this.costTracker.recordApiCost(MODEL_LARGE_LATEST, result.costUsd).catch(() => undefined);
       }
 
       if (!result.content) {
