@@ -3578,7 +3578,17 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
     };
     if (patch.enabled != null) upd.oversold_size_dynamic_enabled = patch.enabled === true;
     setNum('baseNotionalUsd', 'oversold_position_notional_usd', 50, 100_000);
-    setNum('capitalUsd', 'capital_usd', 100, 100_000_000);
+    // Cohérence capital : le sizing lit capital_usd, le bandeau/targets lisent
+    // lisa_initial_capital_usd → on synchronise les DEUX à chaque édition (sinon
+    // divergence comme constaté 08/06 : capital_usd=20k mais bandeau affichait 10k).
+    if (patch.capitalUsd != null) {
+      const v = Number(patch.capitalUsd);
+      if (!Number.isFinite(v) || v < 100 || v > 100_000_000) {
+        throw new BadRequestException('capitalUsd doit être un nombre dans [100, 100000000]');
+      }
+      upd.capital_usd = v;
+      upd.lisa_initial_capital_usd = v;
+    }
     setNum('bandMultDeep', 'oversold_size_band_mult_deep', 0.1, 10);
     setNum('bandMultShallow', 'oversold_size_band_mult_shallow', 0.1, 10);
     setNum('vixDampElevated', 'oversold_size_vix_damp_elevated', 0.1, 1);
