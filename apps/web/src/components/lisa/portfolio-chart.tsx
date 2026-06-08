@@ -202,6 +202,19 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
       }
     }
 
+    // Trim du PLATEAU DE TÊTE : un portefeuille récent affiche souvent un long
+    // plat au capital initial (weekend / avant la 1ère activité de marché) qui
+    // écrase la partie utile de la courbe à droite. On démarre la courbe au 1er
+    // mouvement de valeur, en gardant 1 point d'ancrage juste avant pour montrer
+    // le niveau de départ. Ex EU Oversold : créé vendredi 05/06 à $10k, figé tout
+    // le weekend (marchés fermés) → la courbe démarre au 08/06 quand la valeur
+    // bouge, au lieu d'afficher 3 jours de plat inutiles.
+    if (points.length >= 3 && points[0].value > 0) {
+      const v0 = points[0].value;
+      const firstMove = points.findIndex((p) => Math.abs(p.value - v0) / v0 > 0.0002);
+      if (firstMove > 1) return points.slice(firstMove - 1);
+    }
+
     return points;
   }, [data, liveQuery.data]);
 
