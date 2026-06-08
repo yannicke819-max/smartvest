@@ -43,7 +43,12 @@ import {
   analyzeIntradayRebound,
   passesIntradayReboundFilter,
   DEFAULT_INTRADAY_REBOUND_CONFIG,
+  analyzeRealtimeRebound,
+  passesRealtimeReboundFilter,
+  DEFAULT_REALTIME_REBOUND_CONFIG,
   type IntradayReboundConfig,
+  type RealtimeReboundConfig,
+  type RealtimeOhlc,
 } from './oversold-intraday.helper';
 import { IntradayProviderRouter } from './intraday-provider-router.service';
 import { minutesSinceExchangeOpen, minutesToExchangeClose } from './exchange-sessions.helper';
@@ -499,6 +504,62 @@ export class OversoldScannerService {
     };
   }
 
+  /** Config du chemin real-time OHLC (EU). Seuils réglables sans redeploy. */
+  private realtimeReboundConfig(): RealtimeReboundConfig {
+    const num = (key: string, dflt: number) => {
+      const v = Number(this.config.get<string>(key));
+      return Number.isFinite(v) ? v : dflt;
+    };
+    return {
+      minReboundFromLowPct: num('OVERSOLD_INTRADAY_MIN_REBOUND_FROM_LOW_PCT', DEFAULT_REALTIME_REBOUND_CONFIG.minReboundFromLowPct),
+      minRangePosPct: num('OVERSOLD_INTRADAY_MIN_RANGE_POS_PCT', DEFAULT_REALTIME_REBOUND_CONFIG.minRangePosPct),
+      requirePositiveDay:
+        (this.config.get<string>('OVERSOLD_INTRADAY_REQUIRE_POSITIVE_DAY') ?? 'false').toLowerCase() === 'true',
+    };
+  }
+
+  /**
+   * Régions utilisant le chemin real-time OHLC au lieu des bougies 5m.
+   * Default 'EU' (bougies intraday EU gelées — cf. analyzeRealtimeRebound).
+   * 'US' garde les bougies TD (real-time OK). Réglable via
+   * OVERSOLD_INTRADAY_RT_OHLC_REGIONS (CSV, ex 'EU,US' ou '' pour désactiver).
+   */
+  private useRealtimeOhlcPath(region: 'US' | 'EU'): boolean {
+    const raw = this.config.get<string>('OVERSOLD_INTRADAY_RT_OHLC_REGIONS') ?? 'EU';
+    return raw
+      .split(',')
+      .map((s) => s.trim().toUpperCase())
+      .includes(region);
+  }
+
+  /**
+   * OHLC du jour via EODHD real-time (frais pour l'EU, contrairement à
+   * l'intraday 5m gelé). Retourne null si indispo / incohérent.
+   */
+  private async fetchRealtimeOhlc(symbol: string): Promise<RealtimeOhlc | null> {
+    const apiKey = this.config.get<string>('EODHD_API_KEY');
+    if (!apiKey) return null;
+    const url = `https://eodhd.com/api/real-time/${encodeURIComponent(symbol)}?api_token=${apiKey}&fmt=json`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.FETCH_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, { signal: controller.signal });
+      if (!res.ok) return null;
+      const j = (await res.json()) as Record<string, unknown>;
+      const open = Number(j.open);
+      const high = Number(j.high);
+      const low = Number(j.low);
+      const close = Number(j.close);
+      const prevClose = Number(j.previousClose);
+      if (![open, high, low, close].every((v) => Number.isFinite(v) && v > 0)) return null;
+      return { open, high, low, close, prevClose: Number.isFinite(prevClose) ? prevClose : close };
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private intradayMaxOpensPerDay(): number {
     const v = Number(this.config.get<string>('OVERSOLD_INTRADAY_MAX_OPENS_PER_DAY'));
     return Number.isFinite(v) && v > 0 ? v : 8;
@@ -682,23 +743,64 @@ export class OversoldScannerService {
       close_j: Number.isFinite(c.closeJ) ? c.closeJ : null,
     });
 
+    // Sélection du chemin d'analyse par région : EU → real-time OHLC (bougies
+    // 5m intraday gelées sur vendredi, P19-staleness), US → bougies 5m TD
+    // (real-time OK). Cf. useRealtimeOhlcPath / analyzeRealtimeRebound.
+    const useRt = this.useRealtimeOhlcPath(regime.region);
+    const rtCfg = this.realtimeReboundConfig();
+
     for (const cand of toScan) {
       if (remaining <= 0) break;
       evaluated++;
       const base = baseRecOf(cand);
       try {
+        if (useRt) {
+          // ── Chemin REAL-TIME OHLC (EU) ──
+          const ohlc = await this.fetchRealtimeOhlc(cand.symbol);
+          if (!ohlc) {
+            rejectedRebound++;
+            scanLog.push({ ...base, outcome: 'rejected', reject_stage: 'no_realtime', analysis_mode: 'realtime_ohlc' });
+            continue;
+          }
+          const a = analyzeRealtimeRebound(ohlc);
+          if (!a) {
+            rejectedRebound++;
+            scanLog.push({ ...base, outcome: 'rejected', reject_stage: 'analysis_null', analysis_mode: 'realtime_ohlc' });
+            continue;
+          }
+          const rtCols = {
+            analysis_mode: 'realtime_ohlc',
+            current_price: a.currentPrice,
+            rebound_from_low_pct: Number(a.reboundFromLowPct.toFixed(3)),
+            range_pos_pct: Number(a.rangePosPct.toFixed(3)),
+            day_chg_pct: Number(a.dayChgPct.toFixed(3)),
+          };
+          const gate = passesRealtimeReboundFilter(a, rtCfg);
+          if (!gate.pass) {
+            rejectedRebound++;
+            scanLog.push({ ...base, ...rtCols, outcome: 'rejected', reject_stage: 'rebound_filter', reject_reasons: gate.reasons });
+            continue;
+          }
+          await this.openIntradayPosition(portfolioId, cand, reboundCfgForOpens, a.currentPrice, regime.vix);
+          opened++;
+          remaining--;
+          scanLog.push({ ...base, ...rtCols, outcome: 'opened' });
+          continue;
+        }
+
+        // ── Chemin BOUGIES 5m (US) ──
         const series = await this.intraday
           .getCandles(cand.symbol, '5m', 18, { calledBy: 'oversold_intraday' })
           .catch(() => null);
         const raw = series?.candles ?? [];
         if (raw.length === 0) {
           rejectedRebound++;
-          scanLog.push({ ...base, outcome: 'rejected', reject_stage: 'no_candles' });
+          scanLog.push({ ...base, outcome: 'rejected', reject_stage: 'no_candles', analysis_mode: 'candles' });
           continue;
         }
         if (raw.length < reboundCfg.minBarsRequired) {
           rejectedRebound++;
-          scanLog.push({ ...base, outcome: 'rejected', reject_stage: 'insufficient_bars', bars_count: raw.length });
+          scanLog.push({ ...base, outcome: 'rejected', reject_stage: 'insufficient_bars', bars_count: raw.length, analysis_mode: 'candles' });
           continue;
         }
         const analysis = analyzeIntradayRebound(
@@ -707,10 +809,11 @@ export class OversoldScannerService {
         );
         if (!analysis) {
           rejectedRebound++;
-          scanLog.push({ ...base, outcome: 'rejected', reject_stage: 'analysis_null', bars_count: raw.length });
+          scanLog.push({ ...base, outcome: 'rejected', reject_stage: 'analysis_null', bars_count: raw.length, analysis_mode: 'candles' });
           continue;
         }
         const metricCols = {
+          analysis_mode: 'candles',
           current_price: analysis.currentPrice,
           rebound_pct: Number(analysis.reboundPct.toFixed(3)),
           trend_15m_pct: Number(analysis.trend15mPct.toFixed(3)),
@@ -745,10 +848,13 @@ export class OversoldScannerService {
         portfolioId,
         kind: 'oversold_intraday_scan_completed',
         summary: `Intraday scan: ${tickers.length} univers → ${candidates.length} bande → ${evaluated} évalués → ${opened} ouverts`,
-        rationale:
-          `Drop band [${cfg.dropMinPct}%, ${cfg.dropMaxPct}%], rebound ≥${reboundCfg.minReboundPct}%, ` +
-          `trend15m ≥${reboundCfg.minTrend15mPct}%, bottom-before-${reboundCfg.bottomMustBeBeforeLastNBars}bars, ` +
-          `volRatio ≥${reboundCfg.minVolumeRatio}, cap ${maxOpensPerDay}/j (used ${intradayOpenedToday + opened}).`,
+        rationale: useRt
+          ? `[real-time OHLC] Drop band [${cfg.dropMinPct}%, ${cfg.dropMaxPct}%], reboundFromLow ≥${rtCfg.minReboundFromLowPct}%, ` +
+            `rangePos ≥${rtCfg.minRangePosPct}%${rtCfg.requirePositiveDay ? ', dayChg ≥0' : ''}, ` +
+            `cap ${maxOpensPerDay}/j (used ${intradayOpenedToday + opened}).`
+          : `[candles 5m] Drop band [${cfg.dropMinPct}%, ${cfg.dropMaxPct}%], rebound ≥${reboundCfg.minReboundPct}%, ` +
+            `trend15m ≥${reboundCfg.minTrend15mPct}%, bottom-before-${reboundCfg.bottomMustBeBeforeLastNBars}bars, ` +
+            `volRatio ≥${reboundCfg.minVolumeRatio}, cap ${maxOpensPerDay}/j (used ${intradayOpenedToday + opened}).`,
         payload: {
           universe: cfg.universe,
           universe_size: tickers.length,
@@ -758,10 +864,11 @@ export class OversoldScannerService {
           rejected_rebound: rejectedRebound,
           intraday_opened_today: intradayOpenedToday + opened,
           notional_ratio: notionalRatio,
+          analysis_mode: useRt ? 'realtime_ohlc' : 'candles',
         },
         triggeredBy: 'autopilot_cron',
         watchlistSource: 'mechanical',
-        market: 'us_equity',
+        market: regime.region === 'EU' ? 'eu_equity' : 'us_equity',
       })
       .catch((e) => this.logger.warn(`[oversold-intraday] decision_log append failed: ${String(e).slice(0, 160)}`));
 
