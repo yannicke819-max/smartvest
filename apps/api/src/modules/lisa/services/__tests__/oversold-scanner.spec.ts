@@ -76,9 +76,14 @@ describe('isInDropBand', () => {
 });
 
 describe('passesLiquidity', () => {
-  it('rejette les penny stocks (close <= $5)', () => {
-    expect(passesLiquidity(5, 10_000_000)).toBe(false);
-    expect(passesLiquidity(4.99, 10_000_000)).toBe(false);
+  it('rejette les vrais penny stocks (close <= $1, défaut abaissé 08/06)', () => {
+    expect(passesLiquidity(1, 10_000_000)).toBe(false);
+    expect(passesLiquidity(0.5, 10_000_000)).toBe(false);
+  });
+
+  it('accepte un titre EU liquide à bas prix nominal ($3, $16M vol) — ex ETL.PA, NEL.OL', () => {
+    // 08/06 — le plancher $5 excluait à tort ces EU TRÈS liquides ; le dollar-volume suffit.
+    expect(passesLiquidity(3, 5_400_000)).toBe(true); // $16,2M
   });
 
   it('rejette le dollar-volume insuffisant (<= $5M)', () => {

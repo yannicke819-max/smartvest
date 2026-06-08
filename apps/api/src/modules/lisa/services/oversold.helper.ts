@@ -40,9 +40,15 @@ export interface OversoldCandidate {
   dollarVolume: number; // closeJ * volumeJ
 }
 
-// Seuils de liquidité (spec §3.3) — durs, non configurables en v1.
-const MIN_PRICE_USD = 5;
+// Seuils de liquidité (spec §3.3). 08/06 — MIN_PRICE abaissé 5→1 + configurable via
+// OVERSOLD_MIN_PRICE_USD : le plancher $5 (anti-penny US) excluait à tort des EU TRÈS
+// liquides à bas prix nominal (ETL.PA €3/$16M vol, NEL.OL €3/$24M vol → rebonds +2%/+3,2%
+// ratés). La VRAIE liquidité est garantie par le dollar-volume ($5M), pas le prix nominal.
 const MIN_DOLLAR_VOLUME_USD = 5_000_000;
+function minPriceUsd(): number {
+  const v = Number(process.env.OVERSOLD_MIN_PRICE_USD ?? '1');
+  return Number.isFinite(v) && v >= 0 ? v : 1;
+}
 
 /**
  * Calcule le dropPct 1J d'une série de barres EOD.
@@ -72,7 +78,7 @@ export function isInDropBand(dropPct: number, cfg: OversoldConfig): boolean {
 
 /** Teste les seuils de liquidité (prix + dollar-volume). */
 export function passesLiquidity(closeJ: number, volumeJ: number): boolean {
-  if (!Number.isFinite(closeJ) || closeJ <= MIN_PRICE_USD) return false;
+  if (!Number.isFinite(closeJ) || closeJ <= minPriceUsd()) return false;
   const dollarVol = closeJ * (Number.isFinite(volumeJ) ? volumeJ : 0);
   return dollarVol > MIN_DOLLAR_VOLUME_USD;
 }
