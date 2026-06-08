@@ -261,6 +261,22 @@ export class OversoldMistralExitService {
     const ageDays = businessDaysSince(pos.entry_timestamp, new Date());
     const ageMin = (Date.now() - new Date(pos.entry_timestamp).getTime()) / 60_000;
 
+    // ─── TP LOCK DÉTERMINISTE (demande user 08/06) ──────────────────────────
+    // Verrouillage GARANTI du gain : dès pnl ≥ OVERSOLD_TP_LOCK_PCT (default 2%), on
+    // ferme SANS demander à Mistral (pré-LLM, zéro ambiguïté — pas de "HOLD" possible).
+    // Le gain-picker Mistral reste pour les cas EN-DESSOUS du seuil. Utilise le prix LIVE.
+    const tpLockPct = Number(this.config.get<string>('OVERSOLD_TP_LOCK_PCT') ?? '2.0');
+    if (Number.isFinite(tpLockPct) && tpLockPct > 0 && unrealPnlPct >= tpLockPct) {
+      const verdict: MistralExitVerdict = {
+        action: 'CLOSE',
+        confidence: 1.0,
+        rationale: `TP_LOCK pnl=${unrealPnlPct.toFixed(2)}% ≥ ${tpLockPct}% → lock déterministe (pré-LLM)`,
+      };
+      this.logger.log(`[oversold-mistral-exit] ${pos.symbol} TP_LOCK → close auto (pnl=${unrealPnlPct.toFixed(2)}% ≥ ${tpLockPct}%)`);
+      await this.closePosition(pos, price, unrealPnlPct, unrealPnlPct, ageDays, verdict);
+      return 'closed';
+    }
+
     // ─── HARD CLOSE GUARD (intraday-only) ───────────────────────────────────
     // Garantit que les positions ne reposent jamais overnight. Fire avant tout
     // appel LLM. Validé par audit user : pas d'upside post-close historique.
