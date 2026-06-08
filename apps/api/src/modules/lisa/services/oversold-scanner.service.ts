@@ -573,6 +573,19 @@ export class OversoldScannerService {
   }
 
   /**
+   * Plafond anti-chase : % MAX de hausse vs le close de drop (closeJ) à l'entrée.
+   * Un candidat déjà trop au-dessus de son close de drop a « rebondi trop loin »
+   * — il a plus que récupéré sa chute → ce n'est plus un dip mean-reversion mais
+   * du chasing du sommet. Default 10% (conservateur : ne coupe que les cas
+   * extrêmes type INTC +12.7% du 08/06, garde les rebonds modérés +3-7%). 0 ou
+   * négatif = désactivé. Unifié EU (real-time OHLC) + US (bougies).
+   */
+  private intradayMaxDayChangePct(): number {
+    const v = Number(this.config.get<string>('OVERSOLD_INTRADAY_MAX_DAY_CHANGE_PCT'));
+    return Number.isFinite(v) ? v : 10;
+  }
+
+  /**
    * Cadence effective du scan intraday en minutes (default 15, clamp 5..60).
    * Le cron tire toutes les 5 min (base) ; ce gate throttle à la cadence
    * configurée pour que l'utilisateur la règle sans redeploy via
@@ -762,6 +775,7 @@ export class OversoldScannerService {
     // (real-time OK). Cf. useRealtimeOhlcPath / analyzeRealtimeRebound.
     const useRt = this.useRealtimeOhlcPath(regime.region);
     const rtCfg = this.realtimeReboundConfig();
+    const maxDayChg = this.intradayMaxDayChangePct(); // plafond anti-chase (vs closeJ)
 
     for (const cand of toScan) {
       if (remaining <= 0) break;
@@ -793,6 +807,13 @@ export class OversoldScannerService {
           if (!gate.pass) {
             rejectedRebound++;
             scanLog.push({ ...base, ...rtCols, outcome: 'rejected', reject_stage: 'rebound_filter', reject_reasons: gate.reasons });
+            continue;
+          }
+          // Plafond anti-chase : déjà trop au-dessus du close de drop = sommet déjà joué.
+          const dayChgEu = cand.closeJ > 0 ? ((a.currentPrice - cand.closeJ) / cand.closeJ) * 100 : 0;
+          if (maxDayChg > 0 && dayChgEu > maxDayChg) {
+            rejectedRebound++;
+            scanLog.push({ ...base, ...rtCols, outcome: 'rejected', reject_stage: 'overextended', reject_reasons: [`dayChg=${dayChgEu.toFixed(2)}% > ${maxDayChg}% (rebond déjà consommé)`] });
             continue;
           }
           await this.openIntradayPosition(portfolioId, cand, reboundCfgForOpens, a.currentPrice, regime.vix);
@@ -854,6 +875,13 @@ export class OversoldScannerService {
         if (!gate.pass) {
           rejectedRebound++;
           scanLog.push({ ...base, ...metricCols, outcome: 'rejected', reject_stage: 'rebound_filter', reject_reasons: gate.reasons });
+          continue;
+        }
+        // Plafond anti-chase : déjà trop au-dessus du close de drop = sommet déjà joué.
+        const dayChgUs = cand.closeJ > 0 ? ((analysis.currentPrice - cand.closeJ) / cand.closeJ) * 100 : 0;
+        if (maxDayChg > 0 && dayChgUs > maxDayChg) {
+          rejectedRebound++;
+          scanLog.push({ ...base, ...metricCols, outcome: 'rejected', reject_stage: 'overextended', reject_reasons: [`dayChg=${dayChgUs.toFixed(2)}% > ${maxDayChg}% (rebond déjà consommé)`] });
           continue;
         }
 
