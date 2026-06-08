@@ -3533,6 +3533,70 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
   }
 
   /**
+   * 08/06 — Sizing dynamique oversold : lecture des paramètres (carte UI).
+   */
+  async getOversoldSizing(userId: string, portfolioId: string) {
+    await this.assertPortfolioOwner(userId, portfolioId);
+    const { data } = await this.supabase.getClient()
+      .from('lisa_session_configs')
+      .select(
+        'capital_usd, oversold_position_notional_usd, oversold_size_dynamic_enabled, ' +
+          'oversold_size_band_mult_deep, oversold_size_band_mult_shallow, oversold_size_vix_damp_elevated, ' +
+          'oversold_size_vix_damp_stress, oversold_size_floor_usd, oversold_size_ceiling_pct_capital',
+      )
+      .eq('portfolio_id', portfolioId)
+      .maybeSingle();
+    const r = (data ?? {}) as Record<string, unknown>;
+    const num = (v: unknown, d: number): number => (v == null || !Number.isFinite(Number(v)) ? d : Number(v));
+    return {
+      enabled: r.oversold_size_dynamic_enabled == null ? true : r.oversold_size_dynamic_enabled === true,
+      baseNotionalUsd: num(r.oversold_position_notional_usd, 1000),
+      capitalUsd: num(r.capital_usd, 10000),
+      bandMultDeep: num(r.oversold_size_band_mult_deep, 2.0),
+      bandMultShallow: num(r.oversold_size_band_mult_shallow, 1.0),
+      vixDampElevated: num(r.oversold_size_vix_damp_elevated, 0.8),
+      vixDampStress: num(r.oversold_size_vix_damp_stress, 0.5),
+      floorUsd: num(r.oversold_size_floor_usd, 500),
+      ceilingPctCapital: num(r.oversold_size_ceiling_pct_capital, 12),
+    };
+  }
+
+  /**
+   * 08/06 — Sizing dynamique oversold : mise à jour des paramètres (carte UI).
+   * Validation par bornes ; ne touche que les champs fournis.
+   */
+  async updateOversoldSizing(userId: string, portfolioId: string, patch: Record<string, unknown>) {
+    await this.assertPortfolioOwner(userId, portfolioId);
+    const upd: Record<string, unknown> = {};
+    const setNum = (key: string, col: string, min: number, max: number): void => {
+      if (patch[key] == null) return;
+      const v = Number(patch[key]);
+      if (!Number.isFinite(v) || v < min || v > max) {
+        throw new BadRequestException(`${key} doit être un nombre dans [${min}, ${max}]`);
+      }
+      upd[col] = v;
+    };
+    if (patch.enabled != null) upd.oversold_size_dynamic_enabled = patch.enabled === true;
+    setNum('baseNotionalUsd', 'oversold_position_notional_usd', 50, 100_000);
+    setNum('capitalUsd', 'capital_usd', 100, 100_000_000);
+    setNum('bandMultDeep', 'oversold_size_band_mult_deep', 0.1, 10);
+    setNum('bandMultShallow', 'oversold_size_band_mult_shallow', 0.1, 10);
+    setNum('vixDampElevated', 'oversold_size_vix_damp_elevated', 0.1, 1);
+    setNum('vixDampStress', 'oversold_size_vix_damp_stress', 0.1, 1);
+    setNum('floorUsd', 'oversold_size_floor_usd', 0, 100_000);
+    setNum('ceilingPctCapital', 'oversold_size_ceiling_pct_capital', 1, 100);
+    if (Object.keys(upd).length === 0) {
+      throw new BadRequestException('Aucun champ valide à mettre à jour');
+    }
+    const { error } = await this.supabase.getClient()
+      .from('lisa_session_configs')
+      .update(upd)
+      .eq('portfolio_id', portfolioId);
+    if (error) throw new BadRequestException(`Mise à jour échouée: ${error.message}`);
+    return this.getOversoldSizing(userId, portfolioId);
+  }
+
+  /**
    * Active/désactive le CONTRÔLE MANUEL sur une position. Quand `enabled=true`,
    * l'auto-trader ne ferme plus jamais cette position (SL/TP/trailing/risk-
    * monitor) — l'utilisateur a la main à 100%. Réversible (`enabled=false` rend

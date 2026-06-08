@@ -25,9 +25,26 @@ export interface OversoldSizingResult {
   dynamic: boolean;
 }
 
+/** Paramètres réglables (depuis l'UI/DB). Chaque champ optionnel tombe sur env puis défaut. */
+export interface OversoldSizingConfig {
+  enabled?: boolean | null;
+  bandMultDeep?: number | null;
+  bandMultShallow?: number | null;
+  vixDampElevated?: number | null;
+  vixDampStress?: number | null;
+  floorUsd?: number | null;
+  ceilingPctCapital?: number | null;
+}
+
 function envNum(key: string, def: number): number {
   const v = Number(process.env[key]);
   return Number.isFinite(v) ? v : def;
+}
+
+/** Résout un numérique : valeur DB si fournie, sinon env, sinon défaut code. */
+function resolveNum(dbVal: number | null | undefined, envKey: string, def: number): number {
+  if (dbVal != null && Number.isFinite(Number(dbVal))) return Number(dbVal);
+  return envNum(envKey, def);
 }
 
 export function computeOversoldNotional(p: {
@@ -35,31 +52,35 @@ export function computeOversoldNotional(p: {
   dropPct: number | null;
   vix: number | null;
   capitalUsd: number;
+  config?: OversoldSizingConfig;
 }): OversoldSizingResult {
-  const enabled = (process.env.OVERSOLD_DYNAMIC_SIZING_ENABLED ?? 'true').toLowerCase() === 'true';
+  const c = p.config ?? {};
+  const enabled = c.enabled != null
+    ? c.enabled === true
+    : (process.env.OVERSOLD_DYNAMIC_SIZING_ENABLED ?? 'true').toLowerCase() === 'true';
   const base = Math.max(0, p.baseNotionalUsd);
   if (!enabled || p.dropPct == null || !Number.isFinite(p.dropPct)) {
     return { notionalUsd: Math.round(base), band: 'flat', bandMult: 1, vixDamp: 1, clamp: null, dynamic: false };
   }
 
   // Multiplicateur de bande — proportionnel à l'edge (loi empirique oversold).
-  const deepMult = envNum('OVERSOLD_SIZE_BAND_MULT_DEEP', 2.0); // -8/-12%
-  const shallowMult = envNum('OVERSOLD_SIZE_BAND_MULT_SHALLOW', 1.0); // -5/-8%
+  const deepMult = resolveNum(c.bandMultDeep, 'OVERSOLD_SIZE_BAND_MULT_DEEP', 2.0); // -8/-12%
+  const shallowMult = resolveNum(c.bandMultShallow, 'OVERSOLD_SIZE_BAND_MULT_SHALLOW', 1.0); // -5/-8%
   const band = p.dropPct <= -8 ? '-8/-12%' : '-5/-8%';
   const bandMult = p.dropPct <= -8 ? deepMult : shallowMult;
 
   // Amortisseur VIX — risk-off → réduire (rebond plus incertain en absolu).
   let vixDamp = 1;
   if (p.vix != null && Number.isFinite(p.vix)) {
-    if (p.vix >= 30) vixDamp = envNum('OVERSOLD_SIZE_VIX_DAMP_STRESS', 0.5);
-    else if (p.vix >= 20) vixDamp = envNum('OVERSOLD_SIZE_VIX_DAMP_ELEVATED', 0.8);
+    if (p.vix >= 30) vixDamp = resolveNum(c.vixDampStress, 'OVERSOLD_SIZE_VIX_DAMP_STRESS', 0.5);
+    else if (p.vix >= 20) vixDamp = resolveNum(c.vixDampElevated, 'OVERSOLD_SIZE_VIX_DAMP_ELEVATED', 0.8);
   }
 
   let notional = base * bandMult * vixDamp;
 
   // Caps : plancher absolu + plafond en % du capital (anti-concentration).
-  const floor = envNum('OVERSOLD_SIZE_FLOOR_USD', 500);
-  const ceilingPct = envNum('OVERSOLD_SIZE_CEILING_PCT_CAPITAL', 12);
+  const floor = resolveNum(c.floorUsd, 'OVERSOLD_SIZE_FLOOR_USD', 500);
+  const ceilingPct = resolveNum(c.ceilingPctCapital, 'OVERSOLD_SIZE_CEILING_PCT_CAPITAL', 12);
   const ceiling = p.capitalUsd > 0 ? (p.capitalUsd * ceilingPct) / 100 : Number.POSITIVE_INFINITY;
   let clamp: 'floor' | 'ceiling' | null = null;
   if (notional > ceiling) { notional = ceiling; clamp = 'ceiling'; }

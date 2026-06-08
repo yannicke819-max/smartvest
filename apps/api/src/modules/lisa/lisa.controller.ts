@@ -1880,6 +1880,24 @@ export class LisaController {
     return this.lisa.getCloseDecisions(extractUserId(headers), portfolioId, n);
   }
 
+  // 08/06 — Sizing dynamique oversold : carte UI de configuration.
+  @Get('oversold-sizing/:portfolioId')
+  getOversoldSizing(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    return this.lisa.getOversoldSizing(extractUserId(headers), portfolioId);
+  }
+
+  @Post('oversold-sizing/:portfolioId')
+  updateOversoldSizing(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    return this.lisa.updateOversoldSizing(extractUserId(headers), portfolioId, body ?? {});
+  }
+
   @Get('oversold-mind/:portfolioId')
   getOversoldMind(
     @Headers() headers: Record<string, string>,

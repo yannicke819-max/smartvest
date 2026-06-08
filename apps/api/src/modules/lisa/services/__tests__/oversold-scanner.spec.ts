@@ -26,6 +26,7 @@ const CFG: OversoldConfig = {
   maxOpenPositions: 200,
   universe: 'russell1000',
   capitalUsd: 150000,
+  sizing: {},
 };
 
 // Helper : construit 2 barres (J-1, J) avec un drop ciblé et un volume.

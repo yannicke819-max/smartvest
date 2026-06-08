@@ -190,6 +190,13 @@ interface OversoldPortfolioRow {
   oversold_position_notional_usd: number | string | null;
   oversold_max_open_positions: number | null;
   oversold_universe: string | null;
+  oversold_size_dynamic_enabled: boolean | null;
+  oversold_size_band_mult_deep: number | string | null;
+  oversold_size_band_mult_shallow: number | string | null;
+  oversold_size_vix_damp_elevated: number | string | null;
+  oversold_size_vix_damp_stress: number | string | null;
+  oversold_size_floor_usd: number | string | null;
+  oversold_size_ceiling_pct_capital: number | string | null;
 }
 
 /** Defaults issus de la migration 0191 (si une colonne est NULL en DB). */
@@ -273,7 +280,10 @@ export class OversoldScannerService {
       .select(
         'portfolio_id, capital_usd, oversold_drop_min_pct, oversold_drop_max_pct, oversold_hold_days, ' +
           'oversold_stop_catastrophe_pct, oversold_tp_pct, oversold_position_notional_usd, ' +
-          'oversold_max_open_positions, oversold_universe',
+          'oversold_max_open_positions, oversold_universe, ' +
+          'oversold_size_dynamic_enabled, oversold_size_band_mult_deep, oversold_size_band_mult_shallow, ' +
+          'oversold_size_vix_damp_elevated, oversold_size_vix_damp_stress, oversold_size_floor_usd, ' +
+          'oversold_size_ceiling_pct_capital',
       )
       .eq('strategy_mode', 'oversold')
       .eq('autopilot_enabled', true)
@@ -307,6 +317,15 @@ export class OversoldScannerService {
       maxOpenPositions: row.oversold_max_open_positions ?? DEFAULTS.maxOpenPositions,
       universe: row.oversold_universe ?? DEFAULTS.universe,
       capitalUsd: num(row.capital_usd, 10000),
+      sizing: {
+        enabled: row.oversold_size_dynamic_enabled, // null → helper retombe sur env/défaut
+        bandMultDeep: numOrNull(row.oversold_size_band_mult_deep),
+        bandMultShallow: numOrNull(row.oversold_size_band_mult_shallow),
+        vixDampElevated: numOrNull(row.oversold_size_vix_damp_elevated),
+        vixDampStress: numOrNull(row.oversold_size_vix_damp_stress),
+        floorUsd: numOrNull(row.oversold_size_floor_usd),
+        ceilingPctCapital: numOrNull(row.oversold_size_ceiling_pct_capital),
+      },
     };
   }
 
@@ -704,7 +723,7 @@ export class OversoldScannerService {
     const takeProfitPrice = cfg.tpPct != null ? String(livePrice * (1 + cfg.tpPct / 100)) : null;
 
     // Sizing dynamique (base = notionnel intraday déjà réduit par notionalRatio).
-    const sizing = computeOversoldNotional({ baseNotionalUsd: cfg.positionNotionalUsd, dropPct: cand.dropPct, vix, capitalUsd: cfg.capitalUsd });
+    const sizing = computeOversoldNotional({ baseNotionalUsd: cfg.positionNotionalUsd, dropPct: cand.dropPct, vix, capitalUsd: cfg.capitalUsd, config: cfg.sizing });
     if (sizing.dynamic) {
       this.logger.log(`[oversold-sizing:intraday] ${cand.symbol} drop=${cand.dropPct.toFixed(1)}% ${sizing.band} ×${sizing.bandMult}×vix${sizing.vixDamp} → $${sizing.notionalUsd}${sizing.clamp ? ` (${sizing.clamp})` : ''} (base $${cfg.positionNotionalUsd})`);
     }
@@ -1839,7 +1858,7 @@ export class OversoldScannerService {
     const takeProfitPrice = cfg.tpPct != null ? String(closeJ * (1 + cfg.tpPct / 100)) : null;
 
     // Sizing dynamique : taille calculée par bande de drop × VIX, bornée plancher/plafond.
-    const sizing = computeOversoldNotional({ baseNotionalUsd: cfg.positionNotionalUsd, dropPct: cand.dropPct, vix, capitalUsd: cfg.capitalUsd });
+    const sizing = computeOversoldNotional({ baseNotionalUsd: cfg.positionNotionalUsd, dropPct: cand.dropPct, vix, capitalUsd: cfg.capitalUsd, config: cfg.sizing });
     if (sizing.dynamic) {
       this.logger.log(`[oversold-sizing] ${cand.symbol} drop=${cand.dropPct.toFixed(1)}% ${sizing.band} ×${sizing.bandMult}×vix${sizing.vixDamp} → $${sizing.notionalUsd}${sizing.clamp ? ` (${sizing.clamp})` : ''} (base $${cfg.positionNotionalUsd})`);
     }

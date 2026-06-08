@@ -8,6 +8,8 @@
  * Aucune dépendance NestJS / Supabase / réseau ici : 100% déterministe.
  */
 
+import type { OversoldSizingConfig } from './oversold-sizing.helper';
+
 /** Barre EOD minimale (close + volume) issue d'EODHD. */
 export interface EodBar {
   date: string; // YYYY-MM-DD
@@ -26,6 +28,7 @@ export interface OversoldConfig {
   maxOpenPositions: number;
   universe: string;
   capitalUsd: number; // pour le plafond du sizing dynamique (% du capital)
+  sizing: OversoldSizingConfig; // paramètres du sizing dynamique (DB > env > défaut)
 }
 
 /** Candidat oversold retenu (post-filtre). */
