@@ -3568,6 +3568,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
   async updateOversoldSizing(userId: string, portfolioId: string, patch: Record<string, unknown>) {
     await this.assertPortfolioOwner(userId, portfolioId);
     const upd: Record<string, unknown> = {};
+    let newCapitalUsd: number | null = null;
     const setNum = (key: string, col: string, min: number, max: number): void => {
       if (patch[key] == null) return;
       const v = Number(patch[key]);
@@ -3588,6 +3589,7 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       }
       upd.capital_usd = v;
       upd.lisa_initial_capital_usd = v;
+      newCapitalUsd = v;
     }
     setNum('bandMultDeep', 'oversold_size_band_mult_deep', 0.1, 10);
     setNum('bandMultShallow', 'oversold_size_band_mult_shallow', 0.1, 10);
@@ -3603,6 +3605,24 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       .update(upd)
       .eq('portfolio_id', portfolioId);
     if (error) throw new BadRequestException(`Mise à jour échouée: ${error.message}`);
+
+    // Cohérence capital — 3ème source : le PaperBroker valorise le portefeuille
+    // via portfolios.simulation_initial_capital (cash = initial + réalisé −
+    // déployé). Sans ce sync, augmenter le capital ne crédite JAMAIS le cash réel
+    // → "Valeur totale" + graphe restent figés sur l'ancien capital (bug 08/06 :
+    // capital porté à 20k mais dashboard bloqué à 10k → faux -49.67% car valeur
+    // 10k vs référence graphe 20k). On aligne les 3 sources d'un coup.
+    if (newCapitalUsd != null) {
+      const { error: pErr } = await this.supabase.getClient()
+        .from('portfolios')
+        .update({ simulation_initial_capital: newCapitalUsd })
+        .eq('id', portfolioId);
+      if (pErr) {
+        this.logger.warn(
+          `[oversold-sizing] sync portfolios.simulation_initial_capital échoué (${portfolioId.slice(0, 8)}): ${pErr.message}`,
+        );
+      }
+    }
     return this.getOversoldSizing(userId, portfolioId);
   }
 
