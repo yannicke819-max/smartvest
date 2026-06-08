@@ -202,16 +202,24 @@ export function LisaPortfolioChart({ portfolioId }: { portfolioId: string }) {
       }
     }
 
-    // Trim du PLATEAU DE TÊTE : un portefeuille récent affiche souvent un long
-    // plat dormant au capital initial (weekend marchés fermés / avant la 1ère
-    // activité) qui écrase la partie utile de la courbe. On repère le 1er
-    // décollage MAJEUR de valeur (seuil relatif à l'amplitude totale → robuste
-    // aux micro-variations : frais d'ouverture, drift EOD du weekend de quelques
-    // $) et on démarre la courbe au DÉBUT de sa journée UTC (axe propre). Ex EU
-    // Oversold : créé vendredi 05/06 à $10k, figé tout le weekend, recapitalisé
-    // à $20k le 08/06 → la courbe démarre au 08/06 au lieu d'afficher 3 jours de
-    // plat suivis d'un trait vertical.
+    // Nettoyage du DÉBUT de courbe pour un portefeuille récent / recapitalisé.
     if (points.length >= 3) {
+      // 1) RECAPITALISATION — un saut majeur de valeur en un seul pas (ex dépôt
+      //    $10k→$20k, impossible en trading sur ~1 min entre 2 snapshots). On
+      //    démarre la courbe APRÈS le dernier saut de ce type → on montre
+      //    l'évolution PURE du portefeuille recapitalisé, sans le plat d'avant ni
+      //    la marche du dépôt qui écraserait le reste. L'axe Y se resserre autour
+      //    de la nouvelle valeur → le vrai % de perf redevient lisible.
+      let recapIdx = 0;
+      for (let i = 1; i < points.length; i++) {
+        const prev = points[i - 1].value;
+        if (prev > 0 && points[i].value / prev > 1.25) recapIdx = i;
+      }
+      if (recapIdx > 0) return points.slice(recapIdx);
+
+      // 2) Sinon, trim du PLATEAU DORMANT de tête (weekend marchés fermés / avant
+      //    1ère activité) : on démarre au début de la journée UTC du 1er mouvement
+      //    significatif (seuil relatif à l'amplitude → robuste frais/drift EOD).
       const vals = points.map((p) => p.value);
       const range = Math.max(...vals) - Math.min(...vals);
       const v0 = points[0].value;
