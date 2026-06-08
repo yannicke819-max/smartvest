@@ -817,6 +817,21 @@ export class OversoldScannerService {
           scanLog.push({ ...base, outcome: 'rejected', reject_stage: 'insufficient_bars', bars_count: raw.length, analysis_mode: 'candles' });
           continue;
         }
+        // Garde anti-bougies PÉRIMÉES : sur les titres thin / ADR mal couverts
+        // par TD, la dernière bougie peut dater de la veille → entrée sur signal
+        // périmé à un prix figé (bug KXIAY 08/06 : entré à 44.75 = close veille
+        // alors que le titre était réellement +5.8%). On skippe si la dernière
+        // bougie est trop vieille (default 30 min, réglable).
+        const lastTsRaw = Number(raw[raw.length - 1]?.timestamp ?? 0);
+        const lastTsSec = lastTsRaw > 1e11 ? lastTsRaw / 1000 : lastTsRaw;
+        const candleAgeMin = lastTsSec > 0 ? (Date.now() / 1000 - lastTsSec) / 60 : Number.POSITIVE_INFINITY;
+        const staleMaxMin = Number(this.config.get<string>('OVERSOLD_INTRADAY_STALE_CANDLE_MAX_MIN') ?? '30');
+        if (candleAgeMin > staleMaxMin) {
+          rejectedRebound++;
+          scanLog.push({ ...base, outcome: 'rejected', reject_stage: 'stale_candles', bars_count: raw.length, analysis_mode: 'candles' });
+          this.logger.debug(`[oversold-intraday] ${cand.symbol} bougies périmées (dernière ${candleAgeMin.toFixed(0)}min) → skip`);
+          continue;
+        }
         const analysis = analyzeIntradayRebound(
           raw.map((c) => ({ high: c.high, low: c.low, close: c.close, volume: c.volume })),
           reboundCfg,
