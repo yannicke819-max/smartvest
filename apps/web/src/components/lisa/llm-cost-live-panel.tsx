@@ -34,6 +34,10 @@ interface LlmCostLiveResponse {
     today_date: string;
     today_cost_usd: number;
     today_by_model: Record<string, number>;
+    month_label: string;
+    month_cost_usd: number;
+    year_label: string;
+    year_cost_usd: number;
     last_date: string | null;
     last_cost_usd: number;
     last_by_model: Record<string, number>;
@@ -104,6 +108,21 @@ export function LlmCostLivePanel() {
         <div className="flex items-baseline justify-between">
           <span className="text-2xl font-bold text-gray-900">${data.ledger.today_cost_usd.toFixed(2)}</span>
           <span className="text-xs text-gray-500">coût réel aujourd&apos;hui</span>
+        </div>
+        {/* 08/06 — Agrégats mensuel + annuel (demande user). */}
+        <div className="mt-2 grid grid-cols-3 gap-2 text-center">
+          <div className="rounded bg-gray-50 py-1">
+            <div className="text-[10px] uppercase text-gray-400">Aujourd&apos;hui</div>
+            <div className="text-sm font-semibold tabular-nums text-gray-800">${data.ledger.today_cost_usd.toFixed(2)}</div>
+          </div>
+          <div className="rounded bg-gray-50 py-1">
+            <div className="text-[10px] uppercase text-gray-400">Ce mois ({data.ledger.month_label})</div>
+            <div className="text-sm font-semibold tabular-nums text-gray-800">${data.ledger.month_cost_usd.toFixed(2)}</div>
+          </div>
+          <div className="rounded bg-gray-50 py-1">
+            <div className="text-[10px] uppercase text-gray-400">Année ({data.ledger.year_label})</div>
+            <div className="text-sm font-semibold tabular-nums text-gray-800">${data.ledger.year_cost_usd.toFixed(2)}</div>
+          </div>
         </div>
         {data.ledger.today_cost_usd === 0 && data.ledger.last_date && (
           <p className="mt-1 text-[11px] text-gray-500">

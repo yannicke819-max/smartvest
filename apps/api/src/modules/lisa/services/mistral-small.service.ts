@@ -13,8 +13,9 @@
  * Modèle override via MISTRAL_SMALL_MODEL. Partage MISTRAL_API_KEY + MISTRAL_FREE_TIER
  * avec les autres adapters Mistral (Medium/Large).
  */
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ApiCostTrackerService } from './api-cost-tracker.service';
 
 const MISTRAL_API_URL = 'https://api.mistral.ai/v1/chat/completions';
 const MODEL_SMALL_DEFAULT = 'mistral-small-2506';
@@ -42,7 +43,10 @@ export class MistralSmallService {
   private readonly model: string;
   private readonly freeTier: boolean;
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    @Optional() private readonly costTracker?: ApiCostTrackerService,
+  ) {
     // 07/06 — La clé Fly est nommée MISTRAL_SMARTVEST_API_KEY (pas MISTRAL_API_KEY).
     // Nouveau nom prioritaire (fallback ancien) + nettoyage espaces/virgule de fin
     // (un secret collé avec une virgule cassait l'auth → fetch qui hang jusqu'au
@@ -52,7 +56,10 @@ export class MistralSmallService {
       this.config.get<string>('MISTRAL_API_KEY')
     )?.trim().replace(/,+\s*$/, '').trim();
     this.model = this.config.get<string>('MISTRAL_SMALL_MODEL') ?? MODEL_SMALL_DEFAULT;
-    this.freeTier = (this.config.get<string>('MISTRAL_FREE_TIER') ?? 'true').toLowerCase() === 'true';
+    // 08/06 — Défaut FALSE : la clé MISTRAL_SMARTVEST_API_KEY est facturée (pay-as-you-go,
+    // ~0,77€/j constaté). En free tier le service zérottait le coût → panel $0 trompeur.
+    // Mettre MISTRAL_FREE_TIER=true seulement si le compte est réellement en crédits gratuits.
+    this.freeTier = (this.config.get<string>('MISTRAL_FREE_TIER') ?? 'false').toLowerCase() === 'true';
   }
 
   /** Configuré dès que la clé Mistral partagée est présente. L'activation runtime
@@ -134,6 +141,13 @@ export class MistralSmallService {
           (freshInputTokens / 1_000_000) * PRICE_INPUT_PER_M +
           (cachedTokens / 1_000_000) * PRICE_CACHED_PER_M +
           (result.outputTokens / 1_000_000) * PRICE_OUTPUT_PER_M;
+      }
+
+      // 08/06 — Enregistre le coût dans api_costs_daily (registre lu par le panel +
+      // budget). Avant : Mistral passait par le router qui ne récrivait nulle part →
+      // panel $0 alors que Mistral facturait. Fire-and-forget, ne bloque jamais l'appel.
+      if (result.content && result.costUsd > 0 && this.costTracker) {
+        void this.costTracker.recordApiCost(this.model, result.costUsd).catch(() => undefined);
       }
 
       if (!result.content) {

@@ -156,6 +156,10 @@ export class LisaController {
       today_date: string;
       today_cost_usd: number;
       today_by_model: Record<string, number>;
+      month_label: string;
+      month_cost_usd: number;
+      year_label: string;
+      year_cost_usd: number;
       last_date: string | null;
       last_cost_usd: number;
       last_by_model: Record<string, number>;
@@ -286,6 +290,20 @@ export class LisaController {
     const todayRow = ledgerArr.find((r) => r.date === todayDate) ?? null;
     const lastRow = ledgerArr.find((r) => Number(r.total_usd ?? 0) > 0) ?? null;
 
+    // 08/06 — Agrégats mois courant + année courante (demande user : quotidien/mensuel/annuel).
+    const monthPrefix = todayDate.slice(0, 7); // YYYY-MM
+    const yearPrefix = todayDate.slice(0, 4); // YYYY
+    const { data: yearRows } = await this.supabase
+      .getClient()
+      .from('api_costs_daily')
+      .select('date,total_usd')
+      .gte('date', `${yearPrefix}-01-01`);
+    const yearArr = (yearRows ?? []) as Array<{ date: string; total_usd: number | string }>;
+    const monthCostUsd = yearArr
+      .filter((r) => String(r.date).startsWith(monthPrefix))
+      .reduce((s, r) => s + Number(r.total_usd ?? 0), 0);
+    const yearCostUsd = yearArr.reduce((s, r) => s + Number(r.total_usd ?? 0), 0);
+
     return {
       since: since.toISOString(),
       until: now.toISOString(),
@@ -301,6 +319,10 @@ export class LisaController {
         today_date: todayDate,
         today_cost_usd: todayRow ? Math.round(Number(todayRow.total_usd ?? 0) * 10000) / 10000 : 0,
         today_by_model: (todayRow?.by_model ?? {}) as Record<string, number>,
+        month_label: monthPrefix,
+        month_cost_usd: Math.round(monthCostUsd * 10000) / 10000,
+        year_label: yearPrefix,
+        year_cost_usd: Math.round(yearCostUsd * 10000) / 10000,
         last_date: lastRow?.date ?? null,
         last_cost_usd: lastRow ? Math.round(Number(lastRow.total_usd ?? 0) * 10000) / 10000 : 0,
         last_by_model: (lastRow?.by_model ?? {}) as Record<string, number>,
