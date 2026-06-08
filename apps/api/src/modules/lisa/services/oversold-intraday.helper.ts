@@ -144,3 +144,94 @@ export function passesIntradayReboundFilter(
 
   return { pass: reasons.length === 0, reasons };
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// CHEMIN REAL-TIME OHLC (EU) — fallback quand les bougies intraday 5m sont
+// GELÉES.
+//
+// Découverte 08/06/2026 (logging per-candidat #657) : pour l'EU, les deux
+// sources de bougies intraday (TwelveData time_series ET EODHD intraday) sont
+// gelées sur la séance de vendredi → le scanner ré-analyse du vieux et ne voit
+// jamais le rebond du jour (cf. P19-staleness dans intraday-provider-router).
+// Seul EODHD `/api/real-time` est frais pour l'EU et expose l'OHLC du jour
+// (open/high/low/close/prevClose).
+//
+// On reconstruit donc le "rebond confirmé" à partir de l'OHLC du jour, sans
+// série :
+//   reboundFromLow = (close - low) / low                  → ampleur du rebond
+//   rangePos       = (close - low) / (high - low)          → où on est dans le
+//                                                            range du jour
+//                                                            (100% = au plus haut)
+//   dayChg         = (close - prevClose) / prevClose       → variation du jour
+//
+// rangePos est LE discriminant que les bougies gelées ne donnaient pas : un
+// titre qui rebondit du creux mais reste scotché en bas de range (rangePos bas)
+// est un faux rebond qui refade (validé 08/06 : NEL rangePos 41% → −1.7% ;
+// ETL 15% → −1.6% ; vs SOI 77%/IFX 86%/ADYEN 71% qui ont continué à monter).
+// ────────────────────────────────────────────────────────────────────────────
+
+export interface RealtimeOhlc {
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  prevClose: number;
+}
+
+export interface RealtimeReboundAnalysis {
+  currentPrice: number; // = close du jour
+  reboundFromLowPct: number; // (close - low) / low × 100
+  rangePosPct: number; // (close - low) / (high - low) × 100 ∈ [0, 100]
+  dayChgPct: number; // (close - prevClose) / prevClose × 100
+}
+
+export interface RealtimeReboundConfig {
+  /** % min de rebond depuis le low du jour. Ex 1.5 = +1.5%. */
+  minReboundFromLowPct: number;
+  /** Position min dans le range du jour [0..100]. Ex 50 = moitié haute. */
+  minRangePosPct: number;
+  /** Exiger close ≥ prevClose (vert sur la journée). Default false. */
+  requirePositiveDay: boolean;
+}
+
+export const DEFAULT_REALTIME_REBOUND_CONFIG: RealtimeReboundConfig = {
+  minReboundFromLowPct: 1.5,
+  minRangePosPct: 50,
+  requirePositiveDay: false,
+};
+
+/**
+ * Analyse "rebond confirmé" à partir de l'OHLC real-time du jour (pas de série).
+ * Retourne null si close/low invalides (données incohérentes ou indispo).
+ */
+export function analyzeRealtimeRebound(ohlc: RealtimeOhlc): RealtimeReboundAnalysis | null {
+  const { high, low, close, prevClose } = ohlc;
+  if (!Number.isFinite(close) || close <= 0) return null;
+  if (!Number.isFinite(low) || low <= 0) return null;
+  const reboundFromLowPct = ((close - low) / low) * 100;
+  const range = high - low;
+  const rangePosPct = range > 0 ? ((close - low) / range) * 100 : 0;
+  const dayChgPct = prevClose > 0 ? ((close - prevClose) / prevClose) * 100 : 0;
+  return { currentPrice: close, reboundFromLowPct, rangePosPct, dayChgPct };
+}
+
+/**
+ * Applique les gates "rebond confirmé real-time" sur une analyse OHLC.
+ * Retourne { pass, reasons[] } — reasons liste les gates failed (vide si pass).
+ */
+export function passesRealtimeReboundFilter(
+  a: RealtimeReboundAnalysis,
+  cfg: RealtimeReboundConfig = DEFAULT_REALTIME_REBOUND_CONFIG,
+): { pass: boolean; reasons: string[] } {
+  const reasons: string[] = [];
+  if (a.reboundFromLowPct < cfg.minReboundFromLowPct) {
+    reasons.push(`reboundFromLow=${a.reboundFromLowPct.toFixed(2)}% < ${cfg.minReboundFromLowPct}%`);
+  }
+  if (a.rangePosPct < cfg.minRangePosPct) {
+    reasons.push(`rangePos=${a.rangePosPct.toFixed(0)}% < ${cfg.minRangePosPct}%`);
+  }
+  if (cfg.requirePositiveDay && a.dayChgPct < 0) {
+    reasons.push(`dayChg=${a.dayChgPct.toFixed(2)}% < 0`);
+  }
+  return { pass: reasons.length === 0, reasons };
+}
