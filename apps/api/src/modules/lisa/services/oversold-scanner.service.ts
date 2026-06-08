@@ -47,6 +47,7 @@ import {
 } from './oversold-intraday.helper';
 import { IntradayProviderRouter } from './intraday-provider-router.service';
 import { minutesSinceExchangeOpen, minutesToExchangeClose } from './exchange-sessions.helper';
+import { computeOversoldNotional } from './oversold-sizing.helper';
 
 /**
  * Contexte de régime marché capturé AS-OF l'entrée (PR-2 — features régime).
@@ -180,6 +181,7 @@ export interface OversoldEmpiricalLaw {
 /** Row config oversold lue depuis lisa_session_configs. */
 interface OversoldPortfolioRow {
   portfolio_id: string;
+  capital_usd: number | string | null;
   oversold_drop_min_pct: number | string | null;
   oversold_drop_max_pct: number | string | null;
   oversold_hold_days: number | null;
@@ -269,7 +271,7 @@ export class OversoldScannerService {
       .getClient()
       .from('lisa_session_configs')
       .select(
-        'portfolio_id, oversold_drop_min_pct, oversold_drop_max_pct, oversold_hold_days, ' +
+        'portfolio_id, capital_usd, oversold_drop_min_pct, oversold_drop_max_pct, oversold_hold_days, ' +
           'oversold_stop_catastrophe_pct, oversold_tp_pct, oversold_position_notional_usd, ' +
           'oversold_max_open_positions, oversold_universe',
       )
@@ -304,6 +306,7 @@ export class OversoldScannerService {
       positionNotionalUsd: num(row.oversold_position_notional_usd, DEFAULTS.positionNotionalUsd),
       maxOpenPositions: row.oversold_max_open_positions ?? DEFAULTS.maxOpenPositions,
       universe: row.oversold_universe ?? DEFAULTS.universe,
+      capitalUsd: num(row.capital_usd, 10000),
     };
   }
 
@@ -398,7 +401,7 @@ export class OversoldScannerService {
         sectorCounts.set(sec, cur + 1);
       }
       try {
-        await this.openOversoldPosition(portfolioId, cand, cfg);
+        await this.openOversoldPosition(portfolioId, cand, cfg, regime.vix);
         opened++;
       } catch (err) {
         const msg = String(err).slice(0, 160);
@@ -635,7 +638,7 @@ export class OversoldScannerService {
         }
 
         // Open avec source intraday (distincte de scanner_oversold EOD)
-        await this.openIntradayPosition(portfolioId, cand, reboundCfgForOpens, analysis.currentPrice);
+        await this.openIntradayPosition(portfolioId, cand, reboundCfgForOpens, analysis.currentPrice, regime.vix);
         opened++;
         remaining--;
       } catch (err) {
@@ -694,10 +697,17 @@ export class OversoldScannerService {
     cand: OversoldCandidate,
     cfg: OversoldConfig,
     livePrice: number,
+    vix: number | null = null,
   ): Promise<void> {
     // Le SL/TP utilisent le prix LIVE (pas closeJ) puisqu'on entre intraday.
     const stopLossPrice = String(livePrice * (1 + cfg.stopCatastrophePct / 100));
     const takeProfitPrice = cfg.tpPct != null ? String(livePrice * (1 + cfg.tpPct / 100)) : null;
+
+    // Sizing dynamique (base = notionnel intraday déjà réduit par notionalRatio).
+    const sizing = computeOversoldNotional({ baseNotionalUsd: cfg.positionNotionalUsd, dropPct: cand.dropPct, vix, capitalUsd: cfg.capitalUsd });
+    if (sizing.dynamic) {
+      this.logger.log(`[oversold-sizing:intraday] ${cand.symbol} drop=${cand.dropPct.toFixed(1)}% ${sizing.band} ×${sizing.bandMult}×vix${sizing.vixDamp} → $${sizing.notionalUsd}${sizing.clamp ? ` (${sizing.clamp})` : ''} (base $${cfg.positionNotionalUsd})`);
+    }
 
     await this.lisa.getPaperBroker().openPositionDirect({
       portfolioId,
@@ -705,7 +715,7 @@ export class OversoldScannerService {
       assetClass: 'us_equity',
       direction: 'long',
       venue: 'US',
-      capitalAllocationUsd: String(cfg.positionNotionalUsd),
+      capitalAllocationUsd: String(sizing.notionalUsd),
       livePrice: String(livePrice),
       livePriceSource: 'intraday_5m',
       stopLossPrice,
@@ -1822,10 +1832,17 @@ export class OversoldScannerService {
     portfolioId: string,
     cand: OversoldCandidate,
     cfg: OversoldConfig,
+    vix: number | null = null,
   ): Promise<void> {
     const closeJ = cand.closeJ;
     const stopLossPrice = String(closeJ * (1 + cfg.stopCatastrophePct / 100));
     const takeProfitPrice = cfg.tpPct != null ? String(closeJ * (1 + cfg.tpPct / 100)) : null;
+
+    // Sizing dynamique : taille calculée par bande de drop × VIX, bornée plancher/plafond.
+    const sizing = computeOversoldNotional({ baseNotionalUsd: cfg.positionNotionalUsd, dropPct: cand.dropPct, vix, capitalUsd: cfg.capitalUsd });
+    if (sizing.dynamic) {
+      this.logger.log(`[oversold-sizing] ${cand.symbol} drop=${cand.dropPct.toFixed(1)}% ${sizing.band} ×${sizing.bandMult}×vix${sizing.vixDamp} → $${sizing.notionalUsd}${sizing.clamp ? ` (${sizing.clamp})` : ''} (base $${cfg.positionNotionalUsd})`);
+    }
 
     await this.lisa.getPaperBroker().openPositionDirect({
       portfolioId,
@@ -1833,7 +1850,7 @@ export class OversoldScannerService {
       assetClass: 'us_equity',
       direction: 'long',
       venue: 'US',
-      capitalAllocationUsd: String(cfg.positionNotionalUsd),
+      capitalAllocationUsd: String(sizing.notionalUsd),
       livePrice: String(closeJ),
       livePriceSource: 'eodhd_eod',
       stopLossPrice,

@@ -25,6 +25,7 @@ export interface OversoldConfig {
   positionNotionalUsd: number;
   maxOpenPositions: number;
   universe: string;
+  capitalUsd: number; // pour le plafond du sizing dynamique (% du capital)
 }
 
 /** Candidat oversold retenu (post-filtre). */
