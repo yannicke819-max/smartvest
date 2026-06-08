@@ -279,13 +279,15 @@ export class OversoldExitService {
 
   /** Charge les positions oversold ouvertes (toutes portfolios). */
   private async loadOpenOversoldPositions(): Promise<OpenOversoldPosition[]> {
-    // Filtre sur le JSONB venue_fee_detail->>source (= 'scanner_oversold'),
-    // car le broker n'écrit pas la colonne `source` (CHECK lisa/mechanical).
+    // Filtre sur le JSONB venue_fee_detail->>source, car le broker n'écrit pas
+    // la colonne `source` (CHECK lisa/mechanical). Inclut le scanner intraday
+    // (`scanner_oversold_intraday`) : ces positions ont aussi besoin du J+10 +
+    // stop catastrophe, sinon elles seraient orphelines de toute gestion d'exit.
     const { data, error } = await this.supabase
       .getClient()
       .from('lisa_positions')
       .select('id, portfolio_id, symbol, entry_price, entry_timestamp, manual_control, manual_control_since')
-      .eq('venue_fee_detail->>source', 'scanner_oversold')
+      .in('venue_fee_detail->>source', ['scanner_oversold', 'scanner_oversold_intraday'])
       .eq('status', 'open');
     if (error) {
       this.logger.warn(`[oversold-exit] load positions failed: ${error.message}`);

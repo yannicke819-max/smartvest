@@ -521,7 +521,7 @@ export class OversoldMistralExitService {
     const { data, error } = await this.supabase.getClient()
       .from('lisa_positions')
       .select('id, portfolio_id, symbol, direction, asset_class, entry_price, entry_timestamp, take_profit_price, stop_loss_price')
-      .eq('venue_fee_detail->>source', 'scanner_oversold')
+      .in('venue_fee_detail->>source', ['scanner_oversold', 'scanner_oversold_intraday'])
       .eq('status', 'open');
     if (error) {
       this.logger.warn(`[oversold-mistral-exit] load positions failed: ${error.message}`);

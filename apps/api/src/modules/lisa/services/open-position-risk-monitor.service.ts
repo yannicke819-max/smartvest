@@ -166,7 +166,7 @@ export class OpenPositionRiskMonitorService {
       // avant le rebond → destruction de l'edge. Le risk-monitor ne pilote QUE
       // les positions LLM (gainers/trader). Source via venue_fee_detail.source.
       const source = (p.venue_fee_detail as { source?: string } | null)?.source;
-      if (source === 'scanner_oversold') return false;
+      if ((source ?? '').startsWith('scanner_oversold')) return false;
       return this.isClassEnabled(p.asset_class);
     });
   }

@@ -1,8 +1,10 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Gauge, Clock, Activity, ShieldCheck, ShieldAlert } from 'lucide-react';
+import { Gauge, Clock, Activity, ShieldCheck, ShieldAlert, RefreshCw } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useOversoldRegime, type OversoldRegimeStatus } from '@/hooks/use-oversold-regime';
+import { apiFetch } from '@/lib/api-client';
 
 /**
  * PR-2 — Panel régime de marché du mode OVERSOLD (remplace la pollution gainers).
@@ -92,7 +94,10 @@ export function OversoldRegimePanel({ portfolioId }: { portfolioId: string }) {
             <span className="text-muted-foreground">Rotation sectorielle : —</span>
           )}
         </div>
-        <Countdown iso={data.nextScanUtc} kind={data.nextScanKind} />
+        <div className="flex items-center gap-2">
+          <ForceScanButton portfolioId={portfolioId} />
+          <Countdown iso={data.nextScanUtc} kind={data.nextScanKind} />
+        </div>
       </div>
 
       <p className="text-[11px] text-muted-foreground italic">
@@ -152,6 +157,54 @@ function Thermo(props: {
       </div>
       <div className="text-[10px] text-muted-foreground">seuil {threshold}</div>
     </div>
+  );
+}
+
+/**
+ * Bouton "Forcer le scan" — déclenche un scan intraday immédiat (bypass de la
+ * cadence 15 min) via POST /lisa/oversold/scan-now?phase=intraday. Ouvre les
+ * positions sur les rebonds confirmés sans attendre le prochain cron. Rafraîchit
+ * positions + book + régime après coup.
+ */
+function ForceScanButton({ portfolioId }: { portfolioId: string }) {
+  const qc = useQueryClient();
+  const [state, setState] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
+
+  const run = async () => {
+    if (state === 'running') return;
+    setState('running');
+    try {
+      await apiFetch('/lisa/oversold/scan-now?phase=intraday', { method: 'POST' });
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['lisa', 'positions', portfolioId] }),
+        qc.invalidateQueries({ queryKey: ['lisa', 'open-positions-live', portfolioId] }),
+        qc.invalidateQueries({ queryKey: ['lisa', 'oversold-summary', portfolioId] }),
+        qc.invalidateQueries({ queryKey: ['lisa', 'oversold-regime', portfolioId] }),
+      ]);
+      setState('done');
+      setTimeout(() => setState('idle'), 4000);
+    } catch {
+      setState('error');
+      setTimeout(() => setState('idle'), 4000);
+    }
+  };
+
+  return (
+    <button
+      onClick={run}
+      disabled={state === 'running'}
+      title="Force un scan intraday immédiat (bypass la cadence). Ouvre les positions sur rebonds confirmés."
+      className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-muted disabled:opacity-60 transition-colors"
+    >
+      <RefreshCw className={`h-3.5 w-3.5 ${state === 'running' ? 'animate-spin' : ''}`} />
+      {state === 'running'
+        ? 'Scan en cours…'
+        : state === 'done'
+          ? '✅ Scan lancé'
+          : state === 'error'
+            ? '❌ Échec'
+            : 'Forcer le scan'}
+    </button>
   );
 }
 

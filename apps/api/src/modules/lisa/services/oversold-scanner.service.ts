@@ -606,7 +606,7 @@ export class OversoldScannerService {
    * cron ne gaspille aucun appel EODHD.
    */
   @Cron('0 */5 8-20 * * 1-5', { name: 'oversold-intraday-scan', timeZone: 'UTC' })
-  async runIntradayScan(): Promise<void> {
+  async runIntradayScan(opts?: { force?: boolean }): Promise<void> {
     try {
       if (!this.isEnabled() || !this.intradayEnabled()) {
         this.logger.debug('[oversold-intraday] disabled (OVERSOLD_SCANNER_ENABLED or OVERSOLD_INTRADAY_ENABLED off)');
@@ -616,13 +616,18 @@ export class OversoldScannerService {
       // Gate cadence : throttle la base 5 min à la cadence configurée (default
       // 15 min). Le -30s absorbe la dérive de tick du cron (évite de sauter une
       // fenêtre quand l'écart retombe à 14min59 au lieu de 15min pile).
+      // opts.force (bouton UI "forcer le scan") bypass la cadence — déclenchement
+      // manuel délibéré.
       const cadenceMin = this.intradayCadenceMin();
       const elapsedMs = Date.now() - this.lastIntradayCycleAt;
-      if (elapsedMs < (cadenceMin * 60 - 30) * 1000) {
+      if (!opts?.force && elapsedMs < (cadenceMin * 60 - 30) * 1000) {
         this.logger.debug(
           `[oversold-intraday] cadence gate: ${Math.round(elapsedMs / 1000)}s < ${cadenceMin}min → skip`,
         );
         return;
+      }
+      if (opts?.force) {
+        this.logger.log('[oversold-intraday] FORCE scan (bypass cadence) — déclenchement manuel');
       }
       this.lastIntradayCycleAt = Date.now();
 
@@ -1269,12 +1274,12 @@ export class OversoldScannerService {
       max: Number(cfg?.oversold_drop_max_pct ?? DEFAULTS.dropMaxPct),
     };
 
-    // 2. Positions oversold OUVERTES de ce portfolio.
+    // 2. Positions oversold OUVERTES de ce portfolio (daily + intraday).
     const { data: openRows } = await client
       .from('lisa_positions')
       .select('symbol, entry_price, entry_notional_usd, quantity, entry_timestamp, stop_loss_price')
       .eq('portfolio_id', portfolioId)
-      .eq('venue_fee_detail->>source', 'scanner_oversold')
+      .in('venue_fee_detail->>source', ['scanner_oversold', 'scanner_oversold_intraday'])
       .eq('status', 'open');
     const open = (openRows ?? []) as Array<Record<string, unknown>>;
 
@@ -1283,7 +1288,7 @@ export class OversoldScannerService {
       .from('lisa_positions')
       .select('realized_pnl_usd')
       .eq('portfolio_id', portfolioId)
-      .eq('venue_fee_detail->>source', 'scanner_oversold')
+      .in('venue_fee_detail->>source', ['scanner_oversold', 'scanner_oversold_intraday'])
       .neq('status', 'open');
     const closed = (closedRows ?? []) as Array<{ realized_pnl_usd?: unknown }>;
     let realizedPnlUsd = 0;
@@ -1625,7 +1630,7 @@ export class OversoldScannerService {
       .from('lisa_positions')
       .select('symbol')
       .eq('portfolio_id', portfolioId)
-      .eq('venue_fee_detail->>source', 'scanner_oversold')
+      .in('venue_fee_detail->>source', ['scanner_oversold', 'scanner_oversold_intraday'])
       .eq('status', 'open');
     const symbols = Array.from(new Set((openRows ?? []).map((r) => String(r.symbol))));
     const openPositions = symbols.length;
@@ -1918,7 +1923,7 @@ export class OversoldScannerService {
 
     const oversold = (posRows ?? []).filter((p) => {
       const vfd = p.venue_fee_detail as { source?: string } | null;
-      return vfd?.source === 'scanner_oversold';
+      return (vfd?.source ?? '').startsWith('scanner_oversold');
     });
     if (oversold.length === 0) return;
 
