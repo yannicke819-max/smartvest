@@ -16,9 +16,11 @@ import { NotificationsBell } from './notifications-bell';
 
 interface Props {
   portfolioId: string;
+  /** Mode oversold : masque le branding "agent autonome" + la cible jour (concepts LISA/gainers). */
+  isOversold?: boolean;
 }
 
-export function LisaStickyHeader({ portfolioId }: Props) {
+export function LisaStickyHeader({ portfolioId, isOversold = false }: Props) {
   const {
     targets, stats, currentCapital, drawdownFromInitialPct, killSwitchActive, isLoading,
   } = useLisaTargetsAndStats(portfolioId);
@@ -73,7 +75,7 @@ export function LisaStickyHeader({ portfolioId }: Props) {
           <span className="text-base">🤖</span>
           <span className="font-semibold text-sm">LISA</span>
           <span className="hidden md:inline text-[10px] text-muted-foreground">
-            Agent autonome LISA
+            {isOversold ? 'Oversold · mean-reversion' : 'Agent autonome LISA'}
           </span>
           <NotificationsBell portfolioId={portfolioId} />
         </div>
@@ -88,19 +90,24 @@ export function LisaStickyHeader({ portfolioId }: Props) {
             </span>
           </div>
 
-          <div className="hidden sm:flex items-center gap-1.5">
-            <span className="text-muted-foreground">🎯</span>
-            <span className="font-medium">${targets.daily.effective.toFixed(0)}</span>
-          </div>
+          {/* Cible jour = concept LISA/gainers, masqué en oversold (horizon J+10, pas de cible $/jour). */}
+          {!isOversold && (
+            <div className="hidden sm:flex items-center gap-1.5">
+              <span className="text-muted-foreground">🎯</span>
+              <span className="font-medium">${targets.daily.effective.toFixed(0)}</span>
+            </div>
+          )}
 
           <div className="flex items-center gap-1.5">
             <span className="text-muted-foreground">Σ today :</span>
             <span className={`font-semibold tabular-nums ${pnlColor}`}>
               {sign}${Math.abs(pnlToday).toFixed(2)}
             </span>
-            <span className="text-[10px] text-muted-foreground hidden sm:inline">
-              ({stats.daily.pct_of_target.toFixed(0)}%)
-            </span>
+            {!isOversold && (
+              <span className="text-[10px] text-muted-foreground hidden sm:inline">
+                ({stats.daily.pct_of_target.toFixed(0)}%)
+              </span>
+            )}
           </div>
         </div>
       </div>

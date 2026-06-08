@@ -631,7 +631,7 @@ export default function LisaPage() {
   return (
     <>
       {/* LISA refonte A.3 — sticky header avec cible jour + PnL today */}
-      {selectedPortfolioId && <LisaStickyHeader portfolioId={selectedPortfolioId} />}
+      {selectedPortfolioId && <LisaStickyHeader portfolioId={selectedPortfolioId} isOversold={currentMode === 'oversold'} />}
 
       <div className="mx-auto max-w-5xl space-y-6 p-4 md:p-6">
       <div className="flex items-center justify-between gap-3">
