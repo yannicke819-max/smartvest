@@ -213,6 +213,15 @@ export class CloseDecisionCaptureService {
     // On essaie TOUJOURS postCloseCandles directement.
     const post = await this.postCloseCandles(symbol, r.asset_class as string | null, closedAt);
     if (post.length === 0) {
+      // Fix 08/06/2026 — Fallback real-time pour EU/equities. L'intraday 5m est
+      // périmé côté EODHD (renvoie la dernière séance, ex IFX.XETRA/ADYEN.AS le
+      // 08/06 : barres bloquées au vendredi) ET TD ne couvre pas tous les symboles
+      // EU → postCloseCandles vide → "OK" creux (no_post_data) → signal d'imitation
+      // learning mort sur tout le book EU. MAIS le real-time EODHD (delayed ~15min)
+      // EST frais. Pour un close récent, le prix live ≈ prix à close+~60min → vrai
+      // verdict directionnel. On l'essaie AVANT d'abandonner.
+      if (await this.tryRealtimeVerdict(r, closedAt, exit, sign).catch(() => false)) return true;
+
       // Fix 04/06/2026 — Retry up to 3 fois (~45min entre tentatives) avant marquer
       // verdict='OK' permanent. Évite de fermer définitivement un label quand le
       // provider intraday a juste un trou ponctuel.
@@ -258,6 +267,52 @@ export class CloseDecisionCaptureService {
         labeled_at: new Date().toISOString(),
       })
       .eq('id', String(r.id));
+    return true;
+  }
+
+  /**
+   * Fallback du verdict 60m via prix real-time (frais), quand les candles
+   * intraday post-close sont indisponibles (cas EU : intraday 5m périmé + TD
+   * patchy). Le real-time EODHD est delayed ~15min → pour un close récent
+   * (60-180 min) le prix live ≈ prix à close+~60min. Verdict directionnel sur
+   * ce point unique (pas de max favorable/adverse de fenêtre, d'où le marqueur
+   * label_reason='realtime_proxy' pour que le consumer pondère).
+   *
+   * Crypto exclu : Binance sert des candles fraîches → postCloseCandles n'est
+   * jamais vide pour le crypto, et les symboles crypto ne sont pas des tickers
+   * EODHD pour getQuote.
+   */
+  private async tryRealtimeVerdict(
+    r: Record<string, unknown>,
+    closedAt: number,
+    exit: number,
+    sign: number,
+  ): Promise<boolean> {
+    const assetClass = (r.asset_class as string | null) ?? '';
+    if (assetClass.startsWith('crypto')) return false;
+    const ageMin = (Date.now() - closedAt) / 60_000;
+    // Au-delà de 3h, le prix live a trop dérivé du point close+60min → on laisse
+    // la logique de retry/abandon (le vrai mouvement post-60min est perdu).
+    if (ageMin < 60 || ageMin > 180) return false;
+
+    const q = await this.intraday.getQuote(String(r.symbol), 'close_label_rt').catch(() => null);
+    if (!q || !(q.price > 0)) return false;
+
+    const favPct = ((q.price - exit) / exit) * 100 * sign;
+    let verdict: 'GOOD' | 'EARLY' | 'OK';
+    if (favPct >= 1.0) verdict = 'EARLY';
+    else if (favPct <= -0.5) verdict = 'GOOD';
+    else verdict = 'OK';
+
+    const existingPayload = (r.raw_payload ?? {}) as Record<string, unknown>;
+    await this.supabase.getClient().from('position_close_decisions').update({
+      price_after_60m: round2(q.price),
+      max_favorable_after_60m_pct: round2(favPct),
+      verdict,
+      labeled_at: new Date().toISOString(),
+      raw_payload: { ...existingPayload, label_reason: 'realtime_proxy', rt_provider: q.provider, rt_age_min: round2(ageMin) },
+    }).eq('id', String(r.id));
+    this.logger.log(`[close-labeler] ${String(r.symbol)} verdict=${verdict} via realtime proxy (fav=${round2(favPct)}% age=${Math.round(ageMin)}min)`);
     return true;
   }
 
