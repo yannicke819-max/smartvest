@@ -243,7 +243,14 @@ export class OversoldMistralExitService {
     if (this.skipWhenClosed() && isKnownMarketClosed(pos.symbol, new Date())) {
       return 'skipped_market_closed';
     }
-    const price = await this.fetchLastClose(pos.symbol);
+    // 08/06 — PRIX LIVE intraday (comme l'UI), pas l'EOD figé. fetchLastClose renvoyait
+    // le close de la veille (= prix d'entrée pendant la séance) → PnL vu à ~0% → toutes
+    // les positions EU étaient skipées (MFE<1.5%) alors qu'elles étaient à +1,7% réel.
+    // Le gain-picker est censé être INTRADAY-réactif → il lui faut le prix live. Fallback EOD.
+    let price: number | null = null;
+    const liveQuote = await this.lisa.getLivePrice(pos.symbol).catch(() => null);
+    if (liveQuote && Number(liveQuote.price) > 0) price = Number(liveQuote.price);
+    if (price == null) price = await this.fetchLastClose(pos.symbol);
     if (price == null) return 'skipped_no_price';
 
     const entry = parseFloat(pos.entry_price);
