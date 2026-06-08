@@ -378,6 +378,13 @@ function PositionLiveValue({ live }: { live?: OpenPositionLive }) {
       ? ((live.livePrice - oldest.price) / oldest.price) * 100
       : null;
 
+  // Marché fermé : prix figé (timestamp trop vieux) → le ring buffer 5min reste
+  // vide (aucun mouvement à mesurer). On l'explicite plutôt que d'afficher « — »
+  // ambigu. Seuil 30 min : EODHD US real-time est délayé ~15min EN SÉANCE, donc
+  // on ne déclenche pas « marché fermé » sur un prix simplement différé.
+  const priceAgeMin = live.asOf ? (Date.now() - new Date(live.asOf).getTime()) / 60_000 : null;
+  const marketClosed = priceAgeMin != null && Number.isFinite(priceAgeMin) && priceAgeMin > 30;
+
   const pnlColor =
     live.pnlPct === null ? '' : live.pnlPct >= 0 ? 'text-emerald-600' : 'text-red-500';
 
@@ -403,9 +410,18 @@ function PositionLiveValue({ live }: { live?: OpenPositionLive }) {
       <div className="flex items-center gap-0.5 justify-end text-[10px]">
         <span className="text-muted-foreground">5min</span>
         {trend5mPct === null ? (
-          <span className="text-muted-foreground" title="warm-up (besoin de 2 polls)">
-            <Minus className="h-3 w-3 inline" />
-          </span>
+          marketClosed ? (
+            <span
+              className="text-amber-600/80"
+              title={`Prix figé au close — marché fermé (dernier prix il y a ${Math.round(priceAgeMin!)} min)`}
+            >
+              marché fermé
+            </span>
+          ) : (
+            <span className="text-muted-foreground" title="warm-up (besoin de 2 polls)">
+              <Minus className="h-3 w-3 inline" />
+            </span>
+          )
         ) : trend5mPct > 0.02 ? (
           <span className="text-emerald-600 font-medium">
             <ArrowUp className="h-3 w-3 inline" />
