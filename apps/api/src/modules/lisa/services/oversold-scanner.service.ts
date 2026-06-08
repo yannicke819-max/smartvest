@@ -630,16 +630,37 @@ export class OversoldScannerService {
       positionNotionalUsd: Math.round(cfg.positionNotionalUsd * notionalRatio),
     };
 
+    // Logging per-candidat (mission "gate qui rate les pépites") — capture POUR
+    // CHAQUE candidat le verdict gate + les métriques, au lieu du seul compteur
+    // agrégé `rejected_rebound`. Shadow append-only, jamais bloquant.
+    const scanLog: Record<string, unknown>[] = [];
+    const baseRecOf = (c: OversoldCandidate): Record<string, unknown> => ({
+      portfolio_id: portfolioId,
+      scan_phase: 'intraday',
+      universe: cfg.universe,
+      region: regime.region,
+      symbol: c.symbol,
+      drop_pct: Number.isFinite(c.dropPct) ? Number(c.dropPct.toFixed(3)) : null,
+      close_j: Number.isFinite(c.closeJ) ? c.closeJ : null,
+    });
+
     for (const cand of toScan) {
       if (remaining <= 0) break;
       evaluated++;
+      const base = baseRecOf(cand);
       try {
         const series = await this.intraday
           .getCandles(cand.symbol, '5m', 18, { calledBy: 'oversold_intraday' })
           .catch(() => null);
         const raw = series?.candles ?? [];
+        if (raw.length === 0) {
+          rejectedRebound++;
+          scanLog.push({ ...base, outcome: 'rejected', reject_stage: 'no_candles' });
+          continue;
+        }
         if (raw.length < reboundCfg.minBarsRequired) {
           rejectedRebound++;
+          scanLog.push({ ...base, outcome: 'rejected', reject_stage: 'insufficient_bars', bars_count: raw.length });
           continue;
         }
         const analysis = analyzeIntradayRebound(
@@ -648,11 +669,21 @@ export class OversoldScannerService {
         );
         if (!analysis) {
           rejectedRebound++;
+          scanLog.push({ ...base, outcome: 'rejected', reject_stage: 'analysis_null', bars_count: raw.length });
           continue;
         }
+        const metricCols = {
+          current_price: analysis.currentPrice,
+          rebound_pct: Number(analysis.reboundPct.toFixed(3)),
+          trend_15m_pct: Number(analysis.trend15mPct.toFixed(3)),
+          volume_ratio: Number(analysis.volumeRatio.toFixed(3)),
+          bottom_bar_idx: analysis.lowAtBarIdx,
+          bars_count: analysis.barsCount,
+        };
         const gate = passesIntradayReboundFilter(analysis, reboundCfg);
         if (!gate.pass) {
           rejectedRebound++;
+          scanLog.push({ ...base, ...metricCols, outcome: 'rejected', reject_stage: 'rebound_filter', reject_reasons: gate.reasons });
           continue;
         }
 
@@ -660,12 +691,16 @@ export class OversoldScannerService {
         await this.openIntradayPosition(portfolioId, cand, reboundCfgForOpens, analysis.currentPrice, regime.vix);
         opened++;
         remaining--;
+        scanLog.push({ ...base, ...metricCols, outcome: 'opened' });
       } catch (err) {
         this.logger.warn(
           `[oversold-intraday] ${cand.symbol} évaluation échouée: ${String(err).slice(0, 160)}`,
         );
       }
     }
+
+    // Persiste le log per-candidat (un seul INSERT batch, fire-and-forget).
+    await this.persistScanLog(scanLog);
 
     await this.decisionLog
       .append({
@@ -696,6 +731,31 @@ export class OversoldScannerService {
       `[oversold-intraday] portfolio=${portfolioId.slice(0, 8)} bande=${candidates.length} ` +
         `évalués=${evaluated} ouverts=${opened} (cap ${maxOpensPerDay}, used ${intradayOpenedToday + opened})`,
     );
+  }
+
+  /** Gate du logging per-candidat (désactivable via secret, default on). */
+  private scanRejectLogEnabled(): boolean {
+    return (this.config.get<string>('OVERSOLD_SCAN_REJECT_LOG_ENABLED') ?? 'true').toLowerCase() === 'true';
+  }
+
+  /**
+   * Persiste le log per-candidat du scan (table shadow oversold_scan_rejections).
+   * Un seul INSERT batch par scan. Jamais bloquant : toute erreur est avalée en
+   * debug (le scan ne doit jamais crasher pour un échec de logging d'audit).
+   */
+  private async persistScanLog(rows: Record<string, unknown>[]): Promise<void> {
+    if (!this.scanRejectLogEnabled() || rows.length === 0) return;
+    try {
+      const { error } = await this.supabase
+        .getClient()
+        .from('oversold_scan_rejections')
+        .insert(rows);
+      if (error) {
+        this.logger.debug(`[oversold-intraday] scan-reject log insert failed: ${error.message.slice(0, 160)}`);
+      }
+    } catch (e) {
+      this.logger.debug(`[oversold-intraday] scan-reject log exception: ${String(e).slice(0, 120)}`);
+    }
   }
 
   /** Compte les positions ouvertes par le scanner intraday aujourd'hui UTC. */
