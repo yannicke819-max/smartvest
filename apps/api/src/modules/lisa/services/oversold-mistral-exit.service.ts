@@ -142,6 +142,7 @@ DÉFAUT EN CAS DE DOUTE : si pnl ≥ 1.5%, préfère CLOSE conf 0.70 (l'humain a
 @Injectable()
 export class OversoldMistralExitService {
   private readonly logger = new Logger(OversoldMistralExitService.name);
+  private lastCycleAt = 0; // pour l'intervalle effectif configurable (cron tourne à 1min)
   private readonly FETCH_TIMEOUT_MS = 8000;
   /** Régime VIX/indices — caché par cycle (TTL 10min) pour 1 seul fetch/cycle. */
   private regimeCache: { at: number; data: RegimeCtx } | null = null;
@@ -195,13 +196,22 @@ export class OversoldMistralExitService {
    * (30min) pour capter les rebonds intelligents en cours de journée. Coût LLM
    * borné par MFE skip (positions underwater = pas évaluées).
    */
-  @Cron('0 */15 * * * *', { name: 'oversold-mistral-exit', timeZone: 'UTC' })
+  // 08/06 — Cron à 1min, intervalle EFFECTIF configurable via Fly OVERSOLD_MISTRAL_EXIT_INTERVAL_MIN
+  // (default 2). Réactivité tunable sans redéploy : 2min capte les pics près du sommet (vs 15min
+  // où IFX a perdu 1pt). Coût négligeable (TP lock déterministe + Mistral Small + TwelveData illimité).
+  // Min effectif = 1min (granularité du cron).
+  @Cron('0 */1 * * * *', { name: 'oversold-mistral-exit', timeZone: 'UTC' })
   async runExitCycle(): Promise<void> {
     try {
       if (!this.isEnabled()) {
         this.logger.debug('[oversold-mistral-exit] OVERSOLD_MISTRAL_EXIT_ENABLED=false → skip');
         return;
       }
+      const intervalMin = Number(this.config.get<string>('OVERSOLD_MISTRAL_EXIT_INTERVAL_MIN') ?? '2');
+      if (Number.isFinite(intervalMin) && intervalMin > 1 && Date.now() - this.lastCycleAt < (intervalMin * 60 - 30) * 1000) {
+        return; // intervalle effectif pas encore écoulé
+      }
+      this.lastCycleAt = Date.now();
       const positions = await this.loadOpenPositions();
       if (positions.length === 0) return;
 
