@@ -28,14 +28,16 @@ export function OversoldSizingCard({ portfolioId }: { portfolioId: string }) {
   const set = (k: keyof OversoldSizing, v: number | boolean) => setForm({ ...f, [k]: v });
 
   // Aperçu live (miroir client de la logique serveur).
+  // Base effective : % du capital si > 0 (prioritaire, auto-scale), sinon notionnel fixe.
+  const effectiveBase = f.basePctCapital > 0 && f.capitalUsd > 0 ? (f.capitalUsd * f.basePctCapital) / 100 : f.baseNotionalUsd;
   const ceiling = f.capitalUsd > 0 ? (f.capitalUsd * f.ceilingPctCapital) / 100 : Infinity;
   const clampPv = (n: number) => Math.round(Math.max(f.floorUsd, Math.min(ceiling, n)));
   const previews = f.enabled
     ? [
-        { label: 'Drop −9% · VIX calme', usd: clampPv(f.baseNotionalUsd * f.bandMultDeep) },
-        { label: 'Drop −6% · VIX calme', usd: clampPv(f.baseNotionalUsd * f.bandMultShallow) },
-        { label: 'Drop −9% · VIX 20-30', usd: clampPv(f.baseNotionalUsd * f.bandMultDeep * f.vixDampElevated) },
-        { label: 'Drop −9% · VIX ≥30', usd: clampPv(f.baseNotionalUsd * f.bandMultDeep * f.vixDampStress) },
+        { label: 'Drop −9% · VIX calme', usd: clampPv(effectiveBase * f.bandMultDeep) },
+        { label: 'Drop −6% · VIX calme', usd: clampPv(effectiveBase * f.bandMultShallow) },
+        { label: 'Drop −9% · VIX 20-30', usd: clampPv(effectiveBase * f.bandMultDeep * f.vixDampElevated) },
+        { label: 'Drop −9% · VIX ≥30', usd: clampPv(effectiveBase * f.bandMultDeep * f.vixDampStress) },
       ]
     : [];
 
@@ -62,10 +64,12 @@ export function OversoldSizingCard({ portfolioId }: { portfolioId: string }) {
 
       <p className="text-[11px] text-muted-foreground">
         À chaque ouverture : <strong>notional = base × multiplicateur(bande) × amortisseur(VIX)</strong>, borné plancher/plafond.
+        Base = <strong>{f.basePctCapital > 0 ? `${f.basePctCapital}% du capital ($${Math.round(effectiveBase).toLocaleString()})` : `notionnel fixe ($${Math.round(f.baseNotionalUsd).toLocaleString()})`}</strong>.
       </p>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-        <Field label="Base ($)" value={f.baseNotionalUsd} step={100} onChange={(v) => set('baseNotionalUsd', v)} />
+        <Field label="Base (% capital) ★" value={f.basePctCapital} step={0.5} onChange={(v) => set('basePctCapital', v)} />
+        <Field label="Base fixe ($, si %=0)" value={f.baseNotionalUsd} step={100} onChange={(v) => set('baseNotionalUsd', v)} />
         <Field label="Capital ($)" value={f.capitalUsd} step={1000} onChange={(v) => set('capitalUsd', v)} />
         <Field label="Mult. −8/−12% (deep)" value={f.bandMultDeep} step={0.1} onChange={(v) => set('bandMultDeep', v)} />
         <Field label="Mult. −5/−8% (shallow)" value={f.bandMultShallow} step={0.1} onChange={(v) => set('bandMultShallow', v)} />

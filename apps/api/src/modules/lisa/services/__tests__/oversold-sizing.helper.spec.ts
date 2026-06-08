@@ -63,3 +63,39 @@ describe('computeOversoldNotional — sizing dynamique oversold', () => {
     }
   });
 });
+
+describe('computeOversoldNotional — base en % du capital (auto-scale)', () => {
+  it('basePctCapital=5% prioritaire sur le notionnel fixe → base = capital × 5%', () => {
+    // US $150k × 5% = $7500 base, × deep 2.0 = $15000 (sous plafond 12% = $18000)
+    const r = computeOversoldNotional({
+      baseNotionalUsd: 1000, // ignoré car % > 0
+      dropPct: -9,
+      vix: 15,
+      capitalUsd: 150_000,
+      config: { basePctCapital: 5 },
+    });
+    expect(r.dynamic).toBe(true);
+    expect(r.notionalUsd).toBe(15_000); // 7500 × 2.0
+  });
+
+  it('auto-scale : même 5% donne un ticket différent selon le capital', () => {
+    const us = computeOversoldNotional({ baseNotionalUsd: 1000, dropPct: -6, vix: 15, capitalUsd: 150_000, config: { basePctCapital: 5 } });
+    const eu = computeOversoldNotional({ baseNotionalUsd: 1000, dropPct: -6, vix: 15, capitalUsd: 20_000, config: { basePctCapital: 5 } });
+    expect(us.notionalUsd).toBe(7_500); // 150k × 5% × shallow 1.0
+    expect(eu.notionalUsd).toBe(1_000); // 20k × 5% × shallow 1.0 (= ancien base fixe préservé)
+  });
+
+  it('basePctCapital=0 ou null → retombe sur le notionnel fixe (back-compat)', () => {
+    const zero = computeOversoldNotional({ baseNotionalUsd: 1000, dropPct: -6, vix: 15, capitalUsd: 150_000, config: { basePctCapital: 0 } });
+    const nul = computeOversoldNotional({ baseNotionalUsd: 1000, dropPct: -6, vix: 15, capitalUsd: 150_000, config: { basePctCapital: null } });
+    expect(zero.notionalUsd).toBe(1_000);
+    expect(nul.notionalUsd).toBe(1_000);
+  });
+
+  it('le plafond 12% s\'applique toujours à la base en %', () => {
+    // 10% base × deep 2.0 = 20% du capital > plafond 12% → clamp ceiling
+    const r = computeOversoldNotional({ baseNotionalUsd: 1000, dropPct: -9, vix: 15, capitalUsd: 100_000, config: { basePctCapital: 10 } });
+    expect(r.clamp).toBe('ceiling');
+    expect(r.notionalUsd).toBe(12_000); // 12% de 100k
+  });
+});

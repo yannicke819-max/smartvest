@@ -7,6 +7,10 @@
  * Logique (demande user 08/06/2026) :
  *   notional = base × multiplicateur(bande) × amortisseur(VIX), clampé [plancher, plafond]
  *
+ *   - base : soit un % du capital (basePctCapital, prioritaire → auto-scale avec
+ *     le capital, recommandé) soit un notionnel fixe en $ (baseNotionalUsd,
+ *     back-compat). Le % évite de re-régler le ticket à chaque changement de
+ *     capital et garde un risque cohérent entre portefeuilles (US $150k / EU $20k).
  *   - bande -8/-12% (alpha J+10 +2,45%, meilleur edge) → ×2,0 par défaut
  *   - bande -5/-8%  (alpha +1%)                         → ×1,0
  *   - VIX ≥30 (stress) → ×0,5 · VIX 20-30 (élevé) → ×0,8 · <20 → ×1,0
@@ -28,6 +32,8 @@ export interface OversoldSizingResult {
 /** Paramètres réglables (depuis l'UI/DB). Chaque champ optionnel tombe sur env puis défaut. */
 export interface OversoldSizingConfig {
   enabled?: boolean | null;
+  /** Base = capital × ce % (prioritaire sur baseNotionalUsd, auto-scale). null = base fixe. */
+  basePctCapital?: number | null;
   bandMultDeep?: number | null;
   bandMultShallow?: number | null;
   vixDampElevated?: number | null;
@@ -58,7 +64,12 @@ export function computeOversoldNotional(p: {
   const enabled = c.enabled != null
     ? c.enabled === true
     : (process.env.OVERSOLD_DYNAMIC_SIZING_ENABLED ?? 'true').toLowerCase() === 'true';
-  const base = Math.max(0, p.baseNotionalUsd);
+  // Base = % du capital si configuré (auto-scale, prioritaire), sinon notionnel
+  // fixe (back-compat). OVERSOLD_SIZE_BASE_PCT_CAPITAL en fallback env.
+  const basePct = resolveNum(c.basePctCapital, 'OVERSOLD_SIZE_BASE_PCT_CAPITAL', 0);
+  const base = basePct > 0 && p.capitalUsd > 0
+    ? Math.max(0, (p.capitalUsd * basePct) / 100)
+    : Math.max(0, p.baseNotionalUsd);
   if (!enabled || p.dropPct == null || !Number.isFinite(p.dropPct)) {
     return { notionalUsd: Math.round(base), band: 'flat', bandMult: 1, vixDamp: 1, clamp: null, dynamic: false };
   }

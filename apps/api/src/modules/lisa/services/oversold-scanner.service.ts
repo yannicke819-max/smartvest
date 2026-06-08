@@ -196,6 +196,7 @@ interface OversoldPortfolioRow {
   oversold_max_open_positions: number | null;
   oversold_universe: string | null;
   oversold_size_dynamic_enabled: boolean | null;
+  oversold_size_base_pct_capital: number | string | null;
   oversold_size_band_mult_deep: number | string | null;
   oversold_size_band_mult_shallow: number | string | null;
   oversold_size_vix_damp_elevated: number | string | null;
@@ -286,7 +287,7 @@ export class OversoldScannerService {
         'portfolio_id, capital_usd, oversold_drop_min_pct, oversold_drop_max_pct, oversold_hold_days, ' +
           'oversold_stop_catastrophe_pct, oversold_tp_pct, oversold_position_notional_usd, ' +
           'oversold_max_open_positions, oversold_universe, ' +
-          'oversold_size_dynamic_enabled, oversold_size_band_mult_deep, oversold_size_band_mult_shallow, ' +
+          'oversold_size_dynamic_enabled, oversold_size_base_pct_capital, oversold_size_band_mult_deep, oversold_size_band_mult_shallow, ' +
           'oversold_size_vix_damp_elevated, oversold_size_vix_damp_stress, oversold_size_floor_usd, ' +
           'oversold_size_ceiling_pct_capital',
       )
@@ -324,6 +325,7 @@ export class OversoldScannerService {
       capitalUsd: num(row.capital_usd, 10000),
       sizing: {
         enabled: row.oversold_size_dynamic_enabled, // null → helper retombe sur env/défaut
+        basePctCapital: numOrNull(row.oversold_size_base_pct_capital), // base = capital × % (auto-scale)
         bandMultDeep: numOrNull(row.oversold_size_band_mult_deep),
         bandMultShallow: numOrNull(row.oversold_size_band_mult_shallow),
         vixDampElevated: numOrNull(row.oversold_size_vix_damp_elevated),
@@ -729,9 +731,16 @@ export class OversoldScannerService {
     let evaluated = 0;
     let opened = 0;
     let rejectedRebound = 0;
+    // Intraday = plus petit que daily (ratio 0.7). On réduit la base : le
+    // notionnel fixe ET le % du capital (sinon le sizing en % ignorerait le ratio).
     const reboundCfgForOpens: OversoldConfig = {
       ...cfg,
       positionNotionalUsd: Math.round(cfg.positionNotionalUsd * notionalRatio),
+      sizing: {
+        ...cfg.sizing,
+        basePctCapital:
+          cfg.sizing.basePctCapital != null ? cfg.sizing.basePctCapital * notionalRatio : null,
+      },
     };
 
     // Logging per-candidat (mission "gate qui rate les pépites") — capture POUR
