@@ -258,11 +258,20 @@ export class GeminiRiskManagerService {
     const { data, error } = await this.supabase
       .getClient()
       .from('lisa_positions')
-      .select('id, symbol, asset_class, entry_timestamp, entry_price, direction, stop_loss_price, take_profit_price, peak_pre_exit')
+      .select('id, symbol, asset_class, entry_timestamp, entry_price, direction, stop_loss_price, take_profit_price, peak_pre_exit, venue_fee_detail')
       .eq('status', 'open')
-      .limit(20);
+      .limit(60);
     if (error || !data) return [];
-    return data as Array<OpenPos>;
+    // Exclut les positions OVERSOLD (source scanner_oversold*) : stratégie
+    // déterministe mean-reversion, hold J+10. Le risk-manager momentum (Gemini)
+    // est ANTITHÉTIQUE — il les fermerait pendant le creux normal, juste avant le
+    // rebond — ET consomme du Gemini inutilement (constaté 09/06 : INTC.US
+    // oversold évalué à 02:42). Même exclusion que open-position-risk-monitor.
+    // Filtre JS (gère source NULL des positions non-oversold). Cap 20 conservé.
+    const filtered = (data as Array<OpenPos & { venue_fee_detail?: { source?: string } | null }>).filter(
+      (p) => !(p.venue_fee_detail?.source ?? '').startsWith('scanner_oversold'),
+    );
+    return filtered.slice(0, 20) as Array<OpenPos>;
   }
 
   /** Calcule pnl/distances/peak depuis le live price + position. Pure-ish. */
