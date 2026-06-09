@@ -109,6 +109,24 @@ export function LlmCostLivePanel() {
           <span className="text-2xl font-bold text-gray-900">${data.ledger.today_cost_usd.toFixed(2)}</span>
           <span className="text-xs text-gray-500">coût réel aujourd&apos;hui</span>
         </div>
+        {/* Répartition du JOUR par famille — montre explicitement Gemini $0, pour
+            lever la confusion récurrente avec le cumul annuel (qui inclut un
+            historique Gemini gelé pré-05/06 qui ne baissera jamais). */}
+        <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px]">
+          {(['mistral', 'gemini', 'claude'] as const).map((fam) => {
+            const famCost = Object.entries(data.ledger.today_by_model)
+              .filter(([m]) => m.toLowerCase().includes(fam))
+              .reduce((s, [, c]) => s + Number(c), 0);
+            const label = fam === 'mistral' ? 'Mistral' : fam === 'gemini' ? 'Gemini' : 'Claude';
+            const zero = famCost === 0;
+            return (
+              <span key={fam} className={zero ? 'text-gray-400' : 'font-medium text-gray-700'}>
+                {label}: ${famCost.toFixed(2)}
+                {fam === 'gemini' && zero && <span className="text-green-600"> ✓ off</span>}
+              </span>
+            );
+          })}
+        </div>
         {/* 08/06 — Agrégats mensuel + annuel (demande user). */}
         <div className="mt-2 grid grid-cols-3 gap-2 text-center">
           <div className="rounded bg-gray-50 py-1">
