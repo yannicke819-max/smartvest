@@ -62,11 +62,14 @@ export class ScannerLlmRouterService {
     @Optional() private readonly mistralSmall?: MistralSmallService,
   ) {
     this.enabled = (this.config.get<string>('SCANNER_LLM_ROUTER_ENABLED') ?? 'false').toLowerCase() === 'true';
-    this.primaryProvider = (this.config.get<string>('LLM_PRIMARY_PROVIDER') ?? 'gemini-pro').toLowerCase();
+    // Défaut MISTRAL (demande user 09/06 : « Mistral uniquement »). Primaire =
+    // Mistral Medium, tier rapide = Mistral Small. Gemini n'est plus jamais en
+    // tête, et son exécution est de toute façon bloquée (GeminiProvider kill).
+    this.primaryProvider = (this.config.get<string>('LLM_PRIMARY_PROVIDER') ?? 'mistral-medium').toLowerCase();
     if (this.primaryProvider === 'mistral-medium') {
-      this.logger.log('[scanner-llm] LLM_PRIMARY_PROVIDER=mistral-medium → Mistral Medium 3.5 décideur principal, Gemini Pro en fallback automatique');
+      this.logger.log('[scanner-llm] LLM_PRIMARY_PROVIDER=mistral-medium → Mistral Medium 3.5 décideur principal');
     }
-    this.fastProvider = (this.config.get<string>('LLM_FAST_PROVIDER') ?? '').toLowerCase();
+    this.fastProvider = (this.config.get<string>('LLM_FAST_PROVIDER') ?? 'mistral-small').toLowerCase();
     if (this.fastProvider === 'mistral-small') {
       this.logger.log('[scanner-llm] LLM_FAST_PROVIDER=mistral-small → tier rapide (call) sur Mistral Small, fallback Medium/Gemini');
     }

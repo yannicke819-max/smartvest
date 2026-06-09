@@ -37,11 +37,29 @@ export class GeminiProvider implements LlmProvider {
     else this.id = `gemini-${this.model}`;
   }
 
+  /**
+   * KILL-SWITCH GLOBAL — Gemini DÉSACTIVÉ par défaut (demande user 09/06/2026 :
+   * « Gemini OFF, Mistral uniquement »). Aucun appel Gemini ne passe, peu importe
+   * le service appelant (risk-manager, scout, daily-brief, router…). Le router LLM
+   * a Mistral en primaire → bascule transparente. Réversible UNIQUEMENT en posant
+   * explicitement GEMINI_DISABLED=false.
+   */
+  private static isKilled(): boolean {
+    return (process.env.GEMINI_DISABLED ?? 'true').toLowerCase() !== 'false';
+  }
+
+  // isConfigured reste basé sur la clé : le routeur LLM doit rester "enabled" pour
+  // que le chemin Mistral (gain-picker) fonctionne. Le kill agit sur l'EXÉCUTION
+  // (call() throw) : Gemini ne s'exécute jamais, mais le routeur ne se désactive
+  // pas (sinon il couperait aussi Mistral).
   isConfigured(): boolean {
     return !!this.apiKey;
   }
 
   async call(params: LlmCallParams): Promise<LlmCallResult> {
+    if (GeminiProvider.isKilled()) {
+      throw new Error('GeminiProvider: Gemini désactivé globalement (GEMINI_DISABLED, défaut ON) — Mistral uniquement.');
+    }
     if (!this.apiKey) throw new Error('GeminiProvider: GEMINI_API_KEY missing');
 
     const { GoogleGenAI } = await import('@google/genai');
