@@ -142,7 +142,8 @@ DÉFAUT EN CAS DE DOUTE : si pnl ≥ 1.5%, préfère CLOSE conf 0.70 (l'humain a
 @Injectable()
 export class OversoldMistralExitService {
   private readonly logger = new Logger(OversoldMistralExitService.name);
-  private lastCycleAt = 0; // pour l'intervalle effectif configurable (cron tourne à 1min)
+  private lastCycleAt = 0; // pour l'intervalle effectif configurable (cron base 30s)
+  private running = false; // anti-chevauchement : un cycle peut dépasser 30s
   private readonly FETCH_TIMEOUT_MS = 8000;
   /** Régime VIX/indices — caché par cycle (TTL 10min) pour 1 seul fetch/cycle. */
   private regimeCache: { at: number; data: RegimeCtx } | null = null;
@@ -200,18 +201,27 @@ export class OversoldMistralExitService {
   // (default 2). Réactivité tunable sans redéploy : 2min capte les pics près du sommet (vs 15min
   // où IFX a perdu 1pt). Coût négligeable (TP lock déterministe + Mistral Small + TwelveData illimité).
   // Min effectif = 1min (granularité du cron).
-  @Cron('0 */1 * * * *', { name: 'oversold-mistral-exit', timeZone: 'UTC' })
+  @Cron('*/30 * * * * *', { name: 'oversold-mistral-exit', timeZone: 'UTC' })
   async runExitCycle(): Promise<void> {
+    if (!this.isEnabled()) {
+      this.logger.debug('[oversold-mistral-exit] OVERSOLD_MISTRAL_EXIT_ENABLED=false → skip');
+      return;
+    }
+    // Intervalle effectif configurable (cron base 30s). OVERSOLD_MISTRAL_EXIT_INTERVAL_MIN
+    // accepte les FRACTIONS : 0.5 = 30s, 1 = 1min, 2 = 2min. Tolérance 5s pour la
+    // dérive de tick. Le TP_LOCK est déterministe (check prix, pas Mistral) → 30s
+    // ne coûte que des fetchs prix (TD illimité / EODHD large), pas de Mistral.
+    const intervalMin = Number(this.config.get<string>('OVERSOLD_MISTRAL_EXIT_INTERVAL_MIN') ?? '2');
+    const intervalMs = (Number.isFinite(intervalMin) && intervalMin > 0 ? intervalMin : 2) * 60_000;
+    if (Date.now() - this.lastCycleAt < intervalMs - 5_000) return;
+    // Anti-chevauchement : un cycle (N positions × fetch prix) peut dépasser 30s.
+    if (this.running) {
+      this.logger.debug('[oversold-mistral-exit] cycle déjà en cours → skip (anti-chevauchement)');
+      return;
+    }
+    this.running = true;
+    this.lastCycleAt = Date.now();
     try {
-      if (!this.isEnabled()) {
-        this.logger.debug('[oversold-mistral-exit] OVERSOLD_MISTRAL_EXIT_ENABLED=false → skip');
-        return;
-      }
-      const intervalMin = Number(this.config.get<string>('OVERSOLD_MISTRAL_EXIT_INTERVAL_MIN') ?? '2');
-      if (Number.isFinite(intervalMin) && intervalMin > 1 && Date.now() - this.lastCycleAt < (intervalMin * 60 - 30) * 1000) {
-        return; // intervalle effectif pas encore écoulé
-      }
-      this.lastCycleAt = Date.now();
       const positions = await this.loadOpenPositions();
       if (positions.length === 0) return;
 
@@ -240,6 +250,8 @@ export class OversoldMistralExitService {
       );
     } catch (err) {
       this.logger.error(`[oversold-mistral-exit] runExitCycle exception: ${String(err).slice(0, 300)}`);
+    } finally {
+      this.running = false;
     }
   }
 
