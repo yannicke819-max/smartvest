@@ -60,6 +60,7 @@ export function CloseDecisionsPanel({ portfolioId }: { portfolioId: string }) {
                 <th className="py-1.5 px-2">Sortie</th>
                 <th className="py-1.5 px-2 text-right">P&amp;L close</th>
                 <th className="py-1.5 px-2">Verdict 60m</th>
+                <th className="py-1.5 px-2" title="Le checkpoint J+N où tenir aurait le mieux payé. Survolez pour la trajectoire J+1/J+3/J+6/J+10.">Meilleur jour</th>
                 <th className="py-1.5 px-2">Verdict J+10</th>
                 <th className="py-1.5 pl-2 text-right">News</th>
               </tr>
@@ -75,8 +76,10 @@ export function CloseDecisionsPanel({ portfolioId }: { portfolioId: string }) {
 
       <p className="text-[11px] text-muted-foreground italic">
         « Trop tôt » = le prix a continué favorablement +60min après ta sortie. « Tenir mieux » = tenir
-        jusqu&apos;à J+10 aurait battu ta sortie. C&apos;est la matière brute de l&apos;imitation learning :
-        le LLM apprendra à reproduire tes <strong>bonnes</strong> sorties, pas toutes.
+        jusqu&apos;à J+10 aurait battu ta sortie. <strong>Meilleur jour</strong> = le checkpoint J+N (J+1/J+3/J+6/J+10,
+        survol pour le détail) où tenir aurait le mieux payé — il se peuple au fil des jours, sans attendre J+10.
+        C&apos;est la matière brute de l&apos;imitation learning : le LLM apprendra à reproduire tes
+        <strong> bonnes</strong> sorties, pas toutes.
       </p>
     </div>
   );
@@ -112,6 +115,32 @@ function BadgeDeadline({ v, pnlIfHeld }: { v: string | null; pnlIfHeld: number |
   return <span className="text-muted-foreground" title="Se peuplera à l'échéance J+10">⏳</span>;
 }
 
+/**
+ * Meilleur jour = le checkpoint J+N de la trajectoire où tenir aurait le mieux
+ * payé (P&L-si-tenu max). Se peuple progressivement (J+1 → J+3 → J+6 → J+10).
+ * Le survol montre la trajectoire complète des checkpoints écoulés.
+ */
+function BestDayCell({ r }: { r: CloseDecisionRow }) {
+  const traj = r.trajectory ?? [];
+  if (traj.length === 0 || r.bestDayLabel == null) {
+    return (
+      <span className="text-muted-foreground" title="Se peuple à J+1, J+3, J+6 puis J+10 (le prix EOD doit d'abord publier)">
+        ⏳ en cours
+      </span>
+    );
+  }
+  const pnl = r.bestDayPnlPct;
+  const cls = pnl == null ? 'text-muted-foreground' : pnl > 0 ? 'text-emerald-600' : pnl < 0 ? 'text-rose-500' : 'text-muted-foreground';
+  const tip = traj
+    .map((t) => `J+${t.d} ${t.pnl != null ? `${t.pnl >= 0 ? '+' : ''}${t.pnl.toFixed(1)}%` : '—'}`)
+    .join('  ·  ');
+  return (
+    <span className={`tabular-nums ${cls}`} title={`Trajectoire (P&L si tenu) : ${tip}`}>
+      🏆 {r.bestDayLabel} {pnl != null ? `${pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}%` : ''}
+    </span>
+  );
+}
+
 function Row({ r }: { r: CloseDecisionRow }) {
   const pnlCls = r.pnlPct == null ? 'text-muted-foreground' : r.pnlPct >= 0 ? 'text-emerald-600' : 'text-rose-500';
   return (
@@ -125,6 +154,7 @@ function Row({ r }: { r: CloseDecisionRow }) {
         {r.pnlPct != null ? `${r.pnlPct >= 0 ? '+' : ''}${r.pnlPct.toFixed(2)}%` : '—'}
       </td>
       <td className="py-1.5 px-2 whitespace-nowrap"><Badge60m v={r.verdict60m} /></td>
+      <td className="py-1.5 px-2 whitespace-nowrap"><BestDayCell r={r} /></td>
       <td className="py-1.5 px-2 whitespace-nowrap"><BadgeDeadline v={r.deadlineVerdict} pnlIfHeld={r.pnlIfHeldToDeadlinePct} /></td>
       <td className="py-1.5 pl-2 text-right tabular-nums text-muted-foreground">
         {r.newsCount != null && r.newsCount > 0

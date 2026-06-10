@@ -3494,7 +3494,8 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       .select(
         'id, symbol, context, closer_type, closed_at, pnl_pct, pnl_usd, age_minutes, ' +
           'mfe_pct, give_back_from_mfe, verdict, deadline_verdict, ' +
-          'pnl_if_held_to_deadline_pct, hours_to_deadline, deadline_at, news_count, news_min_sentiment',
+          'pnl_if_held_to_deadline_pct, hours_to_deadline, deadline_at, news_count, news_min_sentiment, ' +
+          'trajectory, best_day_label, best_day_pnl_pct',
       )
       .eq('portfolio_id', portfolioId)
       .order('closed_at', { ascending: false })
@@ -3519,6 +3520,14 @@ tu n'ouvres rien de neuf. Les contraintes "Risk constraints" sont absolues.
       hasDeadline: r.deadline_at != null,
       newsCount: num(r.news_count),
       newsMinSentiment: num(r.news_min_sentiment),
+      // 10/06 — Trajectoire progressive J+1/3/6/10 + meilleur jour (badge UI).
+      trajectory: Array.isArray(r.trajectory)
+        ? (r.trajectory as Array<{ d?: unknown; pnl?: unknown }>)
+            .map((t) => ({ d: Number(t.d), pnl: num(t.pnl) }))
+            .filter((t) => Number.isFinite(t.d))
+        : [],
+      bestDayLabel: (r.best_day_label as string | null) ?? null,
+      bestDayPnlPct: num(r.best_day_pnl_pct),
     }));
     return {
       rows: mapped,

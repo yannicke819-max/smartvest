@@ -148,6 +148,8 @@ import { IntradayProviderRouter } from './services/intraday-provider-router.serv
 import { PositionIndicatorsTrackerService } from './services/position-indicators-tracker.service';
 // Apprentissage décisions de fermeture (capture user+mécanique + cron counterfactuel)
 import { CloseDecisionCaptureService } from './services/close-decision-capture.service';
+// Générateur déterministe de lessons oversold (cron nuit, scope oversold_*_equity)
+import { OversoldRetrospectiveService } from './services/oversold-retrospective.service';
 // Distille les close decisions en politique de sortie apprise (prompt TRADER)
 import { ExitPolicyContextService } from './services/exit-policy-context.service';
 import { GainersExitPolicyService } from './services/research/gainers-exit-policy.service';
@@ -381,6 +383,8 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     PositionIndicatorsTrackerService,
     // Apprentissage décisions fermeture (capture + cron counterfactuel labeler)
     CloseDecisionCaptureService,
+    // Générateur déterministe de lessons oversold (cron nuit 22:45 UTC)
+    OversoldRetrospectiveService,
     // Politique de sortie apprise injectée dans le prompt TRADER
     ExitPolicyContextService,
     GainersExitPolicyService,
