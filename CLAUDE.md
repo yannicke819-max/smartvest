@@ -192,8 +192,12 @@ Cf. `docs/adr/ADR-002-grand-public-ready.md` pour le plan 8 sprints complet.
 
 ## RÈGLE OPÉRATIONNELLE — UI MODE OVERSOLD (PR #653-#656, 07/06/2026)
 
-La page `/lisa` a été nettoyée pour les 2 portfolios **Oversold** (US `a0000001`,
-EU `a0000003`). Le mode oversold est un scanner **mean-reversion déterministe**
+La page `/lisa` a été nettoyée pour les 2 portfolios **Oversold** (US `a0000001`
+« US Oversold / Russell 1000 », EU `c0000001` « EU Oversold / stoxx600 »).
+⚠️ **L'EU oversold est `c0000001`, PAS `a0000003`** (a0000003 est un ancien
+portefeuille gainers). Source de vérité = `lisa_session_configs.strategy_mode='oversold'`
+(découverte dynamique) — ne jamais hardcoder ces IDs, ils ont déjà dérivé.
+Le mode oversold est un scanner **mean-reversion déterministe**
 (cron 21:15 UTC + intraday horaire) — il **n'utilise NI le LLM Lisa, NI les
 gates gainers, NI les lessons, NI le cycle autopilot**. Tout l'historique UI
 gainers/trader/harvest est donc de la **pollution** sur cette vue.

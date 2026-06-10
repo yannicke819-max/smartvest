@@ -25,19 +25,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../supabase/supabase.service';
-import { buildOversoldLessons, type OversoldCloseRow } from './oversold-retrospective.helper';
+import { buildOversoldLessons, deriveRegionScope, type OversoldCloseRow } from './oversold-retrospective.helper';
 
 interface OversoldPortfolioTarget {
   portfolioId: string;
   region: string; // libellé humain pour le texte ('US' / 'EU')
   scope: string; // 'oversold_us_equity' | 'oversold_eu_equity'
 }
-
-// Portefeuilles oversold connus (cf. CLAUDE.md — US a0000001, EU a0000003).
-const OVERSOLD_TARGETS: OversoldPortfolioTarget[] = [
-  { portfolioId: 'a0000001-0000-0000-0000-000000000001', region: 'US', scope: 'oversold_us_equity' },
-  { portfolioId: 'a0000003-0000-0000-0000-000000000003', region: 'EU', scope: 'oversold_eu_equity' },
-];
 
 @Injectable()
 export class OversoldRetrospectiveService {
@@ -64,8 +58,10 @@ export class OversoldRetrospectiveService {
   @Cron('0 45 22 * * *', { name: 'oversold-retrospective', timeZone: 'UTC' })
   async runRetrospective(): Promise<void> {
     if (!this.enabled || !this.supabase.isReady()) return;
+    const targets = await this.resolveTargets();
+    if (targets.length === 0) return;
     let inserted = 0;
-    for (const t of OVERSOLD_TARGETS) {
+    for (const t of targets) {
       try {
         inserted += await this.runForTarget(t);
       } catch (e) {
@@ -73,6 +69,24 @@ export class OversoldRetrospectiveService {
       }
     }
     if (inserted > 0) this.logger.log(`[oversold-retro] ${inserted} leçon(s) oversold écrite(s)`);
+  }
+
+  /** Découvre dynamiquement les portefeuilles oversold + leur région (pas d'ID en dur). */
+  private async resolveTargets(): Promise<OversoldPortfolioTarget[]> {
+    const client = this.supabase.getClient();
+    const { data: cfgs, error } = await client
+      .from('lisa_session_configs')
+      .select('portfolio_id, oversold_universe')
+      .eq('strategy_mode', 'oversold');
+    if (error || !cfgs || cfgs.length === 0) return [];
+    const targets: OversoldPortfolioTarget[] = [];
+    for (const c of cfgs as Array<{ portfolio_id: string; oversold_universe: string | null }>) {
+      const { data: pf } = await client.from('portfolios').select('name').eq('id', c.portfolio_id).maybeSingle();
+      const rs = deriveRegionScope((pf?.name as string) ?? '', c.oversold_universe);
+      if (rs) targets.push({ portfolioId: c.portfolio_id, region: rs.region, scope: rs.scope });
+      else this.logger.warn(`[oversold-retro] ${c.portfolio_id.slice(0, 8)} oversold sans région reconnue (name/univ) — skip`);
+    }
+    return targets;
   }
 
   private async runForTarget(t: OversoldPortfolioTarget): Promise<number> {
