@@ -13,7 +13,7 @@ import { useCloseDecisions, type CloseDecisionRow } from '@/hooks/use-close-deci
  * pure — base du futur LLM qui apprendra QUAND fermer.
  *
  * 10/06 — Colonne « Meilleur jour » (trajectoire progressive J+1/J+3/J+6/J+10 +
- * badge du checkpoint où tenir aurait le mieux payé).
+ * badge du checkpoint où tenir aurait le mieux payé). Déploiement prod via Vercel Pro.
  */
 export function CloseDecisionsPanel({ portfolioId }: { portfolioId: string }) {
   const { data, isLoading, isError } = useCloseDecisions(portfolioId);
