@@ -2115,7 +2115,7 @@ export class MechanicalTradingService {
       }
     }
 
-    // 05/06/2026 — DANGER ZONE LLM (option C validée user) :
+    // DANGER ZONE LLM (gainers/trader) :
     // Quand position atteint X% du SL, set manual_control=true ET appelle Mistral
     // pour décider close_now / widen_sl / set_tp_breakeven / wait_user.
     // Évite que SL hard se déclenche sur prix stale (PR #608 EU 30min lag) tout
@@ -2126,11 +2126,15 @@ export class MechanicalTradingService {
     //   MECHANICAL_DANGER_ZONE_PCT_US             default 0.80 (TwelveData live 3min)
     //   MECHANICAL_DANGER_ZONE_PCT_EU             default 0.75 (EODHD stale 30min)
     //   MECHANICAL_DANGER_ZONE_PCT_CRYPTO         default 0.85 (Binance WS sub-second)
-    // 05/06/2026 — EXCLUSION OVERSOLD : DANGER_ZONE_LLM ne doit JAMAIS s'appliquer
-    // aux positions oversold (HIGH portfolio). Oversold = strategy swing J+10,
-    // SL large 10-15% volontaire pour laisser respirer. Si DANGER_ZONE trigger à
-    // 80% du SL (-8% à -12%), cut loss prématuré → user a perdu MU.US -$63
-    // 05/06 alors qu'elle devait être en mode OVERSOLD_EXTENDED.
+    // OVERSOLD — exclu de CE chemin LLM-pause UNIQUEMENT parce qu'il a sa propre
+    // protection DÉTERMINISTE : RiskMonitorService ferme l'oversold à ~-12% (prix
+    // LIVE) AVANT le -15% catastrophe (fix 10/06/2026, suite au -$301 sur SOI.PA
+    // qui avait gappé à -15% sans alerte). Ce chemin LLM pourrait laisser filer la
+    // position si le LLM répond "wait" → on garde la coupe déterministe à la place.
+    // ⚠️ CE N'EST PAS un choix de "laisser respirer sans filet" et l'utilisateur
+    // n'a JAMAIS validé une absence de protection : l'oversold EST protégé, par un
+    // mécanisme MEILLEUR (déterministe, pas LLM). Toute mention antérieure d'une
+    // "validation user 05/06" de cette exclusion était erronée — corrigée ici.
     //
     // Heuristique : SL_distance > 8% du entry = position oversold (gainers a
     // SL 1.5-3%, oversold a SL 10-15%). Évite query supplémentaire à la DB.
