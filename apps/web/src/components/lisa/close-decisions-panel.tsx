@@ -121,6 +121,10 @@ function BadgeDeadline({ v, pnlIfHeld }: { v: string | null; pnlIfHeld: number |
  * Le survol montre la trajectoire complète des checkpoints écoulés.
  */
 function BestDayCell({ r }: { r: CloseDecisionRow }) {
+  // Pas d'échéance J+10 (closes gainers/manuels) → la trajectoire ne s'applique pas.
+  if (!r.hasDeadline) {
+    return <span className="text-muted-foreground" title="Pas d'horizon J+10 (close hors oversold)">—</span>;
+  }
   const traj = r.trajectory ?? [];
   if (traj.length === 0 || r.bestDayLabel == null) {
     return (
