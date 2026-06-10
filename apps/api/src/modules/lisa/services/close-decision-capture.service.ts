@@ -364,66 +364,121 @@ export class CloseDecisionCaptureService {
   }
 
   /**
-   * Cron quotidien — contrefactuel à l'échéance (J+10 oversold). Pour les closes
-   * avec deadline_at atteinte et pas encore labellisés : compare "tenir jusqu'à
-   * l'échéance" vs "le close réel". Verdict CLOSE_BETTER / HELD_BETTER / NEUTRAL.
+   * Cron quotidien — labeler PROGRESSIF de la trajectoire J+1/J+3/J+6/J+10.
+   *
+   * Demande user 10/06 : voir des verdicts INTERMÉDIAIRES (J+3, J+6) qui se
+   * peuplent au fil de l'eau (pas seulement à l'échéance J+10), + un indicateur
+   * « meilleur jour » (le checkpoint où tenir aurait le mieux payé).
+   *
+   * À chaque run, pour les closes avec échéance pas encore FINALISÉE
+   * (deadline_verdict null) : on remplit la trajectoire des checkpoints déjà
+   * écoulés (P&L-si-tenu à J+1/3/6/10) + best_day. À J+10 atteint, on pose le
+   * verdict final CLOSE_BETTER / HELD_BETTER / NEUTRAL (ce qui fige la ligne).
    */
-  @Cron('0 30 22 * * *', { name: 'close-decision-deadline-labeler', timeZone: 'UTC' })
+  @Cron('0 30 22 * * *', { name: 'close-decision-trajectory-labeler', timeZone: 'UTC' })
   async labelDeadlineCounterfactuals(): Promise<void> {
     if (!this.labelerEnabled || !this.supabase.isReady()) return;
     try {
+      // Tous les closes avec échéance, pas encore finalisés, dont ~J+1 est écoulé.
+      // On re-traite la même ligne chaque jour (checkpoints qui s'ajoutent) jusqu'à
+      // ce que deadline_verdict soit posé à J+10. Coût ~1 call EOD/ligne/jour.
+      const cutoff = new Date(Date.now() - 20 * 3600_000).toISOString();
       const { data: rows } = await this.supabase.getClient()
         .from('position_close_decisions')
         .select('id, symbol, direction, entry_price, exit_price, pnl_pct, closed_at, deadline_at')
         .not('deadline_at', 'is', null)
         .is('deadline_verdict', null)
-        .lte('deadline_at', new Date().toISOString())
+        .lte('closed_at', cutoff)
+        .order('closed_at', { ascending: true })
         .limit(50);
       if (!rows || rows.length === 0) return;
       let labeled = 0;
+      let finalized = 0;
       for (const r of rows) {
-        if (await this.labelDeadlineOne(r as Record<string, unknown>).catch(() => false)) labeled++;
+        const res = await this.labelTrajectoryOne(r as Record<string, unknown>).catch(() => null);
+        if (res) {
+          labeled++;
+          if (res.finalized) finalized++;
+        }
       }
-      if (labeled > 0) this.logger.log(`[close-deadline-labeler] ${labeled}/${rows.length} closes labellisés à l'échéance`);
+      if (labeled > 0) {
+        this.logger.log(`[close-trajectory-labeler] ${labeled}/${rows.length} closes mis à jour (${finalized} finalisés J+10)`);
+      }
     } catch (e) {
-      this.logger.warn(`[close-deadline-labeler] ${String(e).slice(0, 150)}`);
+      this.logger.warn(`[close-trajectory-labeler] ${String(e).slice(0, 150)}`);
     }
   }
 
-  private async labelDeadlineOne(r: Record<string, unknown>): Promise<boolean> {
+  private async labelTrajectoryOne(r: Record<string, unknown>): Promise<{ finalized: boolean } | null> {
     const symbol = String(r.symbol);
     const entry = Number(r.entry_price);
     const pnlAtClose = r.pnl_pct != null ? Number(r.pnl_pct) : null;
     const sign = String(r.direction) === 'short' ? -1 : 1;
     const closedAt = new Date(String(r.closed_at));
+    const deadlineAt = r.deadline_at ? new Date(String(r.deadline_at)) : null;
+    const j10Reached = deadlineAt != null && deadlineAt.getTime() <= Date.now();
+
     if (!(entry > 0)) {
       await this.markDeadlineNoData(String(r.id));
-      return true;
+      return { finalized: true };
     }
     const closes = await this.fetchDailyCloses(symbol, closedAt).catch(() => [] as Array<{ date: string; close: number }>);
     if (closes.length === 0) {
-      await this.markDeadlineNoData(String(r.id));
-      return true;
+      // Pas encore de barre EOD post-close. Si J+10 dépassé → finalise neutre
+      // (no-data) ; sinon on retentera demain (rien à écrire pour l'instant).
+      if (j10Reached) {
+        await this.markDeadlineNoData(String(r.id));
+        return { finalized: true };
+      }
+      return null;
     }
-    // closes ascendant à partir de J+1 ouvré ; J+N = N-ème close.
+
+    // closes ascendant depuis J+1 ouvré ; J+N = N-ème close.
     const pick = (n: number): number | null => (closes[n - 1] ? closes[n - 1].close : null);
-    const pJ10 = pick(10) ?? closes[closes.length - 1].close;
-    const pnlIfHeld = pJ10 != null && entry > 0 ? ((pJ10 - entry) / entry) * 100 * sign : null;
-    let verdict: 'CLOSE_BETTER' | 'HELD_BETTER' | 'NEUTRAL' = 'NEUTRAL';
-    if (pnlIfHeld != null && pnlAtClose != null) {
-      if (pnlIfHeld > pnlAtClose + 0.5) verdict = 'HELD_BETTER'; // tenir aurait mieux valu → close prématuré
-      else if (pnlIfHeld < pnlAtClose - 0.5) verdict = 'CLOSE_BETTER'; // bien fermé
+    const pnlIfHeldAt = (p: number | null): number | null =>
+      p != null && entry > 0 ? ((p - entry) / entry) * 100 * sign : null;
+
+    // Trajectoire : 60min est déjà couvert par `verdict` ; ici J+1 → J+3 → J+6 → J+10.
+    // On ne pousse que les checkpoints DÉJÀ écoulés (closes.length ≥ d).
+    const checkpoints = [1, 3, 6, 10];
+    const trajectory: Array<{ d: number; pnl: number }> = [];
+    for (const d of checkpoints) {
+      const v = pnlIfHeldAt(pick(d));
+      if (v != null) trajectory.push({ d, pnl: round2(v) });
     }
-    await this.supabase.getClient().from('position_close_decisions').update({
+    // Meilleur jour observé jusqu'ici (où tenir aurait le mieux payé).
+    let best: { d: number; pnl: number } | null = null;
+    for (const t of trajectory) if (best == null || t.pnl > best.pnl) best = t;
+
+    const update: Record<string, unknown> = {
       price_j1: pick(1),
       price_j3: pick(3),
-      price_j5: pick(5),
-      price_j10: pJ10,
-      pnl_if_held_to_deadline_pct: pnlIfHeld != null ? round2(pnlIfHeld) : null,
-      deadline_verdict: verdict,
-      deadline_labeled_at: new Date().toISOString(),
-    }).eq('id', String(r.id));
-    return true;
+      price_j6: pick(6),
+      price_j10: pick(10),
+      trajectory,
+      best_day_label: best ? `J+${best.d}` : null,
+      best_day_pnl_pct: best ? best.pnl : null,
+      trajectory_labeled_at: new Date().toISOString(),
+    };
+
+    // Finalisation à J+10 : verdict close vs tenir (fige la ligne).
+    let finalized = false;
+    if (j10Reached) {
+      const pJ10 = pick(10) ?? closes[closes.length - 1].close;
+      const pnlIfHeld = pnlIfHeldAt(pJ10);
+      let verdict: 'CLOSE_BETTER' | 'HELD_BETTER' | 'NEUTRAL' = 'NEUTRAL';
+      if (pnlIfHeld != null && pnlAtClose != null) {
+        if (pnlIfHeld > pnlAtClose + 0.5) verdict = 'HELD_BETTER'; // tenir aurait mieux valu → close prématuré
+        else if (pnlIfHeld < pnlAtClose - 0.5) verdict = 'CLOSE_BETTER'; // bien fermé
+      }
+      update.pnl_if_held_to_deadline_pct = pnlIfHeld != null ? round2(pnlIfHeld) : null;
+      update.deadline_verdict = verdict;
+      update.deadline_labeled_at = new Date().toISOString();
+      finalized = true;
+    }
+
+    await this.supabase.getClient().from('position_close_decisions').update(update).eq('id', String(r.id));
+    return { finalized };
   }
 
   private async markDeadlineNoData(id: string): Promise<void> {

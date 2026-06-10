@@ -24,6 +24,10 @@ export interface CloseDecisionRow {
   hasDeadline: boolean;
   newsCount: number | null;
   newsMinSentiment: number | null;
+  // 10/06 — Trajectoire progressive (checkpoints écoulés) + meilleur jour.
+  trajectory: Array<{ d: number; pnl: number | null }>;
+  bestDayLabel: string | null;
+  bestDayPnlPct: number | null;
 }
 
 export interface CloseDecisionsResponse {
