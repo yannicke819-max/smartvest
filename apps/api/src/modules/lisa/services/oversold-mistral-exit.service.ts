@@ -144,6 +144,7 @@ export class OversoldMistralExitService {
   private readonly logger = new Logger(OversoldMistralExitService.name);
   private lastCycleAt = 0; // pour l'intervalle effectif configurable (cron base 30s)
   private running = false; // anti-chevauchement : un cycle peut dépasser 30s
+  private runningSince = 0; // début du cycle courant → détection de stall (await hung)
   private readonly FETCH_TIMEOUT_MS = 8000;
   /** Régime VIX/indices — caché par cycle (TTL 10min) pour 1 seul fetch/cycle. */
   private regimeCache: { at: number; data: RegimeCtx } | null = null;
@@ -214,12 +215,25 @@ export class OversoldMistralExitService {
     const intervalMin = Number(this.config.get<string>('OVERSOLD_MISTRAL_EXIT_INTERVAL_MIN') ?? '2');
     const intervalMs = (Number.isFinite(intervalMin) && intervalMin > 0 ? intervalMin : 2) * 60_000;
     if (Date.now() - this.lastCycleAt < intervalMs - 5_000) return;
-    // Anti-chevauchement : un cycle (N positions × fetch prix) peut dépasser 30s.
-    if (this.running) {
+    // Anti-chevauchement : un cycle (N positions × fetch prix) peut dépasser l'intervalle.
+    // FIX 10/06 — STUCK-RESET : si un cycle a hung sur un `await` SANS timeout (ex
+    // getLivePrice/Mistral bloqué), le `finally` ne s'exécutait jamais → `running`
+    // restait `true` POUR TOUJOURS → tous les cycles suivants skippaient → 0 lock de
+    // toute la séance US (incident observé : LITE/NOW/TSEM montés à +2,4/+5,6% jamais
+    // verrouillés ; locks EU stoppés à 11:57 = heure du stall). On force le reset
+    // après STUCK_MS pour qu'un cycle bloqué ne gèle pas le service indéfiniment.
+    const STUCK_MS = 120_000;
+    if (this.running && Date.now() - this.runningSince < STUCK_MS) {
       this.logger.debug('[oversold-mistral-exit] cycle déjà en cours → skip (anti-chevauchement)');
       return;
     }
+    if (this.running) {
+      this.logger.warn(
+        `[oversold-mistral-exit] cycle précédent bloqué > ${STUCK_MS / 1000}s (await hung) → reset forcé, on relance`,
+      );
+    }
     this.running = true;
+    this.runningSince = Date.now();
     this.lastCycleAt = Date.now();
     try {
       const positions = await this.loadOpenPositions();
@@ -233,7 +247,20 @@ export class OversoldMistralExitService {
 
       for (const pos of positions) {
         try {
-          const result = await this.evaluatePosition(pos, policyCache);
+          // FIX 10/06 — TIMEOUT PAR POSITION : un getLivePrice/Mistral qui HANG (pas
+          // juste reject) figeait tout le cycle (le .catch ne capte pas un hang). On
+          // borne chaque position à 15s → une position bloquée n'empêche plus les
+          // suivantes d'être verrouillées. Large pour un fetch prix + indicateurs.
+          const result = await Promise.race<
+            'closed' | 'evaluated' | 'skipped_mfe' | 'skipped_no_price' | 'skipped_market_closed' | 'timeout'
+          >([
+            this.evaluatePosition(pos, policyCache),
+            new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 15_000)),
+          ]);
+          if (result === 'timeout') {
+            this.logger.warn(`[oversold-mistral-exit] ${pos.symbol} timeout 15s → skip (évite de figer le cycle)`);
+            continue;
+          }
           if (result === 'closed') closed++;
           else if (result === 'evaluated') evaluated++;
           else if (result === 'skipped_mfe') skippedMfe++;
