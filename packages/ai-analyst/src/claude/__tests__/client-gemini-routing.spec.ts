@@ -15,48 +15,68 @@ import type { LlmRouter } from '../../llm';
 describe('LisaClaudeClient — provider routing', () => {
   // Router stub minimal — on ne l'appelle pas, on vérifie juste la décision provider
   const stubRouter = {} as LlmRouter;
+  const origDisabled = process.env.GEMINI_DISABLED;
+  const restore = (): void => {
+    if (origDisabled === undefined) delete process.env.GEMINI_DISABLED;
+    else process.env.GEMINI_DISABLED = origDisabled;
+  };
 
-  it('défaut sans gemini config → effective claude', () => {
-    const client = new LisaClaudeClient(stubRouter);
-    // @ts-expect-error — accès propriété privée pour test
-    expect(client.effectiveProvider).toBe('claude');
-  });
+  // ── Kill-switch par défaut (GEMINI_DISABLED non posé = Gemini OFF) ──────────
+  describe('Gemini désactivé par défaut → tout en Claude', () => {
+    beforeEach(() => { delete process.env.GEMINI_DISABLED; });
+    afterEach(restore);
 
-  it('provider=gemini sans apiKey → fallback claude + warn', () => {
-    const warn = jest.fn();
-    const client = new LisaClaudeClient(stubRouter, {
-      provider: 'gemini',
-      logger: { warn },
+    it('défaut sans gemini config → claude', () => {
+      const client = new LisaClaudeClient(stubRouter);
+      // @ts-expect-error — accès propriété privée pour test
+      expect(client.effectiveProvider).toBe('claude');
     });
-    // @ts-expect-error — accès propriété privée pour test
-    expect(client.effectiveProvider).toBe('claude');
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('LISA_PROPOSAL_PROVIDER=gemini'),
-    );
-  });
 
-  it('provider=gemini avec apiKey → effective gemini', () => {
-    const client = new LisaClaudeClient(stubRouter, {
-      apiKey: 'fake-key',
-      provider: 'gemini',
+    it('apiKey gemini fourni → claude quand même (kill global) + warn', () => {
+      const warn = jest.fn();
+      const client = new LisaClaudeClient(stubRouter, { apiKey: 'fake-key', logger: { warn } });
+      // @ts-expect-error — accès propriété privée pour test
+      expect(client.effectiveProvider).toBe('claude');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('GEMINI_DISABLED'));
     });
-    // @ts-expect-error — accès propriété privée pour test
-    expect(client.effectiveProvider).toBe('gemini');
-  });
 
-  it('provider=claude explicite + apiKey gemini dispo → claude', () => {
-    const client = new LisaClaudeClient(stubRouter, {
-      apiKey: 'fake-key',
-      provider: 'claude',
+    it('provider=gemini explicite + apiKey → claude quand même (kill global)', () => {
+      const client = new LisaClaudeClient(stubRouter, { apiKey: 'fake-key', provider: 'gemini' });
+      // @ts-expect-error — accès propriété privée pour test
+      expect(client.effectiveProvider).toBe('claude');
     });
-    // @ts-expect-error — accès propriété privée pour test
-    expect(client.effectiveProvider).toBe('claude');
   });
 
-  it('apiKey gemini fourni sans provider explicite → gemini (default)', () => {
-    const client = new LisaClaudeClient(stubRouter, { apiKey: 'fake-key' });
-    // @ts-expect-error — accès propriété privée pour test
-    expect(client.effectiveProvider).toBe('gemini');
+  // ── Routing legacy quand Gemini est explicitement réactivé ─────────────────
+  describe('GEMINI_DISABLED=false → routing legacy', () => {
+    beforeEach(() => { process.env.GEMINI_DISABLED = 'false'; });
+    afterEach(restore);
+
+    it('provider=gemini sans apiKey → fallback claude + warn', () => {
+      const warn = jest.fn();
+      const client = new LisaClaudeClient(stubRouter, { provider: 'gemini', logger: { warn } });
+      // @ts-expect-error — accès propriété privée pour test
+      expect(client.effectiveProvider).toBe('claude');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('LISA_PROPOSAL_PROVIDER=gemini'));
+    });
+
+    it('provider=gemini avec apiKey → effective gemini', () => {
+      const client = new LisaClaudeClient(stubRouter, { apiKey: 'fake-key', provider: 'gemini' });
+      // @ts-expect-error — accès propriété privée pour test
+      expect(client.effectiveProvider).toBe('gemini');
+    });
+
+    it('provider=claude explicite + apiKey gemini dispo → claude', () => {
+      const client = new LisaClaudeClient(stubRouter, { apiKey: 'fake-key', provider: 'claude' });
+      // @ts-expect-error — accès propriété privée pour test
+      expect(client.effectiveProvider).toBe('claude');
+    });
+
+    it('apiKey gemini fourni sans provider explicite → gemini (default legacy)', () => {
+      const client = new LisaClaudeClient(stubRouter, { apiKey: 'fake-key' });
+      // @ts-expect-error — accès propriété privée pour test
+      expect(client.effectiveProvider).toBe('gemini');
+    });
   });
 });
 

@@ -101,9 +101,22 @@ export class LisaClaudeClient {
     geminiConfig: LisaClaudeClientGeminiConfig = {},
   ) {
     this.geminiConfig = geminiConfig;
-    // Provider effectif : 'gemini' si apiKey + provider != 'claude', sinon 'claude'.
+    // ── KILL-SWITCH GLOBAL GEMINI (demande user 09-10/06/2026) ──────────────
+    // FUITE FERMÉE 10/06 : ce client a un chemin Gemini DIRECT (callWithToolGemini)
+    // qui contourne le kill de GeminiProvider — et il défaultait sur Gemini dès
+    // que la clé était présente → facturation Google AI Studio observée ($3.81/j)
+    // alors que l'utilisateur veut Gemini OFF. Tant que GEMINI_DISABLED != 'false'
+    // (défaut ON), LisaClaudeClient n'utilise JAMAIS Gemini : tout part en Claude.
+    const geminiKilled = (process.env.GEMINI_DISABLED ?? 'true').toLowerCase() !== 'false';
     const requested = geminiConfig.provider;
-    if (requested === 'claude') {
+    if (geminiKilled) {
+      this.effectiveProvider = 'claude';
+      if (geminiConfig.apiKey || requested === 'gemini') {
+        geminiConfig.logger?.warn(
+          '[LisaClaudeClient] Gemini désactivé globalement (GEMINI_DISABLED, défaut ON) — propositions forcées en Claude',
+        );
+      }
+    } else if (requested === 'claude') {
       this.effectiveProvider = 'claude';
     } else if (requested === 'gemini' && !geminiConfig.apiKey) {
       // Gemini explicitement demandé mais sans clé → fallback claude
@@ -371,6 +384,12 @@ export class LisaClaudeClient {
   private async callWithToolGemini(options: ClaudeCallOptions & {
     tool: { name: string; description: string; input_schema: Record<string, unknown> };
   }): Promise<ClaudeToolResult> {
+    // Garde kill-switch (défense en profondeur) : même si on arrive ici, aucun
+    // appel Gemini ne part tant que GEMINI_DISABLED != 'false'. Le caller
+    // (callWithTool) fallback alors sur Claude.
+    if ((process.env.GEMINI_DISABLED ?? 'true').toLowerCase() !== 'false') {
+      throw new Error('LisaClaudeClient: Gemini désactivé globalement (GEMINI_DISABLED) — fallback Claude.');
+    }
     const apiKey = this.geminiConfig.apiKey;
     if (!apiKey) {
       throw new Error('LisaClaudeClient.callWithToolGemini: GEMINI_API_KEY missing');
