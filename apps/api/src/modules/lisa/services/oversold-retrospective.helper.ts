@@ -20,6 +20,22 @@ export interface OversoldCloseRow {
   bestDayPnlPct: number | null;
 }
 
+/**
+ * Région + scope dérivés du NOM/UNIVERS du portefeuille (jamais d'ID en dur — un
+ * ID hardcodé périmé a causé un bug : le générateur visait a0000003 alors que
+ * l'EU oversold réel est c0000001). Renvoie null si la région n'est pas
+ * reconnue (→ le caller skip plutôt que de mal scoper une leçon).
+ */
+export function deriveRegionScope(
+  name: string | null | undefined,
+  universe: string | null | undefined,
+): { region: string; scope: string } | null {
+  const hay = `${name ?? ''} ${universe ?? ''}`.toUpperCase();
+  if (/\bUS\b|RUSSELL|S&P|SP500|NASDAQ|US_EQUITY/.test(hay)) return { region: 'US', scope: 'oversold_us_equity' };
+  if (/\bEU\b|STOXX|FTSE|DAX|CAC|EURO|EU_EQUITY/.test(hay)) return { region: 'EU', scope: 'oversold_eu_equity' };
+  return null;
+}
+
 export interface OversoldLessonCandidate {
   lessonKind: string;
   lessonText: string;

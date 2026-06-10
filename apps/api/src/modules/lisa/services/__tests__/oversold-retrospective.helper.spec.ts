@@ -1,4 +1,4 @@
-import { buildOversoldLessons, type OversoldCloseRow } from '../oversold-retrospective.helper';
+import { buildOversoldLessons, deriveRegionScope, type OversoldCloseRow } from '../oversold-retrospective.helper';
 
 function row(p: Partial<OversoldCloseRow>): OversoldCloseRow {
   return {
@@ -68,5 +68,27 @@ describe('buildOversoldLessons — générateur déterministe', () => {
     expect(health.scope).toBe('oversold_eu_equity');
     expect(health.winRateObserved).toBeCloseTo((4 / 6) * 100, 1);
     expect(health.lessonText).toContain('Oversold EU');
+  });
+});
+
+describe('deriveRegionScope — mapping portefeuille → région (anti ID-en-dur)', () => {
+  it('reconnaît US via nom + univers réels', () => {
+    expect(deriveRegionScope('US Oversold (Russell 1000 mean-rev)', 'russell1000')).toEqual({
+      region: 'US',
+      scope: 'oversold_us_equity',
+    });
+  });
+  it('reconnaît EU via nom + univers réels (c0000001)', () => {
+    expect(deriveRegionScope('EU Oversold (stoxx600 mean-rev)', 'stoxx600')).toEqual({
+      region: 'EU',
+      scope: 'oversold_eu_equity',
+    });
+  });
+  it('reconnaît la région même si seul l’univers est dispo', () => {
+    expect(deriveRegionScope('', 'sp500')?.region).toBe('US');
+    expect(deriveRegionScope(null, 'ftse100')?.region).toBe('EU');
+  });
+  it('renvoie null si rien de reconnaissable (skip plutôt que mal scoper)', () => {
+    expect(deriveRegionScope('Mon portefeuille', 'crypto_majors')).toBeNull();
   });
 });
