@@ -63,7 +63,7 @@ export function CloseDecisionsPanel({ portfolioId }: { portfolioId: string }) {
                 <th className="py-1.5 px-2">Sortie</th>
                 <th className="py-1.5 px-2 text-right">P&amp;L close</th>
                 <th className="py-1.5 px-2">Verdict 60m</th>
-                <th className="py-1.5 px-2" title="Le checkpoint J+N où tenir aurait le mieux payé. Survolez pour la trajectoire J+1/J+3/J+6/J+10.">Meilleur jour</th>
+                <th className="py-1.5 px-2" title="P&L si tu avais tenu jusqu'à chaque checkpoint J+N (vs ta sortie). 🏆 = le jour où tenir aurait le mieux payé. Les jours non encore écoulés restent grisés.">Trajectoire J+N</th>
                 <th className="py-1.5 px-2">Verdict J+10</th>
                 <th className="py-1.5 pl-2 text-right">News</th>
               </tr>
@@ -79,8 +79,9 @@ export function CloseDecisionsPanel({ portfolioId }: { portfolioId: string }) {
 
       <p className="text-[11px] text-muted-foreground italic">
         « Trop tôt » = le prix a continué favorablement +60min après ta sortie. « Tenir mieux » = tenir
-        jusqu&apos;à J+10 aurait battu ta sortie. <strong>Meilleur jour</strong> = le checkpoint J+N (J+1/J+3/J+6/J+10,
-        survol pour le détail) où tenir aurait le mieux payé — il se peuple au fil des jours, sans attendre J+10.
+        jusqu&apos;à J+10 aurait battu ta sortie. <strong>Trajectoire J+N</strong> = le P&amp;L que tu aurais eu en
+        tenant jusqu&apos;à chaque jour (J+1/J+3/J+6/J+10), affichés en clair côte à côte ; 🏆 marque le meilleur
+        jour, les jours non encore écoulés restent grisés et se remplissent au fil de l&apos;eau (sans attendre J+10).
         C&apos;est la matière brute de l&apos;imitation learning : le LLM apprendra à reproduire tes
         <strong> bonnes</strong> sorties, pas toutes.
       </p>
@@ -118,10 +119,14 @@ function BadgeDeadline({ v, pnlIfHeld }: { v: string | null; pnlIfHeld: number |
   return <span className="text-muted-foreground" title="Se peuplera à l'échéance J+10">⏳</span>;
 }
 
+// Checkpoints affichés en clair (P&L-si-tenu à J+N). Les non-écoulés restent grisés.
+const TRAJ_CHECKPOINTS = [1, 3, 6, 10] as const;
+
 /**
- * Meilleur jour = le checkpoint J+N de la trajectoire où tenir aurait le mieux
- * payé (P&L-si-tenu max). Se peuple progressivement (J+1 → J+3 → J+6 → J+10).
- * Le survol montre la trajectoire complète des checkpoints écoulés.
+ * Trajectoire inline : affiche les 4 checkpoints J+1/J+3/J+6/J+10 côte à côte,
+ * chacun garde sa valeur (P&L si tenu jusque-là vs la sortie réelle). Le meilleur
+ * jour (max) est surligné 🏆. Les jours pas encore mûrs (EOD non publié) sont
+ * grisés. Ainsi J+1 reste visible même quand J+3/J+6 arrivent (demande user 10/06).
  */
 function BestDayCell({ r }: { r: CloseDecisionRow }) {
   // Pas d'échéance J+10 (closes gainers/manuels) → la trajectoire ne s'applique pas.
@@ -129,21 +134,40 @@ function BestDayCell({ r }: { r: CloseDecisionRow }) {
     return <span className="text-muted-foreground" title="Pas d'horizon J+10 (close hors oversold)">—</span>;
   }
   const traj = r.trajectory ?? [];
-  if (traj.length === 0 || r.bestDayLabel == null) {
+  const present = traj.filter((t) => t.pnl != null);
+  if (present.length === 0) {
     return (
       <span className="text-muted-foreground" title="Se peuple à J+1, J+3, J+6 puis J+10 (le prix EOD doit d'abord publier)">
         ⏳ en cours
       </span>
     );
   }
-  const pnl = r.bestDayPnlPct;
-  const cls = pnl == null ? 'text-muted-foreground' : pnl > 0 ? 'text-emerald-600' : pnl < 0 ? 'text-rose-500' : 'text-muted-foreground';
-  const tip = traj
-    .map((t) => `J+${t.d} ${t.pnl != null ? `${t.pnl >= 0 ? '+' : ''}${t.pnl.toFixed(1)}%` : '—'}`)
-    .join('  ·  ');
+  // Meilleur jour = P&L-si-tenu max parmi les checkpoints déjà écoulés.
+  let best: { d: number; pnl: number | null } | null = null;
+  for (const t of present) if (best == null || (t.pnl ?? -Infinity) > (best.pnl ?? -Infinity)) best = t;
   return (
-    <span className={`tabular-nums ${cls}`} title={`Trajectoire (P&L si tenu) : ${tip}`}>
-      🏆 {r.bestDayLabel} {pnl != null ? `${pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}%` : ''}
+    <span className="inline-flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] tabular-nums">
+      {TRAJ_CHECKPOINTS.map((d) => {
+        const t = traj.find((x) => x.d === d);
+        if (!t || t.pnl == null) {
+          return (
+            <span key={d} className="text-gray-300" title="Pas encore mûr (jour ouvré non écoulé / EOD non publié)">
+              J+{d}
+            </span>
+          );
+        }
+        const isBest = best != null && best.d === d;
+        const cls = t.pnl > 0 ? 'text-emerald-600' : t.pnl < 0 ? 'text-rose-500' : 'text-muted-foreground';
+        return (
+          <span
+            key={d}
+            className={`${cls} ${isBest ? 'font-semibold' : ''}`}
+            title={isBest ? 'Meilleur jour — tenir jusque-là aurait le mieux payé' : `P&L si tenu jusqu'à J+${d}`}
+          >
+            {isBest ? '🏆' : ''}J+{d} {t.pnl >= 0 ? '+' : ''}{t.pnl.toFixed(1)}%
+          </span>
+        );
+      })}
     </span>
   );
 }
