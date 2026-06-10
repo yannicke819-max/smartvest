@@ -11,6 +11,9 @@ import { useCloseDecisions, type CloseDecisionRow } from '@/hooks/use-close-deci
  * à l'échéance J+10 (CLOSE_BETTER / HELD_BETTER / NEUTRAL = aurais-tu mieux fait
  * de tenir ?), avec contexte (danger-zone / oversold-early) + news. Observation
  * pure — base du futur LLM qui apprendra QUAND fermer.
+ *
+ * 10/06 — Colonne « Meilleur jour » (trajectoire progressive J+1/J+3/J+6/J+10 +
+ * badge du checkpoint où tenir aurait le mieux payé).
  */
 export function CloseDecisionsPanel({ portfolioId }: { portfolioId: string }) {
   const { data, isLoading, isError } = useCloseDecisions(portfolioId);
