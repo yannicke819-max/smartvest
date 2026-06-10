@@ -211,17 +211,17 @@ export class RiskMonitorService {
     if (pos.stopLossPrice) {
       const stopPx = new Decimal(pos.stopLossPrice);
 
-      // ── DANGER-ZONE OVERSOLD (LIVE) — coupe AVANT le stop catastrophe -15% ──
-      // 10/06/2026 — SOI.PA a gappé à -15% intraday (-$301) sans protection : la
-      // danger-zone de OversoldExitService tourne sur un cron 30min au prix EOD →
-      // elle ne voit JAMAIS les mouvements intraday. Le seul filet live était le
-      // stop -15% hard (ce service). On ajoute ici, sur le chemin LIVE, une coupe
-      // déterministe dès OVERSOLD_DANGER_ZONE_RATIO (0.80) du chemin vers le stop
-      // = ~-12% pour un stop -15%. SCOPE STRICT : stop large > 8% (= oversold
-      // swing ; les gainers ont 1.5-3% → une danger-zone à -1.2% serait absurde,
-      // ils ne sont PAS concernés). Garanti, sans LLM ni Manu (qui ne capait pas
-      // les gaps rapides). Réversible : OVERSOLD_DANGER_ZONE_LIVE_CLOSE_ENABLED=false.
-      const dzEnabled = (process.env.OVERSOLD_DANGER_ZONE_LIVE_CLOSE_ENABLED ?? 'true').toLowerCase() === 'true';
+      // ── DANGER-ZONE OVERSOLD (LIVE) — MISE EN MANU avant le stop catastrophe -15% ──
+      // 10/06/2026 — À l'approche du stop catastrophe (OVERSOLD_DANGER_ZONE_RATIO,
+      // 0.80 = ~-12% pour -15%), on bascule la position en manual_control : L'HUMAIN
+      // DÉCIDE (tenir le rebond ou couper). On ne coupe JAMAIS automatiquement —
+      // demande user EXPLICITE (un close auto à -12% a coûté -$1265 sur ON.US le
+      // 10/06). Comportement ALIGNÉ sur OversoldExitService.evaluatePosition (même
+      // manual_control_reason='oversold_danger_zone' + re-arm 20min piloté là-bas),
+      // mais sur le chemin LIVE → capte les gaps intraday que le cron 30min EOD rate.
+      // SCOPE STRICT : stop large > 8% (= oversold ; gainers 1.5-3% non concernés).
+      // Réversible : OVERSOLD_DANGER_ZONE_LIVE_MANU_ENABLED=false.
+      const dzEnabled = (process.env.OVERSOLD_DANGER_ZONE_LIVE_MANU_ENABLED ?? 'true').toLowerCase() === 'true';
       if (dzEnabled && entryPx.gt(0)) {
         const slDistPct = entryPx.minus(stopPx).div(entryPx).mul(isLong ? 1 : -1).abs().mul(100).toNumber();
         if (slDistPct > 8) {
@@ -233,19 +233,24 @@ export class RiskMonitorService {
           const beyondStop = isLong ? livePrice.lessThanOrEqualTo(stopPx) : livePrice.greaterThanOrEqualTo(stopPx);
           if (inDanger && !beyondStop) {
             const lossPct = livePrice.minus(entryPx).div(entryPx).mul(isLong ? 1 : -1).mul(100).toNumber();
+            // Mise en Manu idempotente : .eq('manual_control', false) → ne réécrit
+            // pas si déjà en Manu (n'écrase pas un manual_control_since en cours).
+            const { error: muErr } = await this.supabase
+              .from('lisa_positions')
+              .update({
+                manual_control: true,
+                manual_control_since: new Date().toISOString(),
+                manual_control_reason: 'oversold_danger_zone',
+              })
+              .eq('id', pos.id)
+              .eq('manual_control', false);
             console.warn(
               `[risk-monitor] ${pos.symbol}: DANGER-ZONE oversold ${(ratio * 100).toFixed(0)}% du stop ` +
-              `(${lossPct.toFixed(1)}%) → close anticipé avant catastrophe -15%`,
+              `(${lossPct.toFixed(1)}%) → MISE EN MANU (live, l'humain décide)${muErr ? ` [err: ${muErr.message}]` : ''}`,
             );
-            await this.paperBroker.closePosition({
-              positionId: pos.id,
-              reason: 'closed_stop',
-              livePrice: livePrice.toFixed(10),
-              rationale: `Oversold danger-zone ${(ratio * 100).toFixed(0)}% du stop catastrophe touché (${lossPct.toFixed(1)}%) — close anticipé avant -15% (prix live ${livePrice.toFixed(4)})`,
-            });
             result.actionsApplied.push({
-              kind: 'position_closed',
-              details: `${pos.symbol} closed on oversold danger-zone (${lossPct.toFixed(1)}%)`,
+              kind: 'alert_raised',
+              details: `${pos.symbol} oversold danger-zone ${lossPct.toFixed(1)}% → manual_control (aucun close auto)`,
             });
             return;
           }
