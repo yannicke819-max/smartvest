@@ -150,6 +150,8 @@ import { PositionIndicatorsTrackerService } from './services/position-indicators
 import { CloseDecisionCaptureService } from './services/close-decision-capture.service';
 // Générateur déterministe de lessons oversold (cron nuit, scope oversold_*_equity)
 import { OversoldRetrospectiveService } from './services/oversold-retrospective.service';
+// Phase 3 — modèle p_win oversold (logistic sur features, cron hebdo)
+import { OversoldProbabilityService } from './services/oversold-probability.service';
 // Distille les close decisions en politique de sortie apprise (prompt TRADER)
 import { ExitPolicyContextService } from './services/exit-policy-context.service';
 import { GainersExitPolicyService } from './services/research/gainers-exit-policy.service';
@@ -385,6 +387,8 @@ import { SizingABTestService } from './services/research/sizing-ab-test.service'
     CloseDecisionCaptureService,
     // Générateur déterministe de lessons oversold (cron nuit 22:45 UTC)
     OversoldRetrospectiveService,
+    // Phase 3 — modèle p_win oversold (logistic, cron hebdo dimanche 03:00 UTC)
+    OversoldProbabilityService,
     // Politique de sortie apprise injectée dans le prompt TRADER
     ExitPolicyContextService,
     GainersExitPolicyService,
