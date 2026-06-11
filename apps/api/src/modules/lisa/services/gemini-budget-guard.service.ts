@@ -215,14 +215,20 @@ export class GeminiBudgetGuardService {
         .maybeSingle();
       if (!data) return 0;
       const byModel = (data.by_model as Record<string, number> | null) ?? {};
+      const hasByModel = Object.keys(byModel).length > 0;
       let geminiTotal = 0;
       for (const [model, cost] of Object.entries(byModel)) {
         if (model.toLowerCase().includes('gemini')) {
           geminiTotal += Number(cost) || 0;
         }
       }
-      // Si pas de breakdown Gemini, fallback sur total (tracking ancien sans by_model).
-      return geminiTotal > 0 ? geminiTotal : Number(data.total_usd) || 0;
+      // by_model présent → on connaît le VRAI coût Gemini (0 si aucun appel). Le
+      // fallback sur total_usd ne doit s'appliquer QUE si by_model est ABSENT (très
+      // vieux rows pré-breakdown). Bug corrigé 11/06 : avant, `geminiTotal > 0 ? … :
+      // total_usd` retombait sur le TOTAL LLM dès que Gemini=0 → la carte « Coûts
+      // Gemini aujourd'hui » affichait le total Mistral (~$5) alors que le kill rend
+      // Gemini réellement à $0. La méthode mensuelle, elle, était déjà correcte.
+      return hasByModel ? geminiTotal : Number(data.total_usd) || 0;
     } catch (e) {
       this.logger.debug(`[gemini-guard] getTodayGeminiCost fail: ${String(e).slice(0, 100)}`);
       return 0;

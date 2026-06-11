@@ -171,4 +171,36 @@ describe('GeminiBudgetGuardService', () => {
     expect(err.message).toContain('$30.00');
     expect(err.name).toBe('GeminiBudgetExceededError');
   });
+
+  // Régression mislabel (bug observé 08-11/06, 3 fois) — la carte "Coûts Gemini
+  // aujourd'hui" affichait le TOTAL LLM (Mistral) au lieu du vrai coût Gemini ($0).
+  it('todayUsd = coût Gemini RÉEL (0) si by_model présent SANS Gemini — PAS le total', async () => {
+    const supabase = makeSupabaseMock({
+      apiCostsDailyToday: { total_usd: 5.18, by_model: { 'mistral-medium': 5.0, 'claude-opus': 0.18 } },
+      override: null,
+    });
+    const svc = new GeminiBudgetGuardService(makeConfig({}), supabase as never, makeCostTracker());
+    const status = await svc.getStatus(true);
+    expect(status.todayUsd).toBe(0); // surtout pas 5.18 (= total Mistral)
+  });
+
+  it('todayUsd = somme Gemini uniquement quand by_model en contient', async () => {
+    const supabase = makeSupabaseMock({
+      apiCostsDailyToday: { total_usd: 8, by_model: { 'gemini-2.5-pro': 3, 'mistral-medium': 5 } },
+      override: null,
+    });
+    const svc = new GeminiBudgetGuardService(makeConfig({}), supabase as never, makeCostTracker());
+    const status = await svc.getStatus(true);
+    expect(status.todayUsd).toBe(3); // que le Gemini, pas le total 8
+  });
+
+  it('fallback total UNIQUEMENT si by_model absent (vieux rows pré-breakdown)', async () => {
+    const supabase = makeSupabaseMock({
+      apiCostsDailyToday: { total_usd: 4.2 }, // pas de by_model
+      override: null,
+    });
+    const svc = new GeminiBudgetGuardService(makeConfig({}), supabase as never, makeCostTracker());
+    const status = await svc.getStatus(true);
+    expect(status.todayUsd).toBe(4.2); // fallback légitime conservé
+  });
 });
