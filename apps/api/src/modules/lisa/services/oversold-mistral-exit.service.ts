@@ -35,6 +35,12 @@ import { OversoldExitPolicyService } from './research/oversold-exit-policy.servi
 import { IntradayProviderRouter } from './intraday-provider-router.service';
 import { computeIndicatorSnapshot, type IndicatorCandle } from './position-indicators.helper';
 import { businessDaysSince } from './oversold.helper';
+import {
+  resolveBandAlpha,
+  computeLiveBandLaw,
+  type GainPickerBand,
+  type BandLawEntry,
+} from './oversold-live-law.helper';
 import { isKnownMarketClosed } from './exchange-sessions.helper';
 
 interface OpenOversoldRow {
@@ -148,6 +154,8 @@ export class OversoldMistralExitService {
   private readonly FETCH_TIMEOUT_MS = 8000;
   /** Régime VIX/indices — caché par cycle (TTL 10min) pour 1 seul fetch/cycle. */
   private regimeCache: { at: number; data: RegimeCtx } | null = null;
+  /** Phase 2 — loi empirique LIVE (alpha forward-J10 par bande) cachée par portefeuille (TTL 1h). */
+  private lawCache = new Map<string, { at: number; law: Partial<Record<GainPickerBand, BandLawEntry>> }>();
 
   constructor(
     private readonly config: ConfigService,
@@ -166,6 +174,41 @@ export class OversoldMistralExitService {
 
   private minMfePct(): number {
     return Number(this.config.get<string>('OVERSOLD_MISTRAL_EXIT_MIN_MFE_PCT') ?? '1.5');
+  }
+
+  /** Phase 2 — échantillon minimum par bande pour utiliser la loi LIVE (sinon backtest). */
+  private liveLawMinSample(): number {
+    const v = Number(this.config.get<string>('OVERSOLD_LIVE_LAW_MIN_SAMPLE') ?? '10');
+    return Number.isFinite(v) && v >= 1 ? Math.floor(v) : 10;
+  }
+
+  /**
+   * Phase 2 — loi empirique LIVE : rendement forward-J10 moyen par bande de drop,
+   * appris sur les paper_trades oversold DU PORTEFEUILLE (édge US ≠ EU). Cache 1h
+   * (la loi évolue lentement, recalcul coûteux). Renvoie {} si pas encore de label.
+   */
+  private async getLiveBandLaw(portfolioId: string): Promise<Partial<Record<GainPickerBand, BandLawEntry>>> {
+    const cached = this.lawCache.get(portfolioId);
+    if (cached && Date.now() - cached.at < 3_600_000) return cached.law;
+    const { data } = await this.supabase
+      .getClient()
+      .from('paper_trades')
+      .select('fwd_return_10d, features_at_entry')
+      .eq('strategy', 'oversold')
+      .eq('portfolio_id', portfolioId)
+      .not('fwd_return_10d', 'is', null)
+      .limit(2000);
+    const samples: Array<{ drop: number; fwdReturnPct: number }> = [];
+    for (const r of (data ?? []) as Array<{ fwd_return_10d: unknown; features_at_entry: { drop1d?: number | null } | null }>) {
+      const drop = r.features_at_entry?.drop1d;
+      const fwd = r.fwd_return_10d == null ? null : Number(r.fwd_return_10d);
+      if (drop != null && Number.isFinite(drop) && fwd != null && Number.isFinite(fwd)) {
+        samples.push({ drop: Number(drop), fwdReturnPct: fwd });
+      }
+    }
+    const law = computeLiveBandLaw(samples);
+    this.lawCache.set(portfolioId, { at: Date.now(), law });
+    return law;
   }
 
   private confidenceThreshold(): number {
@@ -402,7 +445,12 @@ export class OversoldMistralExitService {
     const bench = benchmarkForSymbol(pos.symbol);
     const benchQ = regime.indices.get(bench.code) ?? null;
     const entryDrop = await this.fetchEntryDayDrop(pos.symbol, pos.entry_timestamp).catch(() => null);
-    const law = entryDrop != null ? bandAlpha(entryDrop) : null;
+    // Phase 2 (boucle fermée 11/06) — expected_alpha = loi empirique LIVE forward-J10
+    // par bande SI assez d'échantillon (≥ OVERSOLD_LIVE_LAW_MIN_SAMPLE), sinon
+    // constante backtest. Sample 0 partout avant les labels J+10 (~18/06) → fallback
+    // → identique à avant ; auto-bascule live quand la donnée arrive (par portefeuille).
+    const liveLaw = await this.getLiveBandLaw(pos.portfolio_id).catch(() => ({}));
+    const law = entryDrop != null ? resolveBandAlpha(entryDrop, liveLaw, this.liveLawMinSample()) : null;
 
     const userPrompt = JSON.stringify({
       symbol: pos.symbol,
@@ -432,6 +480,8 @@ export class OversoldMistralExitService {
             entry_drop_pct: entryDrop != null ? Number(entryDrop.toFixed(1)) : null,
             band: law.band,
             expected_alpha_pct: law.alpha,
+            expected_alpha_source: law.source, // 'live' (appris) | 'backtest' (fondateur)
+            expected_alpha_sample: law.n, // trades labellisés J+10 dans la bande
             pnl_vs_expected: law.alpha != null ? Number((unrealPnlPct - law.alpha).toFixed(2)) : null,
           }
         : null,
@@ -733,15 +783,6 @@ export class OversoldMistralExitService {
       clearTimeout(timer);
     }
   }
-}
-
-/** Bande de drop d'entrée → alpha J+10 historique (backtest fondateur oversold). */
-function bandAlpha(dropPct: number): { band: string; alpha: number | null } {
-  if (dropPct > -3) return { band: '>-3%', alpha: null };
-  if (dropPct > -5) return { band: '-3/-5%', alpha: 0 };
-  if (dropPct > -8) return { band: '-5/-8%', alpha: 1.0 };
-  if (dropPct >= -12) return { band: '-8/-12%', alpha: 2.45 };
-  return { band: '<-12% (falling-knife)', alpha: -1.97 };
 }
 
 /** Indice de référence pour mesurer la sur/sous-performance, par suffixe marché. */
