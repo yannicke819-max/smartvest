@@ -5,6 +5,35 @@ Guide de travail pour Claude Code sur ce repo.
 
 ---
 
+## ⏰ CHECK-IN PROGRAMMÉ — ~20-22/06/2026 : valider l'AUC + décider Phase 3b
+
+**Demandé par l'utilisateur 11/06.** Quand la 1re cohorte oversold atteint J+10
+(entrées 07-10/06 → labels ~18-22/06), valider la boucle d'apprentissage et décider
+de **brancher (ou non) la consommation p_win (Phase 3b)**. Étapes :
+
+1. **Labels J+10 peuplés ?** `paper_trades` `strategy=oversold` avec `fwd_outcome_10d`
+   non null (cible ≥ 30-50 labellisés/portefeuille). Le labeler tourne déjà
+   (oversold-scanner.ts). Si 0 → attendre encore.
+2. **Phase 2 (loi live) — vérifier la bascule** : le gain-picker passe `oversold_law.
+   expected_alpha_source` de `backtest` → `live` dès qu'une bande a ≥ `OVERSOLD_LIVE_LAW_MIN_SAMPLE`
+   (10) trades labellisés. Comparer alpha live vs backtest (−8/−12% = 2.45, etc.) par
+   bande et par portefeuille (US vs EU). Forte divergence = l'edge réel parle.
+3. **Phase 3 (p_win) — entraîner + lire l'AUC** : déclencher `OversoldProbabilityService.
+   trainAndPersist(portfolioId)` (ou attendre le cron dimanche 03:00 UTC). Lire
+   `probability_model_weights` versions `oversold_*` : `sample_size`, `auc_roc`.
+4. **DÉCISION Phase 3b** :
+   - **SI AUC ≥ 0.55** stable sur ≥ 2 portefeuilles → brancher la consommation p_win :
+     d'ABORD en **shadow** (calculer `p_win_at_entry` à l'ouverture + `model_version_at_entry`,
+     mesurer la calibration), PUIS gate d'entrée / input sizing si la calibration tient.
+   - **SINON** (AUC < 0.55) → garder en MESURE seulement, itérer (scaling des features,
+     plus de données). **Ne JAMAIS gater des entrées sur un modèle non discriminant.**
+
+Commits de référence : collecteur news `257c31ed`, Phase 2 `5895d06c`, Phase 3 `9cfd1bd3`.
+Garde-fous existants : gain-picker gains-only (jamais close de loser), danger-zone = Manu
+(jamais close auto), Gemini OFF, p_win/loi live = fallback backtest tant que sample insuffisant.
+
+---
+
 ## 🎯 PLANNING PROCHAINE SESSION (02/06/2026 23:30 — à attaquer en priorité)
 
 **Contexte** : session du 02/06 a livré 7 PR (#575-#581). État au coucher : système discipliné mais **possiblement sur-filtré**. L'utilisateur a exprimé sa peur que les 8 couches de filtrage étranglent l'edge — peur légitime, fondée sur son intuition de calibration 25/05 qui avait recovered +23 TP_HIT en 2j.
