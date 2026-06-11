@@ -13,18 +13,31 @@ jest.spyOn(Logger.prototype, 'debug').mockImplementation(() => undefined);
 
 const cfg = (env: Record<string, string> = {}) => ({ get: (k: string) => env[k] }) as any;
 
+// Mock supabase : supporte `.select().limit()` (univers) ET `.select().eq().limit()`
+// (positions tenues, ajouté 11/06). `rows` est servi pour les deux tables ; comme
+// les rows univers portent `tickers` (pas `symbol`), la query held renvoie [] →
+// les tests d'univers existants gardent leur comportement (held vide).
 function makeSupabase(rows: Array<{ tickers?: string[] | null }> | null) {
+  const chain: any = {
+    eq: () => chain,
+    limit: async () => ({ data: rows, error: rows === null ? { message: 'forced err' } : null }),
+  };
   return {
     isReady: () => rows !== null,
+    getClient: () => ({ from: () => ({ select: () => chain }) }),
+  } as any;
+}
+
+// Mock qui distingue les tables : lisa_positions → held symbols, watchlist_universe → tickers.
+function makeSupabasePositionAware(held: Array<{ symbol: string }>, universe: Array<{ tickers: string[] }>) {
+  const make = (data: any) => {
+    const c: any = { eq: () => c, limit: async () => ({ data, error: null }) };
+    return c;
+  };
+  return {
+    isReady: () => true,
     getClient: () => ({
-      from: () => ({
-        select: () => ({
-          limit: async () => ({
-            data: rows,
-            error: rows === null ? { message: 'forced err' } : null,
-          }),
-        }),
-      }),
+      from: (table: string) => ({ select: () => (table === 'lisa_positions' ? make(held) : make(universe)) }),
     }),
   } as any;
 }
@@ -110,5 +123,26 @@ describe('EodhdNewsCollectorService — fetchActiveUniverse fix', () => {
     // 10 crypto + 1 valid = 11
     expect(fetched.length).toBe(11);
     expect(fetched.slice(10)).toEqual(['VALID.US']);
+  });
+});
+
+describe('EodhdNewsCollectorService — position-aware (held first, fix 11/06)', () => {
+  it('collecte les positions tenues EN PREMIER puis l’univers, dédupliqué', async () => {
+    const held = [{ symbol: 'NOKIA.HE' }, { symbol: 'ADYEN.AS' }, { symbol: 'INTC.US' }];
+    const universe = [{ tickers: ['AAPL.US', 'MSFT.US', 'NOKIA.HE'] }]; // NOKIA.HE en doublon avec held
+    const fetched: string[] = [];
+    const svc = new EodhdNewsCollectorService(
+      cfg({ EODHD_NEWS_PERSIST_ENABLED: 'true', EODHD_NEWS_COLLECTOR_MAX_PER_CYCLE: '50' }),
+      makeSupabasePositionAware(held, universe),
+      makeNewsService(fetched),
+    );
+    await svc.runCollectCycle();
+    // Positions tenues en tête (avant même le crypto/univers)
+    expect(fetched.slice(0, 3)).toEqual(['NOKIA.HE', 'ADYEN.AS', 'INTC.US']);
+    // Puis l'univers est collecté aussi (AAPL/MSFT présents)
+    expect(fetched).toContain('AAPL.US');
+    expect(fetched).toContain('MSFT.US');
+    // NOKIA.HE dédupliqué (tenu ET dans l'univers) → une seule collecte
+    expect(fetched.filter((t) => t === 'NOKIA.HE').length).toBe(1);
   });
 });

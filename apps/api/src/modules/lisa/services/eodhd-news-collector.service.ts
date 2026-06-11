@@ -32,7 +32,7 @@ export class EodhdNewsCollectorService {
     private readonly news: EodhdNewsService,
   ) {
     this.enabled = (this.config.get<string>('EODHD_NEWS_PERSIST_ENABLED') ?? 'false').toLowerCase() === 'true';
-    this.maxPerCycle = Number(this.config.get<string>('EODHD_NEWS_COLLECTOR_MAX_PER_CYCLE') ?? '50');
+    this.maxPerCycle = Number(this.config.get<string>('EODHD_NEWS_COLLECTOR_MAX_PER_CYCLE') ?? '80');
     if (this.enabled) {
       this.logger.log(`[eodhd-news-collector] ENABLED (cron */30min, max=${this.maxPerCycle}/cycle)`);
     }
@@ -60,9 +60,31 @@ export class EodhdNewsCollectorService {
     }
   }
 
-  /** Visible for tests. Pulls news pour `tickers` (ou univers actif si non fourni). */
+  /** Visible for tests. Pulls news pour `tickers` (ou positions tenues + univers si non fourni). */
   async runCollectCycle(tickers?: string[]): Promise<{ processed: number; persisted: number }> {
-    const list = tickers ?? (await this.fetchActiveUniverse());
+    // FIX 11/06/2026 — POSITION-AWARE. Avant : le collecteur ne ramassait que les
+    // `maxPerCycle` PREMIERS tickers de l'univers (10 crypto + ~40 US mega-caps),
+    // sans jamais tourner → les positions EU/Asia (et la plupart des US tenues plus
+    // bas dans l'univers, ex ARM/NXPI @ pos 700+) n'avaient JAMAIS de news → panel
+    // veille vide. On collecte désormais les POSITIONS OUVERTES EN PREMIER (tous
+    // portefeuilles), puis on remplit le reste du budget avec l'univers scanner.
+    // La veille news ne sert que sur ce qu'on TIENT → priorité absolue.
+    let list: string[];
+    if (tickers) {
+      list = tickers;
+    } else {
+      const held = await this.fetchHeldPositionSymbols();
+      const universe = await this.fetchActiveUniverse();
+      const seen = new Set<string>();
+      list = [];
+      for (const t of [...held, ...universe]) {
+        const s = t.trim().toUpperCase();
+        if (s.length > 0 && !seen.has(s)) {
+          seen.add(s);
+          list.push(s);
+        }
+      }
+    }
     if (list.length === 0) {
       this.logger.debug('[eodhd-news-collector] universe empty, skip');
       return { processed: 0, persisted: 0 };
@@ -83,6 +105,37 @@ export class EodhdNewsCollectorService {
     }
     this.logger.log(`[eodhd-news-collector] processed=${processed} persisted=${persisted}`);
     return { processed, persisted };
+  }
+
+  /**
+   * Symboles des positions ACTUELLEMENT ouvertes (tous portefeuilles) — priorité
+   * absolue de la collecte news : la veille news ne sert que sur ce qu'on TIENT.
+   * Garantit que chaque position tenue (US + EU + Asia + crypto) a ses news, peu
+   * importe sa place dans l'univers (les EU étaient @position 700-1161 → jamais
+   * atteintes avant ce fix).
+   */
+  private async fetchHeldPositionSymbols(): Promise<string[]> {
+    if (!this.supabase.isReady()) return [];
+    const { data, error } = await this.supabase
+      .getClient()
+      .from('lisa_positions')
+      .select('symbol')
+      .eq('status', 'open')
+      .limit(1000);
+    if (error || !data) {
+      this.logger.debug(`[eodhd-news-collector] held positions query err: ${error?.message ?? 'no data'}`);
+      return [];
+    }
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const r of data as Array<{ symbol?: string | null }>) {
+      const s = String(r.symbol ?? '').trim().toUpperCase();
+      if (s.length > 0 && !seen.has(s)) {
+        seen.add(s);
+        out.push(s);
+      }
+    }
+    return out;
   }
 
   /**
