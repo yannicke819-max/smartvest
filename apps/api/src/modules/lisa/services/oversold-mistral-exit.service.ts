@@ -461,6 +461,22 @@ export class OversoldMistralExitService {
       `[oversold-mistral-exit] ${pos.symbol} pnl=${unrealPnlPct.toFixed(2)}% mfe=${mfePct.toFixed(2)}% age=J+${ageDays} → ${verdict.action} (conf=${verdict.confidence.toFixed(2)}) ${verdict.rationale}`,
     );
 
+    // GARDE DÉTERMINISTE (11/06) — le gain-picker est un VERROUILLEUR DE GAINS : il
+    // ne ferme JAMAIS une position en PERTE, quoi que dise Mistral. Mistral dévie
+    // parfois de sa propre règle "pertes <1,5% → HOLD" (observé : NOKIA.HE -9,45%
+    // → CLOSE conf 0,70, qui n'a échappé à l'exécution que parce que le prix était
+    // stale cette nuit). Sans cette garde, un loser serait coupé dès que Mistral
+    // hallucine un CLOSE haute-conf sur un prix frais — exactement l'auto-close de
+    // loser refusé par l'utilisateur (cf. -$1265 ON.US). Les losers restent gérés
+    // UNIQUEMENT par danger-zone -12% (Manu) / stop -15% / hold J+10. Plancher
+    // configurable OVERSOLD_GAIN_PICKER_MIN_PNL_PCT (défaut 0 = strictement profit).
+    const minClosePnl = Number(this.config.get<string>('OVERSOLD_GAIN_PICKER_MIN_PNL_PCT') ?? '0');
+    if (verdict.action === 'CLOSE' && unrealPnlPct <= minClosePnl) {
+      this.logger.warn(
+        `[oversold-mistral-exit] ${pos.symbol} CLOSE Mistral IGNORÉ — position en perte (${unrealPnlPct.toFixed(2)}% ≤ ${minClosePnl}%) : garde gains-only (losers → Manu/-15%/J+10, jamais le gain-picker)`,
+      );
+      return 'evaluated';
+    }
     if (verdict.action === 'CLOSE' && verdict.confidence >= this.confidenceThreshold()) {
       await this.closePosition(pos, price, mfePct, unrealPnlPct, ageDays, verdict);
       return 'closed';
