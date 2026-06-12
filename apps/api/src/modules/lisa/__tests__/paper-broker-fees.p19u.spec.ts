@@ -84,6 +84,52 @@ describe('computeRealisticFee — P19u IBKR Pro Tiered model', () => {
       const fee = computeRealisticFee(new Decimal(100), new Decimal(100), 'asia_equity');
       expect(fee.toNumber()).toBeCloseTo(5.00, 2);
     });
+
+    it('KOSDAQ (.KQ) sell adds 0.18% Securities Transaction Tax (KR)', () => {
+      // $3000 notional, sell side : 5bps + 18bps = 23bps = $6.90
+      const fee = computeRealisticFee(new Decimal(100), new Decimal(30), 'asia_equity', '241520.KQ', 'sell');
+      expect(fee.toNumber()).toBeCloseTo(6.90, 2);
+    });
+
+    it('KOSDAQ (.KQ) buy = NO STT (only 5bps commission)', () => {
+      const fee = computeRealisticFee(new Decimal(100), new Decimal(30), 'asia_equity', '241520.KQ', 'buy');
+      expect(fee.toNumber()).toBeCloseTo(1.50, 2);
+    });
+
+    it('KSE (.KO) sell adds 0.18% STT (same as KOSDAQ)', () => {
+      const fee = computeRealisticFee(new Decimal(100), new Decimal(30), 'asia_equity', '005930.KO', 'sell');
+      expect(fee.toNumber()).toBeCloseTo(6.90, 2);
+    });
+
+    it('HK (.HK) adds 0.10% stamp duty on BOTH sides', () => {
+      // $3000 × (0.0005 + 0.001) = $4.50
+      const feeBuy = computeRealisticFee(new Decimal(100), new Decimal(30), 'asia_equity', '0700.HK', 'buy');
+      const feeSell = computeRealisticFee(new Decimal(100), new Decimal(30), 'asia_equity', '0700.HK', 'sell');
+      expect(feeBuy.toNumber()).toBeCloseTo(4.50, 2);
+      expect(feeSell.toNumber()).toBeCloseTo(4.50, 2);
+    });
+
+    it('UK (.LSE) buy adds 0.50% Stamp Duty (Reserve Tax)', () => {
+      // $3000 × (0.0005 + 0.005) = $16.50
+      const fee = computeRealisticFee(new Decimal(100), new Decimal(30), 'eu_equity', 'BARC.LSE', 'buy');
+      expect(fee.toNumber()).toBeCloseTo(16.50, 2);
+    });
+
+    it('UK (.LSE) sell = NO stamp duty (only 5bps commission)', () => {
+      const fee = computeRealisticFee(new Decimal(100), new Decimal(30), 'eu_equity', 'BARC.LSE', 'sell');
+      expect(fee.toNumber()).toBeCloseTo(1.50, 2);
+    });
+
+    it('UK short .L suffix also detected', () => {
+      const fee = computeRealisticFee(new Decimal(100), new Decimal(30), 'eu_equity', 'TSCO.L', 'buy');
+      expect(fee.toNumber()).toBeCloseTo(16.50, 2);
+    });
+
+    it('backward compat : no symbol/side → no tax overlay', () => {
+      // Le old caller pattern (qty, price, ac) doit retourner 5bps comme avant
+      const fee = computeRealisticFee(new Decimal(100), new Decimal(30), 'asia_equity');
+      expect(fee.toNumber()).toBeCloseTo(1.50, 2);
+    });
   });
 
   describe('FX + commodity', () => {
