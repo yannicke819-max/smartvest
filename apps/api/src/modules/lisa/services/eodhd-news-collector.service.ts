@@ -25,6 +25,7 @@ export class EodhdNewsCollectorService {
   private readonly enabled: boolean;
   private readonly maxPerCycle: number;
   private collecting = false;
+  private collectingSince = 0; // début du cycle courant → détection de stall (await hung)
 
   constructor(
     private readonly config: ConfigService,
@@ -46,13 +47,26 @@ export class EodhdNewsCollectorService {
   @Cron('*/10 * * * *', { timeZone: 'UTC' })
   async cronCollect(): Promise<void> {
     if (!this.enabled || !this.news.isEnabled()) return;
-    if (this.collecting) {
+    // STUCK-RESET (fix 15/06) — incident 11/06 11:54 : un await du cycle a hung →
+    // `collecting` resté true → 0 news ingérée pendant 4 JOURS (panel veille mort).
+    // Si bloqué > 20min (bien au-dessus du pire cas ~80 tickers), reset forcé.
+    const STUCK_MS = 20 * 60_000;
+    if (this.collecting && Date.now() - this.collectingSince < STUCK_MS) {
       this.logger.debug('[eodhd-news-collector] previous cycle still running, skip');
       return;
     }
+    if (this.collecting) {
+      this.logger.warn('[eodhd-news-collector] cycle précédent bloqué > 20min (await hung) → reset forcé');
+    }
     this.collecting = true;
+    this.collectingSince = Date.now();
     try {
-      await this.runCollectCycle();
+      // Timeout dur du cycle : un await qui hang (ex query supabase half-open) ne
+      // gèle plus le collecteur indéfiniment — il abandonne et le prochain cycle relance.
+      await Promise.race([
+        this.runCollectCycle(),
+        new Promise<never>((_, rej) => setTimeout(() => rej(new Error('cycle timeout 15min')), 15 * 60_000)),
+      ]);
     } catch (e) {
       this.logger.warn(`[eodhd-news-collector] cycle failed: ${String(e).slice(0, 200)}`);
     } finally {
