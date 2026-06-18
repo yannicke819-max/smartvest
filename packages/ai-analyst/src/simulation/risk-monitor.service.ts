@@ -231,7 +231,14 @@ export class RiskMonitorService {
           const dangerPx = entryPx.plus(stopPx.minus(entryPx).mul(ratio));
           const inDanger = isLong ? livePrice.lessThanOrEqualTo(dangerPx) : livePrice.greaterThanOrEqualTo(dangerPx);
           const beyondStop = isLong ? livePrice.lessThanOrEqualTo(stopPx) : livePrice.greaterThanOrEqualTo(stopPx);
-          if (inDanger && !beyondStop) {
+          // FIX 18/06/2026 — MANU même si beyondStop (l'ancien `&& !beyondStop` était le
+          // bug). Incident TWLO : dérive à -12.8% le 17/06 PENDANT une panne app (monitor
+          // aveugle → danger-zone jamais armée), puis -15.13% le 18/06 → le `!beyondStop`
+          // la laissait filer à l'auto-close -15% (-$1135, 2e fois après ON.US). Désormais
+          // un oversold qui ATTEINT OU DÉPASSE la danger-zone (gap, fast-move, ou reprise
+          // après angle-mort) → MANU, jamais d'auto-close. Le stop catastrophe ne ferme
+          // PLUS JAMAIS un oversold en automatique (slDistPct > 8) — l'humain décide.
+          if (inDanger) {
             const lossPct = livePrice.minus(entryPx).div(entryPx).mul(isLong ? 1 : -1).mul(100).toNumber();
             // Mise en Manu idempotente : .eq('manual_control', false) → ne réécrit
             // pas si déjà en Manu (n'écrase pas un manual_control_since en cours).
@@ -246,7 +253,8 @@ export class RiskMonitorService {
               .eq('manual_control', false);
             console.warn(
               `[risk-monitor] ${pos.symbol}: DANGER-ZONE oversold ${(ratio * 100).toFixed(0)}% du stop ` +
-              `(${lossPct.toFixed(1)}%) → MISE EN MANU (live, l'humain décide)${muErr ? ` [err: ${muErr.message}]` : ''}`,
+              `(${lossPct.toFixed(1)}%)${beyondStop ? ' [AU-DELÀ DU STOP — gap/angle-mort, sauvé de l\'auto-close]' : ''} ` +
+              `→ MISE EN MANU (live, l'humain décide)${muErr ? ` [err: ${muErr.message}]` : ''}`,
             );
             result.actionsApplied.push({
               kind: 'alert_raised',
