@@ -27,8 +27,19 @@ de **brancher (ou non) la consommation p_win (Phase 3b)**. Étapes :
      mesurer la calibration), PUIS gate d'entrée / input sizing si la calibration tient.
    - **SINON** (AUC < 0.55) → garder en MESURE seulement, itérer (scaling des features,
      plus de données). **Ne JAMAIS gater des entrées sur un modèle non discriminant.**
+5. **SYNTHÈSE "meilleur jour pour vendre" (trajectoire J+N) — demandée par l'user 18/06.**
+   Relancer `npx tsx scripts/oversold-jn-synthesis.ts` (P&L moyen/médian/%gagnants si on
+   avait tenu jusqu'à J+1/J+3/J+6/J+10, + jour du pic, segmenté US/EU). **Baseline 18/06
+   (J+10 PAS encore mûri)** : US n=19 → J+1 +4.5%·74%, **J+3 +9.8%·89%**, J+6 +8.5%·75%
+   (pic J+3 = 53%) ; EU n=31 → ~0% partout (aucun edge). **Question à trancher quand J+10
+   se peuple** : le pic US se déplace-t-il vers **J+6/J+10** (ça continue de grimper) ou
+   reste à **J+3** (ça redonne après) ? Si J+10 ≥ J+3 stable sur l'US → envisager d'allonger
+   l'horizon de sortie US (TP J+3→J+N ou trailing 2-3j) au lieu du lock sec +1.5% ; **EU =
+   statu quo** (edge non prouvé). ⚠️ Biais de survie (ce sont les gagnantes du gain-picker)
+   + échantillon petit + US ≈ surtout semis → indicatif, pas robuste.
 
-Commits de référence : collecteur news `257c31ed`, Phase 2 `5895d06c`, Phase 3 `9cfd1bd3`.
+Commits de référence : collecteur news `257c31ed`, Phase 2 `5895d06c`, Phase 3 `9cfd1bd3`,
+fix danger-zone gap (TWLO) `e9320d6c`, synthèse J+N `scripts/oversold-jn-synthesis.ts`.
 Garde-fous existants : gain-picker gains-only (jamais close de loser), danger-zone = Manu
 (jamais close auto), Gemini OFF, p_win/loi live = fallback backtest tant que sample insuffisant.
 
