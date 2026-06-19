@@ -45,12 +45,6 @@ primary_region = 'cdg'
     timeout = "5s"
 
 [[vm]]
-  memory = '1gb'
-  cpu_kind = 'shared'
-  cpus = 1
-  memory_mb = 1024
-
-[[vm]]
   memory = '2gb'
   cpu_kind = 'shared'
   cpus = 2
