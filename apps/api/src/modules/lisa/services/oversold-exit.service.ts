@@ -151,6 +151,8 @@ export class OversoldExitService {
     let rearmedThisCycle = false;
     if (Number.isFinite(entry) && entry > 0) {
       const rearmMin = Number(this.config.get<string>('MANUAL_CONTROL_REARM_MIN') ?? '20');
+      const dangerRatio = Number(this.config.get<string>('OVERSOLD_DANGER_ZONE_RATIO') ?? '0.80');
+      const dangerThreshold = entry * (1 + (cfg.stopCatastrophePct * dangerRatio) / 100);
 
       // A. Déjà en Manu : re-arm si périmé, sinon l'humain garde la main (0 close auto).
       if (pos.manual_control === true) {
@@ -166,7 +168,21 @@ export class OversoldExitService {
           this.logger.debug(`[oversold-exit] ${pos.symbol} manual_control ${stuckMin.toFixed(0)}min → humain décide, pas de close auto`);
           return; // dans la fenêtre → ni catastrophe ni hold
         }
-        // périmé → on rend la main au stop auto CE cycle
+        // FIX 24/06 — NE PAS ré-armer tant que la position est ENCORE en danger
+        // (≤ danger-zone). Avant : le re-arm rendait la main au stop auto même à
+        // -14%/-15% → catastrophe-close (MSTR -$1159, ETL, SOI, ON). Le gain-picker
+        // étant gains-only, un loser n'est JAMAIS « résolu » → ré-armé puis liquidé à
+        // -15% en boucle. Désormais : tant que price ≤ danger, la position RESTE en
+        // MANU (l'humain décide, 0 close auto). On ne ré-arme QUE si elle a RÉCUPÉRÉ
+        // au-dessus de la danger-zone.
+        if (price <= dangerThreshold) {
+          this.logger.warn(
+            `[oversold-exit] ${pos.symbol} MANU périmé (${stuckMin.toFixed(0)}min) MAIS toujours en danger-zone ` +
+              `(${(((price - entry) / entry) * 100).toFixed(1)}%) → reste en MANU, PAS de ré-arm (catastrophe bloqué, l'humain décide)`,
+          );
+          return;
+        }
+        // récupérée au-dessus de la danger-zone → on rend la main au stop auto CE cycle
         await this.supabase.getClient().from('lisa_positions')
           .update({ manual_control: false, manual_control_since: null, manual_control_reason: null }).eq('id', pos.id)
           .then(() => undefined, () => undefined);
@@ -181,10 +197,10 @@ export class OversoldExitService {
         rearmedThisCycle = true; // bloque la re-bascule immédiate ci-dessous
       }
 
-      // B. Approche du stop → bascule en Manu (sauf si on vient de re-armer).
-      const dangerRatio = Number(this.config.get<string>('OVERSOLD_DANGER_ZONE_RATIO') ?? '0.80');
-      const dangerThreshold = entry * (1 + (cfg.stopCatastrophePct * dangerRatio) / 100);
-      if (!rearmedThisCycle && pos.manual_control !== true && price <= dangerThreshold && price > stopThreshold) {
+      // B. À/sous la danger-zone → MANU. Le `price > stopThreshold` a été RETIRÉ
+      // (fix 24/06) : un gap qui passe SOUS le stop catastrophe doit AUSSI basculer
+      // en MANU, pas filer à l'auto-close -15% (même bug que le RiskMonitor).
+      if (!rearmedThisCycle && pos.manual_control !== true && price <= dangerThreshold) {
         const lossPct = ((price - entry) / entry) * 100;
         await this.supabase.getClient().from('lisa_positions')
           .update({ manual_control: true, manual_control_since: new Date().toISOString(), manual_control_reason: 'oversold_danger_zone' }).eq('id', pos.id)
