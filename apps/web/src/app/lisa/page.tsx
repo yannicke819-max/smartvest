@@ -40,6 +40,7 @@ import { OversoldPanel } from '@/components/lisa/oversold-panel';
 import { OversoldRegimePanel } from '@/components/lisa/oversold-regime-panel';
 import { OversoldNewsWatchPanel } from '@/components/lisa/oversold-news-watch-panel';
 import { OversoldEmpiricalLawPanel } from '@/components/lisa/oversold-empirical-law-panel';
+import { OversoldExitHorizonPanel } from '@/components/lisa/oversold-exit-horizon-panel';
 import { OversoldSizingCard } from '@/components/lisa/oversold-sizing-card';
 import { CloseDecisionsPanel } from '@/components/lisa/close-decisions-panel';
 import { LessonsImpactPanel } from '@/components/lisa/lessons-impact-panel';
@@ -771,6 +772,12 @@ export default function LisaPage() {
       {/* 07/06 — Loi empirique par bande de drop : réalisé (dispo) + J+10 (~18/06). */}
       {selectedPortfolioId && currentMode === 'oversold' && (
         <OversoldEmpiricalLawPanel portfolioId={selectedPortfolioId} />
+      )}
+
+      {/* 22/06 — Shadow « meilleur jour de sortie » (J→J+10) : quel horizon aurait
+          capté le plus (US → J+6, EU → lock). Mesure seule, ne change rien au trading. */}
+      {selectedPortfolioId && currentMode === 'oversold' && (
+        <OversoldExitHorizonPanel portfolioId={selectedPortfolioId} />
       )}
 
       {/* 08/06 — Réglage du sizing dynamique (base × bande × VIX, plancher/plafond). */}

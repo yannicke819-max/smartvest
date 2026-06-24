@@ -1698,6 +1698,15 @@ export class LisaController {
     return this.oversoldScanner.getEmpiricalLaw(portfolioId);
   }
 
+  @Get('oversold-exit-horizon/:portfolioId')
+  async getOversoldExitHorizon(
+    @Headers() headers: Record<string, string>,
+    @Param('portfolioId') portfolioId: string,
+  ) {
+    extractUserId(headers);
+    return this.oversoldScanner.getExitHorizonShadow(portfolioId);
+  }
+
   /**
    * 04/06 — Boucles d'apprentissage SÉPARÉES (user request). Chacune lit
    * uniquement les closes labellisés de SA source pour ne pas mixer les

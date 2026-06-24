@@ -53,6 +53,7 @@ import {
 import { IntradayProviderRouter } from './intraday-provider-router.service';
 import { minutesSinceExchangeOpen, minutesToExchangeClose } from './exchange-sessions.helper';
 import { computeOversoldNotional } from './oversold-sizing.helper';
+import { computeExitHorizonShadow, type ExitHorizonRow } from './oversold-exit-horizon.helper';
 
 /**
  * Contexte de régime marché capturé AS-OF l'entrée (PR-2 — features régime).
@@ -1789,6 +1790,24 @@ export class OversoldScannerService {
       forwardJ10: { ...this.buildLawTable(fwdSamples), horizonDays: 10 },
       asOf: new Date().toISOString(),
     };
+  }
+
+  /**
+   * SHADOW « meilleur jour de sortie » (J → J+10). Lit la trajectoire labellisée
+   * des closes (`position_close_decisions`) et calcule, par horizon, le P&L moyen/
+   * médian qu'un exit aurait donné vs le lock réalisé. MESURE SEULE — ne touche pas
+   * au trading. Sert à décider d'allonger l'horizon US (→ J+6) sur données live.
+   */
+  async getExitHorizonShadow(portfolioId: string) {
+    const { data } = await this.supabase
+      .getClient()
+      .from('position_close_decisions')
+      .select('pnl_pct, entry_price, price_j1, price_j3, price_j6, price_j10')
+      .eq('portfolio_id', portfolioId)
+      .not('price_j1', 'is', null)
+      .limit(2000);
+    const shadow = computeExitHorizonShadow((data ?? []) as ExitHorizonRow[]);
+    return { portfolioId, ...shadow, asOf: new Date().toISOString() };
   }
 
   /**
