@@ -156,6 +156,19 @@ export class OversoldExitService {
 
       // A. Déjà en Manu : re-arm si périmé, sinon l'humain garde la main (0 close auto).
       if (pos.manual_control === true) {
+        // #2 (30/06) — la DEADLINE J+10 ferme MÊME une position en MANU. La fenêtre de
+        // mean-reversion est écoulée → tenir plus n'est plus dans la stratégie et le
+        // capital gelé doit être libéré. C'est une sortie d'HORIZON, PAS le stop
+        // catastrophe -15% (que l'user refuse). allowManualControlled=true passe le chokepoint.
+        if (holdExpired) {
+          this.logger.warn(`[oversold-exit] ${pos.symbol} en MANU MAIS deadline J+${cfg.holdDays} atteinte (${heldDays}j) → close deadline (capital libéré, PAS un catastrophe)`);
+          await this.closePosition(
+            pos, price, 'closed_expired', 'oversold_hold_expired',
+            `Hold J+${cfg.holdDays} atteint (${heldDays}j ouvrés) en MANU: close deadline à $${price.toFixed(4)} (fenêtre mean-reversion écoulée)`,
+            true,
+          );
+          return;
+        }
         const since = pos.manual_control_since ? new Date(pos.manual_control_since).getTime() : null;
         if (since == null) {
           await this.supabase.getClient().from('lisa_positions')
@@ -257,6 +270,7 @@ export class OversoldExitService {
     status: 'closed_stop' | 'closed_expired',
     exitLabel: 'oversold_hold_expired' | 'oversold_stop_catastrophe',
     rationale: string,
+    allowManualControlled = false,
   ): Promise<void> {
     await this.lisa.getPaperBroker().closePosition({
       positionId: pos.id,
@@ -266,6 +280,8 @@ export class OversoldExitService {
       livePriceSource: 'eodhd_eod',
       // Marché US fermé hors session : le close EOD est le last close valide.
       marketClosed: true,
+      // #2 (30/06) — la deadline J+10 ferme MÊME une position en MANU (cf. bloc A).
+      allowManualControlled,
     });
 
     await this.decisionLog

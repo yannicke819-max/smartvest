@@ -51,6 +51,17 @@ export class OversoldProbabilityService {
 
   onModuleInit(): void {
     this.enabled = (this.config.get<string>('OVERSOLD_PROBABILITY_ENABLED') ?? 'true').toLowerCase() === 'true';
+    // #1 (30/06) — ENTRAÎNEMENT AU BOOT (best-effort, une fois) : lit l'AUC sans
+    // attendre le cron du dimanche. Maintenant qu'on a ~140 labels J+10, on veut
+    // l'AUC tout de suite pour décider Phase 3b. L'AUC est loggée par runWeeklyRefit
+    // (`[oversold-probability] … auc=…`) → copiable depuis les logs Fly.
+    // Délai 45s = laisse Supabase se stabiliser. Désactivable via OVERSOLD_PROBABILITY_TRAIN_ON_BOOT=false.
+    const trainOnBoot = (this.config.get<string>('OVERSOLD_PROBABILITY_TRAIN_ON_BOOT') ?? 'true').toLowerCase() === 'true';
+    if (this.enabled && trainOnBoot) {
+      setTimeout(() => {
+        this.runWeeklyRefit().catch((e) => this.logger.warn(`[oversold-probability] boot train fail: ${String(e).slice(0, 150)}`));
+      }, 45_000);
+    }
   }
 
   /** Cron hebdomadaire dimanche 03:00 UTC — ré-entraîne les modèles p_win oversold. */
