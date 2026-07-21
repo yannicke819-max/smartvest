@@ -4,40 +4,42 @@ import { TrendingUp } from 'lucide-react';
 import { useOversoldExitHorizon } from '@/hooks/use-oversold-exit-horizon';
 
 /**
- * SHADOW « meilleur jour de sortie » (J → J+10). Pour les positions clôturées par
- * le gain-picker (lock +1.5%), montre ce qu'un exit à chaque horizon aurait donné
- * (moyenne + médiane), à partir de la trajectoire RÉELLE labellisée. MESURE SEULE :
- * aide à décider d'allonger l'horizon (ex US → J+6) sans rien changer au trading.
+ * « Meilleur jour de sortie » v2 — POPULATION COMPLÈTE (J → J+10).
+ * Pour TOUTES les entrées oversold (perdantes incluses — biais de survie éliminé) :
+ * lock = P&L réalisé des positions fermées ; J+N = rendement si on avait tenu N jours
+ * ouvrés (fwd_return du labeler). La v1 (gagnantes verrouillées only) faisait croire
+ * à des pics J+3/J+6 — verdict population complète : le lock bat tous les horizons.
+ * MESURE SEULE : n'influence aucun trade.
  */
 export function OversoldExitHorizonPanel({ portfolioId }: { portfolioId: string }) {
   const { data, isLoading, isError } = useOversoldExitHorizon(portfolioId);
 
   if (isLoading) {
-    return <div className="rounded-lg border p-4 text-sm text-muted-foreground">📈 Chargement du shadow horizon de sortie…</div>;
+    return <div className="rounded-lg border p-4 text-sm text-muted-foreground">📈 Chargement du meilleur jour de sortie…</div>;
   }
   if (isError || !data) {
-    return <div className="rounded-lg border p-4 text-sm text-muted-foreground">📈 Shadow horizon indisponible pour le moment.</div>;
+    return <div className="rounded-lg border p-4 text-sm text-muted-foreground">📈 Meilleur jour de sortie indisponible pour le moment.</div>;
   }
   if (!data.n) {
     return (
       <div className="rounded-lg border p-4 text-sm text-muted-foreground">
-        📈 Pas encore de trajectoire mûrie — se peuple dès J+1 après chaque close.
+        📈 Pas encore d&apos;entrées — le tableau se peuple avec les trades oversold.
       </div>
     );
   }
 
   const fmt = (x: number | null) => (x == null ? '—' : `${x >= 0 ? '+' : ''}${x.toFixed(1)}%`);
   const cls = (x: number | null) => (x == null ? '' : x >= 0 ? 'text-emerald-600' : 'text-red-600');
-  const uplift = data.upliftJ6VsLockPct;
+  const uplift = data.upliftBestHoldVsLockPct;
 
   return (
     <div className="rounded-lg border p-4 space-y-3">
       <div className="flex items-center gap-2">
         <TrendingUp className="h-4 w-4 text-blue-600" />
-        <h2 className="text-sm font-medium">📈 Meilleur jour de sortie — shadow (J → J+10)</h2>
+        <h2 className="text-sm font-medium">📈 Meilleur jour de sortie — population complète (J → J+10)</h2>
       </div>
       <p className="text-xs text-muted-foreground">
-        Ce qu&apos;un exit à chaque horizon aurait donné sur les closes, mesuré sur la trajectoire réelle. Mesure seule — ne change rien au trading.
+        TOUTES les entrées ({data.n}), perdantes incluses — pas seulement les gains verrouillés. Lock = P&L réellement encaissé ; J+N = ce qu&apos;aurait donné tenir N jours ouvrés. Mesure seule.
       </p>
 
       <div className="grid grid-cols-2 gap-2 text-xs">
@@ -45,14 +47,12 @@ export function OversoldExitHorizonPanel({ portfolioId }: { portfolioId: string 
         <Tile label="Meilleur jour (médiane)" value={data.bestDayByMedian ?? '—'} />
       </div>
 
-      {uplift != null && (
-        <div className={`text-xs rounded-md p-2 ${uplift > 0.5 ? 'bg-emerald-50' : uplift < -0.5 ? 'bg-amber-50' : 'bg-muted'}`}>
-          Tenir jusqu&apos;à <b>J+6</b> vs lock actuel : <span className={cls(uplift)}><b>{fmt(uplift)}</b></span> en moyenne ({data.n} trades).{' '}
-          {uplift > 1
-            ? "→ allonger l'horizon capterait nettement plus."
-            : uplift < -0.5
-              ? '→ le lock actuel reste meilleur en moyenne (rebond fragile).'
-              : '→ marginal.'}
+      {uplift != null && data.bestHoldLabel && (
+        <div className={`text-xs rounded-md p-2 ${uplift > 0.5 ? 'bg-amber-50' : 'bg-emerald-50'}`}>
+          Meilleur hold ({data.bestHoldLabel}) vs lock : <span className={cls(uplift)}><b>{fmt(uplift)}</b></span> en moyenne.{' '}
+          {uplift > 0.5
+            ? '→ tenir paierait — signal à re-vérifier avant toute action.'
+            : '→ le lock reste le meilleur jour de sortie (tenir perd en moyenne).'}
         </div>
       )}
 
@@ -85,7 +85,7 @@ export function OversoldExitHorizonPanel({ portfolioId }: { portfolioId: string 
       </div>
 
       <p className="text-[10px] text-muted-foreground">
-        ⚠️ Biais de survie (gagnantes du gain-picker) + petits échantillons (jours à n &lt; {data.minSampleForBest} exclus du « meilleur jour »). Indicatif, le live sera plus bas.
+        J+1/J+3/J+6 se peuplent progressivement (backfill du labeler) — les n augmentent chaque jour. Jours à n &lt; {data.minSampleForBest} exclus du « meilleur jour ».
       </p>
     </div>
   );

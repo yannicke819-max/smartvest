@@ -1,23 +1,24 @@
 /**
- * oversold-exit-horizon.helper.ts — SHADOW « meilleur jour de sortie ».
+ * oversold-exit-horizon.helper.ts — « meilleur jour de sortie », POPULATION COMPLÈTE.
  *
- * Pure compute, testable. Pour les positions oversold clôturées par le gain-picker
- * (lock +1.5%), compare le P&L réalisé (jour J) à ce qu'un exit à chaque horizon
- * J+1 / J+3 / J+6 / J+10 aurait donné, à partir de la trajectoire RÉELLE déjà
- * labellisée dans `position_close_decisions` (price_j1/j3/j6/j10 vs entry_price).
+ * v2 (21/07) — l'ancienne version lisait la trajectoire des closes verrouillés
+ * (`position_close_decisions`) = GAGNANTES UNIQUEMENT → biais de survie qui a fait
+ * successivement croire à un pic J+3 (18/06) puis J+6 (22/06). Le verdict sur
+ * population complète (30/06, reconfirmé 21/07 : lock +0.64%/+1.20% vs J+10
+ * −4.29%/−0.84%) : LE LOCK BAT TOUS LES HORIZONS. Cette v2 lit `paper_trades`
+ * (TOUTES les entrées, perdantes incluses) : lock = pnl_pct réalisé des fermées,
+ * J+N = fwd_return_{1,3,6,10}d stampés par le labeler (migration 0204).
  *
- * MESURE SEULE — ne change rien au trading. Sert à décider (sur données live, biais
- * de survie assumé) s'il faut allonger l'horizon de sortie (ex US → J+6) ou garder
- * le lock (ex EU, bimodal → la moyenne du hold est plombée par les effondrements).
+ * Pure compute, testable. MESURE SEULE — ne change rien au trading.
  */
 
-export interface ExitHorizonRow {
-  pnl_pct: number | string | null; // P&L réalisé à la sortie (lock) = jour J
-  entry_price: number | string | null;
-  price_j1: number | string | null;
-  price_j3: number | string | null;
-  price_j6: number | string | null;
-  price_j10: number | string | null;
+export interface ExitHorizonFullPopRow {
+  pnl_pct: number | string | null; // P&L réalisé (fermées) = sortie jour J (lock)
+  status: string | null;
+  fwd_return_1d: number | string | null;
+  fwd_return_3d: number | string | null;
+  fwd_return_6d: number | string | null;
+  fwd_return_10d: number | string | null;
 }
 
 export type ExitHorizonKey = 'lock' | 'j1' | 'j3' | 'j6' | 'j10';
@@ -32,13 +33,15 @@ export interface ExitHorizonDay {
 }
 
 export interface ExitHorizonShadow {
-  n: number; // lignes avec trajectoire (price_j1 non null)
+  n: number; // entrées totales considérées
+  basis: 'full_population';
   days: ExitHorizonDay[];
   bestDayByMean: string | null;
   bestDayByMedian: string | null;
   lockAvgPct: number | null;
-  j6AvgPct: number | null;
-  upliftJ6VsLockPct: number | null; // j6 - lock (moyenne) : >0 = tenir paie
+  bestHoldLabel: string | null; // meilleur jour de HOLD (hors lock)
+  bestHoldAvgPct: number | null;
+  upliftBestHoldVsLockPct: number | null; // bestHold − lock (moyenne) : >0 = tenir paierait
   minSampleForBest: number;
 }
 
@@ -50,22 +53,17 @@ function toNum(x: unknown): number | null {
   return Number.isFinite(v) ? v : null;
 }
 
-/**
- * Calcule la table par horizon. `minSampleForBest` exclut les jours à trop petit
- * échantillon du choix du « meilleur jour » (ex US J+10 n=1 = bruit).
- */
-export function computeExitHorizonShadow(rows: ExitHorizonRow[], minSampleForBest = 3): ExitHorizonShadow {
-  const pj = (r: ExitHorizonRow, field: 'price_j1' | 'price_j3' | 'price_j6' | 'price_j10'): number | null => {
-    const px = toNum(r[field]);
-    const e = toNum(r.entry_price);
-    return px != null && e != null && e > 0 ? (px / e - 1) * 100 : null;
-  };
-  const defs: Array<{ label: string; key: ExitHorizonKey; get: (r: ExitHorizonRow) => number | null }> = [
-    { label: 'J (lock)', key: 'lock', get: (r) => toNum(r.pnl_pct) },
-    { label: 'J+1', key: 'j1', get: (r) => pj(r, 'price_j1') },
-    { label: 'J+3', key: 'j3', get: (r) => pj(r, 'price_j3') },
-    { label: 'J+6', key: 'j6', get: (r) => pj(r, 'price_j6') },
-    { label: 'J+10', key: 'j10', get: (r) => pj(r, 'price_j10') },
+/** `minSampleForBest` exclut les horizons à trop petit échantillon du « meilleur jour ». */
+export function computeExitHorizonFullPopulation(
+  rows: ExitHorizonFullPopRow[],
+  minSampleForBest = 10,
+): ExitHorizonShadow {
+  const defs: Array<{ label: string; key: ExitHorizonKey; get: (r: ExitHorizonFullPopRow) => number | null }> = [
+    { label: 'J (lock)', key: 'lock', get: (r) => (r.status !== 'open' ? toNum(r.pnl_pct) : null) },
+    { label: 'J+1', key: 'j1', get: (r) => toNum(r.fwd_return_1d) },
+    { label: 'J+3', key: 'j3', get: (r) => toNum(r.fwd_return_3d) },
+    { label: 'J+6', key: 'j6', get: (r) => toNum(r.fwd_return_6d) },
+    { label: 'J+10', key: 'j10', get: (r) => toNum(r.fwd_return_10d) },
   ];
 
   const days: ExitHorizonDay[] = defs.map((d) => {
@@ -82,17 +80,21 @@ export function computeExitHorizonShadow(rows: ExitHorizonRow[], minSampleForBes
   const byMean = eligible.filter((d) => d.avgPct != null).sort((a, b) => (b.avgPct as number) - (a.avgPct as number))[0];
   const byMed = eligible.filter((d) => d.medPct != null).sort((a, b) => (b.medPct as number) - (a.medPct as number))[0];
   const lock = days.find((d) => d.key === 'lock');
-  const j6 = days.find((d) => d.key === 'j6');
-  const uplift = lock?.avgPct != null && j6?.avgPct != null ? round1(j6.avgPct - lock.avgPct) : null;
+  const holdBest = eligible
+    .filter((d) => d.key !== 'lock' && d.avgPct != null)
+    .sort((a, b) => (b.avgPct as number) - (a.avgPct as number))[0];
+  const uplift = lock?.avgPct != null && holdBest?.avgPct != null ? round1(holdBest.avgPct - lock.avgPct) : null;
 
   return {
     n: rows.length,
+    basis: 'full_population',
     days,
     bestDayByMean: byMean?.label ?? null,
     bestDayByMedian: byMed?.label ?? null,
     lockAvgPct: lock?.avgPct ?? null,
-    j6AvgPct: j6?.avgPct ?? null,
-    upliftJ6VsLockPct: uplift,
+    bestHoldLabel: holdBest?.label ?? null,
+    bestHoldAvgPct: holdBest?.avgPct ?? null,
+    upliftBestHoldVsLockPct: uplift,
     minSampleForBest,
   };
 }

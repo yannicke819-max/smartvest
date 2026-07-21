@@ -1,7 +1,7 @@
-// LISA — Oversold "meilleur jour de sortie" shadow hook (mode oversold).
-// Source : GET /lisa/oversold-exit-horizon/:portfolioId — pour les closes labellisés
-// (trajectoire J+1..J+10), P&L moyen/médian qu'un exit à chaque horizon aurait donné
-// vs le lock réalisé. MESURE SEULE, ne change rien au trading.
+// LISA — « Meilleur jour de sortie » v2 POPULATION COMPLÈTE (mode oversold).
+// Source : GET /lisa/oversold-exit-horizon/:portfolioId — pour TOUTES les entrées
+// (perdantes incluses, biais de survie éliminé) : lock = P&L réalisé des fermées,
+// J+N = fwd_return_{1,3,6,10}d stampés par le labeler. MESURE SEULE.
 
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
@@ -20,12 +20,14 @@ export interface ExitHorizonDay {
 export interface OversoldExitHorizon {
   portfolioId: string;
   n: number;
+  basis: 'full_population';
   days: ExitHorizonDay[];
   bestDayByMean: string | null;
   bestDayByMedian: string | null;
   lockAvgPct: number | null;
-  j6AvgPct: number | null;
-  upliftJ6VsLockPct: number | null;
+  bestHoldLabel: string | null;
+  bestHoldAvgPct: number | null;
+  upliftBestHoldVsLockPct: number | null;
   minSampleForBest: number;
   asOf: string;
 }

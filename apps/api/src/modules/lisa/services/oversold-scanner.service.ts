@@ -54,7 +54,7 @@ import { IntradayProviderRouter } from './intraday-provider-router.service';
 import { OversoldProbabilityService } from './oversold-probability.service';
 import { minutesSinceExchangeOpen, minutesToExchangeClose } from './exchange-sessions.helper';
 import { computeOversoldNotional } from './oversold-sizing.helper';
-import { computeExitHorizonShadow, type ExitHorizonRow } from './oversold-exit-horizon.helper';
+import { computeExitHorizonFullPopulation, type ExitHorizonFullPopRow } from './oversold-exit-horizon.helper';
 
 /**
  * Contexte de régime marché capturé AS-OF l'entrée (PR-2 — features régime).
@@ -1808,20 +1808,21 @@ export class OversoldScannerService {
   }
 
   /**
-   * SHADOW « meilleur jour de sortie » (J → J+10). Lit la trajectoire labellisée
-   * des closes (`position_close_decisions`) et calcule, par horizon, le P&L moyen/
-   * médian qu'un exit aurait donné vs le lock réalisé. MESURE SEULE — ne touche pas
-   * au trading. Sert à décider d'allonger l'horizon US (→ J+6) sur données live.
+   * « Meilleur jour de sortie » (J → J+10) — v2 POPULATION COMPLÈTE (21/07).
+   * Lit `paper_trades` (TOUTES les entrées, perdantes incluses) : lock = pnl_pct
+   * réalisé des fermées, J+N = fwd_return_{1,3,6,10}d du labeler (0204). L'ancienne
+   * v1 lisait les trajectoires des closes verrouillés (gagnantes only) → biais de
+   * survie (faux pics J+3 puis J+6). MESURE SEULE — ne touche pas au trading.
    */
   async getExitHorizonShadow(portfolioId: string) {
     const { data } = await this.supabase
       .getClient()
-      .from('position_close_decisions')
-      .select('pnl_pct, entry_price, price_j1, price_j3, price_j6, price_j10')
+      .from('paper_trades')
+      .select('pnl_pct, status, fwd_return_1d, fwd_return_3d, fwd_return_6d, fwd_return_10d')
+      .eq('strategy', 'oversold')
       .eq('portfolio_id', portfolioId)
-      .not('price_j1', 'is', null)
-      .limit(2000);
-    const shadow = computeExitHorizonShadow((data ?? []) as ExitHorizonRow[]);
+      .limit(3000);
+    const shadow = computeExitHorizonFullPopulation((data ?? []) as ExitHorizonFullPopRow[]);
     return { portfolioId, ...shadow, asOf: new Date().toISOString() };
   }
 
@@ -1940,23 +1941,28 @@ export class OversoldScannerService {
    * PR-4a — Calcule le label J+10 d'une position (fetch barres + index entrée).
    * Renvoie null si entry+horizon pas encore disponible (position trop récente).
    */
-  private async computeFwdForPosition(
+  private async computeFwdMultiForPosition(
     symbol: string,
     entryIso: string,
-    horizon = 10,
-  ): Promise<{ fwdReturn: number; fwdOutcome: number } | null> {
+    horizons: number[],
+  ): Promise<Map<number, { fwdReturn: number; fwdOutcome: number }>> {
+    const out = new Map<number, { fwdReturn: number; fwdOutcome: number }>();
     const entryDate = entryIso.slice(0, 10);
-    if (!entryDate) return null;
+    if (!entryDate) return out;
     const bars = await this.fetchEodBars(symbol, 160);
-    if (bars.length < 2) return null;
+    if (bars.length < 2) return out;
     let idx = bars.findIndex((b) => b.date === entryDate);
     if (idx < 0) {
       for (let i = bars.length - 1; i >= 0; i--) {
         if (bars[i].date <= entryDate) { idx = i; break; }
       }
     }
-    if (idx < 0) return null;
-    return computeForwardOutcome(bars, idx, horizon);
+    if (idx < 0) return out;
+    for (const h of horizons) {
+      const r = computeForwardOutcome(bars, idx, h);
+      if (r) out.set(h, r);
+    }
+    return out;
   }
 
   /**
@@ -2015,18 +2021,28 @@ export class OversoldScannerService {
 
     const { data: ptRows } = await client
       .from('paper_trades')
-      .select('id, scanner_position_id, status, fwd_return_10d')
+      .select('id, scanner_position_id, status, fwd_return_10d, fwd_return_1d, fwd_return_3d, fwd_return_6d')
       .eq('strategy', 'oversold')
       .limit(5000);
-    const ptByPos = new Map<string, { id: string; status: string; fwdSet: boolean }>();
+    const ptByPos = new Map<string, { id: string; status: string; fwdSet: boolean; fwd1Set: boolean; fwd3Set: boolean; fwd6Set: boolean }>();
     for (const r of ptRows ?? []) {
       if (r.scanner_position_id)
         ptByPos.set(r.scanner_position_id as string, {
           id: r.id as string,
           status: r.status as string,
           fwdSet: r.fwd_return_10d != null,
+          fwd1Set: r.fwd_return_1d != null,
+          fwd3Set: r.fwd_return_3d != null,
+          fwd6Set: r.fwd_return_6d != null,
         });
     }
+    // 0204 — backfill multi-horizon plafonné par cycle (1 fetch de barres par position
+    // à combler ; ~500 rows legacy × 1 fetch = trop pour un seul cycle → converge en
+    // quelques cycles de 30 min sans marteler EODHD).
+    let backfillFetches = 0;
+    const MAX_BACKFILL_FETCHES_PER_CYCLE = 60;
+    // Seuils d'âge CALENDAIRES garantissant que le h-ième bar OUVRÉ existe.
+    const FWD_AGE_MIN_DAYS: Record<number, number> = { 1: 4, 3: 7, 6: 11, 10: 14 };
 
     const pids = [...new Set(oversold.map((p) => p.portfolio_id as string))];
     const { data: pf } = await client.from('portfolios').select('id, user_id').in('id', pids);
@@ -2057,18 +2073,33 @@ export class OversoldScannerService {
             .eq('id', existing.id);
           updated++;
         }
-        // PR-4a — backfill label J+10 quand la position a vieilli au-delà de
-        // l'horizon (entry+10 jours ouvrés disponible). Idempotent : une seule
-        // fois par position (fwdSet devient true ensuite).
-        if (!existing.fwdSet) {
+        // PR-4a + 0204 — backfill des labels forward quand la position a vieilli
+        // au-delà de chaque horizon (J+1/J+3/J+6/J+10, population complète).
+        // Idempotent : chaque horizon n'est calculé qu'une fois (flag *Set).
+        {
           const ageDays = (Date.now() - new Date(String(p.entry_timestamp ?? '')).getTime()) / 86_400_000;
-          if (Number.isFinite(ageDays) && ageDays >= 14) {
-            const fwd = await this.computeFwdForPosition(p.symbol as string, String(p.entry_timestamp ?? ''));
-            if (fwd) {
-              await client
-                .from('paper_trades')
-                .update({ fwd_return_10d: String(fwd.fwdReturn), fwd_outcome_10d: fwd.fwdOutcome, fwd_horizon_days: 10 })
-                .eq('id', existing.id);
+          const due: number[] = [];
+          if (Number.isFinite(ageDays)) {
+            if (!existing.fwd1Set && ageDays >= FWD_AGE_MIN_DAYS[1]) due.push(1);
+            if (!existing.fwd3Set && ageDays >= FWD_AGE_MIN_DAYS[3]) due.push(3);
+            if (!existing.fwd6Set && ageDays >= FWD_AGE_MIN_DAYS[6]) due.push(6);
+            if (!existing.fwdSet && ageDays >= FWD_AGE_MIN_DAYS[10]) due.push(10);
+          }
+          if (due.length > 0 && backfillFetches < MAX_BACKFILL_FETCHES_PER_CYCLE) {
+            backfillFetches++;
+            const multi = await this.computeFwdMultiForPosition(p.symbol as string, String(p.entry_timestamp ?? ''), due);
+            if (multi.size > 0) {
+              const upd: Record<string, unknown> = {};
+              for (const [h, r] of multi) {
+                if (h === 10) {
+                  upd.fwd_return_10d = String(r.fwdReturn);
+                  upd.fwd_outcome_10d = r.fwdOutcome;
+                  upd.fwd_horizon_days = 10;
+                } else {
+                  upd[`fwd_return_${h}d`] = String(r.fwdReturn);
+                }
+              }
+              await client.from('paper_trades').update(upd).eq('id', existing.id);
               updated++;
             }
           }
@@ -2140,6 +2171,11 @@ export class OversoldScannerService {
         row.fwd_return_10d = String(fwd.fwdReturn);
         row.fwd_outcome_10d = fwd.fwdOutcome;
         row.fwd_horizon_days = 10;
+      }
+      // 0204 — horizons intermédiaires J+1/J+3/J+6 (mêmes barres, population complète).
+      for (const h of [1, 3, 6]) {
+        const r = computeForwardOutcome(bars, idx, h);
+        if (r) row[`fwd_return_${h}d`] = String(r.fwdReturn);
       }
       const { error } = await client.from('paper_trades').insert(row);
       if (!error) inserted++;
