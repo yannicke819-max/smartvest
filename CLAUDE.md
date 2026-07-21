@@ -5,43 +5,57 @@ Guide de travail pour Claude Code sur ce repo.
 
 ---
 
-## ⏰ CHECK-IN PROGRAMMÉ — ~20-22/06/2026 : valider l'AUC + décider Phase 3b
+## ⏰ CHECK-IN PROGRAMMÉ — ~04-08/08/2026 : CALIBRATION p_win → décision GATE US
 
-**Demandé par l'utilisateur 11/06.** Quand la 1re cohorte oversold atteint J+10
-(entrées 07-10/06 → labels ~18-22/06), valider la boucle d'apprentissage et décider
-de **brancher (ou non) la consommation p_win (Phase 3b)**. Étapes :
+**Demandé par l'utilisateur 21/07.** Le shadow p_win est LIVE depuis le 21/07
+(commit `edf7e89`) : chaque nouvelle entrée oversold est estampillée
+`p_win_at_entry` + `model_version_at_entry` dans `paper_trades` (mesure pure,
+zéro gate). Les 1res entrées estampillées mûrissent à J+10 vers ~04-08/08.
+**Mission : mesurer la calibration et décider d'activer (ou non) le gate US.**
 
-1. **Labels J+10 peuplés ?** `paper_trades` `strategy=oversold` avec `fwd_outcome_10d`
-   non null (cible ≥ 30-50 labellisés/portefeuille). Le labeler tourne déjà
-   (oversold-scanner.ts). Si 0 → attendre encore.
-2. **Phase 2 (loi live) — vérifier la bascule** : le gain-picker passe `oversold_law.
-   expected_alpha_source` de `backtest` → `live` dès qu'une bande a ≥ `OVERSOLD_LIVE_LAW_MIN_SAMPLE`
-   (10) trades labellisés. Comparer alpha live vs backtest (−8/−12% = 2.45, etc.) par
-   bande et par portefeuille (US vs EU). Forte divergence = l'edge réel parle.
-3. **Phase 3 (p_win) — entraîner + lire l'AUC** : déclencher `OversoldProbabilityService.
-   trainAndPersist(portfolioId)` (ou attendre le cron dimanche 03:00 UTC). Lire
-   `probability_model_weights` versions `oversold_*` : `sample_size`, `auc_roc`.
-4. **DÉCISION Phase 3b** :
-   - **SI AUC ≥ 0.55** stable sur ≥ 2 portefeuilles → brancher la consommation p_win :
-     d'ABORD en **shadow** (calculer `p_win_at_entry` à l'ouverture + `model_version_at_entry`,
-     mesurer la calibration), PUIS gate d'entrée / input sizing si la calibration tient.
-   - **SINON** (AUC < 0.55) → garder en MESURE seulement, itérer (scaling des features,
-     plus de données). **Ne JAMAIS gater des entrées sur un modèle non discriminant.**
-5. **SYNTHÈSE "meilleur jour pour vendre" (trajectoire J+N) — demandée par l'user 18/06.**
-   Relancer `npx tsx scripts/oversold-jn-synthesis.ts` (P&L moyen/médian/%gagnants si on
-   avait tenu jusqu'à J+1/J+3/J+6/J+10, + jour du pic, segmenté US/EU). **Baseline 18/06
-   (J+10 PAS encore mûri)** : US n=19 → J+1 +4.5%·74%, **J+3 +9.8%·89%**, J+6 +8.5%·75%
-   (pic J+3 = 53%) ; EU n=31 → ~0% partout (aucun edge). **Question à trancher quand J+10
-   se peuple** : le pic US se déplace-t-il vers **J+6/J+10** (ça continue de grimper) ou
-   reste à **J+3** (ça redonne après) ? Si J+10 ≥ J+3 stable sur l'US → envisager d'allonger
-   l'horizon de sortie US (TP J+3→J+N ou trailing 2-3j) au lieu du lock sec +1.5% ; **EU =
-   statu quo** (edge non prouvé). ⚠️ Biais de survie (ce sont les gagnantes du gain-picker)
-   + échantillon petit + US ≈ surtout semis → indicatif, pas robuste.
+### Étapes
 
-Commits de référence : collecteur news `257c31ed`, Phase 2 `5895d06c`, Phase 3 `9cfd1bd3`,
-fix danger-zone gap (TWLO) `e9320d6c`, synthèse J+N `scripts/oversold-jn-synthesis.ts`.
-Garde-fous existants : gain-picker gains-only (jamais close de loser), danger-zone = Manu
-(jamais close auto), Gemini OFF, p_win/loi live = fallback backtest tant que sample insuffisant.
+1. **Sample suffisant ?** `paper_trades` `strategy=oversold` avec `p_win_at_entry`
+   NOT NULL **ET** `fwd_outcome_10d` NOT NULL (cible ≥ 30-50/portefeuille, surtout
+   US `a0000001`). Si trop peu → repousser d'une semaine, ne rien forcer.
+2. **Calibration par bucket** : terciles/déciles de `p_win_at_entry` → winRate J+10
+   observé + `fwd_return_10d` moyen par bucket. Critère : **monotone** (haut p_win
+   gagne plus que bas p_win) + écart net entre bucket haut et bas (≥ 15-20 pts de WR).
+3. **Re-walk-forward** : refaire le contrefactuel temporel (train ancien / test récent,
+   méthode du 21/07) avec les données de juillet-août. Critère : **AUC out-of-sample
+   US ≥ 0.55 STABLE** (pas l'AUC plein-set des logs — c'est un mirage d'overfit,
+   preuve : EU plein-set 0.876 vs OOS 0.437).
+4. **DÉCISION GATE US** :
+   - **SI calibration monotone + OOS ≥ 0.55** → implémenter le gate d'entrée US :
+     env `OVERSOLD_PWIN_GATE` (`off`/`shadow`/`active`), seuil `p ≥ 0.5`, rollout
+     `shadow` 48-72h (compter les skips + leur fwd) PUIS `active`.
+   - **SINON** → rester en mesure, ré-entraîner avec plus de données, re-check +2 sem.
+   - **EU : JAMAIS de gate** tant que son AUC OOS < 0.55 (le 21/07 : 0.437 = pire
+     que hasard, le gate aurait coûté −58 pts de P&L cumulé). Ré-évaluer à ~250 labels.
+
+### Baselines 21/07 (contrefactuel walk-forward, à battre/confirmer)
+
+- **US** (train juin n=156 / test juil n=105) : **AUC OOS 0.685** ; gate `p≥0.5` →
+  garde 39/105 (37%), réalisé cumulé **+17.05% vs +14.73%** sans gate, +0.44%/trade
+  vs +0.14% (×3), fwd des écartés −10.50% (bien écartés).
+- **EU** : AUC OOS **0.437** (plein-set 0.876 = overfit) → gate destructeur (+88%→+30%).
+- Modèles persistés : US `oversold_a0000001` AUC 0.775 n=261 ; EU 0.876 n=132
+  (plein-set — se refittent au boot + dimanche 03:00 UTC).
+- **Verdict "meilleur jour de sortie" (30/06, population complète n=320)** : le
+  **lock J (+1.5%) bat tous les horizons** (US J+1 −0.69%, J+3 −0.14%, J+6 −1.59% ;
+  EU idem négatif) → NE PAS allonger l'horizon ; le signal "J+6" du shadow panel
+  était du biais de survie (gagnantes only). Panneau UI `/lisa` à corriger un jour.
+- **News à l'entrée (finding 21/07, US n=154)** : news POSITIVES à l'entrée →
+  WR J+10 31% / ret −6.24% (PIRE que sans news 40%/−2.06%) — chute malgré bonnes
+  news = fondamentale. Capté par la feature `newsAvgSentiment` du p_win.
+
+Commits de référence : shadow p_win `edf7e89`, boot-train + deadline-ferme-MANU
+`4cc31b7`, fix re-arm catastrophe (MSTR) `4409294c`, fix danger-zone gap (TWLO)
+`e9320d6c`, Phase 2 `5895d06c`, Phase 3 `9cfd1bd3`.
+Garde-fous : gain-picker gains-only ; danger-zone = MANU sans re-arm tant qu'en
+danger ; deadline J+10 ferme AUSSI les MANU (sortie d'horizon, pas catastrophe) ;
+le stop catastrophe −15% ne ferme JAMAIS un oversold en auto ; Gemini OFF ;
+clé Mistral = `MISTRAL_SMARTVEST_API_KEY` (re-créée 21/07, l'ancienne 401 depuis ~29/06).
 
 ---
 
