@@ -67,6 +67,11 @@ interface OversoldRegimeCtx {
   vix3mRatio: number | null; // VIX/VIX3M ; >1 = backwardation (stress aigu)
   spy5d: number | null; // rendement SPY 5j en %
   hyg5d: number | null; // rendement HYG 5j en % (proxy stress crédit)
+  // Régime EU NATIF (21/07 — features US-centriques = 1 cause suspectée de
+  // l'échec OOS du modèle EU 0.437) : une entrée EU était scorée avec la météo
+  // de Wall Street. Mêmes tickers que le gate régime EU (V2TX.INDX / SX5E.INDX).
+  v2tx: number | null; // VSTOXX (close EOD)
+  sx5e5d: number | null; // rendement Euro Stoxx 50 5j en %
 }
 
 /** Une position oversold enrichie pour l'UI dédiée (book summary). */
@@ -1544,13 +1549,16 @@ export class OversoldScannerService {
     if (this.regimeCtxCache && Date.now() - this.regimeCtxCache.at < this.REGIME_CTX_TTL_MS) {
       return this.regimeCtxCache.byDate;
     }
-    const [vix, vix3m, spy, hyg] = await Promise.all([
+    const [vix, vix3m, spy, hyg, v2tx, sx5e] = await Promise.all([
       this.fetchEodBars('VIX.INDX', 220).catch(() => [] as EodBar[]),
       this.fetchEodBars('VIX3M.INDX', 220).catch(() => [] as EodBar[]),
       this.fetchEodBars('SPY.US', 220).catch(() => [] as EodBar[]),
       this.fetchEodBars('HYG.US', 220).catch(() => [] as EodBar[]),
+      this.fetchEodBars('V2TX.INDX', 220).catch(() => [] as EodBar[]),
+      this.fetchEodBars('SX5E.INDX', 220).catch(() => [] as EodBar[]),
     ]);
     const v3ByDate = new Map(vix3m.map((b) => [b.date, b.close]));
+    const v2ByDate = new Map(v2tx.map((b) => [b.date, b.close]));
     const ret5 = (bars: EodBar[]): Map<string, number> => {
       const m = new Map<string, number>();
       for (let i = 5; i < bars.length; i++) {
@@ -1561,7 +1569,10 @@ export class OversoldScannerService {
     };
     const spy5 = ret5(spy);
     const hyg5 = ret5(hyg);
+    const sx5e5 = ret5(sx5e);
     const byDate = new Map<string, OversoldRegimeCtx>();
+    // Clé = dates VIX (calendrier US). Jours fériés croisés US/EU : lookup exact
+    // sinon null — regimeAsOf retombe de toute façon sur la dernière date <= entrée.
     for (const b of vix) {
       const v3 = v3ByDate.get(b.date);
       byDate.set(b.date, {
@@ -1569,6 +1580,8 @@ export class OversoldScannerService {
         vix3mRatio: v3 && v3 > 0 ? b.close / v3 : null,
         spy5d: spy5.get(b.date) ?? null,
         hyg5d: hyg5.get(b.date) ?? null,
+        v2tx: v2ByDate.get(b.date) ?? null,
+        sx5e5d: sx5e5.get(b.date) ?? null,
       });
     }
     this.regimeCtxCache = { at: Date.now(), byDate };

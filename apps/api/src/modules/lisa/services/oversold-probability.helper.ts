@@ -28,6 +28,12 @@ export const OVERSOLD_FEATURE_NAMES = [
   'newsAgeHours',
   'newsAvgSentiment',
   'newsMinSentiment',
+  // Régime EU NATIF (21/07) — le modèle EU était scoré avec des features de régime
+  // US-only (vix/spy5d/hyg5d), 1 cause suspectée de son échec OOS (AUC 0.437).
+  // Peuplées en FORWARD-ONLY (nouvelles lignes) ; anciennes lignes → 0 via
+  // extractFeatureRow ; anciens modèles persistés sans ces clés → coef 0 (compat).
+  'v2tx',
+  'sx5e5d',
 ] as const;
 
 /** Extrait un vecteur de features numériques d'un features_at_entry (non-fini → 0). */

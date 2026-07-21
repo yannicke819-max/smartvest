@@ -5,14 +5,16 @@ import {
 } from '../oversold-probability.helper';
 
 describe('oversold-probability helper — Phase 3', () => {
-  it('extractFeatureRow mappe les 16 features, non-fini → 0', () => {
-    const row = extractFeatureRow({ vix: 19.8, rsi14: 65, drop1d: -6.2, newsAvgSentiment: null, bogus: 99 });
+  it('extractFeatureRow mappe toutes les features (dont régime EU natif), non-fini → 0', () => {
+    const row = extractFeatureRow({ vix: 19.8, rsi14: 65, drop1d: -6.2, newsAvgSentiment: null, v2tx: 21.5, bogus: 99 });
     expect(Object.keys(row).sort()).toEqual([...OVERSOLD_FEATURE_NAMES].sort());
     expect(row.vix).toBe(19.8);
     expect(row.rsi14).toBe(65);
     expect(row.drop1d).toBe(-6.2);
     expect(row.newsAvgSentiment).toBe(0); // null → 0
     expect(row.vol14).toBe(0); // absent → 0
+    expect(row.v2tx).toBe(21.5); // régime EU natif (21/07)
+    expect(row.sx5e5d).toBe(0); // absent (vieilles lignes) → 0
     expect((row as Record<string, number>).bogus).toBeUndefined(); // hors liste ignoré
   });
 
