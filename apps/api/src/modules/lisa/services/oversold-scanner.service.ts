@@ -1536,6 +1536,9 @@ export class OversoldScannerService {
     }
   }
 
+  /** 0204 — lignes dont le fetch de barres n'a rien donné CE boot (délistées…) : ne pas re-brûler le budget backfill dessus. */
+  private readonly fwdBackfillBarrenIds = new Set<string>();
+
   // ─── PR-2 — Contexte de régime as-of entrée (cache 6h, fail-open) ───
   private regimeCtxCache: { at: number; byDate: Map<string, OversoldRegimeCtx> } | null = null;
   private readonly REGIME_CTX_TTL_MS = 6 * 60 * 60 * 1000;
@@ -2040,7 +2043,7 @@ export class OversoldScannerService {
     // à combler ; ~500 rows legacy × 1 fetch = trop pour un seul cycle → converge en
     // quelques cycles de 30 min sans marteler EODHD).
     let backfillFetches = 0;
-    const MAX_BACKFILL_FETCHES_PER_CYCLE = 60;
+    const MAX_BACKFILL_FETCHES_PER_CYCLE = 120;
     // Seuils d'âge CALENDAIRES garantissant que le h-ième bar OUVRÉ existe.
     const FWD_AGE_MIN_DAYS: Record<number, number> = { 1: 4, 3: 7, 6: 11, 10: 14 };
 
@@ -2085,9 +2088,14 @@ export class OversoldScannerService {
             if (!existing.fwd6Set && ageDays >= FWD_AGE_MIN_DAYS[6]) due.push(6);
             if (!existing.fwdSet && ageDays >= FWD_AGE_MIN_DAYS[10]) due.push(10);
           }
-          if (due.length > 0 && backfillFetches < MAX_BACKFILL_FETCHES_PER_CYCLE) {
+          if (due.length > 0 && !this.fwdBackfillBarrenIds.has(existing.id) && backfillFetches < MAX_BACKFILL_FETCHES_PER_CYCLE) {
             backfillFetches++;
             const multi = await this.computeFwdMultiForPosition(p.symbol as string, String(p.entry_timestamp ?? ''), due);
+            // Famine de budget (constat 21/07) : ~76 lignes sans barres (délistées/
+            // symboles morts) re-tentées à CHAQUE cycle bouffaient tout le budget →
+            // les 200+ lignes comblables derrière ne passaient jamais. Une ligne qui
+            // renvoie 0 horizon est marquée stérile pour CE boot (retry au prochain).
+            if (multi.size === 0) this.fwdBackfillBarrenIds.add(existing.id);
             if (multi.size > 0) {
               const upd: Record<string, unknown> = {};
               for (const [h, r] of multi) {
