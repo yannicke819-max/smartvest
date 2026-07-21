@@ -51,6 +51,7 @@ import {
   type RealtimeOhlc,
 } from './oversold-intraday.helper';
 import { IntradayProviderRouter } from './intraday-provider-router.service';
+import { OversoldProbabilityService } from './oversold-probability.service';
 import { minutesSinceExchangeOpen, minutesToExchangeClose } from './exchange-sessions.helper';
 import { computeOversoldNotional } from './oversold-sizing.helper';
 import { computeExitHorizonShadow, type ExitHorizonRow } from './oversold-exit-horizon.helper';
@@ -233,6 +234,7 @@ export class OversoldScannerService {
     private readonly decisionLog: DecisionLogService,
     private readonly config: ConfigService,
     private readonly intraday: IntradayProviderRouter,
+    private readonly probability: OversoldProbabilityService,
   ) {}
 
   /** Gate env — désactivable sans redeploy via secret Fly. */
@@ -2102,6 +2104,19 @@ export class OversoldScannerService {
         features_at_entry: featPlus,
         opened_at: p.entry_timestamp,
       };
+      // Phase 3b SHADOW (21/07) — p_win écrit à l'entrée (MESURE : calibration du
+      // modèle sur données live, walk-forward US AUC OOS 0.685). AUCUN gate/sizing :
+      // le trade s'ouvre exactement pareil, on note juste ce que le modèle en pensait.
+      // Best-effort : null si aucun modèle persisté (ne bloque jamais la collecte).
+      try {
+        const est = await this.probability.estimatePWin(p.portfolio_id as string, featPlus);
+        if (est) {
+          row.p_win_at_entry = est.pWin.toFixed(4);
+          row.model_version_at_entry = est.version;
+        }
+      } catch {
+        // shadow only — jamais bloquant
+      }
       if (closed) {
         row.closed_at = p.exit_timestamp;
         row.pnl_usd = String(pnl);

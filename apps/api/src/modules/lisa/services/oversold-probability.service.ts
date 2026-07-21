@@ -23,10 +23,22 @@ import { Cron } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
 import { fitLogistic, predict, computeAuc, computeAccuracy } from '@smartvest/ai-analyst';
 import { SupabaseService } from '../../supabase/supabase.service';
-import { buildOversoldTrainingSet, type OversoldTrainTrade } from './oversold-probability.helper';
+import {
+  buildOversoldTrainingSet,
+  extractFeatureRow,
+  OVERSOLD_FEATURE_NAMES,
+  type OversoldTrainTrade,
+} from './oversold-probability.helper';
 
 const MIN_SAMPLE = 30;
 const MIN_AUC = 0.55;
+
+type LogisticWeights = Parameters<typeof predict>[0];
+
+export interface OversoldPWinEstimate {
+  pWin: number;
+  version: string;
+}
 
 export interface OversoldFitResult {
   portfolioId: string;
@@ -131,6 +143,64 @@ export class OversoldProbabilityService {
       return { portfolioId, persisted: false, version: null, sampleSize: ts.n, wins: ts.wins, aucRoc: auc, accuracy, reason: error.message };
     }
     return { portfolioId, persisted: true, version, sampleSize: ts.n, wins: ts.wins, aucRoc: auc, accuracy };
+  }
+
+  /**
+   * Phase 3b SHADOW (21/07, walk-forward validé US AUC OOS 0.685) — estime p_win
+   * pour un vecteur de features à l'entrée, via le DERNIER modèle persisté du
+   * portefeuille. MESURE UNIQUEMENT : le caller écrit p_win_at_entry +
+   * model_version_at_entry dans paper_trades ; AUCUN gate, AUCUN sizing.
+   * Retourne null si aucun modèle persisté (ex : avant 1er fit) — jamais bloquant.
+   */
+  async estimatePWin(
+    portfolioId: string,
+    features: Record<string, unknown> | null | undefined,
+  ): Promise<OversoldPWinEstimate | null> {
+    if (!this.enabled || !this.supabase.isReady()) return null;
+    const model = await this.loadLatestModel(portfolioId);
+    if (!model) return null;
+    const pWin = predict(model.weights, extractFeatureRow(features));
+    return Number.isFinite(pWin) ? { pWin, version: model.version } : null;
+  }
+
+  /** Cache 10 min par portefeuille (y compris les miss → pas de hammering DB). */
+  private readonly modelCache = new Map<string, { model: { weights: LogisticWeights; version: string } | null; asOf: number }>();
+  private static readonly MODEL_CACHE_TTL_MS = 10 * 60_000;
+
+  private async loadLatestModel(portfolioId: string): Promise<{ weights: LogisticWeights; version: string } | null> {
+    const cached = this.modelCache.get(portfolioId);
+    if (cached && Date.now() - cached.asOf < OversoldProbabilityService.MODEL_CACHE_TTL_MS) return cached.model;
+    let model: { weights: LogisticWeights; version: string } | null = null;
+    try {
+      const { data } = await this.supabase
+        .getClient()
+        .from('probability_model_weights')
+        .select('version, weights')
+        .like('version', `oversold_${portfolioId.slice(0, 8)}_%`)
+        .order('trained_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const raw = (data?.weights ?? null) as Record<string, unknown> | null;
+      if (data?.version && raw) {
+        const coefficients: Record<string, number> = {};
+        for (const name of OVERSOLD_FEATURE_NAMES) {
+          const v = Number(raw[name]);
+          coefficients[name] = Number.isFinite(v) ? v : 0;
+        }
+        model = {
+          version: String(data.version),
+          weights: {
+            intercept: Number(raw.intercept) || 0,
+            coefficients,
+            featureNames: [...OVERSOLD_FEATURE_NAMES],
+          },
+        };
+      }
+    } catch (e) {
+      this.logger.debug(`[oversold-probability] loadLatestModel fail: ${String(e).slice(0, 120)}`);
+    }
+    this.modelCache.set(portfolioId, { model, asOf: Date.now() });
+    return model;
   }
 
   /** Portefeuilles en mode oversold (découverte dynamique, pas d'ID en dur). */
