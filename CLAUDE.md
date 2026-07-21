@@ -32,6 +32,15 @@ zéro gate). Les 1res entrées estampillées mûrissent à J+10 vers ~04-08/08.
    - **SINON** → rester en mesure, ré-entraîner avec plus de données, re-check +2 sem.
    - **EU : JAMAIS de gate** tant que son AUC OOS < 0.55 (le 21/07 : 0.437 = pire
      que hasard, le gate aurait coûté −58 pts de P&L cumulé). Ré-évaluer à ~250 labels.
+5. **COMPARAISON AVANT/APRÈS 21/07 (demandé par l'user 21/07)** — le 21/07 ~15:35 UTC
+   est une frontière naturelle : AVANT (≈29/06 → 21/07) la sortie LLM Mistral était
+   MUETTE (clé 401) → exits 100% déterministes (lock +1.5%, deadline J+10, danger-zone) ;
+   APRÈS : LLM exit ressuscité (consomme la loi live Phase 2) + shadow p_win actif.
+   Comparer les 2 fenêtres (~2-3 sem de part et d'autre, par portefeuille) :
+   P&L/trade réalisé, répartition des types de sortie (`oversold_mistral_gain_pick`
+   vs lock déterministe vs `closed_expired`), win rate, give-back vs MFE.
+   ⚠️ Pas un vrai A/B (régime marché différent entre les fenêtres) mais directionnel :
+   c'est LA mesure de la valeur ajoutée réelle de la couche LLM de sortie.
 
 ### Baselines 21/07 (contrefactuel walk-forward, à battre/confirmer)
 
