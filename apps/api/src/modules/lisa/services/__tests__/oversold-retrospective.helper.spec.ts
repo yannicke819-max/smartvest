@@ -92,3 +92,32 @@ describe('deriveRegionScope — mapping portefeuille → région (anti ID-en-dur
     expect(deriveRegionScope('Mon portefeuille', 'crypto_majors')).toBeNull();
   });
 });
+
+describe('HEALTH_SUMMARY — population complète (fix biais 23/07)', () => {
+  const lockedWinners = Array.from({ length: 6 }, () => ({
+    pnlPct: 1.5, pnlUsd: 15, deadlineVerdict: 'CLOSE_BETTER',
+    pnlIfHeldToDeadlinePct: -1, bestDayLabel: 'J+1', bestDayPnlPct: 2,
+  }));
+
+  it('sans healthRows (back-compat) : santé = gagnantes only → WR 100%', () => {
+    const out = buildOversoldLessons(lockedWinners, { region: 'US', scope: 'oversold_us_equity', minSample: 5 });
+    const health = out.find((l) => l.lessonKind === 'HEALTH_SUMMARY')!;
+    expect(health.winRateObserved).toBe(100);
+    expect(health.payload.health_basis).toBe('locked_only');
+  });
+
+  it('avec healthRows (toutes fermetures) : le WR reflète les catastrophes', () => {
+    const healthRows = [
+      ...Array.from({ length: 8 }, () => ({ pnlPct: 1.5, pnlUsd: 15 })),
+      { pnlPct: -15.1, pnlUsd: -1159 }, // catastrophe MSTR-like
+      { pnlPct: -4.2, pnlUsd: -70 },    // deadline-close perdante
+    ];
+    const out = buildOversoldLessons(lockedWinners, { region: 'US', scope: 'oversold_us_equity', minSample: 5 }, healthRows);
+    const health = out.find((l) => l.lessonKind === 'HEALTH_SUMMARY')!;
+    expect(health.winRateObserved).toBe(80); // 8/10, plus jamais 100% mensonger
+    expect(health.sampleSize).toBe(10);
+    expect(health.payload.health_basis).toBe('full_population');
+    expect(health.lessonText).toContain('toutes sorties');
+    expect(health.avgPnlUsd).toBeLessThan(0); // la moyenne inclut la catastrophe
+  });
+});

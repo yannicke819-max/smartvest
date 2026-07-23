@@ -113,7 +113,23 @@ export class OversoldRetrospectiveService {
       bestDayPnlPct: r.best_day_pnl_pct == null ? null : Number(r.best_day_pnl_pct),
     }));
 
-    const candidates = buildOversoldLessons(rows, { region: t.region, scope: t.scope, minSample: this.minSample });
+    // FIX 23/07 — santé sur TOUTES les fermetures (paper_trades), pas seulement
+    // les sorties verrouillées : sinon "win rate 100%" par construction (les
+    // catastrophes/deadlines ne passent pas par position_close_decisions).
+    const { data: ptData } = await client
+      .from('paper_trades')
+      .select('pnl_pct, pnl_usd')
+      .eq('strategy', 'oversold')
+      .eq('portfolio_id', t.portfolioId)
+      .eq('status', 'closed')
+      .gte('closed_at', since)
+      .limit(2000);
+    const healthRows = ((ptData ?? []) as Array<Record<string, unknown>>).map((r) => ({
+      pnlPct: r.pnl_pct == null ? null : Number(r.pnl_pct),
+      pnlUsd: r.pnl_usd == null ? null : Number(r.pnl_usd),
+    }));
+
+    const candidates = buildOversoldLessons(rows, { region: t.region, scope: t.scope, minSample: this.minSample }, healthRows);
     if (candidates.length === 0) return 0;
 
     const today = new Date().toISOString().slice(0, 10);

@@ -36,6 +36,18 @@ export function deriveRegionScope(
   return null;
 }
 
+/**
+ * FIX 23/07 — biais de survie dans HEALTH_SUMMARY : `position_close_decisions` ne
+ * contient QUE les sorties verrouillées (gagnantes) → "win rate 100%" par
+ * construction, +$210/trade affiché alors que la vraie moyenne toutes-sorties
+ * est ~+$40 (catastrophes TWLO/MSTR et deadline-closes invisibles). La santé se
+ * calcule désormais sur TOUTES les fermetures (paper_trades) passées ici.
+ */
+export interface OversoldHealthRow {
+  pnlPct: number | null;
+  pnlUsd: number | null;
+}
+
 export interface OversoldLessonCandidate {
   lessonKind: string;
   lessonText: string;
@@ -67,6 +79,7 @@ function toNum(v: unknown): number | null {
 export function buildOversoldLessons(
   rows: OversoldCloseRow[],
   opts: { region: string; scope: string; minSample?: number },
+  healthRows?: OversoldHealthRow[],
 ): OversoldLessonCandidate[] {
   const minSample = opts.minSample ?? 5;
   const n = rows.length;
@@ -157,20 +170,29 @@ export function buildOversoldLessons(
     });
   }
 
-  // 2. HEALTH — synthèse win rate / P&L de la fenêtre.
+  // 2. HEALTH — synthèse win rate / P&L de la fenêtre, sur TOUTES les fermetures
+  // (locks + stops catastrophe + deadlines) quand healthRows est fourni. Sinon
+  // fallback rows (back-compat) — mais c'est la vue biaisée gagnantes-only.
+  const hr = healthRows && healthRows.length ? healthRows : rows;
+  const hPnls = hr.map((r) => toNum(r.pnlPct)).filter((v): v is number => v != null);
+  const hPnlsUsd = hr.map((r) => toNum(r.pnlUsd)).filter((v): v is number => v != null);
+  const hWinRate = hPnls.length ? (hPnls.filter((v) => v > 0).length / hPnls.length) * 100 : null;
+  const hAvgPct = hPnls.length ? mean(hPnls) : null;
+  const hAvgUsd = hPnlsUsd.length ? mean(hPnlsUsd) : null;
+  const healthBasis = healthRows && healthRows.length ? 'toutes sorties (locks + stops + deadlines)' : 'sorties verrouillées uniquement';
   const healthNote =
-    winRate != null && winRate < 40
+    hWinRate != null && hWinRate < 40
       ? 'Sous la cible mean-reversion — surveiller la bande de drop et le régime VIX.'
       : "Conforme à l'edge mean-reversion attendu.";
   out.push({
     lessonKind: 'HEALTH_SUMMARY',
-    lessonText: `Oversold ${reg} : ${n} trades clos sur la fenêtre, win rate ${winRate != null ? winRate.toFixed(0) : 'n/a'}%, P&L moyen ${fmtUsd(avgPnlUsd)}/trade (${fmtPct(avgPnlPct)}). ${healthNote}`,
+    lessonText: `Oversold ${reg} : ${hr.length} trades clos sur la fenêtre (${healthBasis}), win rate ${hWinRate != null ? hWinRate.toFixed(0) : 'n/a'}%, P&L moyen ${fmtUsd(hAvgUsd)}/trade (${fmtPct(hAvgPct)}). ${healthNote}`,
     scope: opts.scope,
     confidence,
-    sampleSize: n,
-    winRateObserved: winRate,
-    avgPnlUsd,
-    payload: { ...basePayload, signal: 'health' },
+    sampleSize: hr.length,
+    winRateObserved: hWinRate,
+    avgPnlUsd: hAvgUsd,
+    payload: { ...basePayload, signal: 'health', health_basis: healthRows && healthRows.length ? 'full_population' : 'locked_only', health_win_rate: hWinRate != null ? round2(hWinRate) : null, health_avg_pnl_pct: hAvgPct != null ? round2(hAvgPct) : null },
   });
 
   return out;
