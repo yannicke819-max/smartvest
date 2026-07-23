@@ -72,6 +72,11 @@ interface OversoldRegimeCtx {
   // de Wall Street. Mêmes tickers que le gate régime EU (V2TX.INDX / SX5E.INDX).
   v2tx: number | null; // VSTOXX (close EOD)
   sx5e5d: number | null; // rendement Euro Stoxx 50 5j en %
+  // ΔVIX/ΔV2TX 1j (21/07, demande user) — le gate régime les utilise (ΔVIX>+10% =
+  // hostile) mais le p_win ne les voyait PAS. Cause→effet mesuré : US ΔVIX −3..0
+  // (complaisance) → WR 21% fwdJ+10 −9.6% vs +3..+10 (vraie peur) → WR 44% −0.2%.
+  vixChg1d: number | null; // Δ VIX 1 jour en %
+  v2txChg1d: number | null; // Δ V2TX 1 jour en %
 }
 
 /** Une position oversold enrichie pour l'UI dédiée (book summary). */
@@ -1163,6 +1168,25 @@ export class OversoldScannerService {
       }
     }
 
+    // ── GATE EUPHORIE (21/07 — cause→effet mesuré sur 467 entrées) ──
+    // Acheter un drop idiosyncratique quand L'INDICE monte fort = toxique :
+    // idx5d > +1.5% → US fwdJ+10 −9.50% (WR 18%, n=55, lock réalisé −1.29%) ;
+    // EU fwdJ+10 −2.50% (WR 27%, n=41, lock −0.25%). Si le marché rallye et que le
+    // titre chute quand même, la chute est fondamentale, pas du flow → pas de
+    // mean-reversion. Le gate régime actuel bloque le marché TROP FAIBLE (idx5dMin)
+    // mais jamais TROP FORT — ce garde comble ce trou. Modes : off (default) /
+    // active. Activation SANS redeploy : Fly secret OVERSOLD_EUPHORIA_GATE=active
+    // (+ OVERSOLD_EUPHORIA_IDX5D_MAX, default 1.5).
+    const euphMode = (this.config.get<string>('OVERSOLD_EUPHORIA_GATE') ?? 'off').toLowerCase();
+    const euphMax = parseFloat(this.config.get<string>('OVERSOLD_EUPHORIA_IDX5D_MAX') ?? '1.5');
+    if (euphMode === 'active' && idx5d != null && Number.isFinite(euphMax) && idx5d > euphMax) {
+      return {
+        block: true,
+        reason: `euphorie: ${labels.idx} 5j +${idx5d.toFixed(2)}% > +${euphMax}% (drops idiosyncratiques → pas de mean-reversion)`,
+        region, vix, vixChg, idx5d, vixSource, thresholds: effThresholds, rotation,
+      };
+    }
+
     const decision = decideRegimeBlock({ vix, vixChg, idx5d }, effThresholds, labels);
     return { ...decision, region, vix, vixChg, idx5d, vixSource, thresholds: effThresholds, rotation };
   }
@@ -1573,6 +1597,16 @@ export class OversoldScannerService {
     const spy5 = ret5(spy);
     const hyg5 = ret5(hyg);
     const sx5e5 = ret5(sx5e);
+    const chg1 = (bars: EodBar[]): Map<string, number> => {
+      const m = new Map<string, number>();
+      for (let i = 1; i < bars.length; i++) {
+        const prev = bars[i - 1].close;
+        if (prev > 0) m.set(bars[i].date, (bars[i].close / prev - 1) * 100);
+      }
+      return m;
+    };
+    const vixChg = chg1(vix);
+    const v2Chg = chg1(v2tx);
     const byDate = new Map<string, OversoldRegimeCtx>();
     // Clé = dates VIX (calendrier US). Jours fériés croisés US/EU : lookup exact
     // sinon null — regimeAsOf retombe de toute façon sur la dernière date <= entrée.
@@ -1585,6 +1619,8 @@ export class OversoldScannerService {
         hyg5d: hyg5.get(b.date) ?? null,
         v2tx: v2ByDate.get(b.date) ?? null,
         sx5e5d: sx5e5.get(b.date) ?? null,
+        vixChg1d: vixChg.get(b.date) ?? null,
+        v2txChg1d: v2Chg.get(b.date) ?? null,
       });
     }
     this.regimeCtxCache = { at: Date.now(), byDate };

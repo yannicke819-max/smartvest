@@ -34,6 +34,11 @@ export const OVERSOLD_FEATURE_NAMES = [
   // extractFeatureRow ; anciens modèles persistés sans ces clés → coef 0 (compat).
   'v2tx',
   'sx5e5d',
+  // ΔVIX/ΔV2TX 1j (21/07, demande user) — le gate régime les utilise mais le
+  // modèle ne les voyait pas. Forward-only, anciennes lignes → 0, anciens
+  // modèles → coef 0 (compat identique v2tx/sx5e5d).
+  'vixChg1d',
+  'v2txChg1d',
 ] as const;
 
 /** Extrait un vecteur de features numériques d'un features_at_entry (non-fini → 0). */

@@ -57,6 +57,23 @@ zéro gate). Les 1res entrées estampillées mûrissent à J+10 vers ~04-08/08.
 - **News à l'entrée (finding 21/07, US n=154)** : news POSITIVES à l'entrée →
   WR J+10 31% / ret −6.24% (PIRE que sans news 40%/−2.06%) — chute malgré bonnes
   news = fondamentale. Capté par la feature `newsAvgSentiment` du p_win.
+- **RÉGIME→RÉSULTATS (cause→effet, 21/07, demande user "TRÈS IMPORTANT", 467 entrées
+  matched aux payloads de scans)** :
+  · **EUPHORIE = LE signal #1** : indice 5j > +1.5% à l'entrée → US fwdJ+10 −9.50%
+    (WR 18%, n=55, même le lock réalisé est NÉGATIF −1.29%) ; EU −2.50% (WR 27%,
+    n=41, lock −0.25%). Drop pendant un rallye = fondamental, pas du flow.
+    → **GATE EUPHORIE implémenté** (`OVERSOLD_EUPHORIA_GATE`, default `off`,
+    seuil `OVERSOLD_EUPHORIA_IDX5D_MAX=1.5`) — activer = Fly secret `active`.
+  · **US : la vraie peur paie, la complaisance tue** — ΔVIX −3..0 (drift baissier
+    complaisant) → WR 21% fwd −9.57% ; ΔVIX +3..+10 (vraie peur) → WR 44% −0.22%.
+    VIX 15-17 → WR 26% ; VIX ≥17 → WR 40-43%. Entrées ≤2j APRÈS un jour hostile =
+    meilleure cohorte US (WR 53%, fwd +0.63%) → le gate hostile US est VALIDÉ.
+  · **EU : l'INVERSE de l'US** — V2TX <16 → WR 75% fwd +3.73% ; V2TX ≥20 → WR 30%
+    lock −0.60%. Le mean-reversion EU marche dans le CALME. ΔV2TX 0..+3 → WR 78%.
+  · Features `vixChg1d`/`v2txChg1d` ajoutées au p_win (20 features) — le gate les
+    utilisait mais pas le modèle. Forward-only, compat anciens modèles (coef 0).
+  · Au check-in : re-mesurer les buckets avec plus de n ; si euphorie confirme,
+    passer le gate `active` (si pas déjà fait) ; envisager V2TX max EU 22→20.
 
 Commits de référence : shadow p_win `edf7e89`, boot-train + deadline-ferme-MANU
 `4cc31b7`, fix re-arm catastrophe (MSTR) `4409294c`, fix danger-zone gap (TWLO)
