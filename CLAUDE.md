@@ -112,6 +112,17 @@ zéro gate). Les 1res entrées estampillées mûrissent à J+10 vers ~04-08/08.
     mais 100% réalisable. Au check-in : util moyenne attendue 70-90%, ZÉRO jour
     >100%, comparer P&L/risque des 2 ères (avant/après 24/07) — ne PAS conclure
     « le régulateur fait perdre » en comparant au réel levier (biais connu).
+- **FAST-FAIL / VÉLOCITÉ DE PERTE (24/07, question user)** : J+1 LIT le risque US
+  (J+1 ≤−6% → 63% de désastres J+10 ; les 5 pires pertes US toutes ≤−5% dès J+1 ;
+  J+3 n'ajoute rien, EU illisible tôt — NHY à 0.0% à J+1 avant −15%). MAIS toute
+  règle « vendre coûte que coûte à J+N si rouge » PERD : meilleure variante US
+  (J+1≤−5%) = −$1 349, J+3≤−5% = −$13 061 ☠️, EU tout ≤0. Cause structurelle :
+  on achète des couteaux — les futurs gagnants ressemblent aux futurs perdants à
+  J+1, les faux positifs (rebonds tués à −6% au lieu de lock +1.5% ≈ −7.5 pts)
+  coûtent plus que les désastres « sauvés » (~5 pts vs l'ancien stop −15%).
+  **VERDICT : ne JAMAIS ajouter de stop J+1/J+3 — la défense anti-désastre se
+  joue à l'ENTRÉE (p_win gate : écartés à fwd −10.5% ; euphorie).** Hybride
+  explorable au check-in : exit J+1≤−6% SEULEMENT si p_win d'entrée faible.
 
 Commits de référence : shadow p_win `edf7e89`, boot-train + deadline-ferme-MANU
 `4cc31b7`, fix re-arm catastrophe (MSTR) `4409294c`, fix danger-zone gap (TWLO)
