@@ -89,6 +89,17 @@ zéro gate). Les 1res entrées estampillées mûrissent à J+10 vers ~04-08/08.
     0 cata) ; EU vendredi J+1 méd −0.87% (PAS de pop weekend en EU — inverse US).
   · 7 semaines de données, 5 buckets × plusieurs métriques = risque de faux
     positifs — INDICATIF, aucune action avant re-mesure au check-in.
+- **EXPOSITION/LEVIER (audit 24/07, jour par jour depuis l'origine)** : AUCUN
+  contrôle somme(notionnels)≤capital n'existait → US exposé en MOYENNE à 117%
+  du capital, PIC 284% ($426k/$150k le 27/06), 23j/51 >100%. EU moy 49.6%,
+  pic 126%. Le P&L US (+$13k) contenait du jus de levier non budgété (à 90%
+  strict : +$4.1k). EU = le plus efficace : +23.7%/$ déployé (US +7.4%) mais
+  affamé (médiane 38%). → **BUDGET D'EXPOSITION implémenté (24/07, actif)** :
+  cap dur `OVERSOLD_MAX_EXPOSURE_PCT` (default 100 — plus jamais de levier) +
+  boost `OVERSOLD_TARGET_EXPOSURE_PCT` (85) borné ×2 quand le book est peu
+  chargé, jamais au-dessus du budget libre (`OVERSOLD_EXPOSURE_BOOST_ENABLED`
+  =false pour couper). Au check-in : vérifier utilisation moyenne (attendu
+  ~70-90% sans pic >100%) et l'effet sur le P&L/risque.
 
 Commits de référence : shadow p_win `edf7e89`, boot-train + deadline-ferme-MANU
 `4cc31b7`, fix re-arm catastrophe (MSTR) `4409294c`, fix danger-zone gap (TWLO)

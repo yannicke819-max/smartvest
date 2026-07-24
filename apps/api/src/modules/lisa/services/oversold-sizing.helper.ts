@@ -99,3 +99,56 @@ export function computeOversoldNotional(p: {
 
   return { notionalUsd: Math.round(notional), band, bandMult, vixDamp, clamp, dynamic: true };
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// BUDGET D'EXPOSITION (24/07 — audit levier : US exposé en moyenne à 117% du
+// capital, pic 284% le 27/06, faute de tout contrôle somme(notionnels)≤capital).
+//   · CAP dur : plus d'ouverture quand l'exposition atteint OVERSOLD_MAX_EXPOSURE_PCT
+//     (default 100) — le paper redevient honnête, le pire-cas est borné.
+//   · BOOST dynamique : book peu chargé → position grossie (jusqu'à ×2) pour
+//     pousser l'utilisation vers OVERSOLD_TARGET_EXPOSURE_PCT (default 85) SANS
+//     jamais crever le cap. Nourrit l'EU (le + efficace : +23.7%/$ déployé, mais
+//     médiane 38% d'utilisation). Désactivable : OVERSOLD_EXPOSURE_BOOST_ENABLED=false.
+// ────────────────────────────────────────────────────────────────────────────
+
+export interface ExposureBudgetResult {
+  notionalUsd: number;
+  skip: boolean;
+  reason: string | null;
+  utilizationPct: number;
+  boost: number;
+}
+
+export function applyExposureBudget(p: {
+  desiredNotionalUsd: number;
+  capitalUsd: number;
+  exposureUsd: number;
+  maxExposurePct?: number | null;
+  targetExposurePct?: number | null;
+  boostEnabled?: boolean | null;
+}): ExposureBudgetResult {
+  const desired = Math.max(0, p.desiredNotionalUsd);
+  // Fail-open : sans capital connu, comportement inchangé (jamais bloquant sur data manquante).
+  if (!(p.capitalUsd > 0)) return { notionalUsd: desired, skip: false, reason: null, utilizationPct: 0, boost: 1 };
+
+  const maxPct = p.maxExposurePct ?? Number(process.env.OVERSOLD_MAX_EXPOSURE_PCT ?? '100');
+  const targetPct = p.targetExposurePct ?? Number(process.env.OVERSOLD_TARGET_EXPOSURE_PCT ?? '85');
+  const boostOn = p.boostEnabled ?? (process.env.OVERSOLD_EXPOSURE_BOOST_ENABLED ?? 'true').toLowerCase() === 'true';
+
+  const utilizationPct = (p.exposureUsd / p.capitalUsd) * 100;
+  const budgetFreeUsd = (p.capitalUsd * maxPct) / 100 - p.exposureUsd;
+  // Budget épuisé (ou miettes) → CAP : on n'ouvre pas.
+  if (budgetFreeUsd < Math.max(200, desired * 0.1)) {
+    return {
+      notionalUsd: 0,
+      skip: true,
+      reason: `exposure_cap: ${utilizationPct.toFixed(0)}% du capital exposé (cap ${maxPct}%), libre $${Math.max(0, Math.round(budgetFreeUsd))}`,
+      utilizationPct,
+      boost: 1,
+    };
+  }
+  // Boost : util basse → jusqu'à ×2 ; convergence douce vers la cible ; jamais > budget libre.
+  const boost = boostOn ? Math.min(2, Math.max(1, targetPct / Math.max(utilizationPct, 25))) : 1;
+  const notionalUsd = Math.round(Math.min(desired * boost, budgetFreeUsd));
+  return { notionalUsd, skip: false, reason: null, utilizationPct, boost: Math.round(boost * 100) / 100 };
+}

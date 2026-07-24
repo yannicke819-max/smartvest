@@ -53,7 +53,7 @@ import {
 import { IntradayProviderRouter } from './intraday-provider-router.service';
 import { OversoldProbabilityService } from './oversold-probability.service';
 import { minutesSinceExchangeOpen, minutesToExchangeClose } from './exchange-sessions.helper';
-import { computeOversoldNotional } from './oversold-sizing.helper';
+import { computeOversoldNotional, applyExposureBudget } from './oversold-sizing.helper';
 import { computeExitHorizonFullPopulation, type ExitHorizonFullPopRow } from './oversold-exit-horizon.helper';
 
 /**
@@ -265,6 +265,22 @@ export class OversoldScannerService {
       ]);
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  /** Exposition courante = somme des notionnels des positions ouvertes du portefeuille. */
+  private async currentExposureUsd(portfolioId: string): Promise<number> {
+    try {
+      const { data } = await this.supabase
+        .getClient()
+        .from('lisa_positions')
+        .select('entry_notional_usd')
+        .eq('portfolio_id', portfolioId)
+        .eq('status', 'open')
+        .limit(500);
+      return (data ?? []).reduce((s, r: { entry_notional_usd: unknown }) => s + (Number(r.entry_notional_usd) || 0), 0);
+    } catch {
+      return 0; // fail-open : budget inconnu → applyExposureBudget laisse passer (capital>0 mais exposure 0)
     }
   }
 
@@ -1023,6 +1039,16 @@ export class OversoldScannerService {
     if (sizing.dynamic) {
       this.logger.log(`[oversold-sizing:intraday] ${cand.symbol} drop=${cand.dropPct.toFixed(1)}% ${sizing.band} ×${sizing.bandMult}×vix${sizing.vixDamp} → $${sizing.notionalUsd}${sizing.clamp ? ` (${sizing.clamp})` : ''} (base $${cfg.positionNotionalUsd})`);
     }
+    // Budget d'exposition (24/07 — audit levier) : cap dur + boost vers la cible.
+    const exposureUsd = await this.currentExposureUsd(portfolioId);
+    const budget = applyExposureBudget({ desiredNotionalUsd: sizing.notionalUsd, capitalUsd: cfg.capitalUsd, exposureUsd });
+    if (budget.skip) {
+      this.logger.warn(`[oversold-exposure:intraday] ${cand.symbol} SKIP — ${budget.reason}`);
+      return;
+    }
+    if (budget.notionalUsd !== sizing.notionalUsd) {
+      this.logger.log(`[oversold-exposure:intraday] ${cand.symbol} util=${budget.utilizationPct.toFixed(0)}% boost=×${budget.boost} → $${budget.notionalUsd}`);
+    }
 
     await this.lisa.getPaperBroker().openPositionDirect({
       portfolioId,
@@ -1030,7 +1056,7 @@ export class OversoldScannerService {
       assetClass: 'us_equity',
       direction: 'long',
       venue: 'US',
-      capitalAllocationUsd: String(sizing.notionalUsd),
+      capitalAllocationUsd: String(budget.notionalUsd),
       livePrice: String(livePrice),
       livePriceSource: 'intraday_5m',
       stopLossPrice,
@@ -2272,6 +2298,16 @@ export class OversoldScannerService {
     if (sizing.dynamic) {
       this.logger.log(`[oversold-sizing] ${cand.symbol} drop=${cand.dropPct.toFixed(1)}% ${sizing.band} ×${sizing.bandMult}×vix${sizing.vixDamp} → $${sizing.notionalUsd}${sizing.clamp ? ` (${sizing.clamp})` : ''} (base $${cfg.positionNotionalUsd})`);
     }
+    // Budget d'exposition (24/07 — audit levier) : cap dur + boost vers la cible.
+    const exposureUsd = await this.currentExposureUsd(portfolioId);
+    const budget = applyExposureBudget({ desiredNotionalUsd: sizing.notionalUsd, capitalUsd: cfg.capitalUsd, exposureUsd });
+    if (budget.skip) {
+      this.logger.warn(`[oversold-exposure] ${cand.symbol} SKIP — ${budget.reason}`);
+      return;
+    }
+    if (budget.notionalUsd !== sizing.notionalUsd) {
+      this.logger.log(`[oversold-exposure] ${cand.symbol} util=${budget.utilizationPct.toFixed(0)}% boost=×${budget.boost} → $${budget.notionalUsd}`);
+    }
 
     await this.lisa.getPaperBroker().openPositionDirect({
       portfolioId,
@@ -2279,7 +2315,7 @@ export class OversoldScannerService {
       assetClass: 'us_equity',
       direction: 'long',
       venue: 'US',
-      capitalAllocationUsd: String(sizing.notionalUsd),
+      capitalAllocationUsd: String(budget.notionalUsd),
       livePrice: String(closeJ),
       livePriceSource: 'eodhd_eod',
       stopLossPrice,

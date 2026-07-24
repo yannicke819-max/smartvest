@@ -99,3 +99,47 @@ describe('computeOversoldNotional — base en % du capital (auto-scale)', () => 
     expect(r.notionalUsd).toBe(12_000); // 12% de 100k
   });
 });
+
+// ── applyExposureBudget (24/07 — audit levier 117%/284%) ──
+import { applyExposureBudget } from '../oversold-sizing.helper';
+
+describe('applyExposureBudget', () => {
+  const base = { desiredNotionalUsd: 1000, capitalUsd: 20000 };
+
+  it('CAP : skip quand le budget est épuisé (plus jamais de levier ×2.8)', () => {
+    const r = applyExposureBudget({ ...base, exposureUsd: 20000, maxExposurePct: 100, targetExposurePct: 85, boostEnabled: true });
+    expect(r.skip).toBe(true);
+    expect(r.reason).toContain('exposure_cap');
+  });
+
+  it('BOOST : book presque vide → position grossie, bornée ×2', () => {
+    const r = applyExposureBudget({ ...base, exposureUsd: 2000, maxExposurePct: 100, targetExposurePct: 85, boostEnabled: true }); // util 10% → clamp 25 → 85/25=3.4 → ×2
+    expect(r.skip).toBe(false);
+    expect(r.boost).toBe(2);
+    expect(r.notionalUsd).toBe(2000);
+  });
+
+  it('convergence : util proche de la cible → boost ≈ 1', () => {
+    const r = applyExposureBudget({ ...base, exposureUsd: 17000, maxExposurePct: 100, targetExposurePct: 85, boostEnabled: true }); // util 85%
+    expect(r.boost).toBe(1);
+    expect(r.notionalUsd).toBe(1000);
+  });
+
+  it('jamais au-dessus du budget libre (le dernier slot est rogné, pas explosé)', () => {
+    const r = applyExposureBudget({ ...base, exposureUsd: 19500, maxExposurePct: 100, targetExposurePct: 85, boostEnabled: true }); // libre $500
+    expect(r.skip).toBe(false);
+    expect(r.notionalUsd).toBe(500);
+  });
+
+  it('boost off → taille de base, cap conservé', () => {
+    const r = applyExposureBudget({ ...base, exposureUsd: 2000, maxExposurePct: 100, targetExposurePct: 85, boostEnabled: false });
+    expect(r.boost).toBe(1);
+    expect(r.notionalUsd).toBe(1000);
+  });
+
+  it('fail-open : capital inconnu → comportement inchangé', () => {
+    const r = applyExposureBudget({ desiredNotionalUsd: 1000, capitalUsd: 0, exposureUsd: 5000 });
+    expect(r.skip).toBe(false);
+    expect(r.notionalUsd).toBe(1000);
+  });
+});
