@@ -144,6 +144,15 @@ zéro gate). Les 1res entrées estampillées mûrissent à J+10 vers ~04-08/08.
   désastre 15% vs base 34% ; EU 0% désastre, +6.7% moy, n=33 = meilleure
   cohorte EU) — la capitulation à gros volume rebondit, la glissade silencieuse
   tue. Piste sizing-boost EU à confirmer au check-in.
+  **SEUIL DU LOCK (balayage 24/07, plus-hauts quotidiens réels, 540 entrées)** :
+  le 1.5% « arbitraire » est PROCHE de l'optimum. Classement simulé (lock plat,
+  sans couche Mistral — seuls les CLASSEMENTS sont valides) : US plat 1.5-3%,
+  léger sommet 2.0-2.5% (+$5.8k sim vs 1.5%), effondrement ≥4% ; EU croissant
+  jusqu'à 3-4% (+$353 vs 1.5%), l'EU rebondit plus proprement. ⚠️ Le 1.5% réel
+  est un PLANCHER (Mistral sort déjà au-dessus) → gain réel d'un relèvement <
+  simu. Au check-in : re-balayer avec les données d'août ; si confirmé → ajuster
+  via secret `OVERSOLD_TP_LOCK_PCT` (US 2.0-2.5 / EU 2.5-3, per-portfolio à
+  implémenter si seuils différenciés). Ne PAS relever au-delà de 4%.
   Edge brut US = +$51k gagnantes vs −$38k perdantes → le net +$13k est une marge
   fine : la calibration p_win du check-in se juge CONTRE ce gisement de ~$38k.
 
