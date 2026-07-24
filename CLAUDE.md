@@ -98,8 +98,20 @@ zéro gate). Les 1res entrées estampillées mûrissent à J+10 vers ~04-08/08.
   cap dur `OVERSOLD_MAX_EXPOSURE_PCT` (default 100 — plus jamais de levier) +
   boost `OVERSOLD_TARGET_EXPOSURE_PCT` (85) borné ×2 quand le book est peu
   chargé, jamais au-dessus du budget libre (`OVERSOLD_EXPOSURE_BOOST_ENABLED`
-  =false pour couper). Au check-in : vérifier utilisation moyenne (attendu
-  ~70-90% sans pic >100%) et l'effet sur le P&L/risque.
+  =false pour couper).
+  **REPLAY trade-par-trade « régulateur depuis le début » (24/07, conclusions
+  validées par l'user)** :
+  · **US** : +$3 591 simulé vs +$13 033 réel (−$9 442) — util 76%/pic 100%/0j>100
+    vs 117%/285%/23j. Les 138 trades skippés (+$9 861) étaient le SURPLUS
+    au-delà de 100% du capital = **jus de levier non budgété** (juin a rebondi ;
+    la même jambe en baisse et ils deviennent l'amplificateur de catastrophe).
+    PAS un manque à gagner. Cohérent avec l'estimation ×k plafonné (+$4.1k).
+  · **EU** : +$2 386 vs +$2 354 = **ÉGALITÉ** avec util lissée 39→54% méd et pic
+    126→100% — le régulateur y est un repas gratuit (risque en moins, P&L intact).
+  · **Attente forward** : rythme de P&L headline PLUS BAS que l'illusion de juin
+    mais 100% réalisable. Au check-in : util moyenne attendue 70-90%, ZÉRO jour
+    >100%, comparer P&L/risque des 2 ères (avant/après 24/07) — ne PAS conclure
+    « le régulateur fait perdre » en comparant au réel levier (biais connu).
 
 Commits de référence : shadow p_win `edf7e89`, boot-train + deadline-ferme-MANU
 `4cc31b7`, fix re-arm catastrophe (MSTR) `4409294c`, fix danger-zone gap (TWLO)
