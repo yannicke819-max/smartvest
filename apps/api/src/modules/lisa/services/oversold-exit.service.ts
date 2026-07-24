@@ -144,6 +144,17 @@ export class OversoldExitService {
     const entry = parseFloat(pos.entry_price);
     const stopThreshold = entry * (1 + cfg.stopCatastrophePct / 100);
 
+    // ── SENTINELLE US (24/07, SHADOW — mesure seule, AUCUNE action) ──
+    // Règle mesurée sur 286 trades labellisés : pnl ≤ −6% dès J+1 ET news
+    // POSITIVES à l'entrée (≥3 articles, sentiment ≥ +0.3) → 96% finissent
+    // négatifs à J+10, 71% en désastre ≤−10%, trajectoire moyenne −15.1% (n=24).
+    // Et la recovery post-deadline montre que ces profondes CONTINUENT de couler
+    // après J+10 (RKLB −33% de plus, GFS −21%…) → la seule action rationnelle
+    // serait une COUPE PRÉCOCE à J+1 — mais c'est un auto-close de perdant
+    // (ligne rouge user) → SHADOW d'abord, décision humaine au check-in 04-08/08.
+    // Env : OVERSOLD_SENTINEL_MODE=off|shadow (default shadow), OVERSOLD_SENTINEL_PNL_PCT (-6).
+    await this.maybeFlagSentinel(pos, price, entry).catch(() => undefined);
+
     // ─── DANGER-ZONE OVERSOLD → MISE EN MANU (demande user 07/06) ─────────────
     // À l'APPROCHE du stop catastrophe, on bascule la position en manual_control
     // (l'humain décide : tenir le rebond ou couper) AU LIEU de couper auto.
@@ -264,6 +275,43 @@ export class OversoldExitService {
    *                 garde pour le decision_log uniquement.
    * @param exitLabel libellé métier oversold (kind decision_log).
    */
+  /** Cache news-à-l'entrée par position (30 min) — évite 1 query paper_trades par cycle. */
+  private readonly sentinelNewsCache = new Map<string, { newsPos: boolean; at: number }>();
+
+  private async maybeFlagSentinel(pos: OpenOversoldPosition, price: number, entry: number): Promise<void> {
+    const mode = (this.config.get<string>('OVERSOLD_SENTINEL_MODE') ?? 'shadow').toLowerCase();
+    if (mode === 'off') return;
+    if (!pos.symbol.endsWith('.US')) return; // règle validée US uniquement (EU illisible tôt)
+    if (!(entry > 0) || !(price > 0)) return;
+    const lossPct = (price / entry - 1) * 100;
+    const thr = Number(this.config.get<string>('OVERSOLD_SENTINEL_PNL_PCT') ?? '-6');
+    if (!(lossPct <= thr)) return;
+    const heldDays = businessDaysSince(pos.entry_timestamp, new Date());
+    if (heldDays < 1) return; // le signal est défini au close J+1, pas intraday J+0
+
+    // News à l'entrée (cache 30 min)
+    const cached = this.sentinelNewsCache.get(pos.id);
+    let newsPos: boolean;
+    if (cached && Date.now() - cached.at < 30 * 60_000) {
+      newsPos = cached.newsPos;
+    } else {
+      const { data } = await this.supabase.getClient()
+        .from('paper_trades')
+        .select('features_at_entry')
+        .eq('scanner_position_id', pos.id)
+        .maybeSingle();
+      const f = (data?.features_at_entry ?? {}) as Record<string, unknown>;
+      newsPos = (Number(f.newsCount) || 0) >= 3 && (Number(f.newsAvgSentiment) || 0) >= 0.3;
+      this.sentinelNewsCache.set(pos.id, { newsPos, at: Date.now() });
+    }
+    if (!newsPos) return;
+
+    this.logger.warn(
+      `[sentinelle-us:${mode}] 🚨 ${pos.symbol} pnl=${lossPct.toFixed(1)}% J+${heldDays} avec news POSITIVES à l'entrée ` +
+        `→ profil 96% négatif à J+10 (71% désastre, moy −15.1%, n=24) — SIGNAL LOGGÉ, AUCUNE ACTION (shadow)`,
+    );
+  }
+
   private async closePosition(
     pos: OpenOversoldPosition,
     price: number,

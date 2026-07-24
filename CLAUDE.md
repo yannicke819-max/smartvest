@@ -126,6 +126,19 @@ zéro gate). Les 1res entrées estampillées mûrissent à J+10 vers ~04-08/08.
   **ORACLES (plafonds théoriques, 24/07)** : perdants liquidés au jour J (= gate
   d'entrée parfait) → US +$37 926 / EU +$1 458 de mieux ; à J+1 → +$16 600 / +$776
   (58%/48% de la casse déjà subie à J+1 — les couteaux coupent le 1er soir).
+  **SENTINELLE US (24/07, SHADOW live)** : règle validée sur 286 labellisés —
+  pnl ≤ −6% dès J+1 ET news POSITIVES à l'entrée (≥3 art, sent ≥0.3) → **96%
+  finissent négatifs à J+10, 71% désastre, moy −15.1% (n=24)**. En shadow
+  (`OVERSOLD_SENTINEL_MODE`, logs `[sentinelle-us:shadow]`) — l'action
+  rationnelle serait la COUPE à J+1 (pas MANU-regarder : la recovery post-
+  deadline montre que ces profondes CONTINUENT de couler après J+10 : US 16/36
+  remontées seulement, « jamais liquider » = −$6 000 de MIEUX perdus ; EU +$337
+  ≈ 0 avec capital gelé → DEADLINE J+10 VALIDÉE). Mais coupe auto d'un perdant
+  = ligne rouge user → décision humaine au check-in sur les flags accumulés.
+  **INVERSION VOLUME (vs littérature)** : relVol ≥2× à l'entrée = REBOND (US
+  désastre 15% vs base 34% ; EU 0% désastre, +6.7% moy, n=33 = meilleure
+  cohorte EU) — la capitulation à gros volume rebondit, la glissade silencieuse
+  tue. Piste sizing-boost EU à confirmer au check-in.
   Edge brut US = +$51k gagnantes vs −$38k perdantes → le net +$13k est une marge
   fine : la calibration p_win du check-in se juge CONTRE ce gisement de ~$38k.
 
