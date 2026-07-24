@@ -74,6 +74,21 @@ zéro gate). Les 1res entrées estampillées mûrissent à J+10 vers ~04-08/08.
     utilisait mais pas le modèle. Forward-only, compat anciens modèles (coef 0).
   · Au check-in : re-mesurer les buckets avec plus de n ; si euphorie confirme,
     passer le gate `active` (si pas déjà fait) ; envisager V2TX max EU 22→20.
+- **JOUR DE SEMAINE (23/07, demande user, historique complet n=547)** :
+  · **US vendredi = meilleur jour d'entrée POUR LE LOCK** (robuste moy+méd) :
+    J+1 +3.41%/méd +2.20% (pop du lundi post-weekend), lock +2.04%, 0 catastrophe.
+    MAIS fwdJ+10 −5.24%/WR 27% = pire → le pop du lundi FADE ensuite.
+    ⚠️ NE PAS mettre le jour-de-semaine dans p_win : son label est J+10 → il
+    apprendrait « vendredi mauvais » et gaterait notre MEILLEUR jour de lock
+    (divergence label J+10 vs stratégie lock — piège documenté).
+  · **US : 16/20 catastrophes (<−10%) viennent d'entrées LUN+MER** (8+8) pour
+    35% des entrées — médianes normales = phénomène de QUEUE (couteaux du lundi
+    post-weekend-news / mercredi). Si ça persiste à n≥500 → sizing damp lun/mer,
+    pas un gate.
+  · **EU mercredi = meilleur jour** (lock +1.80/méd +1.62, J+1 +1.56/méd +1.41,
+    0 cata) ; EU vendredi J+1 méd −0.87% (PAS de pop weekend en EU — inverse US).
+  · 7 semaines de données, 5 buckets × plusieurs métriques = risque de faux
+    positifs — INDICATIF, aucune action avant re-mesure au check-in.
 
 Commits de référence : shadow p_win `edf7e89`, boot-train + deadline-ferme-MANU
 `4cc31b7`, fix re-arm catastrophe (MSTR) `4409294c`, fix danger-zone gap (TWLO)
