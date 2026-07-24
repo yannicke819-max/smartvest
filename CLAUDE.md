@@ -157,6 +157,10 @@ zéro gate). Les 1res entrées estampillées mûrissent à J+10 vers ~04-08/08.
   (1.0% +$294, 0.75% ≈ 0, 0.5% NÉGATIF −$352) ; frais = 20% du gain à 0.5%
   (vs 7% à 1.5%) ; rotation gagnée 0.4j = négligeable car le système est
   limité par l'OFFRE de candidats, pas par le capital. Plancher : jamais <1.5%.
+  **➡️ DÉCISION OUVERTE (enregistrée à la demande de l'user 24/07) : la SEULE
+  direction encore ouverte sur le lock est le léger relèvement — US 2-2.5% /
+  EU 2.5-3% — à confirmer avec les données d'août au check-in du 04-08.**
+  Tout le reste est clos : jamais <1.5%, jamais ≥4%.
   Edge brut US = +$51k gagnantes vs −$38k perdantes → le net +$13k est une marge
   fine : la calibration p_win du check-in se juge CONTRE ce gisement de ~$38k.
 
