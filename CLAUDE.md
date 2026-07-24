@@ -123,6 +123,11 @@ zéro gate). Les 1res entrées estampillées mûrissent à J+10 vers ~04-08/08.
   **VERDICT : ne JAMAIS ajouter de stop J+1/J+3 — la défense anti-désastre se
   joue à l'ENTRÉE (p_win gate : écartés à fwd −10.5% ; euphorie).** Hybride
   explorable au check-in : exit J+1≤−6% SEULEMENT si p_win d'entrée faible.
+  **ORACLES (plafonds théoriques, 24/07)** : perdants liquidés au jour J (= gate
+  d'entrée parfait) → US +$37 926 / EU +$1 458 de mieux ; à J+1 → +$16 600 / +$776
+  (58%/48% de la casse déjà subie à J+1 — les couteaux coupent le 1er soir).
+  Edge brut US = +$51k gagnantes vs −$38k perdantes → le net +$13k est une marge
+  fine : la calibration p_win du check-in se juge CONTRE ce gisement de ~$38k.
 
 Commits de référence : shadow p_win `edf7e89`, boot-train + deadline-ferme-MANU
 `4cc31b7`, fix re-arm catastrophe (MSTR) `4409294c`, fix danger-zone gap (TWLO)
