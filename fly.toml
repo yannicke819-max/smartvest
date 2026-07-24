@@ -43,6 +43,18 @@ primary_region = 'cdg'
     path = "/health"
     timeout = "5s"
 
+  # Dead man's switch (24/07/2026) — /health/vitals prouve EN BASE que les
+  # boucles vitales oversold battent (scans en fenetre, news). 503 si stale
+  # → Fly redemarre la machine automatiquement (~60s) au lieu d'un gel
+  # silencieux de plusieurs heures (incidents 22/05, 11/06, 24/07). Le
+  # endpoint est fenetre-aware + warmup 10min + fail-open sur blip DB.
+  [[http_service.checks]]
+    grace_period = "10m"
+    interval = "60s"
+    method = "GET"
+    path = "/health/vitals"
+    timeout = "10s"
+
 [[vm]]
   memory = '2gb'
   cpu_kind = 'shared'
