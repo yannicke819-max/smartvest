@@ -83,35 +83,55 @@ export function computeRealisticFee(
   qty: Decimal,
   price: Decimal,
   assetClass: string | undefined,
+  symbol?: string,
+  side?: 'buy' | 'sell',
 ): Decimal {
   const ac = (assetClass ?? '').toLowerCase();
   if (qty.lte(0) || price.lte(0)) return new Decimal(0);
+  const notional = qty.mul(price);
+  const sym = (symbol ?? '').toUpperCase();
 
   // Crypto via IBKR/Paxos — average 0.085% (maker-taker mix)
   if (ac.startsWith('crypto')) {
-    return qty.mul(price).mul(0.00085);
+    return notional.mul(0.00085);
   }
-  // EU equities — 5bps proxy (réel IBKR EU varie par exchange + tier)
+  // EU equities — 5bps proxy. EXCEPTIONS taxes :
+  //  - UK (.LSE / .L) : Stamp Duty Reserve Tax 0.50% côté BUYER uniquement
+  //  - FR (.PA) > €1B cap : FTT 0.30% (non modelé ici car nécessite market cap lookup)
   if (ac === 'eu_equity') {
-    return qty.mul(price).mul(0.0005);
+    let fee = notional.mul(0.0005);
+    if (side === 'buy' && (sym.endsWith('.LSE') || sym.endsWith('.L'))) {
+      fee = fee.plus(notional.mul(0.005)); // UK Stamp Duty 0.50%
+    }
+    return fee;
   }
-  // Asia equities — 5bps proxy
+  // Asia equities — 5bps proxy. EXCEPTION taxe :
+  //  - KOSDAQ (.KQ) + KSE (.KO) : Securities Transaction Tax 0.18% côté SELLER (depuis 2024)
+  //  - HK (.HK) : Stamp Duty 0.10% × 2 sides (~0.20% RT) + autres frais marginaux
+  //  - JP (.T) : pas de STT générique
   if (ac === 'asia_equity') {
-    return qty.mul(price).mul(0.0005);
+    let fee = notional.mul(0.0005);
+    if (side === 'sell' && (sym.endsWith('.KQ') || sym.endsWith('.KO'))) {
+      fee = fee.plus(notional.mul(0.0018)); // Korean STT 0.18% côté seller
+    }
+    if (sym.endsWith('.HK')) {
+      fee = fee.plus(notional.mul(0.001)); // HK Stamp Duty 0.10% (les 2 sides)
+    }
+    return fee;
   }
   // FX major / cross — typiquement 0.5-1bp ; on prend 1bp
   if (ac.startsWith('fx_')) {
-    return qty.mul(price).mul(0.0001);
+    return notional.mul(0.0001);
   }
   // Commodity / Rates — 5bps proxy
   if (ac === 'commodity' || ac === 'rates') {
-    return qty.mul(price).mul(0.0005);
+    return notional.mul(0.0005);
   }
   // Default — US equities + ETFs IBKR Pro Tiered :
   //   $0.005/share, min $0.35, max 1% of trade value
   const perShare = qty.mul(0.005);
   const minFee = new Decimal(0.35);
-  const maxFee = qty.mul(price).mul(0.01);
+  const maxFee = notional.mul(0.01);
   let fee = Decimal.max(perShare, minFee);
   if (fee.gt(maxFee)) fee = maxFee;
   return fee;
