@@ -129,12 +129,17 @@ zéro gate). Les 1res entrées estampillées mûrissent à J+10 vers ~04-08/08.
   **SENTINELLE US (24/07, SHADOW live)** : règle validée sur 286 labellisés —
   pnl ≤ −6% dès J+1 ET news POSITIVES à l'entrée (≥3 art, sent ≥0.3) → **96%
   finissent négatifs à J+10, 71% désastre, moy −15.1% (n=24)**. En shadow
-  (`OVERSOLD_SENTINEL_MODE`, logs `[sentinelle-us:shadow]`) — l'action
-  rationnelle serait la COUPE à J+1 (pas MANU-regarder : la recovery post-
-  deadline montre que ces profondes CONTINUENT de couler après J+10 : US 16/36
-  remontées seulement, « jamais liquider » = −$6 000 de MIEUX perdus ; EU +$337
-  ≈ 0 avec capital gelé → DEADLINE J+10 VALIDÉE). Mais coupe auto d'un perdant
-  = ligne rouge user → décision humaine au check-in sur les flags accumulés.
+  (`OVERSOLD_SENTINEL_MODE`, logs `[sentinelle-us:shadow]`).
+  ⚠️ **COUPE EXÉCUTÉE = SIMULÉE NÉGATIVE (24/07, correction importante)** : couper
+  les flaguées à J+1 aurait fait **−$4 209** (aveugle −6% : −$1 581 ; EU : rien).
+  Le 96%-négatif-à-J+10 est VRAI, mais 9/20 flaguées ont fait un REBOND
+  intermédiaire ≥+1.5% que le LOCK a encaissé avant la rechute (MSTR/STX/CBRS
+  lockées puis re-effondrées : aujourd'hui ASTS −29%, QCOM −18%, NBIS −23%).
+  Sacrifier ces 9 locks (−$8 610) pour épargner 11 désastres (+$4 400) = net perdant.
+  **VERDICT FINAL SORTIE : ni tenir plus (recovery −$6k), ni couper plus tôt
+  (sentinelle −$4.2k) — le lock actuel est optimal. La sentinelle reste ALERTE
+  HUMAINE UNIQUEMENT, ne JAMAIS l'activer en coupe auto.** (Deadline J+10
+  validée : US « jamais liquider » = −$6 000 de mieux perdus ; EU +$337 ≈ 0.)
   **INVERSION VOLUME (vs littérature)** : relVol ≥2× à l'entrée = REBOND (US
   désastre 15% vs base 34% ; EU 0% désastre, +6.7% moy, n=33 = meilleure
   cohorte EU) — la capitulation à gros volume rebondit, la glissade silencieuse
