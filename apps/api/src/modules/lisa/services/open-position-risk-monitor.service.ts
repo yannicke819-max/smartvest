@@ -106,12 +106,12 @@ export class OpenPositionRiskMonitorService {
   }
 
   // PR #542 — Cadence 5→2 min pour cut losses plus rapidement.
-  // 01/06 PR follow-up — 2→1 min : user veut suivi minute-par-minute des positions
-  // ouvertes pour décisions Mistral optimales (objectif : gain net positif).
-  // Limite : 60 calls/h × 4 portfolios × ~3-5k tok/call ≈ 12-20k TPM, OK sur
-  // mistral-medium-2505 (375k TPM, 0.42 rps) — passer à ce snapshot via
-  // MISTRAL_SHADOW_MODEL si on reste sur free tier 50k TPM. Cf. PR notes.
-  @Cron('0 */1 * * * *', { name: 'open-position-risk-monitor', timeZone: 'UTC' })
+  // PR #554 a tenté 2→1 min mais saturait Mistral rate limit (0.42 rps tier
+  // mistral-medium-2505 vs ~40 calls/min effectifs = 60% over limit). Logs Fly
+  // 01/06 11:00-12:30 UTC : 429 systématiques + fallback Gemini Pro à chaque
+  // cycle = pollution + coût LLM.
+  // 01/06 14h — Rollback 1→2 min : on reste dans le rate limit Mistral.
+  @Cron('0 */2 * * * *', { name: 'open-position-risk-monitor', timeZone: 'UTC' })
   async runCycle(): Promise<void> {
     if (!this.enabled) return;
     if (!this.supabase.isReady()) return;
