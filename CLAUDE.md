@@ -153,6 +153,10 @@ zéro gate). Les 1res entrées estampillées mûrissent à J+10 vers ~04-08/08.
   simu. Au check-in : re-balayer avec les données d'août ; si confirmé → ajuster
   via secret `OVERSOLD_TP_LOCK_PCT` (US 2.0-2.5 / EU 2.5-3, per-portfolio à
   implémenter si seuils différenciés). Ne PAS relever au-delà de 4%.
+  **Versant BAISSE testé aussi (0.5-1.25%) : PIRE partout** — EU monotone
+  (1.0% +$294, 0.75% ≈ 0, 0.5% NÉGATIF −$352) ; frais = 20% du gain à 0.5%
+  (vs 7% à 1.5%) ; rotation gagnée 0.4j = négligeable car le système est
+  limité par l'OFFRE de candidats, pas par le capital. Plancher : jamais <1.5%.
   Edge brut US = +$51k gagnantes vs −$38k perdantes → le net +$13k est une marge
   fine : la calibration p_win du check-in se juge CONTRE ce gisement de ~$38k.
 
