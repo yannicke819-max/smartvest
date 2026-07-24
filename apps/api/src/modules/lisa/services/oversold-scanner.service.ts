@@ -247,6 +247,27 @@ export class OversoldScannerService {
     private readonly probability: OversoldProbabilityService,
   ) {}
 
+  /**
+   * Timeout dur d'un cycle de scan par portefeuille. Incident 24/07 : un await
+   * sans timeout dans scanPortfolioIntraday (~10:45) s'est pendu → CHAQUE tick
+   * suivant se pendait au même endroit → scans EU gelés 4h EN SILENCE (zéro log,
+   * l'US était hors fenêtre). Un cycle > 4 min est abandonné BRUYAMMENT via le
+   * catch du caller ; le tick suivant repart propre.
+   */
+  private async withCycleTimeout(p: Promise<void>, ms = 4 * 60_000): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        p,
+        new Promise<never>((_, rej) => {
+          timer = setTimeout(() => rej(new Error(`cycle timeout ${ms / 1000}s — await pendu, cycle abandonné (le prochain tick repart)`)), ms);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   /** Gate env — désactivable sans redeploy via secret Fly. */
   private isEnabled(): boolean {
     return (this.config.get<string>('OVERSOLD_SCANNER_ENABLED') ?? 'true').toLowerCase() === 'true';
@@ -277,7 +298,7 @@ export class OversoldScannerService {
 
       for (const row of portfolios) {
         try {
-          await this.scanPortfolio(row);
+          await this.withCycleTimeout(this.scanPortfolio(row));
         } catch (err) {
           this.logger.error(
             `[oversold] scan portfolio ${row.portfolio_id.slice(0, 8)} échoué: ${String(err).slice(0, 300)}`,
@@ -666,7 +687,7 @@ export class OversoldScannerService {
       }
       for (const row of portfolios) {
         try {
-          await this.scanPortfolioIntraday(row);
+          await this.withCycleTimeout(this.scanPortfolioIntraday(row));
         } catch (err) {
           this.logger.error(
             `[oversold-intraday] portfolio ${row.portfolio_id.slice(0, 8)} échoué: ${String(err).slice(0, 300)}`,
