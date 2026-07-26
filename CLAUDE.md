@@ -104,12 +104,23 @@ zéro gate). Les 1res entrées estampillées mûrissent à J+10 vers ~04-08/08.
     bien (P&L +$289 sur ces 52 trades).
   · Couverture : US 100% (tous .US), EU 77% (Nordics/Vienne/Bruxelles/Madrid
     absents du mapping `eodhdToTdSymbol`).
-  · **Piste d'économie ($229/mois) à trancher au check-in** : passer
-    `TWELVEDATA_INTRADAY_AB_RATIO` à 0 pendant 1-2 semaines (EODHD seul, le
-    dual-call garde EODHD de toute façon → aucun risque de rupture) et comparer
-    overshoot/latence/stale-rate. Garder TD UNIQUEMENT si un besoin réel apparaît
-    sur les marchés où EODHD ne sert pas le live (Corée/Chine — cas d'usage
-    historique du routeur, hors univers oversold actuel).
+  · ⚠️ **HYPOTHÈSE FAILOVER (soulevée par l'user 26/07 — À TRANCHER LE 04/08)** :
+    l'audit ci-dessus mesure la PRÉCISION, pas la RÉSILIENCE. Or les logs Fly
+    montrent des `intraday_router_dual_call` avec `{"td_success":true,
+    "eodhd_success":false}` (ESLT.US, EQNR.US, CVNA.US) + des `[eodhd] X empty
+    response` / `skipped (session closed)`. **TD est peut-être un FILET quand
+    EODHD flanche** — et il est appelé AVANT le check de quota EODHD
+    (`canCallEodhd`), donc il pourrait aussi PRÉSERVER le quota EODHD réservé
+    aux barres EOD (= le cœur de l'edge). Valeur d'assurance ≠ valeur de
+    précision : ne PAS couper TD avant d'avoir tranché ce point.
+  · **ACTION CHECK-IN 04/08 (test A/B propre)** : passer
+    `TWELVEDATA_INTRADAY_AB_RATIO=0` (secret Fly, sans redeploy — le dual-call
+    appelle EODHD de toute façon, donc zéro risque de rupture) pendant 1-2
+    semaines, puis comparer : overshoot du lock, latence, taux de `stale_*` /
+    `fallback_quota_cap`, et surtout **nombre de cas où EODHD échoue seul**.
+    Décision : couper TD ($229/mois économisés) SEULEMENT si le taux d'échec
+    EODHD-seul reste négligeable. Sinon, garder TD comme assurance (et le
+    documenter comme tel, pas comme source de précision).
 
 - **EXPOSITION/LEVIER (audit 24/07, jour par jour depuis l'origine)** : AUCUN
   contrôle somme(notionnels)≤capital n'existait → US exposé en MOYENNE à 117%
