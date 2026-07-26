@@ -113,6 +113,40 @@ zéro gate). Les 1res entrées estampillées mûrissent à J+10 vers ~04-08/08.
     (`canCallEodhd`), donc il pourrait aussi PRÉSERVER le quota EODHD réservé
     aux barres EOD (= le cœur de l'edge). Valeur d'assurance ≠ valeur de
     précision : ne PAS couper TD avant d'avoir tranché ce point.
+  · ✅ **AUDIT FAILOVER EXHAUSTIF (26/07, 4 angles + vérif perso) — RÉSULTATS** :
+    · **PANNE EODHD RÉELLE ET RÉCENTE, VÉRIFIÉE** : 13-15/07/2026, **265 820 HTTP 402**
+      ("Payment Required" = plan bloqué) — 93 494 / 81 807 / 90 519 sur 3 jours
+      (source `eodhd_request_log`, colonne `timestamp` — PAS `created_at`, piège
+      PostgREST). Hors panne, EODHD est CHRONIQUEMENT au-dessus de son quota :
+      11 000-23 000 HTTP 429/jour. Le risque provider n'est pas théorique.
+    · **MAIS TD ne couvre que ~7% de la surface de panne** : le SCAN oversold
+      (= choix des candidats = LE cœur de l'edge), les barres EOD et toute la
+      gestion du risque (stop catastrophe, danger-zone, deadline J+10) sont
+      **100% EODHD, sans retry, sans backoff, sans provider alternatif**.
+      TD ne protège QUE le prix live US (où EODHD /real-time est délayé ~15 min
+      vs seuil de staleness 180s) + les bougies 5m du contexte Mistral.
+    · **L'indice initial était un FAUX POSITIF** : les `{"td_success":true,
+      "eodhd_success":false}` (ESLT/EQNR/CVNA) ne sont pas des échecs EODHD mais
+      NOTRE propre skip volontaire (`SKIP_SESSION_CLOSED`) qui met le flag à false.
+    · **TD n'apporte AUCUNE précision** : 0 divergence >5 bps sur ~52 000 bougies
+      comparées (redondance pure, confirmé par 3 angles indépendants).
+    · **~32% du volume TD est du GASPILLAGE PUR** : le chemin `live_price_bcxe`
+      (Cboe Europe) fait ~48 000 appels/jour à **100% HTTP 404** — add-on non
+      souscrit. À couper immédiatement, indépendamment de la décision TD.
+    · ⚠️ **LE VRAI TROU RÉVÉLÉ (prioritaire sur la question TD)** : le scan
+      oversold n'a AUCUN plan B. Un HTTP 429/402 fait disparaître silencieusement
+      des candidats (pas de log d'échec de scan, juste moins de candidats).
+      **Action 04/08 : ajouter retry+backoff sur `fetchEodBars`/`loadUniverse`**
+      et un compteur d'échecs de fetch dans le payload `oversold_scan_completed`
+      (aujourd'hui on ne saurait PAS distinguer "3 candidats" de "3 candidats +
+      40 fetchs ratés").
+    · 🔴 **PISTE DE BUG À INVESTIGUER EN PRIORITÉ (indépendante de TD)** : 3
+      fermetures TP_LOCK déclenchées en **26-62 secondes** sur des prix
+      ANTÉRIEURS à la baisse achetée (prix périmés) — le chemin de sortie
+      oversold consomme `getLivePrice` **SANS garde-fou de staleness**,
+      contrairement au chemin mécanique historique (`isFallbackSource` + sanity
+      bound 30%). Ces artefacts pèseraient 59% du P&L du groupe EODHD-seul →
+      **vérifier si des gains réalisés sont des mirages de prix périmés**.
   · **ACTION CHECK-IN 04/08 (test A/B propre)** : passer
     `TWELVEDATA_INTRADAY_AB_RATIO=0` (secret Fly, sans redeploy — le dual-call
     appelle EODHD de toute façon, donc zéro risque de rupture) pendant 1-2
