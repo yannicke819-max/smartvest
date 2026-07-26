@@ -89,6 +89,28 @@ zéro gate). Les 1res entrées estampillées mûrissent à J+10 vers ~04-08/08.
     0 cata) ; EU vendredi J+1 méd −0.87% (PAS de pop weekend en EU — inverse US).
   · 7 semaines de données, 5 buckets × plusieurs métriques = risque de faux
     positifs — INDICATIF, aucune action avant re-mesure au check-in.
+- **TWELVEDATA — INFLUENCE RÉELLE (audit 26/07, question user)** : verdict =
+  **quasi nulle sur l'oversold**, malgré ~190k appels/jour.
+  · **ENTRÉE (le cœur de l'edge) : ZÉRO TD** — `fetchEodBars` (barres EOD) et
+    `fetchRealtimeOhlc` (rebond intraday EU) tapent **EODHD en direct**, le
+    routeur n'est jamais dans la boucle. La sélection des candidats = 100% EODHD.
+  · **SORTIE : TD est la source PRIMAIRE du prix live** (`fetchLivePriceInner` →
+    `intradayRouter.getLiveQuote` AVANT EODHD) → c'est lui qui déclenche le lock,
+    + les bougies 5m du contexte Mistral (dual-call, TD préféré).
+  · **MAIS l'expérience naturelle dit que ça ne change rien** : les 38 locks EU
+    sur symboles NON couverts par TD (.OL/.HE/.ST/.CO/.BR/.VI/.MC = 23% des
+    trades EU, EODHD seul) ont un overshoot MÉDIAN de 0.06 pt vs 0.10 pt avec TD
+    — **écart −0.14 pt, à l'avantage du SANS-TD**. EODHD seul verrouille aussi
+    bien (P&L +$289 sur ces 52 trades).
+  · Couverture : US 100% (tous .US), EU 77% (Nordics/Vienne/Bruxelles/Madrid
+    absents du mapping `eodhdToTdSymbol`).
+  · **Piste d'économie ($229/mois) à trancher au check-in** : passer
+    `TWELVEDATA_INTRADAY_AB_RATIO` à 0 pendant 1-2 semaines (EODHD seul, le
+    dual-call garde EODHD de toute façon → aucun risque de rupture) et comparer
+    overshoot/latence/stale-rate. Garder TD UNIQUEMENT si un besoin réel apparaît
+    sur les marchés où EODHD ne sert pas le live (Corée/Chine — cas d'usage
+    historique du routeur, hors univers oversold actuel).
+
 - **EXPOSITION/LEVIER (audit 24/07, jour par jour depuis l'origine)** : AUCUN
   contrôle somme(notionnels)≤capital n'existait → US exposé en MOYENNE à 117%
   du capital, PIC 284% ($426k/$150k le 27/06), 23j/51 >100%. EU moy 49.6%,
