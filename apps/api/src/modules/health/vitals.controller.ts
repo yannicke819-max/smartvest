@@ -28,7 +28,7 @@ import { SupabaseService } from '../supabase/supabase.service';
 import { isOversoldScanWindow, skippedVital, vitalVerdict, type VitalCheck } from './vitals.helper';
 
 interface VitalsPayload {
-  status: 'healthy' | 'stale' | 'idle' | 'warming';
+  status: 'healthy' | 'degraded' | 'stale' | 'idle' | 'warming';
   uptime_sec: number;
   vitals: VitalCheck[];
 }
@@ -60,7 +60,27 @@ export class VitalsController {
     const now = new Date();
 
     try {
+      // Vital 0 — CRONS VIVANTS (le SEUL fatal). `eodhd_request_log` est écrit en
+      // continu par TOUS les appels providers (price warmer 30s, gain-picker 30s,
+      // position-tracker 1min…). Si plus rien n'y arrive, le process est mort ou
+      // son event-loop est gelé — c'est le vrai cas que le switch doit tuer.
+      // Budget large (30 min) : mieux vaut rater un gel partiel que tuer une
+      // machine saine (cf. incident 27/07 causé par un vital trop fin).
+      const cronBudgetSec = Math.max(1, Number(this.config.get<string>('OVERSOLD_VITALS_CRON_MAX_AGE_MIN') ?? '30')) * 60;
+      const { data: crons, error: cronErr } = await client
+        .from('eodhd_request_log')
+        .select('timestamp')
+        .order('timestamp', { ascending: false })
+        .limit(1);
+      if (cronErr) {
+        vitals.push(skippedVital('crons_alive', `db err: ${cronErr.message.slice(0, 60)}`, cronBudgetSec));
+      } else {
+        vitals.push(vitalVerdict('crons_alive', crons?.[0]?.timestamp ?? null, cronBudgetSec, now));
+      }
+
       // Vital 1 — SCANS oversold (fenêtre-aware, seulement si ≥1 portfolio oversold).
+      // ⚠️ NON FATAL (alerte seulement) : un skip légitime (cap d'ouvertures
+      // atteint, hors fenêtre, régime bloqué) n'écrit aucun événement.
       if (!isOversoldScanWindow(now)) {
         vitals.push(skippedVital('oversold_scans', 'hors fenêtre (lun-ven 08-20 UTC)', scanBudgetSec));
       } else {
@@ -110,16 +130,39 @@ export class VitalsController {
       return { status: 'idle', uptime_sec: uptimeSec, vitals };
     }
 
+    // ── FATAL vs ALERTE (fix 27/07 — INCIDENT causé par ce endpoint) ──
+    // Le vital `oversold_scans` a produit un FAUX POSITIF : le scanner skippe
+    // LÉGITIMEMENT (cap d'ouvertures atteint « a0000001 cap reached (8/8) »,
+    // hors fenêtre EU) sans écrire d'événement → âge qui grimpe → 503 → Fly a
+    // sorti la machine du load-balancer alors que TOUT tournait. L'app est
+    // devenue injoignable pendant que le trading fonctionnait.
+    // Leçon : un dead man's switch ne doit renvoyer 503 QUE sur une preuve de
+    // process MORT, jamais sur une absence d'activité métier (qui a mille
+    // raisons légitimes). Le coût d'un faux positif (app down) est bien
+    // supérieur au bénéfice d'une détection fine.
+    // → seuls les vitaux marqués `fatal` peuvent déclencher le 503 ; les autres
+    //   sont des ALERTES : loggées bruyamment, exposées dans le payload, 200.
+    const FATAL_VITALS = new Set(['crons_alive']);
     const stale = vitals.filter((v) => !v.ok);
-    if (stale.length > 0) {
+    const fatal = stale.filter((v) => FATAL_VITALS.has(v.name));
+    const alerts = stale.filter((v) => !FATAL_VITALS.has(v.name));
+
+    if (alerts.length > 0) {
+      this.logger.warn(
+        `[vitals] ⚠️ ALERTE (non fatale, HTTP 200 — pas de restart) : ${alerts
+          .map((v) => `${v.name} age=${v.age_sec ?? '?'}s > ${v.budget_sec}s`)
+          .join(' · ')}`,
+      );
+    }
+    if (fatal.length > 0) {
       this.logger.error(
-        `[vitals] 🔴 STALE → 503 (Fly va redémarrer la machine) : ${stale
+        `[vitals] 🔴 PROCESS MORT → 503 (Fly va redémarrer) : ${fatal
           .map((v) => `${v.name} age=${v.age_sec ?? '?'}s > ${v.budget_sec}s`)
           .join(' · ')}`,
       );
       res.status(HttpStatus.SERVICE_UNAVAILABLE);
       return { status: 'stale', uptime_sec: uptimeSec, vitals };
     }
-    return { status: 'healthy', uptime_sec: uptimeSec, vitals };
+    return { status: alerts.length > 0 ? 'degraded' : 'healthy', uptime_sec: uptimeSec, vitals };
   }
 }
