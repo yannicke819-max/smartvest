@@ -32,6 +32,15 @@ zéro gate). Les 1res entrées estampillées mûrissent à J+10 vers ~04-08/08.
    - **SINON** → rester en mesure, ré-entraîner avec plus de données, re-check +2 sem.
    - **EU : JAMAIS de gate** tant que son AUC OOS < 0.55 (le 21/07 : 0.437 = pire
      que hasard, le gate aurait coûté −58 pts de P&L cumulé). Ré-évaluer à ~250 labels.
+     **MAJ 29/07 (171 labels)** : AUC OOS remontée **0.437 → 0.536** — l'EU ne
+     classe plus à l'envers, il approche du seuil (qualification possible en août).
+     ⚠️ **MAIS l'amélioration ne vient PAS des features EU natives** : walk-forward
+     16 vs 20 features = **0.536 dans les deux cas, à l'identique** → mon hypothèse
+     « le modèle EU échouait car scoré à la météo US » est INFIRMÉE pour l'instant.
+     Cause : `v2tx`/`sx5e5d`/`vixChg1d` sont forward-only → la quasi-totalité des
+     171 labels d'entraînement les ont à 0. Le vrai test des features EU est
+     REPORTÉ au check-in (quand une part significative des labels portera de
+     vraies valeurs). Le gain d'AUC vient des +39 labels, rien d'autre.
 5. **COMPARAISON AVANT/APRÈS 21/07 (demandé par l'user 21/07)** — le 21/07 ~15:35 UTC
    est une frontière naturelle : AVANT (≈29/06 → 21/07) la sortie LLM Mistral était
    MUETTE (clé 401) → exits 100% déterministes (lock +1.5%, deadline J+10, danger-zone) ;
@@ -53,7 +62,11 @@ zéro gate). Les 1res entrées estampillées mûrissent à J+10 vers ~04-08/08.
 - **Verdict "meilleur jour de sortie" (30/06, population complète n=320)** : le
   **lock J (+1.5%) bat tous les horizons** (US J+1 −0.69%, J+3 −0.14%, J+6 −1.59% ;
   EU idem négatif) → NE PAS allonger l'horizon ; le signal "J+6" du shadow panel
-  était du biais de survie (gagnantes only). Panneau UI `/lisa` à corriger un jour.
+  était du biais de survie (gagnantes only). ✅ **Panneau UI CORRIGÉ le 22/07**
+  (migration 0204 + labeler multi-horizon J+1/3/6/10 sur TOUTES les entrées) :
+  `/lisa` affiche désormais la population complète. Verdict re-confirmé sur 540
+  entrées backfillées : dégradation MONOTONE (US lock +0.60% vs J+1 −0.78% →
+  J+10 −4.16% ; EU lock +1.23% vs tout ≤ +0.43%). Sujet CLOS.
 - **News à l'entrée (finding 21/07, US n=154)** : news POSITIVES à l'entrée →
   WR J+10 31% / ret −6.24% (PIRE que sans news 40%/−2.06%) — chute malgré bonnes
   news = fondamentale. Capté par la feature `newsAvgSentiment` du p_win.
@@ -230,6 +243,31 @@ zéro gate). Les 1res entrées estampillées mûrissent à J+10 vers ~04-08/08.
   Tout le reste est clos : jamais <1.5%, jamais ≥4%.
   Edge brut US = +$51k gagnantes vs −$38k perdantes → le net +$13k est une marge
   fine : la calibration p_win du check-in se juge CONTRE ce gisement de ~$38k.
+
+- 🚨 **INCIDENT 27/07 — DEAD MAN'S SWITCH (à ne pas oublier au check-in)** : le
+  vital `oversold_scans` a renvoyé 503 alors que TOUT allait bien — le scanner
+  skippe LÉGITIMEMENT sans écrire d'événement (« cap reached (8/8) », hors fenêtre
+  EU, régime bloqué) → Fly a sorti la machine du load-balancer (`PR01 no known
+  healthy instances`) ~10 min. Trading jamais interrompu, seul le WEB était coupé.
+  **Fix `8287234`** : séparation FATAL/ALERTE — seul `crons_alive` (dernier appel
+  provider dans `eodhd_request_log`, budget 30 min = preuve d'event-loop gelé)
+  peut déclencher un 503 ; scans/news deviennent des ALERTES en HTTP 200 (statut
+  `degraded`). **LEÇON : un dispositif de mise à mort automatique ne se déclenche
+  QUE sur preuve de mort du process, jamais sur une absence d'activité métier —
+  le coût d'un faux positif (app down) dépasse le bénéfice d'une détection fine.**
+  ⚠️ **ACTION AU CHECK-IN** : l'user a posé `OVERSOLD_VITALS_ENABLED=false` en
+  coupe-circuit pendant l'incident → **le switch est actuellement DÉSACTIVÉ**.
+  Le retirer (ou `true`) une fois la confiance rétablie, sinon la protection
+  anti-gel reste morte en silence.
+- **MI-PARCOURS 29/07 (repères, à comparer au check-in)** : shadow p_win servi à
+  **100%** (66/66 entrées estampillées, valeurs discriminantes 0.026→0.935) ;
+  signal PRÉCOCE J+1 par tercile — US haut **+4.78%** vs bas −1.14% (n=10/tercile),
+  EU haut +0.91% vs bas −0.53% (mou, non monotone) ⚠️ c'est du J+1, PAS le label
+  J+10 → ne rien décider dessus ; jours de semaine CONFIRMÉS avec +1 semaine de
+  données (US vendredi +2.99% J+1 / 0 catastrophe sur 61 ; EU mercredi +1.79%
+  lock / 0 catastrophe sur 64 ; lun+mer US = 16/20 catastrophes) ; régulateur
+  d'exposition NOMINAL (US pile à 100.0%, jamais au-delà ; EU 41-55%) ;
+  P&L depuis le régulateur (24→29/07) : US +$2 568 / EU +$376, sans levier.
 
 Commits de référence : shadow p_win `edf7e89`, boot-train + deadline-ferme-MANU
 `4cc31b7`, fix re-arm catastrophe (MSTR) `4409294c`, fix danger-zone gap (TWLO)
