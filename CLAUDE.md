@@ -51,6 +51,50 @@ zéro gate). Les 1res entrées estampillées mûrissent à J+10 vers ~04-08/08.
    ⚠️ Pas un vrai A/B (régime marché différent entre les fenêtres) mais directionnel :
    c'est LA mesure de la valeur ajoutée réelle de la couche LLM de sortie.
 
+### 🎯 LIVRABLE ATTENDU LE 04/08 (exigence user 29/07) — TRANCHER, pas observer
+
+L'utilisateur attend **une analyse profonde comparative ET historique débouchant
+sur des DÉCISIONS**, pas un relevé de mesures. Format imposé :
+
+**A. Les 3 comparaisons obligatoires**
+1. **Avant/après 21/07** (LLM de sortie muet vs actif) — 1re mesure 29/07 : écart
+   NUL. Refaire avec ~2 sem de plus.
+2. **Avant/après 24/07** (régulateur d'exposition) — attendu : util 70-90%, ZÉRO
+   jour >100%, P&L/RISQUE meilleur même si P&L headline plus bas. ⚠️ ne PAS
+   comparer au réel dopé au levier (biais documenté).
+3. **Historique complet vs fenêtre récente** — l'edge se dégrade-t-il ? Comparer
+   espérance/trade, WR, taux de catastrophes, qualité d'entrée (fwdJ+10) entre
+   juin, juillet et août par portefeuille.
+
+**B. Les décisions à rendre (chacune avec critère PRÉ-ÉCRIT, à ne pas négocier
+après coup)**
+| # | Décision | Critère de bascule | Défaut si critère non atteint |
+|---|---|---|---|
+| 1 | **Gate p_win US** | calibration J+10 monotone + écart ≥15-20 pts WR haut/bas + AUC OOS ≥0.55 STABLE | rester en shadow, re-check +2 sem |
+| 2 | **Gate p_win EU** | idem + ~250 labels (171 au 29/07) | jamais de gate |
+| 3 | **Couche LLM de sortie** (Mistral ~$6/j) | écart P&L/trade après-vs-avant > +0.3 pt ET sorties distinctes du lock | couper si écart reste nul |
+| 4 | **TwelveData** ($229/mois) | échec EODHD-seul non négligeable pendant l'A/B `TWELVEDATA_INTRADAY_AB_RATIO=0` | couper (0 précision prouvée) |
+| 5 | **Seuil du lock** | balayage août confirme US 2-2.5% / EU 2.5-3% | garder 1.5% (jamais <1.5, jamais ≥4) |
+| 6 | **Sizing damp lun/mer US** | cluster catastrophes persiste à n≥500 | ne rien faire |
+| 7 | **Sizing-boost EU sur relVol ≥2×** | cohorte confirmée à n plus grand | ne rien faire |
+| 8 | **V2TX max EU 22→20** | buckets V2TX ≥20 toujours perdants | garder 22 |
+
+**C. Les correctifs techniques à livrer (indépendants des décisions ci-dessus)**
+- retry+backoff sur `fetchEodBars`/`loadUniverse` + compteur d'échecs dans le
+  payload de scan (le scan n'a AUCUN plan B — trou le plus grave identifié) ;
+- garde-fou de staleness sur le chemin de sortie oversold (bug prix périmés) ;
+- couper `live_price_bcxe` (~48k appels/jour à 100% HTTP 404) ;
+- réactiver `OVERSOLD_VITALS_ENABLED` (posé à false pendant l'incident 27/07).
+
+**D. Règles de méthode (apprises à la dure dans cette session)**
+- Toujours mesurer sur la **population complète**, jamais sur les gagnantes
+  (3 fausses conclusions successives : pic J+3, puis J+6, puis WR 100%).
+- L'**AUC plein-set est un mirage** — seul le walk-forward out-of-sample compte.
+- Un signal **J+1 ne prouve rien** sur un modèle entraîné en J+10.
+- Vérifier les colonnes réelles avant toute requête PostgREST (une colonne
+  inexistante renvoie 0 ligne silencieusement — a déjà produit 2 faux « 0 »).
+- Si une conclusion arrange, la faire attaquer avant de la retenir.
+
 ### Baselines 21/07 (contrefactuel walk-forward, à battre/confirmer)
 
 - **US** (train juin n=156 / test juil n=105) : **AUC OOS 0.685** ; gate `p≥0.5` →
