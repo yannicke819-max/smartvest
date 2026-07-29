@@ -259,6 +259,39 @@ zéro gate). Les 1res entrées estampillées mûrissent à J+10 vers ~04-08/08.
   coupe-circuit pendant l'incident → **le switch est actuellement DÉSACTIVÉ**.
   Le retirer (ou `true`) une fois la confiance rétablie, sinon la protection
   anti-gel reste morte en silence.
+- 🔻 **ALERTE 29/07 — L'AUC OOS US A BAISSÉ : 0.685 → 0.553** (286 labels, train
+  171 juin / test 115 juil). Elle ne passe le seuil de 0.55 que **de 0.003** →
+  le gate US n'est PLUS un scénario acquis, contrairement à ce que la baseline
+  du 21/07 laissait croire. Deux lectures à départager au check-in : dégradation
+  réelle en généralisation, ou fenêtre de test (juillet) plus difficile.
+  **NE PAS activer le gate sur cette AUC seule** — exiger la calibration J+10
+  observée (monotone + écart ≥15-20 pts de WR entre bucket haut et bas).
+  ⚠️ Contraste trompeur : le signal PRÉCOCE J+1 par tercile est excellent
+  (US haut +4.78% vs bas −1.14%) mais c'est du J+1, pas le label J+10 — ne pas
+  s'en servir comme preuve.
+- **COMPARAISON AVANT/APRÈS 21/07 — 1re mesure (29/07) : AUCUN gain mesurable**
+  du LLM de sortie. US AVANT (n=167) +0.31%/trade WR 86% vs APRÈS (n=22)
+  +0.37% WR 86% ; EU AVANT (n=102) +1.28% WR 89% vs APRÈS (n=35) +1.55% WR 91%.
+  Écarts (+0.06 / +0.27 pt) DANS LE BRUIT, échantillons « après » trop petits.
+  **Et la répartition des sorties est IDENTIQUE** (US après : 19 lock / 3 deadline
+  / 0 catastrophe) → le LLM ne produit aucune sortie « fine » distincte du lock
+  déterministe. À re-mesurer au check-in avec 2 semaines de plus ; si l'écart
+  reste nul, la couche LLM de sortie ne se justifie plus (coût Mistral ~$6/jour).
+  ✅ Point positif des 2 côtés : **0 catastrophe-close** sur toute la fenêtre.
+- 🔴 **BUG PRIX PÉRIMÉS — CONFIRMÉ mais CALIBRÉ (29/07)** : 5 locks en <5 min
+  après l'entrée, dont 3 aberrants — NOKIA.HE +7.13% en **26 s**, MAERSK-B.CO
+  +4.58% en 30 s, UCB.BR +7.73% en 62 s. Tous **EU sans couverture TD**
+  (Nordics/Bruxelles) et tous à **21:16 ou 14:16 UTC**, juste après le scan :
+  position ouverte au close EOD puis « prix live » issu d'une AUTRE séance.
+  **MAIS le poids réel est +$263 (~1.5% du P&L EU), PAS 59%** — l'estimation du
+  workflow était fausse. → bug de FIABILITÉ à corriger (garde-fou de staleness
+  sur le chemin de sortie oversold, aligné sur `isFallbackSource` + sanity bound
+  du chemin mécanique), PAS une remise en cause des gains réalisés.
+- ✅ **EUPHORIE & SENTINELLE — les deux fonctionnent (29/07)** : gate euphorie
+  **23 blocages sur 42** depuis activation (SX5E 5j +2.11 à +2.25% > seuil 1.5%)
+  → il écarte réellement les entrées en plein rallye. Sentinelle US : **1 flag**
+  (SNDK.US) depuis le 24/07, et elle avait RAISON (SNDK à −10% aujourd'hui).
+  Peu de flags = régime calme, pas une panne.
 - **MI-PARCOURS 29/07 (repères, à comparer au check-in)** : shadow p_win servi à
   **100%** (66/66 entrées estampillées, valeurs discriminantes 0.026→0.935) ;
   signal PRÉCOCE J+1 par tercile — US haut **+4.78%** vs bas −1.14% (n=10/tercile),
