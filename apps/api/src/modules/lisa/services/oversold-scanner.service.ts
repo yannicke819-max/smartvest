@@ -448,21 +448,36 @@ export class OversoldScannerService {
     const candidates = buildOversoldCandidates(barsBySymbol, cfg);
     const toOpen = selectOversoldOpens(candidates, openSymbols);
 
-    // Sector cap — max N positions ouvertes par GICS sector simultané.
-    // DÉFAUT OFF : le backtest 04/06 montre que cap=5 aurait bloqué 29/48 positions
-    // (Tech 30 dominant). À activer via secret OVERSOLD_SECTOR_CAP_ENABLED=true
-    // uniquement quand on aura calibré le seuil sur N >= 100 jours.
-    // Pré-charge les sectors des positions DÉJÀ ouvertes pour amorcer le compteur.
+    // ─── CAP DE CONCENTRATION SECTORIELLE ──────────────────────────────────
+    // Max N ouvertures par (JOUR × industrie GICS). Instruit au check-in 06/08.
+    //
+    // LE RISQUE MESURÉ : le 01/07/2026, le scan de 21:15 a ouvert 26 positions
+    // d'un coup, dont 15 en « Semiconductors & Semiconductor Equipment »
+    // (−$10 260 sur les −$12 399 de la journée). Cette SEULE journée a ensuite
+    // faussé deux analyses distinctes (le gate euphorie et « le mercredi est un
+    // mauvais jour ») — elle n'est ni un régime, ni un jour de semaine : c'est
+    // un défaut de diversification. 8 des 9 clusters qui dépasseraient N=6 sont
+    // des semi-conducteurs : la concentration du système est mono-thématique.
+    //
+    // ⚠️ CE N'EST PAS UN GÉNÉRATEUR DE P&L, C'EST UNE ASSURANCE. Mesuré à N=6 :
+    //   · pire journée   −$12 399 → −$7 916   (−36%)
+    //   · σ journalier    $2 939  →  $2 318   (−21%)
+    //   · P&L            +$25 684 → +$27 982  AVEC le 01/07…
+    //     …mais −$2 185 SANS le 01/07 → en espérance, la prime est NÉGATIVE.
+    // Autrement dit : on paie ~$2 200 sur 2 mois pour borner la queue. C'est un
+    // arbitrage rendement/risque légitime, pas un repas gratuit — d'où le
+    // DÉFAUT OFF. Le gain affiché « +$2 298 » est de l'ajustement à une seule
+    // journée : ne jamais le présenter comme un gain espéré.
+    //
+    // Activation : OVERSOLD_SECTOR_CAP_ENABLED=true, seuil OVERSOLD_SECTOR_CAP
+    // (défaut 6 — mord sur 5% des clusters, écarte 11% du flux).
+    // EU : inutile (pire cluster −$284, jamais plus de 8 positions/industrie).
     const sectorCapEnabled =
       (this.config.get<string>('OVERSOLD_SECTOR_CAP_ENABLED') ?? 'false').toLowerCase() === 'true';
-    const sectorCap = parseInt(this.config.get<string>('OVERSOLD_SECTOR_CAP') ?? '5', 10);
-    const sectorCounts = new Map<string, number>();
-    if (sectorCapEnabled && openSymbols.size > 0) {
-      for (const s of openSymbols) {
-        const sec = await this.loadSectorFor(s);
-        sectorCounts.set(sec, (sectorCounts.get(sec) ?? 0) + 1);
-      }
-    }
+    const sectorCap = parseInt(this.config.get<string>('OVERSOLD_SECTOR_CAP') ?? '6', 10);
+    const sectorCounts = sectorCapEnabled
+      ? await this.sectorCountsForToday(portfolioId)
+      : new Map<string, number>();
 
     let opened = 0;
     let skippedSector = 0;
@@ -797,6 +812,18 @@ export class OversoldScannerService {
     let evaluated = 0;
     let opened = 0;
     let rejectedRebound = 0;
+    // Cap de concentration sectorielle — CHECK-IN 06/08. Ce chemin en était
+    // DÉPOURVU (il n'existait que sur le scan quotidien), alors que les clusters
+    // se forment à cheval sur les deux : le 27/07 par exemple, 8 entrées à 15h
+    // (intraday) puis 4 à 21h (quotidien). Un cap qui ne couvre qu'un chemin
+    // laisse l'autre reconstituer la concentration qu'il vient d'écarter.
+    const sectorCapEnabled =
+      (this.config.get<string>('OVERSOLD_SECTOR_CAP_ENABLED') ?? 'false').toLowerCase() === 'true';
+    const sectorCap = parseInt(this.config.get<string>('OVERSOLD_SECTOR_CAP') ?? '6', 10);
+    const sectorCounts = sectorCapEnabled
+      ? await this.sectorCountsForToday(portfolioId)
+      : new Map<string, number>();
+    let skippedSectorIntraday = 0;
     // Intraday = plus petit que daily (ratio 0.7). On réduit la base : le
     // notionnel fixe ET le % du capital (sinon le sizing en % ignorerait le ratio).
     const reboundCfgForOpens: OversoldConfig = {
@@ -869,6 +896,16 @@ export class OversoldScannerService {
             scanLog.push({ ...base, ...rtCols, outcome: 'rejected', reject_stage: 'overextended', reject_reasons: [`dayChg=${dayChgEu.toFixed(2)}% > ${maxDayChg}% (rebond déjà consommé)`] });
             continue;
           }
+          // Cap de concentration sectorielle (cf. bloc d'init plus haut).
+          if (sectorCapEnabled) {
+            const sec = await this.loadSectorFor(cand.symbol);
+            if ((sectorCounts.get(sec) ?? 0) >= sectorCap) {
+              skippedSectorIntraday++;
+              scanLog.push({ ...base, ...rtCols, outcome: 'rejected', reject_stage: 'sector_cap', reject_reasons: [`${sec} déjà à ${sectorCap} aujourd'hui`] });
+              continue;
+            }
+            sectorCounts.set(sec, (sectorCounts.get(sec) ?? 0) + 1);
+          }
           await this.openIntradayPosition(portfolioId, cand, reboundCfgForOpens, a.currentPrice, regime.vix);
           opened++;
           remaining--;
@@ -938,6 +975,17 @@ export class OversoldScannerService {
           continue;
         }
 
+        // Cap de concentration sectorielle (cf. bloc d'init ci-dessus).
+        if (sectorCapEnabled) {
+          const sec = await this.loadSectorFor(cand.symbol);
+          if ((sectorCounts.get(sec) ?? 0) >= sectorCap) {
+            skippedSectorIntraday++;
+            scanLog.push({ ...base, ...metricCols, outcome: 'rejected', reject_stage: 'sector_cap', reject_reasons: [`${sec} déjà à ${sectorCap} aujourd'hui`] });
+            continue;
+          }
+          sectorCounts.set(sec, (sectorCounts.get(sec) ?? 0) + 1);
+        }
+
         // Open avec source intraday (distincte de scanner_oversold EOD)
         await this.openIntradayPosition(portfolioId, cand, reboundCfgForOpens, analysis.currentPrice, regime.vix);
         opened++;
@@ -976,6 +1024,9 @@ export class OversoldScannerService {
           intraday_opened_today: intradayOpenedToday + opened,
           notional_ratio: notionalRatio,
           analysis_mode: useRt ? 'realtime_ohlc' : 'candles',
+          skipped_sector_cap: skippedSectorIntraday,
+          sector_cap_enabled: sectorCapEnabled,
+          sector_cap: sectorCap,
         },
         triggeredBy: 'autopilot_cron',
         watchlistSource: 'mechanical',
@@ -1318,6 +1369,23 @@ export class OversoldScannerService {
    */
   private readonly sectorCache = new Map<string, string>();
 
+  /**
+   * CHECK-IN 06/08 — GRANULARITÉ : on indexe désormais sur l'INDUSTRIE GICS
+   * (`GicIndustry`), plus sur le secteur large (`Sector`).
+   *
+   * Mesuré sur les 383 trades US fermés, cap à 6 par (jour × groupe) :
+   *   · sur `Sector` (11 secteurs)    → 114 trades écartés, P&L −$27 (inutile)
+   *   · sur `GicIndustry` (~70 lignes)→  42 trades écartés, pire journée
+   *                                      −$12 399 → −$7 916, σ journalier −21%
+   * Le secteur large est trop grossier : KLAC et un éditeur de logiciel sont
+   * tous les deux « Technology », donc le cap bloquait des positions sans
+   * aucun lien de corrélation. C'est ce que constatait déjà la note d'origine
+   * (« cap=5 aurait bloqué 29/48 positions, Tech 30 dominant ») — le défaut
+   * n'était pas le seuil, c'était l'axe.
+   *
+   * `filter=` restreint la réponse aux 4 champs utiles (au lieu du document
+   * fundamentals complet, ~200 Ko). Couverture vérifiée : 251/251 symboles.
+   */
   private async loadSectorFor(symbol: string): Promise<string> {
     const cached = this.sectorCache.get(symbol);
     if (cached !== undefined) return cached;
@@ -1330,7 +1398,9 @@ export class OversoldScannerService {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), this.FETCH_TIMEOUT_MS);
       const res = await fetch(
-        `https://eodhd.com/api/fundamentals/${encodeURIComponent(symbol)}?api_token=${apiKey}&fmt=json`,
+        `https://eodhd.com/api/fundamentals/${encodeURIComponent(symbol)}` +
+          `?api_token=${apiKey}&fmt=json` +
+          `&filter=General::GicIndustry,General::Industry,General::GicSector,General::Sector`,
         { signal: controller.signal },
       );
       clearTimeout(timer);
@@ -1338,14 +1408,47 @@ export class OversoldScannerService {
         this.sectorCache.set(symbol, 'unknown');
         return 'unknown';
       }
-      const j = (await res.json()) as { General?: { Sector?: string; GicSector?: string } };
-      const sec = j?.General?.Sector ?? j?.General?.GicSector ?? 'unknown';
+      const j = (await res.json()) as Record<string, string | null>;
+      // Du plus fin au plus grossier : l'industrie GICS est l'axe de corrélation utile.
+      const sec =
+        j['General::GicIndustry'] ||
+        j['General::Industry'] ||
+        j['General::GicSector'] ||
+        j['General::Sector'] ||
+        'unknown';
       this.sectorCache.set(symbol, sec);
       return sec;
     } catch {
       this.sectorCache.set(symbol, 'unknown');
       return 'unknown';
     }
+  }
+
+  /**
+   * Compte les ouvertures du JOUR par industrie GICS, pour amorcer le cap.
+   *
+   * ⚠️ Pourquoi le jour et pas « les positions simultanément ouvertes » : la
+   * détention médiane oversold est de ~0.3 jour. Le compteur des positions
+   * ouvertes est donc quasi vide au moment où le scan de 21:15 ouvre 26
+   * positions d'un coup — il ne voit jamais la concentration se former. Le
+   * risque réellement mesuré (01/07 : 15 semi-conducteurs le même jour,
+   * −$10 260 sur −$12 399) est un risque d'ouvertures SIMULTANÉES.
+   */
+  private async sectorCountsForToday(portfolioId: string): Promise<Map<string, number>> {
+    const counts = new Map<string, number>();
+    const dayStart = `${new Date().toISOString().slice(0, 10)}T00:00:00Z`;
+    const { data } = await this.supabase
+      .getClient()
+      .from('lisa_positions')
+      .select('symbol')
+      .eq('portfolio_id', portfolioId)
+      .gte('entry_timestamp', dayStart)
+      .limit(500);
+    for (const row of data ?? []) {
+      const sec = await this.loadSectorFor(String(row.symbol));
+      counts.set(sec, (counts.get(sec) ?? 0) + 1);
+    }
+    return counts;
   }
 
   /** Charge le tableau de tickers d'une watchlist nommée. */

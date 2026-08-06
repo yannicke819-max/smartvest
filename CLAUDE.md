@@ -322,6 +322,122 @@ Signal bien plus fort et bien plus fourni (n=151 vs n=8 pour V2TX) que la décis
 suppression de l'ancienne clé Mistral (partagées en chat lors des sessions
 précédentes).
 
+---
+
+### F. CRITÈRES PRÉ-ENREGISTRÉS LE 06/08 — À TESTER AU PROCHAIN CHECK-IN
+
+**⚠️ Ces critères sont figés AVANT d'avoir les données. Ne pas les renégocier.**
+Le défaut par défaut est TOUJOURS « ne rien faire ».
+
+| # | Règle candidate | Critère d'activation | Défaut si non atteint |
+|---|---|---|---|
+| F1 | **Boost sizing mardi + vendredi US ×1.3** | à **≥12 mardis et ≥14 vendredis** : les deux jours restent à **≥90 % de journées calendaires positives** ET leur $/trade reste **≥1.5×** celui des autres jours | ne rien faire |
+| F2 | **Damp sizing lundi US ×0.7** | à **≥14 lundis** : la médiane par journée calendaire reste **négative** ET le damp simulé rapporte **≥ +$3 000** | ne rien faire |
+| F3 | **Jours de semaine EU** | — | **ne rien tester** : signal absent (tous les jours 75-88 % de journées positives, médianes +$37 à +$126) |
+| F4 | **Cap secteur `OVERSOLD_SECTOR_CAP_ENABLED=true`** | après ≥1 mois d'observation en shadow : le cap réduit **σ journalier ≥15 %** ET sa prime reste **< $1 500/mois** | rester `false` |
+| F5 | **Sizing par heure d'entrée US** (E3) | à **n≥300 entrées de 21h** : leur $/trade reste **< 50 %** de celui des entrées 15-19h | ne rien faire |
+| F6 | **Damp VIX 16-18 / boost 18-20 US** (E5) | à **n≥200 par bucket** : l'écart de réalisé/trade reste **≥1.5 pt** | ne rien faire |
+
+**Pourquoi rien n'est activé aujourd'hui** : le signal jours-de-semaine repose sur
+**6 mardis et 8 vendredis**. C'est du backtest in-sample sur les données mêmes qui
+ont servi à trouver la règle, et le jour de semaine n'était pas dans les critères
+pré-écrits du 29/07. Décider aujourd'hui serait exactement la renégociation
+après coup que la règle D interdit.
+
+**🔴 CORRECTION IMPORTANTE — MERCREDI US EST INNOCENTÉ.** Le tableau E1 le donne à
+−$4 605. Sans le 01/07 il fait **+$7 794 (+$153/trade, 6/6 journées positives)**.
+Le classement robuste (médiane par journée calendaire, % de journées positives) :
+
+| US | médiane/journée | journées positives | verdict |
+|---|---|---|---|
+| **mardi** | **+$2 026** | **6/6 (100 %)** | 🟢 robuste |
+| **vendredi** | +$899 | **8/8 (100 %)** | 🟢 robuste |
+| mercredi | +$942 | 6/6 hors 01/07 | ⚪ normal |
+| jeudi | +$341 | 5/8 | ⚪ normal |
+| lundi | **−$228** | 4/8 (50 %) | 🟡 seul jour à médiane négative |
+
+**Le 01/07 a maintenant faussé TROIS analyses** (gate euphorie, mercredi, et le
+cap secteur ci-dessous). Toujours tester une loi de calendrier ou de régime en
+retirant les 1-3 pires trades avant de la retenir.
+
+---
+
+### G. CAP DE CONCENTRATION SECTORIELLE — INSTRUIT LE 06/08
+
+**Le risque est réel et mono-thématique.** Le 01/07, le scan de 21:15 a ouvert
+**26 positions d'un coup**, dont **15 en « Semiconductors & Semiconductor
+Equipment » (−$10 260 sur les −$12 399)**. Sur les 9 clusters qui dépasseraient
+un cap de 6, **8 sont des semi-conducteurs**.
+
+**Trois défauts du mécanisme existant, corrigés :**
+
+| Défaut | Correctif |
+|---|---|
+| indexé sur `General.Sector` (11 secteurs larges) | → **`GicIndustry`** (~70 lignes). Mesuré à cap 6 : secteur large = 114 trades écartés pour **−$27** ; industrie GICS = 42 écartés pour un vrai effet. KLAC et un éditeur de logiciel étaient tous deux « Technology ». |
+| **absent du chemin intraday** | → appliqué aux **deux** chemins (candles 5m ET real-time OHLC). Les clusters se forment à cheval : le 27/07, 8 entrées à 15h puis 4 à 21h. |
+| comptait les positions simultanément OUVERTES | → compte les **ouvertures du JOUR**. Avec une détention médiane de 0.3 j, le compteur d'ouvertes est quasi vide quand le scan de 21h ouvre 26 positions — il ne voyait jamais la concentration se former. |
+
+**⚠️ CE N'EST PAS UN GÉNÉRATEUR DE P&L — C'EST UNE ASSURANCE, ET ELLE A UNE PRIME.**
+
+| cap N=6 (US) | sans cap | avec cap |
+|---|---|---|
+| pire journée | −$12 399 | **−$7 916** (−36 %) |
+| σ journalier | $2 939 | **$2 318** (−21 %) |
+| P&L **avec** le 01/07 | +$25 684 | +$27 982 (+$2 298) |
+| P&L **sans** le 01/07 | +$38 083 | **+$35 898 (−$2 185)** |
+
+**Le « gain » de +$2 298 est de l'ajustement à une seule journée.** Hors 01/07,
+le cap coûte de l'argent **à tous les seuils** (−$8 536 à N=3, −$2 185 à N=6,
+−$1 108 à N=10) : il écarte des clusters rentables (le bucket 6-8 positions est
+le MEILLEUR en $/position, +$134 contre +$99 pour les positions isolées).
+
+→ **DÉFAUT `OVERSOLD_SECTOR_CAP_ENABLED=false`.** C'est un arbitrage
+rendement/risque qui appartient à l'utilisateur, pas un repas gratuit. Le
+présenter comme un gain espéré serait répéter l'erreur du gate euphorie.
+Secrets : `OVERSOLD_SECTOR_CAP_ENABLED` (défaut `false`),
+`OVERSOLD_SECTOR_CAP` (défaut **6** — mord sur 5 % des clusters, écarte 11 % du flux).
+**EU : inutile** (pire cluster −$284, jamais plus de 8 positions par industrie).
+
+---
+
+### H. LA NEWS — DÉJÀ EXPLOITÉE, ET SANS LLM (audit 06/08)
+
+Question utilisateur : « le LLM ne tire-t-il aucun apprentissage des news ? »
+Réponse mesurée : **la news est déjà collectée sur 100 % des entrées** (4 des 20
+features p_win : `newsCount`, `newsAvgSentiment`, `newsMinSentiment`,
+`newsAgeHours`) **et elle porte un signal réel, contre-intuitif** :
+
+| US — pire news à l'entrée | n | fwdJ+10 | catastrophes | RÉALISÉ |
+|---|---|---|---|---|
+| **≤ −0.8 (choc de news)** | 59 | −0.95 % | **22 %** | **+0.83 %** |
+| −0.8..−0.4 | 48 | −2.35 % | 24 % | +0.73 % |
+| **≥ 0 (aucune news négative)** | 150 | **−6.19 %** | **36 %** | +0.34 % |
+
+**Une chute EXPLIQUÉE par une mauvaise nouvelle est plus SÛRE qu'une chute
+inexpliquée** — mean-reversion pure : la news donne un point d'ancrage, le marché
+sur-réagit, puis corrige. Une chute sans cause identifiable est souvent le début
+de quelque chose. Autre signal : **news > 24h → −1.01 %/trade, 45 % de
+catastrophes** (seul bucket news franchement négatif — le catalyseur est digéré).
+EU : `newsCount` 1-4 → +1.66 %/trade, WR 94 % vs silence +1.14 %.
+
+**Sur les positions OUVERTES, `checkNewsShockClose` existe et n'a quasiment
+jamais agi** : **3 déclenchements US sur 383 sorties, 0 sur EU**, pour
+−1.60 %/trade et −$48 (dont MU.US fermée à −6.34 %, que le lock aurait
+probablement récupérée).
+
+**Conclusion honnête** : il n'y a **aucune boucle d'auto-apprentissage fermée**.
+La seule brique qui apprend (p_win, régression logistique 20 features — PAS un
+LLM) ne décide rien (shadow) ; les seules briques qui décident (scanner, lock)
+n'apprennent rien. Ce qui a fait progresser le système, c'est une boucle
+humain+agent : on mesure, on tranche, on change un secret.
+**Ne PAS rebrancher un LLM sur les news** : la valeur est déjà captée par 4
+nombres qu'une régression ingère mieux. Le seul cas d'usage défendable serait de
+distinguer « chute sur profit warning » (thèse cassée) de « chute sur rumeur »
+(sur-réaction) — que le sentiment agrégé ne sait pas faire. À monter en SHADOW
+d'abord, comme p_win, jamais sur une intuition.
+
+---
+
 ### 📌 REPORTÉ AU PROCHAIN CHECK-IN (~20/08, ou J+14 après reprise des entrées)
 
 1. **Décision #1 (gate p_win US)** — attendre 30-50 trades ayant p_win ET label J+10
@@ -332,9 +448,9 @@ précédentes).
    BEAUCOUP plus bas, ou en modulation de SIZING plutôt qu'en gate binaire.
 2. **Décision #4 (TwelveData)** — trancher après l'A/B `RATIO=0`.
 3. **Seuil de lock EU per-portfolio** (3.0 %) — nécessite un champ dédié.
-4. **Cap secteur/corrélation à l'entrée** — le vrai remède au 01/07 (26 entrées
-   semi-conducteurs le même jour, −$12 399).
-5. **Sizing par heure d'entrée US** (E3) et **par bucket VIX** (E5).
+4. ~~Cap secteur/corrélation à l'entrée~~ — **INSTRUIT ET LIVRÉ le 06/08** (cf. §G),
+   défaut OFF : sa prime est négative hors 01/07. Critère d'activation = F4.
+5. **Sizing par heure d'entrée US** (E3, critère F5) et **par bucket VIX** (E5, F6).
 6. ~~Fuite de la bande de drop US −5..0 %~~ — **CLOS le 06/08** : artefact du jour 1
    (04/06), pas une fuite. Cf. correction en E4.
 
