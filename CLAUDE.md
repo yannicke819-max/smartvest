@@ -426,6 +426,88 @@ jamais agi** : **3 déclenchements US sur 383 sorties, 0 sur EU**, pour
 −1.60 %/trade et −$48 (dont MU.US fermée à −6.34 %, que le lock aurait
 probablement récupérée).
 
+**H-bis — UN LLM BIEN PROMPTÉ AURAIT-IL ÉVITÉ LES PERTES ? TEST DIRECT (06/08).**
+
+Question utilisateur. Rendue falsifiable : *l'information qui sépare les perdants
+des gagnants est-elle présente dans le TEXTE des news à l'entrée ?* C'est le seul
+endroit où un LLM bat une régression. J'ai sorti les titres réels (table
+`eodhd_news_articles`, 63 441 articles) pour les **12 pires pertes US** et
+**12 locks normaux**. Verdict : **NON**.
+
+1. **Les news à l'entrée sont du commentaire de marché générique**, pas des
+   catalyseurs propres à l'entreprise. ORCL (−24.33 %) : « 3 Highly Ranked
+   Alternative Energy Stocks to Buy Now ». MSTR (−15.45 %) : « BlackRock is
+   launching a bitcoin ETF that pays you ». Rien à lire là-dedans.
+2. **Les MÊMES titres accompagnent des issues opposées.** « Meta AI Cloud Push
+   Sends Nvidia, AMD, Intel, Micron Stocks Sinking » → KLAC −15.67 % ET
+   LRCX −10.47 %. « Chip Stocks Pummeled. SK Hynix Dives. » → CRDO **+2.19 %**.
+3. **Les mêmes TICKERS sont des deux côtés.** CRWV : −30.71 % le 22/06,
+   **+1.96 %** le 24/07. Idem ALAB, CRDO, COIN. Ce n'est pas « quel titre »,
+   c'est **« quel jour »** — une information qui n'existe pas à l'entrée.
+4. **ON.US a perdu 12 % avec ZÉRO news.** Aucun texte à lire.
+
+**Le `sentiment_polarity` d'EODHD est en revanche démontrablement cassé** : MRVL
+à −24 % portait des news taguées **+0.87 / +0.98 / +0.97**, dont « Stocks Fall on
+Weakness in Chipmakers ». Un LLM corrigerait ça. **Mais ça n'aurait pas changé le
+trade** — la news était sectorielle et les mêmes noms ont gagné d'autres jours.
+
+**H-ter — LE TEST EXÉCUTÉ (06/08) : ON A DEMANDÉ À MISTRAL, EN AVEUGLE.**
+
+Pas une opinion : un test. Échantillon **équilibré de 68 cas** (34 perdants
+< −3 %, 34 gagnants > +1.4 %), le LLM ne voyant **ni l'issue, ni le P&L, ni la
+date de sortie** — seulement le ticker, drop1d/drop3d, RSI, distMa20, VIX,
+volume relatif, et les **titres + contenus réels des news des 48 h précédentes**.
+Prompt volontairement orienté sur la seule question où un LLM bat un nombre :
+*sur-réaction sectorielle (ACHETER) vs thèse cassée (ÉVITER)*, en lui indiquant
+explicitement que 14 % des achats perdent et détruisent 61 % des gains bruts.
+
+| modèle | AUC | ACHETER | ÉVITER |
+|---|---|---|---|
+| `mistral-small-latest` | **0.457** 🔴 | 13 gagnants / 16 perdants | 21 gagnants / 18 perdants |
+| `mistral-large-latest` | **0.392** 🔴 | 14 gagnants / **20 perdants** | **20 gagnants** / 14 perdants |
+
+**Les deux classent SOUS le hasard, et le grand modèle est le PIRE.** Sur
+`mistral-large`, « ACHETER » contient plus de perdants que de gagnants et
+« ÉVITER » plus de gagnants que de perdants : le signal est **systématiquement
+inversé**. Confiance moyenne : **0.84-0.95**. Il ne dit jamais « je ne sais pas ».
+
+**Le mode d'échec qualitatif est encore plus parlant que l'AUC** :
+- `ARM.US` **−32.06 %** → « ÉVITER (0.95) — *News sectorielle neutre, pas de
+  dégradation durable* » : le verdict CONTREDIT sa propre justification.
+- `CRWV.US` **−30.71 %** → « ÉVITER (0.95) — *Thèse intacte, chute technique* ».
+- `INTC.US` **+2.34 %** → « ÉVITER (0.95) — *thèse intacte, chute technique* » :
+  **exactement la même phrase, issue opposée.**
+- `MRVL.US` apparaît des DEUX côtés (−24.19 % et +1.85 %) → ÉVITER les deux fois.
+
+**Pourquoi — l'explication qui compte** : le LLM applique le réflexe d'un
+investisseur fondamental (« ne rattrape pas un couteau qui tombe ») à une
+stratégie qui **achète précisément les couteaux et sort au rebond**. Quand il lit
+« faiblesse sectorielle confirmée », il dit ÉVITER — or c'est exactement le
+setup qui rebondit et locke à +1.5 %. **Son a priori est anti-corrélé à la
+stratégie.** Et il produit une narration plausible pour chaque cas, ce qui rend
+l'erreur invisible sans test en aveugle.
+
+⚠️ **Limites honnêtes** : n=68, un seul provider, une seule famille de prompt.
+Un autre cadrage ferait peut-être mieux. Mais 0.457 et 0.392 ne sont pas « un peu
+sous » — c'est inversé, et le mode d'échec (confiance 0.95 sur des verdicts
+incohérents avec leur propre raisonnement) n'est pas un problème de taille
+d'échantillon. **Le prérequis avant toute réouverture du sujet : ce test doit
+passer AUC ≥ 0.60 en aveugle sur ≥150 cas. Il est reproductible à volonté.**
+
+**LA VRAIE STRUCTURE DES PERTES — ce n'est pas un problème de prédiction :**
+
+| | |
+|---|---|
+| **3 journées** portent | **64 % des pertes** |
+| **8 journées** portent | **86 %** (sur 19 journées avec ≥1 perte) |
+| **Semi-conducteurs** | **42 %** des pertes |
+| positions en **cluster** (≥3 même industrie le même jour) | 47 % |
+
+Les 54 perdants ne sont pas 54 mauvais choix qu'un lecteur plus fin aurait
+évités : ce sont **quelques journées où un secteur entier a continué de chuter**.
+Aucun prompt ne lit l'avenir. **Le levier est l'ALLOCATION (cap secteur, lock),
+pas la LECTURE.**
+
 **Conclusion honnête** : il n'y a **aucune boucle d'auto-apprentissage fermée**.
 La seule brique qui apprend (p_win, régression logistique 20 features — PAS un
 LLM) ne décide rien (shadow) ; les seules briques qui décident (scanner, lock)
