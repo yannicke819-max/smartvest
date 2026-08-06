@@ -254,10 +254,11 @@ les scans intraday 15-19h font +1.26 à +2.74 %.** Explication mécanique : à 2
 achète au close le jour même de la chute, sans aucune preuve de rebond ; en intraday
 on entre sur un rebond déjà amorcé et vérifié. Côté EU l'écart est bien plus faible
 (21h +1.19 % vs 14h +2.11 %, 10h +1.96 %).
-> **À instruire en priorité à la prochaine session** (pas décidé aujourd'hui, ce
-> n'était pas dans les critères pré-écrits) : réduire le notionnel des entrées US
-> de 21h (ou exiger un critère de rebond supplémentaire) et redéployer vers 15-19h.
-> Gisement potentiel bien supérieur à tout ce qui reste dans la matrice B.
+> 🔴 **CE TABLEAU EST FAUSSÉ — voir §I.** Les 26 entrées du 01/07 sont TOUTES à
+> 21h et écrasent la moyenne de ce bucket. Hors 01/07, le scan de 21h fait
+> **+0.75 %/trade et +$20 762** (et +0.87 % hors jour 1), contre +1.75 % en
+> intraday : un écart de $22/trade, pas un gouffre. J'avais recommandé de réduire
+> le notionnel de 21h — **recommandation RETIRÉE**, elle détruit du P&L (§I).
 
 **E4 — Loi empirique par bande de drop (le cœur de la sélection).**
 
@@ -335,7 +336,7 @@ Le défaut par défaut est TOUJOURS « ne rien faire ».
 | F2 | **Damp sizing lundi US ×0.7** | à **≥14 lundis** : la médiane par journée calendaire reste **négative** ET le damp simulé rapporte **≥ +$3 000** | ne rien faire |
 | F3 | **Jours de semaine EU** | — | **ne rien tester** : signal absent (tous les jours 75-88 % de journées positives, médianes +$37 à +$126) |
 | F4 | **Cap secteur `OVERSOLD_SECTOR_CAP_ENABLED=true`** | après ≥1 mois d'observation en shadow : le cap réduit **σ journalier ≥15 %** ET sa prime reste **< $1 500/mois** | rester `false` |
-| F5 | **Sizing par heure d'entrée US** (E3) | à **n≥300 entrées de 21h** : leur $/trade reste **< 50 %** de celui des entrées 15-19h | ne rien faire |
+| F5 | ~~Damp sizing des entrées US de 21h~~ | **🔴 RETIRÉ LE 06/08 — le chiffre fondateur était faux, cf. §I** | **ne rien faire, définitivement** |
 | F6 | **Damp VIX 16-18 / boost 18-20 US** (E5) | à **n≥200 par bucket** : l'écart de réalisé/trade reste **≥1.5 pt** | ne rien faire |
 
 **Pourquoi rien n'est activé aujourd'hui** : le signal jours-de-semaine repose sur
@@ -435,6 +436,66 @@ nombres qu'une régression ingère mieux. Le seul cas d'usage défendable serait
 distinguer « chute sur profit warning » (thèse cassée) de « chute sur rumeur »
 (sur-réaction) — que le sentiment agrégé ne sait pas faire. À monter en SHADOW
 d'abord, comme p_win, jamais sur une intuition.
+
+---
+
+### I. 🔴 LE SCAN DE 21h N'EST PAS LE PROBLÈME — RECOMMANDATION RETIRÉE
+
+J'ai présenté E3 comme « le finding le plus actionnable du check-in », avec le
+scan de 21:15 UTC à **+0.19 %/trade** contre +1.26 à +2.74 % en intraday, et j'ai
+écrit que le gisement était « bien supérieur à tout ce qui reste dans la matrice ».
+**C'était faux. Le 01/07 — pour la QUATRIÈME fois — faussait le chiffre**, et ses
+26 entrées étaient toutes à 21h.
+
+| US | n | RÉALISÉ/trade | $/trade | P&L $ |
+|---|---|---|---|---|
+| 21h — **brut** | 213 | **+0.20 %** | +39 | +8 363 |
+| 21h — **hors 01/07** | 187 | **+0.75 %** | +111 | **+20 762** |
+| 21h — **hors 01/07 et jour 1** | 184 | **+0.87 %** | **+114** | +20 951 |
+| 15-19h (même filtre) | 122 | +1.75 % | +136 | +16 634 |
+
+**L'écart réel est de +0.88 pt, soit $22/trade — pas le gouffre que j'ai décrit.**
+Et le scan de 21h produit **+$20 762 sur les +$25 684 du portefeuille US** : c'est
+la majorité du P&L du système.
+
+**Les deux populations sont comparables à l'entrée** (drop1d −7.11 vs −6.41,
+VIX 17.4 vs 17.7, relVol 1.37 vs 1.38, RSI 45.7 vs 43.9) — ce n'est donc pas un
+effet de composition. Mais **ce ne sont pas les mêmes stratégies** : l'intraday
+n'entre que sur un rebond déjà amorcé et vérifié (fwd J+1 **+1.41 %**, 56 % de
+positives), le scan de 21h achète la chute au close sans aucune preuve (fwd J+1
+**−1.13 %**, 44 %). **Et ce filtre ne peut PAS être porté à 21h : le marché est
+fermé, il n'y a aucun rebond à observer.**
+
+**Damper le 21h détruit du P&L à tous les niveaux** — parce que ces trades sont
+rentables et que le système est limité par l'OFFRE (notionnel médian par journée
+d'ouverture : 45 % du capital) : le capital libéré n'a rien d'autre à acheter,
+l'intraday étant plafonné et dépendant de candidats qui montrent un rebond.
+
+| damp 21h | Δ P&L (avec 01/07) | Δ P&L (hors 01/07) |
+|---|---|---|
+| ×0.7 | **−$2 509** | **−$6 229** |
+| ×0.5 | −$4 181 | −$10 381 |
+| ×0.0 | −$8 363 | −$20 762 |
+
+**→ NE RIEN FAIRE. Critère F5 retiré, pas reporté.** Ce qui reste vrai et sans
+action : les entrées de 21h chutent encore un peu avant de rebondir (fwd J+1
+−1.13 %) — mais **le lock encaisse quand même** (+0.87 % réalisé). C'est encore
+la divergence label/lock. La seule piste non testée serait de DIFFÉRER l'entrée
+au lendemain matin sur confirmation de rebond, au lieu de la réduire — mais on
+achèterait alors plus haut, et je n'ai aucune donnée pour l'arbitrer. **À monter
+en shadow un jour, jamais à activer sur cette base.**
+
+### ⚖️ RÈGLE DE MÉTHODE AJOUTÉE (6e) — LE 01/07 A FAUSSÉ QUATRE ANALYSES
+
+gate euphorie · « mercredi US est un mauvais jour » · le cap secteur · le scan de
+21h. À chaque fois le mécanisme est le même : une moyenne dominée par une seule
+journée de 26 positions corrélées.
+
+> **Tout agrégat publié sur la population oversold DOIT être accompagné de sa
+> version « moins les 1-3 pires trades ».** Si la conclusion s'inverse, il n'y a
+> pas de loi — il y a un épisode. `sensitivityToWorst()` dans
+> `scripts/oversold-checkin-metrics.ts` fait exactement ça : l'utiliser
+> systématiquement, avant publication et non après contestation.
 
 ---
 
