@@ -499,6 +499,91 @@ journée de 26 positions corrélées.
 
 ---
 
+### J. LIENS DE CAUSE À EFFET (VIX & indicateurs) — CE QUI TIENT, CE QUI NE TIENT PAS
+
+Demande utilisateur 06/08 : établir des liens de cause à effet exploitables.
+**Réponse : les patterns existent et sont cohérents, mais AUCUN ne survit au test
+hors échantillon. Rien à activer.** Le détail, parce que le négatif est instructif.
+
+**LA STRUCTURE DU PROBLÈME — c'est le seul résultat solide, et il est important.**
+
+| | US | EU |
+|---|---|---|
+| trades fermés | 383 | 260 |
+| **perdants** | **54 (14 %)** | **30 (12 %)** |
+| gains bruts | +$66 668 | +$4 933 |
+| **pertes brutes** | **−$40 985** | −$1 746 |
+| net | +$25 684 | +$3 187 |
+
+**Les 54 perdants US détruisent 61 % des gains bruts.** La médiane réalisée est de
++1.65 % PARTOUT, dans tous les buckets de toutes les features. **Le jeu n'est donc
+pas de gagner plus, c'est d'éviter les couteaux.** Toute optimisation doit viser
+la QUEUE, jamais le centre. C'est pourquoi le lock (qui borne la queue par le
+haut) vaut plus que n'importe quel filtre d'entrée.
+
+**CE QUI EST COHÉRENT EN DIRECTION (univarié, terciles, %perdants).**
+La fréquence de perte ne peut pas être dominée par 2 trades — contrairement au
+P&L. Ces trois signaux vont tous dans le même sens, sur les DEUX portefeuilles :
+
+| signal | tercile bas | tercile haut | lecture |
+|---|---|---|---|
+| **VIX US** | 15.4-16.2 → **23 % perdants** | 18.4-21.7 → **8 %** | la peur paie, la complaisance tue |
+| **VIX EU** | 15.0-16.9 → **21 %** | 18.6-22.2 → **8 %** | idem, direction confirmée |
+| **spy5d US** | −3.0..−0.1 → **4 %** | 0.0..+3.1 → **16 %** | acheter quand le marché a baissé |
+| **rsi14 US** | 13.7-40.3 → 13 % | 51.8-78.7 → **22 %** | acheter du vraiment survendu |
+| **distMa20 US** | sous la MM20 → 9 % | au-dessus → **19 %** | idem |
+| **news EU** | sentiment < 0 → **20 %** | > 0 → **6 %** | chute inexpliquée = danger (cf. §H) |
+| **newsCount EU** | 0 (silence) → **19 %** | ≥1 → **8 %** | idem |
+
+**Histoire unifiée** : le système perd quand il achète une **respiration dans une
+tendance calme** (VIX bas, RSI élevé, au-dessus de la MM20, marché en hausse,
+aucune news) et gagne quand il achète une **vraie survente en régime de peur**.
+
+**CE QUI NE TIENT PAS — et c'est là que ça compte.**
+
+1. **Modèle entraîné sur la BONNE cible (P(perdant) au réalisé, 17 features)** :
+   AUC out-of-sample **0.590 puis 0.531** côté US, **0.537 puis 0.507** côté EU.
+   Instable, au niveau du hasard. Pire : sur les fenêtres de test, le quintile
+   « le plus risqué » selon le modèle est **PROFITABLE** (+$4 930, +$4 956).
+   L'écarter fait PERDRE de l'argent à tous les splits.
+2. **Règle simple « VIX < 16.5 ET RSI14 > 50 »** (la traduction directe de
+   l'univarié) : in-sample, les 75 trades flaggés font **31 % de perdants et
+   −$6 384**. Mais :
+   - **1re moitié : les flaggés font +1.07 %/trade, +$3 443** — signal ABSENT ;
+   - 2e moitié : −2.67 %/trade, −$9 827 — signal très fort ;
+   - **sans les 2 pires trades : −$6 384 → +$236.** 🔴 le signal s'inverse.
+   Elle échoue donc les deux tests : instabilité temporelle ET règle 6.
+   Côté EU la règle est carrément inverse (flaggés +1.43 %/trade, meilleurs).
+
+**POURQUOI — le diagnostic honnête.** Avec 94 % de gagnants au réalisé, une
+fenêtre de test contient **6 à 9 événements de perte**. On ne peut ni apprendre
+ni valider quoi que ce soit sur 6 événements. **Le problème n'est pas l'absence
+de signal, c'est l'absence d'ÉVÉNEMENTS.** Le nombre de trades croît vite (646 en
+2 mois) mais le nombre de PERTES croît lentement (84 au total) : il faudra ~6 mois
+pour atteindre ~250 pertes, seuil à partir duquel un modèle de queue devient
+entraînable. **Ajouter des features n'y changera rien — seul le temps le fera.**
+
+**CONSÉQUENCE POUR p_win.** Le modèle en production est entraîné sur
+`fwd_outcome_10d` — une cible que la stratégie ne joue pas (on encaisse au lock).
+Contrôle mesuré : ce modèle, ÉVALUÉ sur le réalisé, donne AUC 0.763 côté US et
+0.508 côté EU sur un split — mieux que le modèle entraîné directement sur le
+réalisé, parce que fwdJ+10 a une base équilibrée (~30 % de positifs) là où le
+réalisé est à 94 % et n'offre presque aucun exemple négatif. **Ne PAS conclure
+qu'il faut garder fwdJ+10 comme cible** : c'est un chiffre, un split, et j'ai été
+démenti quatre fois aujourd'hui. À retester au prochain check-in.
+
+> **À NE PAS FAIRE** : transformer les patterns du tableau ci-dessus en gate ou en
+> damp de sizing. Ils décrivent le passé ; ils ne prédisent pas assez pour qu'on
+> mise dessus. C'est exactement le raisonnement qui a produit le gate euphorie.
+
+**SUR LES LESSONS** : il y a **0 lesson de scope `oversold*`** en base, le
+générateur (`OversoldRetrospectiveService`) est **100 % déterministe (zéro LLM)**,
+et **aucun composant du pipeline oversold ne les lit** (pas de `getLessonsBlock`).
+Elles n'alimentent qu'un panneau d'affichage. Il n'y a donc rien à en tirer
+aujourd'hui, et rien à corriger tant que le corpus est vide.
+
+---
+
 ### 📌 REPORTÉ AU PROCHAIN CHECK-IN (~20/08, ou J+14 après reprise des entrées)
 
 1. **Décision #1 (gate p_win US)** — attendre 30-50 trades ayant p_win ET label J+10
