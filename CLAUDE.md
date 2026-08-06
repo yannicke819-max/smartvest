@@ -1023,10 +1023,40 @@ splits/dividends, exchange-symbol-list, delisted) :
 
 | Provider | Plan SmartVest | Quota | Contrainte pratique |
 |---|---|---|---|
-| EODHD | ALL-IN-ONE $99.99/mo | 100k calls/jour | aucune |
+| EODHD | ALL-IN-ONE $99.99/mo | 100k calls/jour | aucune sur le quota — **mais 70 places seulement, et Borsa Italiana n'en fait PAS partie** (cf. ci-dessous) |
 | TwelveData | **$229/mo** | **infini (quota illimité)** | **aucune — ne pas optimiser le volume de calls par souci de coût** |
 | Binance | public market data | gratuit | géo-block sandbox locale (HTTP 451), OK depuis Fly |
 | FRED | gratuit | 120 req/min | non bloquant |
+
+### 🔴 EODHD NE COUVRE PAS LA BOURSE ITALIENNE (découvert le 06/08)
+
+`GET /api/exchanges-list` renvoie **70 places** et **`MI` n'y figure pas**. Vérifié
+aussi via `/api/search` : ENI, ENEL et Intesa Sanpaolo n'ont AUCUNE cotation
+Borsa Italiana chez EODHD — uniquement leurs lignes étrangères (XETRA, Francfort,
+LSE, OTC US). **Ce n'est pas une erreur de suffixe** (`.MI`, `.MTA`, `.IT`
+renvoient tous 404) : l'Italie est absente du plan.
+
+**Conséquence mesurée** : sur les 518 tickers de la watchlist `stoxx600`,
+**39 sont morts (7.5 %)** — dont **29 `.MI`** (ENI, ENEL, Intesa, UniCredit,
+Stellantis, Moncler, Leonardo, Prysmian, Generali, Terna, Snam, Nexi, Mediobanca…).
+Ils échouent à CHAQUE scan et ne produiront jamais de candidat.
+
+Les 10 autres sont des flux EODHD qui se sont arrêtés sur des places pourtant
+couvertes — à surveiller, pas à supprimer (ils peuvent revenir) :
+`ROG.SW` (Roche, dernière barre 25/03), `GLPG.AS` (08/07), `BIRG.LSE` (26/06),
+`COFB.BR` (30/06), `SWR.LSE` (19/06), `KOJAMO.HE` (15/05), et 4 sans aucune barre
+2026 (`HELN.SW`, `DUFN.SW`, `ICP.LSE`, `IIA.VI`).
+
+**Découvert grâce au compteur `fetch_failures` livré le même jour** (correctif C1) :
+le 1er scan EU post-déploiement affichait `518 tentatives / 29 KO / 11 retries`.
+Avant, ces 29 disparaissaient en silence. ⚠️ **Tant que les `.MI` restent dans
+l'univers, le `fetch_failure_rate` du portefeuille EU plafonne à ~5.6 % de bruit
+structurel** et ne peut pas servir à détecter une vraie panne provider.
+
+**Action proposée, non exécutée** : retirer les 29 `.MI` de `watchlist_universe`
+(strictement neutre — ils ne peuvent produire aucun candidat) et laisser les 10
+autres sous surveillance. Ne PAS les remplacer par leur ligne XETRA sans décision
+explicite : autre place, autre liquidité, autres horaires.
 
 **Conséquence opérationnelle** : le volume de calls TwelveData (`daily_usage` qui grimpe à 3000+/h) **n'est PAS un problème de quota** — le plan $229 est illimité. Si on optimise les calls TD, c'est uniquement pour **latence** (pression sur le rate-limit instantané, pas le quota journalier) ou **fraîcheur** (éviter de payer un round-trip pour une quote `STALE` qu'on va re-tagger). Ne PAS proposer de réduire la fréquence du price warmer ou les dual-calls IntradayRouter pour économiser du quota — c'est zéro impact budget.
 
