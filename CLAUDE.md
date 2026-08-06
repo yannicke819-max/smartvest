@@ -278,10 +278,20 @@ on entre sur un rebond déjà amorcé et vérifié. Côté EU l'écart est bien 
 | −7..−6 % | 67 | +1.03 % | 87 % | −0.67 % | 4/42 |
 | −6..−5 % | 97 | +1.24 % | 89 % | −3.14 % | 16/77 |
 
-**Bande optimale : US −10..−8 %, EU −8..−7 %.** ⚠️ **15 entrées US sont hors bande
-(−5..0 %)** alors que `oversold_drop_max_pct = −5` : elles réalisent −2.21 % avec
-40 % de WR. **Fuite à investiguer** (arrondi, drop recalculé après coup, ou chemin
-intraday qui contourne la borne).
+**Bande optimale : US −10..−8 %, EU −8..−7 %.**
+
+⚠️ **CORRECTION (même jour) — la « fuite hors bande » n'existe pas.** J'avais
+signalé 15 entrées US hors spec comme une fuite à investiguer. Vérification :
+il y a en fait **46 entrées hors bande [−12, −5], et 45 d'entre elles datent du
+04/06/2026** — le JOUR 1 du système, en deux salves (08:33 : 26 entrées ; 19:43 :
+19 entrées, dont ~19 symboles en DOUBLON de la salve du matin), avec des `drop1d`
+carrément POSITIFS (jusqu'à +6.61 % : HOOD, RKLB +4.58, SAP +3.58, BAM +3.23).
+La 46ᵉ est MU.US le 05/06 à −13.25 % (juste sous la borne basse). **Zéro entrée
+hors bande depuis le 05/06 ; zéro côté EU sur 262 trades.** La borne est donc
+respectée par le code — c'était un artefact d'amorçage.
+**Conséquence** : le bucket « −5..0 % » du tableau ci-dessus (−2.21 %, WR 40 %)
+est intégralement du jour 1 et **ne prouve rien** sur la bande de drop. Ne pas
+s'en servir pour justifier un resserrement. Rien à corriger côté code.
 
 **E5 — VIX (US) : bande morte 16-18, gisement 18-20.**
 
@@ -325,7 +335,8 @@ précédentes).
 4. **Cap secteur/corrélation à l'entrée** — le vrai remède au 01/07 (26 entrées
    semi-conducteurs le même jour, −$12 399).
 5. **Sizing par heure d'entrée US** (E3) et **par bucket VIX** (E5).
-6. **Fuite de la bande de drop US −5..0 %** (E4).
+6. ~~Fuite de la bande de drop US −5..0 %~~ — **CLOS le 06/08** : artefact du jour 1
+   (04/06), pas une fuite. Cf. correction en E4.
 
 **Commits de référence** : shadow p_win `edf7e89`, boot-train + deadline-ferme-MANU
 `4cc31b7`, fix re-arm catastrophe (MSTR) `4409294c`, fix danger-zone gap (TWLO)
