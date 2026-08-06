@@ -215,6 +215,21 @@ export class OversoldMistralExitService {
     return Number(this.config.get<string>('OVERSOLD_MISTRAL_EXIT_CONFIDENCE_MIN') ?? '0.65');
   }
 
+  /**
+   * Source de prix non actionnable pour une FERMETURE.
+   *
+   * Même définition que `Rebound MonitorService.isFallbackSource` / le chemin
+   * mécanique : `fallback*` (prix hardcodé ou inconnu) ET `stale_*` (quote périmé,
+   * typiquement le close d'une séance précédente servi pendant la séance suivante).
+   * Cf. CLAUDE.md « Garde-fous prix fallback ». Peut être désactivé en urgence via
+   * `OVERSOLD_EXIT_STALENESS_GUARD=false`.
+   */
+  private isStaleOrFallback(source: string | undefined): boolean {
+    if ((this.config.get<string>('OVERSOLD_EXIT_STALENESS_GUARD') ?? 'true').toLowerCase() === 'false') return false;
+    if (!source) return true;
+    return source.startsWith('fallback') || source.startsWith('stale_');
+  }
+
   /** R0 (quick-lock scalp) — age max en minutes pour déclencher. Default 10. */
   private r0MaxAgeMin(): number {
     return Number(this.config.get<string>('OVERSOLD_MISTRAL_R0_MAX_AGE_MIN') ?? '10');
@@ -341,12 +356,36 @@ export class OversoldMistralExitService {
     // Le gain-picker est censé être INTRADAY-réactif → il lui faut le prix live. Fallback EOD.
     let price: number | null = null;
     const liveQuote = await this.lisa.getLivePrice(pos.symbol).catch(() => null);
-    if (liveQuote && Number(liveQuote.price) > 0) price = Number(liveQuote.price);
+    // 🛡️ GARDE-FOU DE STALENESS (CHECK-IN 06/08) — aligne ce chemin sur le chemin
+    // mécanique (`isFallbackSource` + sanity bound), qui l'avait et pas nous.
+    //
+    // BUG CONFIRMÉ : 5 locks déclenchés en < 5 min après l'entrée, dont 3 aberrants
+    // (NOKIA.HE +7.13% en 26 s, MAERSK-B.CO +4.58% en 30 s, UCB.BR +7.73% en 62 s).
+    // Tous EU sans couverture TwelveData (Nordics/Bruxelles), tous à 21:16 ou 14:16
+    // UTC juste après le scan : position ouverte au close EOD, puis « prix live »
+    // issu d'une AUTRE séance → un lock encaissé sur un prix qui n'existe plus.
+    // Poids mesuré : +$263 (~1,5% du P&L EU) — bug de FIABILITÉ, pas un mirage massif.
+    if (liveQuote && this.isStaleOrFallback(liveQuote.source)) {
+      this.logger.warn(`[oversold-mistral-exit] ${pos.symbol} prix ignoré (source=${liveQuote.source}) → fallback EOD`);
+    } else if (liveQuote && Number(liveQuote.price) > 0) {
+      price = Number(liveQuote.price);
+    }
     if (price == null) price = await this.fetchLastClose(pos.symbol);
     if (price == null) return 'skipped_no_price';
 
     const entry = parseFloat(pos.entry_price);
     if (!Number.isFinite(entry) || entry <= 0) return 'skipped_no_price';
+
+    // 🛡️ SANITY BOUND 30% — un écart > 30% vs l'entrée en un seul tick est presque
+    // toujours une corruption (cache pollué, séance décalée, source aberrante non
+    // taggée). On skippe ce tick : un vrai mouvement violent sera capté au suivant.
+    const divergencePct = Math.abs((price - entry) / entry) * 100;
+    if (divergencePct > 30) {
+      this.logger.warn(
+        `[oversold-mistral-exit] [SANITY_BOUND] ${pos.symbol} prix ${price} vs entrée ${entry} (${divergencePct.toFixed(1)}%) → tick ignoré`,
+      );
+      return 'skipped_no_price';
+    }
 
     const sign = pos.direction === 'short' ? -1 : 1;
     const unrealPnlPct = ((price - entry) / entry) * 100 * sign;

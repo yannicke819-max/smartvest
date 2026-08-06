@@ -5,354 +5,335 @@ Guide de travail pour Claude Code sur ce repo.
 
 ---
 
-## ⏰ CHECK-IN PROGRAMMÉ — ~04-08/08/2026 : CALIBRATION p_win → décision GATE US
+## ✅ CHECK-IN RENDU LE 06/08/2026 — LES 8 DÉCISIONS SONT TRANCHÉES
 
-**Demandé par l'utilisateur 21/07.** Le shadow p_win est LIVE depuis le 21/07
-(commit `edf7e89`) : chaque nouvelle entrée oversold est estampillée
-`p_win_at_entry` + `model_version_at_entry` dans `paper_trades` (mesure pure,
-zéro gate). Les 1res entrées estampillées mûrissent à J+10 vers ~04-08/08.
-**Mission : mesurer la calibration et décider d'activer (ou non) le gate US.**
+Check-in exécuté le 06/08 sur **384 trades US / 262 EU** (315 + 180 labels J+10),
+population complète, méthode pré-écrite du 29/07 respectée à la lettre.
+**Aucun critère n'a été renégocié après coup.** Le détail de chaque mesure est
+ci-dessous ; les conclusions qui « arrangeaient » ont été attaquées avant d'être
+retenues (2 d'entre elles n'y ont pas survécu — cf. §D).
 
-### Étapes
+---
 
-1. **Sample suffisant ?** `paper_trades` `strategy=oversold` avec `p_win_at_entry`
-   NOT NULL **ET** `fwd_outcome_10d` NOT NULL (cible ≥ 30-50/portefeuille, surtout
-   US `a0000001`). Si trop peu → repousser d'une semaine, ne rien forcer.
-2. **Calibration par bucket** : terciles/déciles de `p_win_at_entry` → winRate J+10
-   observé + `fwd_return_10d` moyen par bucket. Critère : **monotone** (haut p_win
-   gagne plus que bas p_win) + écart net entre bucket haut et bas (≥ 15-20 pts de WR).
-3. **Re-walk-forward** : refaire le contrefactuel temporel (train ancien / test récent,
-   méthode du 21/07) avec les données de juillet-août. Critère : **AUC out-of-sample
-   US ≥ 0.55 STABLE** (pas l'AUC plein-set des logs — c'est un mirage d'overfit,
-   preuve : EU plein-set 0.876 vs OOS 0.437).
-4. **DÉCISION GATE US** :
-   - **SI calibration monotone + OOS ≥ 0.55** → implémenter le gate d'entrée US :
-     env `OVERSOLD_PWIN_GATE` (`off`/`shadow`/`active`), seuil `p ≥ 0.5`, rollout
-     `shadow` 48-72h (compter les skips + leur fwd) PUIS `active`.
-   - **SINON** → rester en mesure, ré-entraîner avec plus de données, re-check +2 sem.
-   - **EU : JAMAIS de gate** tant que son AUC OOS < 0.55 (le 21/07 : 0.437 = pire
-     que hasard, le gate aurait coûté −58 pts de P&L cumulé). Ré-évaluer à ~250 labels.
-     **MAJ 29/07 (171 labels)** : AUC OOS remontée **0.437 → 0.536** — l'EU ne
-     classe plus à l'envers, il approche du seuil (qualification possible en août).
-     ⚠️ **MAIS l'amélioration ne vient PAS des features EU natives** : walk-forward
-     16 vs 20 features = **0.536 dans les deux cas, à l'identique** → mon hypothèse
-     « le modèle EU échouait car scoré à la météo US » est INFIRMÉE pour l'instant.
-     Cause : `v2tx`/`sx5e5d`/`vixChg1d` sont forward-only → la quasi-totalité des
-     171 labels d'entraînement les ont à 0. Le vrai test des features EU est
-     REPORTÉ au check-in (quand une part significative des labels portera de
-     vraies valeurs). Le gain d'AUC vient des +39 labels, rien d'autre.
-5. **COMPARAISON AVANT/APRÈS 21/07 (demandé par l'user 21/07)** — le 21/07 ~15:35 UTC
-   est une frontière naturelle : AVANT (≈29/06 → 21/07) la sortie LLM Mistral était
-   MUETTE (clé 401) → exits 100% déterministes (lock +1.5%, deadline J+10, danger-zone) ;
-   APRÈS : LLM exit ressuscité (consomme la loi live Phase 2) + shadow p_win actif.
-   Comparer les 2 fenêtres (~2-3 sem de part et d'autre, par portefeuille) :
-   P&L/trade réalisé, répartition des types de sortie (`oversold_mistral_gain_pick`
-   vs lock déterministe vs `closed_expired`), win rate, give-back vs MFE.
-   ⚠️ Pas un vrai A/B (régime marché différent entre les fenêtres) mais directionnel :
-   c'est LA mesure de la valeur ajoutée réelle de la couche LLM de sortie.
+### 🚨 LE FAIT DOMINANT — LE GATE EUPHORIE A MIS LE SYSTÈME À L'ARRÊT
 
-### 🎯 LIVRABLE ATTENDU LE 04/08 (exigence user 29/07) — TRANCHER, pas observer
+Depuis le **04/08**, le gate euphorie bloque **100 % des scans** sur les DEUX
+portefeuilles (SPY 5j jusqu'à +5.53 %, SX5E +3.65 % vs seuil +1.5 %). Le book est
+**VIDE** (0 position ouverte), la dernière entrée date du **03/08**. Sur août :
+128 scans bloqués contre 22 complétés. Le trading est éteint depuis 3 jours.
 
-L'utilisateur attend **une analyse profonde comparative ET historique débouchant
-sur des DÉCISIONS**, pas un relevé de mesures. Format imposé :
+**Sa justification statistique ne survit pas au test du P&L RÉALISÉ.**
+Buckets reconstruits sur la population COMPLÈTE (idx5d recalculé depuis les vraies
+barres SPY/SX5E — couverture 100 %, contre 66 % via `features_at_entry`) :
 
-**A. Les 3 comparaisons obligatoires**
-1. **Avant/après 21/07** (LLM de sortie muet vs actif) — 1re mesure 29/07 : écart
-   NUL. Refaire avec ~2 sem de plus.
-2. **Avant/après 24/07** (régulateur d'exposition) — attendu : util 70-90%, ZÉRO
-   jour >100%, P&L/RISQUE meilleur même si P&L headline plus bas. ⚠️ ne PAS
-   comparer au réel dopé au levier (biais documenté).
-3. **Historique complet vs fenêtre récente** — l'edge se dégrade-t-il ? Comparer
-   espérance/trade, WR, taux de catastrophes, qualité d'entrée (fwdJ+10) entre
-   juin, juillet et août par portefeuille.
+| idx5d US | n | fwdJ+10 | WR J+10 | catas | **RÉALISÉ** | P&L $ |
+|---|---|---|---|---|---|---|
+| < −1.5 % | 93 | +1.80 % | 52 % | 15 % | +1.40 % | +10 864 |
+| −1.5..0 % | 74 | −4.26 % | 33 % | 26 % | +1.97 % | +13 841 |
+| 0..+1.5 % (**laissé passer**) | 125 | −4.35 % | 35 % | 35 % | **+0.03 %** | +2 700 |
+| +1.5..+2.5 % (**bloqué**) | 79 | −8.09 % | 25 % | 46 % | −0.02 % | −4 474 |
+| > +2.5 % (**bloqué**) | 13 | −1.16 % | 38 % | 23 % | **+2.33 %** | **+2 607** |
 
-**B. Les décisions à rendre (chacune avec critère PRÉ-ÉCRIT, à ne pas négocier
-après coup)**
-| # | Décision | Critère de bascule | Défaut si critère non atteint |
-|---|---|---|---|
-| 1 | **Gate p_win US** | calibration J+10 monotone + écart ≥15-20 pts WR haut/bas + AUC OOS ≥0.55 STABLE | rester en shadow, re-check +2 sem |
-| 2 | **Gate p_win EU** | idem + ~250 labels (171 au 29/07) | jamais de gate |
-| 3 | **Couche LLM de sortie** (Mistral ~$6/j) | écart P&L/trade après-vs-avant > +0.3 pt ET sorties distinctes du lock | couper si écart reste nul |
-| 4 | **TwelveData** ($229/mois) | échec EODHD-seul non négligeable pendant l'A/B `TWELVEDATA_INTRADAY_AB_RATIO=0` | couper (0 précision prouvée) |
-| 5 | **Seuil du lock** | balayage août confirme US 2-2.5% / EU 2.5-3% | garder 1.5% (jamais <1.5, jamais ≥4) |
-| 6 | **Sizing damp lun/mer US** | cluster catastrophes persiste à n≥500 | ne rien faire |
-| 7 | **Sizing-boost EU sur relVol ≥2×** | cohorte confirmée à n plus grand | ne rien faire |
-| 8 | **V2TX max EU 22→20** | buckets V2TX ≥20 toujours perdants | garder 22 |
+Le gate à 1.5 % écarte 92 trades pour −$1 868 de P&L évité — mais **toute cette
+« performance » tient à UNE SEULE JOURNÉE** : le **01/07/2026**, 26 entrées,
+−$12 399, quasi toutes des **semi-conducteurs** (KLAC, TER, AMAT, LRCX, MRVL,
+COHR, GFS, TSEM, FLEX). Test de sensibilité sur les 92 écartés :
 
-**C. Les correctifs techniques à livrer (indépendants des décisions ci-dessus)**
-- retry+backoff sur `fetchEodBars`/`loadUniverse` + compteur d'échecs dans le
-  payload de scan (le scan n'a AUCUN plan B — trou le plus grave identifié) ;
-- garde-fou de staleness sur le chemin de sortie oversold (bug prix périmés) ;
-- couper `live_price_bcxe` (~48k appels/jour à 100% HTTP 404) ;
-- réactiver `OVERSOLD_VITALS_ENABLED` (posé à false pendant l'incident 27/07).
+| on retire les k pires | 0 | 1 | 2 | 3 | 5 |
+|---|---|---|---|---|---|
+| P&L des écartés | −$1 868 | **+$1 760** | +$4 752 | +$7 102 | +$9 831 |
 
-**D. Règles de méthode (apprises à la dure dans cette session)**
-- Toujours mesurer sur la **population complète**, jamais sur les gagnantes
-  (3 fausses conclusions successives : pic J+3, puis J+6, puis WR 100%).
-- L'**AUC plein-set est un mirage** — seul le walk-forward out-of-sample compte.
-- Un signal **J+1 ne prouve rien** sur un modèle entraîné en J+10.
-- Vérifier les colonnes réelles avant toute requête PostgREST (une colonne
-  inexistante renvoie 0 ligne silencieusement — a déjà produit 2 faux « 0 »).
+Médiane des écartés = **+1.68 %** (= un lock normal). **Ce n'est pas une loi de
+régime, c'est un choc sectoriel d'un jour.** Le bon remède est un **cap de
+corrélation/secteur**, pas un blackout d'entrée sur tout le marché.
+Côté EU, le gate est destructeur à **tous** les seuils (+$593 à 1.0, +$321 à 1.5,
++$210 à 2.0, +$317 à 2.5 — du P&L POSITIF écarté à chaque fois).
+
+Coût de second ordre : le gate **assèche aussi la collecte des labels p_win**,
+donc il empêche mécaniquement les décisions #1/#2 d'être tranchables un jour.
+
+> **DÉCISION #9 (hors matrice, imposée par les faits) : REPASSER `OVERSOLD_EUPHORIA_GATE`
+> À `off`.** Critère pré-écrit du 21/07 : « si euphorie confirme, passer active ».
+> **Elle ne confirme pas** sur le réalisé une fois l'artefact du 01/07 retiré.
+> Remplacement à instruire : cap secteur/corrélation à l'entrée (max N positions
+> par secteur GICS le même jour) — c'est ÇA le vrai risque mesuré.
+
+---
+
+### A. LES 3 COMPARAISONS OBLIGATOIRES
+
+**A1 — Avant/après 21/07 (couche LLM de sortie) : la couche ne produit RIEN.**
+
+| | n | /trade | méd | WR | P&L $ |
+|---|---|---|---|---|---|
+| US avant (LLM muet) | 320 | +0.64 % | +1.68 % | 85 % | +12 942 |
+| US après (LLM actif) | 62 | +1.64 % | +1.71 % | 92 % | +12 595 |
+| EU avant | 195 | +1.20 % | +1.56 % | 88 % | +2 126 |
+| EU après | 65 | +1.24 % | +1.55 % | 89 % | +1 061 |
+
+L'écart US (+1.00 pt) dépasse le critère de +0.3 pt — **mais il n'est PAS
+attribuable au LLM** : sur les 62 sorties US d'après, **Mistral en a décidé ZÉRO**
+(57 locks déterministes 92 %, 4 autres, 1 deadline). Côté EU : **1 seule** décision
+Mistral sur 65. L'écart est un pur effet de composition : la fenêtre « avant »
+contenait 49 closes manuels (+0.82 %), 30 « autres » (−5.46 %) et 9 deadlines
+(−23.09 %) qui plombaient la moyenne ; la fenêtre « après » est à 92 % du lock pur.
+**Une couche qui prend 1 décision sur 127 ne peut pas créer +1 point.**
+
+**A2 — Avant/après 24/07 (régulateur d'exposition) : ✅ NOMINAL, critère atteint.**
+Mesuré par replay chronologique des événements (une position ouverte puis lockée
+dans la journée ne doit pas compter la journée entière — ma 1re mesure faisait
+cette erreur et concluait à tort à un échec) :
+
+| | pic moyen | pic médian | PIC MAX | jours pic > 100 % |
+|---|---|---|---|---|
+| US avant 24/07 | 140 % | 116 % | **285 %** | **23/40** |
+| US après 24/07 | **85 %** | 99 % | **100.0 %** | **0/10** ✅ |
+| EU avant | 69 % | 70 % | 128 % | 7/39 |
+| EU après | 68 % | 79 % | **100.0 %** | **0/11** ✅ |
+
+Cible pré-écrite « util 70-90 %, ZÉRO jour > 100 % » : **atteinte exactement**.
+Le levier non budgété a disparu, plafond jamais franchi. Rien à changer.
+
+**A3 — L'edge se dégrade-t-il ? OUI côté US, sur l'ENTRÉE — pas sur le réalisé.**
+
+| US | n entrées | RÉALISÉ/trade | WR réal | P&L $ | fwdJ+10 | WR J+10 | catastrophes |
+|---|---|---|---|---|---|---|---|
+| juin | 209 | +0.63 % | 84 % | +10 681 | −1.70 % | 42 % | 25 % |
+| juillet | 173 | +0.99 % | 88 % | +14 293 | **−7.70 %** | **25 %** | **43 %** |
+| août | 2 | +2.44 % | 100 % | +562 | n/a | n/a | n/a |
+
+| EU | n entrées | RÉALISÉ/trade | WR réal | P&L $ | fwdJ+10 | WR J+10 | catastrophes |
+|---|---|---|---|---|---|---|---|
+| juin | 118 | +0.74 % | 84 % | +723 | −0.19 % | 47 % | 12 % |
+| juillet | 141 | +1.60 % | 92 % | +2 413 | −1.07 % | 48 % | 13 % |
+| août | 3 | +1.59 % | 100 % | +52 | n/a | n/a | n/a |
+
+**Lecture** : la qualité BRUTE des entrées US s'effondre (fwdJ+10 −1.70 → −7.70 %,
+catastrophes 25 → 43 %) pendant que le RÉALISÉ s'améliore (+0.63 → +0.99 %).
+Ce n'est pas une contradiction : **c'est le lock qui fait le travail** — il encaisse
+le rebond avant que la rechute n'arrive. L'edge de SÉLECTION se dégrade, l'edge
+d'EXÉCUTION compense. ⚠️ Caveat honnête : juillet n'a que 106/173 labels (les
+entrées de fin juillet n'ont pas encore 14 jours) → la fenêtre labellisée s'arrête
+au ~23/07. EU ne montre aucune dégradation.
+**Conséquence stratégique : la survie du système repose sur le lock, pas sur la
+qualité d'entrée. Toute décision qui affaiblit le lock est dangereuse ; toute
+décision qui l'améliore vaut plus qu'un filtre d'entrée de plus.**
+
+---
+
+### B. LES 8 DÉCISIONS — VERDICTS
+
+| # | Décision | Critère pré-écrit | Mesure 06/08 | **VERDICT** |
+|---|---|---|---|---|
+| 1 | Gate p_win **US** | calibration J+10 monotone + écart ≥15-20 pts WR + AUC OOS ≥0.55 stable | **6 trades seulement** ont p_win ET label J+10 (cible 30-50) ; AUC OOS ✅ **0.679 / 0.711** | 🟡 **RESTER EN SHADOW** — 2 critères sur 3 non mesurables |
+| 2 | Gate p_win **EU** | idem + ~250 labels | 3 trades avec les deux ; AUC OOS **0.568 puis 0.447 = INSTABLE** ; écartés meilleurs que gardés | 🔴 **JAMAIS DE GATE** (défaut confirmé) |
+| 3 | Couche LLM de sortie (~$6/j) | écart > +0.3 pt **ET** sorties distinctes du lock | écart apparent +1.00 pt US **mais 1 décision Mistral sur 127 sorties** | 🔴 **COUPER** — 2e condition catégoriquement non remplie |
+| 4 | TwelveData ($229/mois) | échec EODHD-seul non négligeable pendant l'A/B `RATIO=0` | **l'A/B n'a jamais tourné** (aucun deploy ni secret depuis le 27/07) | 🟡 **GARDER + LANCER L'A/B** — décision non instruite, ne pas couper à l'aveugle |
+| 5 | Seuil du lock | balayage août confirme US 2-2.5 % / EU 2.5-3 % | **monotone croissant jusqu'à 3 %**, catastrophes stables, capital non contraignant < 3 % | 🟢 **RELEVER : US → 2.5 %, EU → 3.0 %** |
+| 6 | Sizing damp lun/mer US | cluster catastrophes persiste à n≥500 | **40/99 catastrophes** pour 36 % des entrées ≈ proportionnel (c'était 16/20 le 23/07) | 🔴 **NE RIEN FAIRE** — le cluster a disparu |
+| 7 | Sizing-boost EU relVol ≥2× | cohorte confirmée à n plus grand | **0 catastrophe sur 39 labels** ✅ mais réalisé INFÉRIEUR (+0.56 à +1.19 % vs +1.63 %) | 🔴 **NE RIEN FAIRE** — cohorte sûre mais moins rentable au lock |
+| 8 | V2TX max EU 22 → 20 | buckets V2TX ≥20 toujours perdants | bucket 20-22 : **n=8**, réalisé **+0.82 %** (pas perdant) | 🔴 **GARDER 22** |
+
+**Détail #5 — le balayage du lock (le seul relèvement décidé).**
+1re version FAUSSE (cherchait le plus-haut sur 11 jours sans jamais mourir en
+route) → refaite jour par jour AVEC stop catastrophe −15 % et deadline J+10.
+Calibration du modèle : EU simulé +$3 012 vs +$3 187 réel (erreur −$175, excellent).
+
+| seuil | US %lock | US %cata | US P&L sim | Δ vs 1.5 % | EU P&L sim | Δ vs 1.5 % |
+|---|---|---|---|---|---|---|
+| 1.0 % | 98 % | 1 % | +27 207 | −12 031 | +2 116 | −896 |
+| **1.5 % (actuel)** | 97 % | 2 % | +39 238 | 0 | +3 012 | 0 |
+| 2.0 % | 96 % | 2 % | +52 194 | +12 956 | +3 985 | +973 |
+| **2.5 %** | 95 % | 2 % | **+63 492** | **+24 255** | +4 642 | +1 630 |
+| **3.0 %** | 92 % | 3 % | +71 400 | +32 163 | **+4 945** | **+1 979** |
+| 4.0 % | 85 % | 7 % | +78 294 | +39 056 | +4 907 | +1 941 |
+
+Contrôle sous **contrainte de capital** (le régulateur plafonne à 100 % depuis le
+24/07, et monter le lock allonge la détention 0.3j → 1.9j) : **0 trade skippé faute
+de capital jusqu'à 2.5 %**, 9 à 3 %, 40 à 4 %. Le capital ne mord pas dans la bande
+retenue. **On reste dans la bande PRÉ-ENREGISTRÉE (US 2-2.5 / EU 2.5-3) et on prend
+son haut** — aller à 4 % serait renégocier le critère après avoir vu les données.
+⚠️ Le gain réel sera INFÉRIEUR au simulé : la simu suppose qu'on capte exactement
+le plus-haut quotidien, alors que le picker sonde toutes les 30 s. Et ce balayage
+porte sur un marché HAUSSIER (juin-juillet) : en marché baissier, un seuil plus haut
+rate plus souvent (le taux de deadline monte de 1 → 4 % US et 5 → 12 % EU).
+
+---
+
+### C. LES 4 CORRECTIFS TECHNIQUES — LIVRÉS
+
+| # | Correctif | État |
+|---|---|---|
+| C1 | retry + backoff exponentiel sur `fetchEodBars` **et** `loadUniverse` + compteur d'échecs dans le payload de scan | ✅ **livré** — `OVERSOLD_FETCH_MAX_ATTEMPTS` (3), `OVERSOLD_FETCH_BACKOFF_MS` (400). Ne retente QUE le transitoire (429/5xx/réseau), jamais un 404. Payload : `fetch_attempts`, `fetch_failures`, `fetch_retries`, `fetch_failure_rate`, `fetch_last_error` → on peut enfin distinguer « 3 candidats » de « 3 candidats + 40 fetchs ratés ». |
+| C2 | garde-fou de staleness sur le chemin de sortie oversold | ✅ **livré** — `isStaleOrFallback` (rejette `fallback*` et `stale_*`) + **sanity bound 30 %**, aligné sur le chemin mécanique. 8 tests. Kill-switch `OVERSOLD_EXIT_STALENESS_GUARD=false`. |
+| C3 | couper `live_price_bcxe` (~48k appels/jour à 100 % HTTP 404) | ✅ **livré** — `TWELVEDATA_BCXE_ENABLED` défaut `true` → **`false`**. L'add-on Cboe Europe n'a jamais été accordé (demande du 26/05 sans suite). |
+| C4 | réactiver `OVERSOLD_VITALS_ENABLED` | ⏳ **ACTION UTILISATEUR (Fly UI)** — vérifié le 06/08 : `/health/vitals` renvoie `status:"idle"` → **le dead man's switch est toujours MORT**. Depuis le fix `8287234`, seul `crons_alive` peut produire un 503 : le faux positif du 27/07 ne peut plus se reproduire. |
+
+**Note santé providers (mesurée le 04-06/08, 200 000 appels)** : hors skips
+volontaires `SKIP_SESSION_CLOSED`, `EodProvider.fetchWithRetry` a **3 % d'échecs
+réels** (525 HTTP 429 + 506 erreurs réseau sur 34 935). Le risque provider est réel
+et permanent — c'est exactement ce que C1 couvre désormais.
+
+---
+
+### D. LES CONCLUSIONS QUI N'ONT PAS SURVÉCU À LEUR PROPRE VÉRIFICATION
+
+Trois fois pendant ce check-in, une première mesure donnait une réponse nette qui
+s'est révélée fausse. Les règles de méthode ont fonctionné :
+
+1. **« Le régulateur d'exposition est cassé »** (US 110 % moyen, 7 jours > 100 %) →
+   **FAUX**. Artefact de comptage : une position ouverte ET lockée le même jour
+   comptait la journée entière. Replay chronologique correct → **pic max 100.0 %,
+   0 dépassement**. Le régulateur est nominal.
+2. **« Relever le lock à 4 % rapporte +$43k »** → **FAUX**. La simulation cherchait
+   le plus-haut sur 11 jours sans jamais appliquer le stop catastrophe. Corrigée,
+   elle donne +$39k à 4 % mais avec un taux de catastrophe qui triple — et surtout
+   on ne dépasse pas la bande pré-enregistrée.
+3. **« Le LLM de sortie vaut +1.00 pt »** → **FAUX**. Il a pris **0 décision sur
+   62 sorties US**. Pur effet de composition.
+
+**Règles confirmées, à réappliquer systématiquement :**
+- Population complète, jamais les gagnantes (`paper_trades`, pas `position_close_decisions`).
+- L'AUC plein-set est un mirage (US 0.740 plein-set vs 0.679 OOS ; **EU 0.881 vs 0.447**).
+- Un signal J+1 ne prouve rien sur un label J+10.
+- **Divergence label J+10 vs stratégie lock** : le piège qui a produit le gate
+  euphorie ET la fausse alerte « vendredi US mauvais ». Tout filtre calibré sur
+  fwdJ+10 doit être re-testé sur le RÉALISÉ avant activation.
+- Vérifier les colonnes réelles avant toute requête PostgREST (`eodhd_request_log.ticker`
+  et non `symbol` — a encore produit un faux « 0 ligne » aujourd'hui).
 - Si une conclusion arrange, la faire attaquer avant de la retenir.
 
-### Baselines 21/07 (contrefactuel walk-forward, à battre/confirmer)
+---
 
-- **US** (train juin n=156 / test juil n=105) : **AUC OOS 0.685** ; gate `p≥0.5` →
-  garde 39/105 (37%), réalisé cumulé **+17.05% vs +14.73%** sans gate, +0.44%/trade
-  vs +0.14% (×3), fwd des écartés −10.50% (bien écartés).
-- **EU** : AUC OOS **0.437** (plein-set 0.876 = overfit) → gate destructeur (+88%→+30%).
-- Modèles persistés : US `oversold_a0000001` AUC 0.775 n=261 ; EU 0.876 n=132
-  (plein-set — se refittent au boot + dimanche 03:00 UTC).
-- **Verdict "meilleur jour de sortie" (30/06, population complète n=320)** : le
-  **lock J (+1.5%) bat tous les horizons** (US J+1 −0.69%, J+3 −0.14%, J+6 −1.59% ;
-  EU idem négatif) → NE PAS allonger l'horizon ; le signal "J+6" du shadow panel
-  était du biais de survie (gagnantes only). ✅ **Panneau UI CORRIGÉ le 22/07**
-  (migration 0204 + labeler multi-horizon J+1/3/6/10 sur TOUTES les entrées) :
-  `/lisa` affiche désormais la population complète. Verdict re-confirmé sur 540
-  entrées backfillées : dégradation MONOTONE (US lock +0.60% vs J+1 −0.78% →
-  J+10 −4.16% ; EU lock +1.23% vs tout ≤ +0.43%). Sujet CLOS.
-- **News à l'entrée (finding 21/07, US n=154)** : news POSITIVES à l'entrée →
-  WR J+10 31% / ret −6.24% (PIRE que sans news 40%/−2.06%) — chute malgré bonnes
-  news = fondamentale. Capté par la feature `newsAvgSentiment` du p_win.
-- **RÉGIME→RÉSULTATS (cause→effet, 21/07, demande user "TRÈS IMPORTANT", 467 entrées
-  matched aux payloads de scans)** :
-  · **EUPHORIE = LE signal #1** : indice 5j > +1.5% à l'entrée → US fwdJ+10 −9.50%
-    (WR 18%, n=55, même le lock réalisé est NÉGATIF −1.29%) ; EU −2.50% (WR 27%,
-    n=41, lock −0.25%). Drop pendant un rallye = fondamental, pas du flow.
-    → **GATE EUPHORIE implémenté** (`OVERSOLD_EUPHORIA_GATE`, default `off`,
-    seuil `OVERSOLD_EUPHORIA_IDX5D_MAX=1.5`) — activer = Fly secret `active`.
-  · **US : la vraie peur paie, la complaisance tue** — ΔVIX −3..0 (drift baissier
-    complaisant) → WR 21% fwd −9.57% ; ΔVIX +3..+10 (vraie peur) → WR 44% −0.22%.
-    VIX 15-17 → WR 26% ; VIX ≥17 → WR 40-43%. Entrées ≤2j APRÈS un jour hostile =
-    meilleure cohorte US (WR 53%, fwd +0.63%) → le gate hostile US est VALIDÉ.
-  · **EU : l'INVERSE de l'US** — V2TX <16 → WR 75% fwd +3.73% ; V2TX ≥20 → WR 30%
-    lock −0.60%. Le mean-reversion EU marche dans le CALME. ΔV2TX 0..+3 → WR 78%.
-  · Features `vixChg1d`/`v2txChg1d` ajoutées au p_win (20 features) — le gate les
-    utilisait mais pas le modèle. Forward-only, compat anciens modèles (coef 0).
-  · Au check-in : re-mesurer les buckets avec plus de n ; si euphorie confirme,
-    passer le gate `active` (si pas déjà fait) ; envisager V2TX max EU 22→20.
-- **JOUR DE SEMAINE (23/07, demande user, historique complet n=547)** :
-  · **US vendredi = meilleur jour d'entrée POUR LE LOCK** (robuste moy+méd) :
-    J+1 +3.41%/méd +2.20% (pop du lundi post-weekend), lock +2.04%, 0 catastrophe.
-    MAIS fwdJ+10 −5.24%/WR 27% = pire → le pop du lundi FADE ensuite.
-    ⚠️ NE PAS mettre le jour-de-semaine dans p_win : son label est J+10 → il
-    apprendrait « vendredi mauvais » et gaterait notre MEILLEUR jour de lock
-    (divergence label J+10 vs stratégie lock — piège documenté).
-  · **US : 16/20 catastrophes (<−10%) viennent d'entrées LUN+MER** (8+8) pour
-    35% des entrées — médianes normales = phénomène de QUEUE (couteaux du lundi
-    post-weekend-news / mercredi). Si ça persiste à n≥500 → sizing damp lun/mer,
-    pas un gate.
-  · **EU mercredi = meilleur jour** (lock +1.80/méd +1.62, J+1 +1.56/méd +1.41,
-    0 cata) ; EU vendredi J+1 méd −0.87% (PAS de pop weekend en EU — inverse US).
-  · 7 semaines de données, 5 buckets × plusieurs métriques = risque de faux
-    positifs — INDICATIF, aucune action avant re-mesure au check-in.
-- **TWELVEDATA — INFLUENCE RÉELLE (audit 26/07, question user)** : verdict =
-  **quasi nulle sur l'oversold**, malgré ~190k appels/jour.
-  · **ENTRÉE (le cœur de l'edge) : ZÉRO TD** — `fetchEodBars` (barres EOD) et
-    `fetchRealtimeOhlc` (rebond intraday EU) tapent **EODHD en direct**, le
-    routeur n'est jamais dans la boucle. La sélection des candidats = 100% EODHD.
-  · **SORTIE : TD est la source PRIMAIRE du prix live** (`fetchLivePriceInner` →
-    `intradayRouter.getLiveQuote` AVANT EODHD) → c'est lui qui déclenche le lock,
-    + les bougies 5m du contexte Mistral (dual-call, TD préféré).
-  · **MAIS l'expérience naturelle dit que ça ne change rien** : les 38 locks EU
-    sur symboles NON couverts par TD (.OL/.HE/.ST/.CO/.BR/.VI/.MC = 23% des
-    trades EU, EODHD seul) ont un overshoot MÉDIAN de 0.06 pt vs 0.10 pt avec TD
-    — **écart −0.14 pt, à l'avantage du SANS-TD**. EODHD seul verrouille aussi
-    bien (P&L +$289 sur ces 52 trades).
-  · Couverture : US 100% (tous .US), EU 77% (Nordics/Vienne/Bruxelles/Madrid
-    absents du mapping `eodhdToTdSymbol`).
-  · ⚠️ **HYPOTHÈSE FAILOVER (soulevée par l'user 26/07 — À TRANCHER LE 04/08)** :
-    l'audit ci-dessus mesure la PRÉCISION, pas la RÉSILIENCE. Or les logs Fly
-    montrent des `intraday_router_dual_call` avec `{"td_success":true,
-    "eodhd_success":false}` (ESLT.US, EQNR.US, CVNA.US) + des `[eodhd] X empty
-    response` / `skipped (session closed)`. **TD est peut-être un FILET quand
-    EODHD flanche** — et il est appelé AVANT le check de quota EODHD
-    (`canCallEodhd`), donc il pourrait aussi PRÉSERVER le quota EODHD réservé
-    aux barres EOD (= le cœur de l'edge). Valeur d'assurance ≠ valeur de
-    précision : ne PAS couper TD avant d'avoir tranché ce point.
-  · ✅ **AUDIT FAILOVER EXHAUSTIF (26/07, 4 angles + vérif perso) — RÉSULTATS** :
-    · **PANNE EODHD RÉELLE ET RÉCENTE, VÉRIFIÉE** : 13-15/07/2026, **265 820 HTTP 402**
-      ("Payment Required" = plan bloqué) — 93 494 / 81 807 / 90 519 sur 3 jours
-      (source `eodhd_request_log`, colonne `timestamp` — PAS `created_at`, piège
-      PostgREST). Hors panne, EODHD est CHRONIQUEMENT au-dessus de son quota :
-      11 000-23 000 HTTP 429/jour. Le risque provider n'est pas théorique.
-    · **MAIS TD ne couvre que ~7% de la surface de panne** : le SCAN oversold
-      (= choix des candidats = LE cœur de l'edge), les barres EOD et toute la
-      gestion du risque (stop catastrophe, danger-zone, deadline J+10) sont
-      **100% EODHD, sans retry, sans backoff, sans provider alternatif**.
-      TD ne protège QUE le prix live US (où EODHD /real-time est délayé ~15 min
-      vs seuil de staleness 180s) + les bougies 5m du contexte Mistral.
-    · **L'indice initial était un FAUX POSITIF** : les `{"td_success":true,
-      "eodhd_success":false}` (ESLT/EQNR/CVNA) ne sont pas des échecs EODHD mais
-      NOTRE propre skip volontaire (`SKIP_SESSION_CLOSED`) qui met le flag à false.
-    · **TD n'apporte AUCUNE précision** : 0 divergence >5 bps sur ~52 000 bougies
-      comparées (redondance pure, confirmé par 3 angles indépendants).
-    · **~32% du volume TD est du GASPILLAGE PUR** : le chemin `live_price_bcxe`
-      (Cboe Europe) fait ~48 000 appels/jour à **100% HTTP 404** — add-on non
-      souscrit. À couper immédiatement, indépendamment de la décision TD.
-    · ⚠️ **LE VRAI TROU RÉVÉLÉ (prioritaire sur la question TD)** : le scan
-      oversold n'a AUCUN plan B. Un HTTP 429/402 fait disparaître silencieusement
-      des candidats (pas de log d'échec de scan, juste moins de candidats).
-      **Action 04/08 : ajouter retry+backoff sur `fetchEodBars`/`loadUniverse`**
-      et un compteur d'échecs de fetch dans le payload `oversold_scan_completed`
-      (aujourd'hui on ne saurait PAS distinguer "3 candidats" de "3 candidats +
-      40 fetchs ratés").
-    · 🔴 **PISTE DE BUG À INVESTIGUER EN PRIORITÉ (indépendante de TD)** : 3
-      fermetures TP_LOCK déclenchées en **26-62 secondes** sur des prix
-      ANTÉRIEURS à la baisse achetée (prix périmés) — le chemin de sortie
-      oversold consomme `getLivePrice` **SANS garde-fou de staleness**,
-      contrairement au chemin mécanique historique (`isFallbackSource` + sanity
-      bound 30%). Ces artefacts pèseraient 59% du P&L du groupe EODHD-seul →
-      **vérifier si des gains réalisés sont des mirages de prix périmés**.
-  · **ACTION CHECK-IN 04/08 (test A/B propre)** : passer
-    `TWELVEDATA_INTRADAY_AB_RATIO=0` (secret Fly, sans redeploy — le dual-call
-    appelle EODHD de toute façon, donc zéro risque de rupture) pendant 1-2
-    semaines, puis comparer : overshoot du lock, latence, taux de `stale_*` /
-    `fallback_quota_cap`, et surtout **nombre de cas où EODHD échoue seul**.
-    Décision : couper TD ($229/mois économisés) SEULEMENT si le taux d'échec
-    EODHD-seul reste négligeable. Sinon, garder TD comme assurance (et le
-    documenter comme tel, pas comme source de précision).
+### E. ANALYSES COMPLÉMENTAIRES (demandées le 06/08)
 
-- **EXPOSITION/LEVIER (audit 24/07, jour par jour depuis l'origine)** : AUCUN
-  contrôle somme(notionnels)≤capital n'existait → US exposé en MOYENNE à 117%
-  du capital, PIC 284% ($426k/$150k le 27/06), 23j/51 >100%. EU moy 49.6%,
-  pic 126%. Le P&L US (+$13k) contenait du jus de levier non budgété (à 90%
-  strict : +$4.1k). EU = le plus efficace : +23.7%/$ déployé (US +7.4%) mais
-  affamé (médiane 38%). → **BUDGET D'EXPOSITION implémenté (24/07, actif)** :
-  cap dur `OVERSOLD_MAX_EXPOSURE_PCT` (default 100 — plus jamais de levier) +
-  boost `OVERSOLD_TARGET_EXPOSURE_PCT` (85) borné ×2 quand le book est peu
-  chargé, jamais au-dessus du budget libre (`OVERSOLD_EXPOSURE_BOOST_ENABLED`
-  =false pour couper).
-  **REPLAY trade-par-trade « régulateur depuis le début » (24/07, conclusions
-  validées par l'user)** :
-  · **US** : +$3 591 simulé vs +$13 033 réel (−$9 442) — util 76%/pic 100%/0j>100
-    vs 117%/285%/23j. Les 138 trades skippés (+$9 861) étaient le SURPLUS
-    au-delà de 100% du capital = **jus de levier non budgété** (juin a rebondi ;
-    la même jambe en baisse et ils deviennent l'amplificateur de catastrophe).
-    PAS un manque à gagner. Cohérent avec l'estimation ×k plafonné (+$4.1k).
-  · **EU** : +$2 386 vs +$2 354 = **ÉGALITÉ** avec util lissée 39→54% méd et pic
-    126→100% — le régulateur y est un repas gratuit (risque en moins, P&L intact).
-  · **Attente forward** : rythme de P&L headline PLUS BAS que l'illusion de juin
-    mais 100% réalisable. Au check-in : util moyenne attendue 70-90%, ZÉRO jour
-    >100%, comparer P&L/risque des 2 ères (avant/après 24/07) — ne PAS conclure
-    « le régulateur fait perdre » en comparant au réel levier (biais connu).
-- **FAST-FAIL / VÉLOCITÉ DE PERTE (24/07, question user)** : J+1 LIT le risque US
-  (J+1 ≤−6% → 63% de désastres J+10 ; les 5 pires pertes US toutes ≤−5% dès J+1 ;
-  J+3 n'ajoute rien, EU illisible tôt — NHY à 0.0% à J+1 avant −15%). MAIS toute
-  règle « vendre coûte que coûte à J+N si rouge » PERD : meilleure variante US
-  (J+1≤−5%) = −$1 349, J+3≤−5% = −$13 061 ☠️, EU tout ≤0. Cause structurelle :
-  on achète des couteaux — les futurs gagnants ressemblent aux futurs perdants à
-  J+1, les faux positifs (rebonds tués à −6% au lieu de lock +1.5% ≈ −7.5 pts)
-  coûtent plus que les désastres « sauvés » (~5 pts vs l'ancien stop −15%).
-  **VERDICT : ne JAMAIS ajouter de stop J+1/J+3 — la défense anti-désastre se
-  joue à l'ENTRÉE (p_win gate : écartés à fwd −10.5% ; euphorie).** Hybride
-  explorable au check-in : exit J+1≤−6% SEULEMENT si p_win d'entrée faible.
-  **ORACLES (plafonds théoriques, 24/07)** : perdants liquidés au jour J (= gate
-  d'entrée parfait) → US +$37 926 / EU +$1 458 de mieux ; à J+1 → +$16 600 / +$776
-  (58%/48% de la casse déjà subie à J+1 — les couteaux coupent le 1er soir).
-  **SENTINELLE US (24/07, SHADOW live)** : règle validée sur 286 labellisés —
-  pnl ≤ −6% dès J+1 ET news POSITIVES à l'entrée (≥3 art, sent ≥0.3) → **96%
-  finissent négatifs à J+10, 71% désastre, moy −15.1% (n=24)**. En shadow
-  (`OVERSOLD_SENTINEL_MODE`, logs `[sentinelle-us:shadow]`).
-  ⚠️ **COUPE EXÉCUTÉE = SIMULÉE NÉGATIVE (24/07, correction importante)** : couper
-  les flaguées à J+1 aurait fait **−$4 209** (aveugle −6% : −$1 581 ; EU : rien).
-  Le 96%-négatif-à-J+10 est VRAI, mais 9/20 flaguées ont fait un REBOND
-  intermédiaire ≥+1.5% que le LOCK a encaissé avant la rechute (MSTR/STX/CBRS
-  lockées puis re-effondrées : aujourd'hui ASTS −29%, QCOM −18%, NBIS −23%).
-  Sacrifier ces 9 locks (−$8 610) pour épargner 11 désastres (+$4 400) = net perdant.
-  **VERDICT FINAL SORTIE : ni tenir plus (recovery −$6k), ni couper plus tôt
-  (sentinelle −$4.2k) — le lock actuel est optimal. La sentinelle reste ALERTE
-  HUMAINE UNIQUEMENT, ne JAMAIS l'activer en coupe auto.** (Deadline J+10
-  validée : US « jamais liquider » = −$6 000 de mieux perdus ; EU +$337 ≈ 0.)
-  **INVERSION VOLUME (vs littérature)** : relVol ≥2× à l'entrée = REBOND (US
-  désastre 15% vs base 34% ; EU 0% désastre, +6.7% moy, n=33 = meilleure
-  cohorte EU) — la capitulation à gros volume rebondit, la glissade silencieuse
-  tue. Piste sizing-boost EU à confirmer au check-in.
-  **SEUIL DU LOCK (balayage 24/07, plus-hauts quotidiens réels, 540 entrées)** :
-  le 1.5% « arbitraire » est PROCHE de l'optimum. Classement simulé (lock plat,
-  sans couche Mistral — seuls les CLASSEMENTS sont valides) : US plat 1.5-3%,
-  léger sommet 2.0-2.5% (+$5.8k sim vs 1.5%), effondrement ≥4% ; EU croissant
-  jusqu'à 3-4% (+$353 vs 1.5%), l'EU rebondit plus proprement. ⚠️ Le 1.5% réel
-  est un PLANCHER (Mistral sort déjà au-dessus) → gain réel d'un relèvement <
-  simu. Au check-in : re-balayer avec les données d'août ; si confirmé → ajuster
-  via secret `OVERSOLD_TP_LOCK_PCT` (US 2.0-2.5 / EU 2.5-3, per-portfolio à
-  implémenter si seuils différenciés). Ne PAS relever au-delà de 4%.
-  **Versant BAISSE testé aussi (0.5-1.25%) : PIRE partout** — EU monotone
-  (1.0% +$294, 0.75% ≈ 0, 0.5% NÉGATIF −$352) ; frais = 20% du gain à 0.5%
-  (vs 7% à 1.5%) ; rotation gagnée 0.4j = négligeable car le système est
-  limité par l'OFFRE de candidats, pas par le capital. Plancher : jamais <1.5%.
-  **➡️ DÉCISION OUVERTE (enregistrée à la demande de l'user 24/07) : la SEULE
-  direction encore ouverte sur le lock est le léger relèvement — US 2-2.5% /
-  EU 2.5-3% — à confirmer avec les données d'août au check-in du 04-08.**
-  Tout le reste est clos : jamais <1.5%, jamais ≥4%.
-  Edge brut US = +$51k gagnantes vs −$38k perdantes → le net +$13k est une marge
-  fine : la calibration p_win du check-in se juge CONTRE ce gisement de ~$38k.
+**E1 — Jours de la semaine, JOUR D'ENTRÉE (n complet).** Le classement du 23/07
+a changé : **le mardi passe devant le vendredi côté US.**
 
-- 🚨 **INCIDENT 27/07 — DEAD MAN'S SWITCH (à ne pas oublier au check-in)** : le
-  vital `oversold_scans` a renvoyé 503 alors que TOUT allait bien — le scanner
-  skippe LÉGITIMEMENT sans écrire d'événement (« cap reached (8/8) », hors fenêtre
-  EU, régime bloqué) → Fly a sorti la machine du load-balancer (`PR01 no known
-  healthy instances`) ~10 min. Trading jamais interrompu, seul le WEB était coupé.
-  **Fix `8287234`** : séparation FATAL/ALERTE — seul `crons_alive` (dernier appel
-  provider dans `eodhd_request_log`, budget 30 min = preuve d'event-loop gelé)
-  peut déclencher un 503 ; scans/news deviennent des ALERTES en HTTP 200 (statut
-  `degraded`). **LEÇON : un dispositif de mise à mort automatique ne se déclenche
-  QUE sur preuve de mort du process, jamais sur une absence d'activité métier —
-  le coût d'un faux positif (app down) dépasse le bénéfice d'une détection fine.**
-  ⚠️ **ACTION AU CHECK-IN** : l'user a posé `OVERSOLD_VITALS_ENABLED=false` en
-  coupe-circuit pendant l'incident → **le switch est actuellement DÉSACTIVÉ**.
-  Le retirer (ou `true`) une fois la confiance rétablie, sinon la protection
-  anti-gel reste morte en silence.
-- 🔻 **ALERTE 29/07 — L'AUC OOS US A BAISSÉ : 0.685 → 0.553** (286 labels, train
-  171 juin / test 115 juil). Elle ne passe le seuil de 0.55 que **de 0.003** →
-  le gate US n'est PLUS un scénario acquis, contrairement à ce que la baseline
-  du 21/07 laissait croire. Deux lectures à départager au check-in : dégradation
-  réelle en généralisation, ou fenêtre de test (juillet) plus difficile.
-  **NE PAS activer le gate sur cette AUC seule** — exiger la calibration J+10
-  observée (monotone + écart ≥15-20 pts de WR entre bucket haut et bas).
-  ⚠️ Contraste trompeur : le signal PRÉCOCE J+1 par tercile est excellent
-  (US haut +4.78% vs bas −1.14%) mais c'est du J+1, pas le label J+10 — ne pas
-  s'en servir comme preuve.
-- **COMPARAISON AVANT/APRÈS 21/07 — 1re mesure (29/07) : AUCUN gain mesurable**
-  du LLM de sortie. US AVANT (n=167) +0.31%/trade WR 86% vs APRÈS (n=22)
-  +0.37% WR 86% ; EU AVANT (n=102) +1.28% WR 89% vs APRÈS (n=35) +1.55% WR 91%.
-  Écarts (+0.06 / +0.27 pt) DANS LE BRUIT, échantillons « après » trop petits.
-  **Et la répartition des sorties est IDENTIQUE** (US après : 19 lock / 3 deadline
-  / 0 catastrophe) → le LLM ne produit aucune sortie « fine » distincte du lock
-  déterministe. À re-mesurer au check-in avec 2 semaines de plus ; si l'écart
-  reste nul, la couche LLM de sortie ne se justifie plus (coût Mistral ~$6/jour).
-  ✅ Point positif des 2 côtés : **0 catastrophe-close** sur toute la fenêtre.
-- 🔴 **BUG PRIX PÉRIMÉS — CONFIRMÉ mais CALIBRÉ (29/07)** : 5 locks en <5 min
-  après l'entrée, dont 3 aberrants — NOKIA.HE +7.13% en **26 s**, MAERSK-B.CO
-  +4.58% en 30 s, UCB.BR +7.73% en 62 s. Tous **EU sans couverture TD**
-  (Nordics/Bruxelles) et tous à **21:16 ou 14:16 UTC**, juste après le scan :
-  position ouverte au close EOD puis « prix live » issu d'une AUTRE séance.
-  **MAIS le poids réel est +$263 (~1.5% du P&L EU), PAS 59%** — l'estimation du
-  workflow était fausse. → bug de FIABILITÉ à corriger (garde-fou de staleness
-  sur le chemin de sortie oversold, aligné sur `isFallbackSource` + sanity bound
-  du chemin mécanique), PAS une remise en cause des gains réalisés.
-- ✅ **EUPHORIE & SENTINELLE — les deux fonctionnent (29/07)** : gate euphorie
-  **23 blocages sur 42** depuis activation (SX5E 5j +2.11 à +2.25% > seuil 1.5%)
-  → il écarte réellement les entrées en plein rallye. Sentinelle US : **1 flag**
-  (SNDK.US) depuis le 24/07, et elle avait RAISON (SNDK à −10% aujourd'hui).
-  Peu de flags = régime calme, pas une panne.
-- **MI-PARCOURS 29/07 (repères, à comparer au check-in)** : shadow p_win servi à
-  **100%** (66/66 entrées estampillées, valeurs discriminantes 0.026→0.935) ;
-  signal PRÉCOCE J+1 par tercile — US haut **+4.78%** vs bas −1.14% (n=10/tercile),
-  EU haut +0.91% vs bas −0.53% (mou, non monotone) ⚠️ c'est du J+1, PAS le label
-  J+10 → ne rien décider dessus ; jours de semaine CONFIRMÉS avec +1 semaine de
-  données (US vendredi +2.99% J+1 / 0 catastrophe sur 61 ; EU mercredi +1.79%
-  lock / 0 catastrophe sur 64 ; lun+mer US = 16/20 catastrophes) ; régulateur
-  d'exposition NOMINAL (US pile à 100.0%, jamais au-delà ; EU 41-55%) ;
-  P&L depuis le régulateur (24→29/07) : US +$2 568 / EU +$376, sans levier.
+| US | n | RÉALISÉ | méd | WR | P&L $ | $/trade | fwdJ+10 |
+|---|---|---|---|---|---|---|---|
+| lundi | 60 | **−1.03 %** | +1.60 % | 82 % | **−3 399** | −57 | −3.71 % |
+| **mardi** | 51 | **+2.34 %** | +1.89 % | **98 %** | +11 312 | **+222** | −0.46 % |
+| mercredi | 77 | +0.09 % | +1.69 % | 81 % | **−4 605** | −60 | −5.66 % |
+| jeudi | 126 | +0.88 % | +1.63 % | 82 % | +8 210 | +66 | −3.28 % |
+| **vendredi** | 70 | +1.90 % | +1.82 % | 94 % | **+14 019** | +203 | −5.24 % |
 
-Commits de référence : shadow p_win `edf7e89`, boot-train + deadline-ferme-MANU
+| EU | n | RÉALISÉ | méd | WR | P&L $ | $/trade |
+|---|---|---|---|---|---|---|
+| lundi | 38 | +0.51 % | +1.53 % | 82 % | +246 | +6 |
+| mardi | 50 | +1.28 % | +1.59 % | 84 % | +595 | +12 |
+| **mercredi** | 74 | **+1.82 %** | +1.62 % | **97 %** | **+1 443** | +19 |
+| jeudi | 45 | +0.47 % | +1.50 % | 84 % | +213 | +5 |
+| vendredi | 55 | +1.42 % | +1.54 % | 89 % | +691 | +13 |
+
+**Mardi + vendredi = +$25 331 sur 121 trades US ; lundi + mercredi = −$8 004 sur
+137 trades.** Les médianes restent normales partout (+1.60 à +1.89 %) → phénomène
+de QUEUE, pas de centre : lundi/mercredi ne sont pas « moins bons », ils portent les
+couteaux. EU : mercredi confirmé champion pour la 3e mesure consécutive.
+⚠️ Ne JAMAIS mettre le jour de semaine dans le p_win (label J+10 vs stratégie lock —
+le modèle apprendrait « vendredi mauvais » et gaterait notre 2e meilleur jour).
+
+**E2 — Jour de SORTIE.** US : mardi +2.03 % / lundi +1.35 % ; jeudi (+0.64 %) et
+vendredi (+0.57 %) sont les plus faibles. EU : mardi **+2.06 %, WR 100 %**.
+Cohérent avec E1 (le lock tombe 1-2 jours après l'entrée).
+
+**E3 — 🔴 HEURE D'ENTRÉE : le finding le plus actionnable du check-in.**
+
+| US | n | RÉALISÉ | méd | WR | fwdJ+10 | catastrophes | P&L $ |
+|---|---|---|---|---|---|---|---|
+| 08h (intraday hors séance US) | 26 | +0.24 % | +1.79 % | 73 % | −4.35 % | **11/26 (42 %)** | +63 |
+| 15h | 44 | +1.46 % | +1.65 % | 95 % | −2.47 % | 6/27 | +6 071 |
+| 16h | 30 | +1.26 % | +1.69 % | 86 % | +2.16 % | 2/16 | +2 628 |
+| 17h | 18 | +1.44 % | +1.62 % | 94 % | +6.69 % | 1/11 | +1 949 |
+| 18h | 30 | **+2.74 %** | +1.78 % | 97 % | −6.24 % | 9/22 | +5 724 |
+| 19h | 20 | +1.98 % | +1.77 % | 90 % | −3.82 % | 8/20 | +609 |
+| **21h (scan EOD quotidien)** | **213** | **+0.19 %** | +1.66 % | 83 % | −4.82 % | **61/190 (32 %)** | +8 216 |
+
+**Le scan quotidien de 21:15 UTC produit 55 % du flux US pour +0.19 %/trade, quand
+les scans intraday 15-19h font +1.26 à +2.74 %.** Explication mécanique : à 21h on
+achète au close le jour même de la chute, sans aucune preuve de rebond ; en intraday
+on entre sur un rebond déjà amorcé et vérifié. Côté EU l'écart est bien plus faible
+(21h +1.19 % vs 14h +2.11 %, 10h +1.96 %).
+> **À instruire en priorité à la prochaine session** (pas décidé aujourd'hui, ce
+> n'était pas dans les critères pré-écrits) : réduire le notionnel des entrées US
+> de 21h (ou exiger un critère de rebond supplémentaire) et redéployer vers 15-19h.
+> Gisement potentiel bien supérieur à tout ce qui reste dans la matrice B.
+
+**E4 — Loi empirique par bande de drop (le cœur de la sélection).**
+
+| US drop1d | n | RÉALISÉ | WR | fwdJ+10 | catastrophes | $/trade |
+|---|---|---|---|---|---|---|
+| −12..−10 % | 42 | +0.56 % | 83 % | −8.89 % | 15/30 (50 %) | +111 |
+| **−10..−8 %** | 63 | **+1.72 %** | **94 %** | −4.06 % | 13/40 | **+189** |
+| −8..−7 % | 54 | +0.97 % | 87 % | −4.15 % | 15/44 | +71 |
+| −7..−6 % | 66 | +0.20 % | 82 % | −4.11 % | 19/58 | +13 |
+| −6..−5 % | 113 | +0.62 % | 87 % | −1.87 % | 18/97 | +36 |
+| −5..0 % (**hors spec**) | 15 | **−2.21 %** | **40 %** | −10.26 % | 7/15 | −22 |
+
+| EU drop1d | n | RÉALISÉ | WR | fwdJ+10 | catastrophes |
+|---|---|---|---|---|---|
+| −12..−10 % | 21 | +0.64 % | 81 % | +4.44 % | 2/12 |
+| −10..−8 % | 37 | +1.00 % | 92 % | +2.22 % | **0/25** |
+| **−8..−7 %** | 40 | **+1.99 %** | 92 % | +3.04 % | **0/24** |
+| −7..−6 % | 67 | +1.03 % | 87 % | −0.67 % | 4/42 |
+| −6..−5 % | 97 | +1.24 % | 89 % | −3.14 % | 16/77 |
+
+**Bande optimale : US −10..−8 %, EU −8..−7 %.** ⚠️ **15 entrées US sont hors bande
+(−5..0 %)** alors que `oversold_drop_max_pct = −5` : elles réalisent −2.21 % avec
+40 % de WR. **Fuite à investiguer** (arrondi, drop recalculé après coup, ou chemin
+intraday qui contourne la borne).
+
+**E5 — VIX (US) : bande morte 16-18, gisement 18-20.**
+
+| VIX à l'entrée | n | RÉALISÉ | WR | fwdJ+10 | catastrophes | P&L $ |
+|---|---|---|---|---|---|---|
+| 14-16 | 79 | +0.75 % | 82 % | −3.19 % | 35 % | +4 182 |
+| **16-18** | **151** | **−0.01 %** | 81 % | −6.94 % | 38 % | **−1 269** |
+| **18-20** | **133** | **+1.78 %** | **93 %** | −1.30 % | 24 % | **+22 201** |
+| 20-22 | 20 | +0.38 % | 84 % | +7.90 % | 8 % | +185 |
+
+Signal bien plus fort et bien plus fourni (n=151 vs n=8 pour V2TX) que la décision
+#8. Confirme la loi du 21/07 « la vraie peur paie, la complaisance tue ».
+À instruire : damp de sizing US sur VIX 16-18 / boost sur 18-20.
+
+---
+
+### 🎬 ACTIONS À EXÉCUTER (secrets Fly — via l'UI, valeurs à coller)
+
+| Secret | Nouvelle valeur | Pourquoi |
+|---|---|---|
+| `OVERSOLD_EUPHORIA_GATE` | **`off`** | 🔴 URGENT — bloque 100 % des scans depuis le 04/08, justification invalidée (artefact du 01/07) |
+| `OVERSOLD_TP_LOCK_PCT` | **`2.5`** | décision #5 — relèvement US (⚠️ valeur GLOBALE aujourd'hui ; le per-portfolio EU 3.0 % reste à implémenter) |
+| `OVERSOLD_MISTRAL_EXIT_ENABLED` | **`false`** | décision #3 — 1 décision sur 127 sorties, ~$6/jour |
+| `OVERSOLD_VITALS_ENABLED` | **supprimer** (ou `true`) | correctif C4 — le dead man's switch est mort depuis le 27/07 |
+| `TWELVEDATA_INTRADAY_AB_RATIO` | **`0`** | décision #4 — lancer enfin l'A/B, 1-2 semaines, zéro risque (le dual-call appelle EODHD de toute façon) |
+
+**Rotations de clés toujours en attente** : Supabase service_role, EODHD, et
+suppression de l'ancienne clé Mistral (partagées en chat lors des sessions
+précédentes).
+
+### 📌 REPORTÉ AU PROCHAIN CHECK-IN (~20/08, ou J+14 après reprise des entrées)
+
+1. **Décision #1 (gate p_win US)** — attendre 30-50 trades ayant p_win ET label J+10
+   (6 aujourd'hui). **Ne redeviendra mesurable que si les entrées reprennent.**
+   AUC OOS US est solide (0.679/0.711), le seul manque est la calibration observée.
+   ⚠️ Nuance nouvelle : à `p ≥ 0.5` le gate ne garde que 18-25 % du flux et jette
+   jusqu'à $6 371 de P&L réalisé — s'il est un jour activé, ce sera à un seuil
+   BEAUCOUP plus bas, ou en modulation de SIZING plutôt qu'en gate binaire.
+2. **Décision #4 (TwelveData)** — trancher après l'A/B `RATIO=0`.
+3. **Seuil de lock EU per-portfolio** (3.0 %) — nécessite un champ dédié.
+4. **Cap secteur/corrélation à l'entrée** — le vrai remède au 01/07 (26 entrées
+   semi-conducteurs le même jour, −$12 399).
+5. **Sizing par heure d'entrée US** (E3) et **par bucket VIX** (E5).
+6. **Fuite de la bande de drop US −5..0 %** (E4).
+
+**Commits de référence** : shadow p_win `edf7e89`, boot-train + deadline-ferme-MANU
 `4cc31b7`, fix re-arm catastrophe (MSTR) `4409294c`, fix danger-zone gap (TWLO)
-`e9320d6c`, Phase 2 `5895d06c`, Phase 3 `9cfd1bd3`.
-Garde-fous : gain-picker gains-only ; danger-zone = MANU sans re-arm tant qu'en
-danger ; deadline J+10 ferme AUSSI les MANU (sortie d'horizon, pas catastrophe) ;
-le stop catastrophe −15% ne ferme JAMAIS un oversold en auto ; Gemini OFF ;
-clé Mistral = `MISTRAL_SMARTVEST_API_KEY` (re-créée 21/07, l'ancienne 401 depuis ~29/06).
+`e9320d6c`, fix dead man's switch `8287234`, Phase 2 `5895d06c`, Phase 3 `9cfd1bd3`.
+**Garde-fous inchangés** : gain-picker gains-only ; danger-zone = MANU sans re-arm
+tant qu'en danger ; deadline J+10 ferme AUSSI les MANU ; le stop catastrophe −15 %
+ne ferme JAMAIS un oversold en auto ; Gemini OFF ; clé Mistral =
+`MISTRAL_SMARTVEST_API_KEY`.
 
 ---
 

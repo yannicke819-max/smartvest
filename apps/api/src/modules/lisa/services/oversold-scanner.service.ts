@@ -429,6 +429,7 @@ export class OversoldScannerService {
     }
 
     // a. Charge l'univers depuis watchlist_universe.
+    this.resetFetchFailures();
     const tickers = await this.loadUniverse(cfg.universe);
     if (tickers.length === 0) {
       this.logger.warn(
@@ -497,6 +498,7 @@ export class OversoldScannerService {
           `notional $${cfg.positionNotionalUsd}, cap ${cfg.maxOpenPositions}. ` +
           (errors.length > 0 ? `Erreurs open: ${errors.slice(0, 5).join('; ')}` : 'Aucune erreur open.'),
         payload: {
+          ...this.fetchHealthPayload(),
           universe: cfg.universe,
           universe_size: tickers.length,
           candidates: candidates.length,
@@ -771,6 +773,7 @@ export class OversoldScannerService {
       return;
     }
 
+    this.resetFetchFailures();
     const tickers = await this.loadUniverse(cfg.universe);
     if (tickers.length === 0) return;
 
@@ -963,6 +966,7 @@ export class OversoldScannerService {
             `trend15m ≥${reboundCfg.minTrend15mPct}%, bottom-before-${reboundCfg.bottomMustBeBeforeLastNBars}bars, ` +
             `volRatio ≥${reboundCfg.minVolumeRatio}, cap ${maxOpensPerDay}/j (used ${intradayOpenedToday + opened}).`,
         payload: {
+          ...this.fetchHealthPayload(),
           universe: cfg.universe,
           universe_size: tickers.length,
           drop_band_candidates: candidates.length,
@@ -1345,19 +1349,34 @@ export class OversoldScannerService {
   }
 
   /** Charge le tableau de tickers d'une watchlist nommée. */
+  /**
+   * CHECK-IN 06/08 — RETRY + BACKOFF sur le chargement de l'univers.
+   * Un univers vide = scan à ZÉRO candidat, indiscernable d'un « rien à acheter ».
+   * Un blip Supabase ne doit pas éteindre silencieusement une journée de scan.
+   */
   private async loadUniverse(name: string): Promise<string[]> {
-    const { data, error } = await this.supabase
-      .getClient()
-      .from('watchlist_universe')
-      .select('tickers')
-      .eq('name', name)
-      .maybeSingle();
-    if (error || !data) {
-      this.logger.warn(`[oversold] watchlist_universe '${name}' fetch failed: ${error?.message ?? 'empty'}`);
-      return [];
+    const maxAttempts = Math.max(1, Number(this.config.get<string>('OVERSOLD_FETCH_MAX_ATTEMPTS') ?? '3'));
+    const baseDelayMs = Math.max(50, Number(this.config.get<string>('OVERSOLD_FETCH_BACKOFF_MS') ?? '400'));
+    let lastErr = 'empty';
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const { data, error } = await this.supabase
+        .getClient()
+        .from('watchlist_universe')
+        .select('tickers')
+        .eq('name', name)
+        .maybeSingle();
+      const tickers = ((data?.tickers as string[] | null) ?? []).filter((t) => typeof t === 'string' && t.length > 0);
+      if (!error && tickers.length > 0) return tickers;
+      lastErr = error?.message ?? 'empty';
+      if (attempt < maxAttempts) {
+        this.fetchFailures.retries++;
+        await this.sleep(baseDelayMs * 2 ** (attempt - 1));
+      }
     }
-    const tickers = (data.tickers as string[] | null) ?? [];
-    return tickers.filter((t) => typeof t === 'string' && t.length > 0);
+    this.fetchFailures.failures++;
+    this.fetchFailures.lastError = `universe '${name}': ${lastErr}`.slice(0, 80);
+    this.logger.error(`[oversold] 🔴 watchlist_universe '${name}' VIDE après ${maxAttempts} tentatives (${lastErr}) → scan sans univers`);
+    return [];
   }
 
   /** Symboles déjà ouverts (anti-doublon, toutes sources confondues). */
@@ -1569,8 +1588,42 @@ export class OversoldScannerService {
   }
 
   /**
+   * Compteur d'échecs de fetch du cycle de scan en cours.
+   *
+   * CHECK-IN 06/08 — « le trou le plus grave » : le scan n'avait AUCUN plan B.
+   * Un HTTP 429/402 faisait disparaître des candidats SILENCIEUSEMENT (pas de log
+   * d'échec, juste moins de candidats). On ne savait pas distinguer « 3 candidats »
+   * de « 3 candidats + 40 fetchs ratés ». Ce compteur est remis à zéro au début de
+   * chaque scan et publié dans le payload `oversold_*_scan_completed`.
+   */
+  private fetchFailures = { attempts: 0, failures: 0, retries: 0, lastError: '' };
+
+  private resetFetchFailures(): void {
+    this.fetchFailures = { attempts: 0, failures: 0, retries: 0, lastError: '' };
+  }
+
+  private fetchHealthPayload(): Record<string, unknown> {
+    const { attempts, failures, retries, lastError } = this.fetchFailures;
+    return {
+      fetch_attempts: attempts,
+      fetch_failures: failures,
+      fetch_retries: retries,
+      fetch_failure_rate: attempts > 0 ? Number((failures / attempts).toFixed(3)) : 0,
+      fetch_last_error: lastError || null,
+    };
+  }
+
+  /**
    * Fetch direct EODHD EOD sur la fenêtre des ~5 derniers jours pour 1 symbole.
    * 1 call EOD = 1 quota. La clé n'est JAMAIS loggée.
+   *
+   * CHECK-IN 06/08 — RETRY + BACKOFF. Ce chemin est le CŒUR DE L'EDGE (la sélection
+   * des candidats est 100% EODHD). Il tournait sans retry, sans backoff, sans
+   * provider alternatif : un 429 transitoire (EODHD est chroniquement au-dessus de
+   * son quota : 11 000-23 000 HTTP 429/jour) supprimait un candidat en silence.
+   * Panne réelle vérifiée : 13-15/07/2026, 265 820 HTTP 402 sur 3 jours.
+   * On retente les erreurs TRANSITOIRES (429, 5xx, réseau/timeout) — jamais un 404
+   * (symbole délisté : réessayer ne fait que brûler du quota).
    */
   private async fetchEodBars(symbol: string, calendarDays = 8): Promise<EodBar[]> {
     const apiKey = this.config.get<string>('EODHD_API_KEY');
@@ -1585,26 +1638,65 @@ export class OversoldScannerService {
       `https://eodhd.com/api/eod/${encodeURIComponent(symbol)}` +
       `?from=${fromStr}&to=${toStr}&api_token=${apiKey}&fmt=json`;
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.FETCH_TIMEOUT_MS);
-    try {
-      const res = await fetch(url, { signal: controller.signal });
-      if (!res.ok) return [];
-      const json = (await res.json()) as Array<Record<string, unknown>>;
-      if (!Array.isArray(json)) return [];
-      const bars: EodBar[] = json
-        .map((b) => ({
-          date: String(b.date ?? ''),
-          close: Number(b.close ?? b.adjusted_close ?? NaN),
-          volume: Number(b.volume ?? 0),
-        }))
-        .filter((b) => b.date.length > 0 && Number.isFinite(b.close) && b.close > 0);
-      // Tri chronologique croissant (EODHD renvoie déjà ainsi, mais on garantit).
-      bars.sort((a, b) => a.date.localeCompare(b.date));
-      return bars;
-    } finally {
-      clearTimeout(timer);
+    const maxAttempts = Math.max(1, Number(this.config.get<string>('OVERSOLD_FETCH_MAX_ATTEMPTS') ?? '3'));
+    const baseDelayMs = Math.max(50, Number(this.config.get<string>('OVERSOLD_FETCH_BACKOFF_MS') ?? '400'));
+    this.fetchFailures.attempts++;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.FETCH_TIMEOUT_MS);
+      try {
+        const res = await fetch(url, { signal: controller.signal });
+        if (!res.ok) {
+          // 404 / 401 / 403 = définitif pour CE symbole : ne pas réessayer.
+          const transient = res.status === 429 || res.status >= 500;
+          if (!transient || attempt === maxAttempts) {
+            this.fetchFailures.failures++;
+            this.fetchFailures.lastError = `HTTP ${res.status}`;
+            if (transient) {
+              this.logger.warn(`[oversold] fetchEodBars ${symbol} abandon après ${attempt} tentatives (HTTP ${res.status})`);
+            }
+            return [];
+          }
+          this.fetchFailures.retries++;
+          await this.sleep(baseDelayMs * 2 ** (attempt - 1));
+          continue;
+        }
+        const json = (await res.json()) as Array<Record<string, unknown>>;
+        if (!Array.isArray(json)) {
+          this.fetchFailures.failures++;
+          this.fetchFailures.lastError = 'payload non-array';
+          return [];
+        }
+        const bars: EodBar[] = json
+          .map((b) => ({
+            date: String(b.date ?? ''),
+            close: Number(b.close ?? b.adjusted_close ?? NaN),
+            volume: Number(b.volume ?? 0),
+          }))
+          .filter((b) => b.date.length > 0 && Number.isFinite(b.close) && b.close > 0);
+        // Tri chronologique croissant (EODHD renvoie déjà ainsi, mais on garantit).
+        bars.sort((a, b) => a.date.localeCompare(b.date));
+        return bars;
+      } catch (e) {
+        // Réseau / abort / timeout = transitoire.
+        if (attempt === maxAttempts) {
+          this.fetchFailures.failures++;
+          this.fetchFailures.lastError = String(e).slice(0, 80);
+          this.logger.warn(`[oversold] fetchEodBars ${symbol} abandon après ${attempt} tentatives: ${String(e).slice(0, 80)}`);
+          return [];
+        }
+        this.fetchFailures.retries++;
+        await this.sleep(baseDelayMs * 2 ** (attempt - 1));
+      } finally {
+        clearTimeout(timer);
+      }
     }
+    return [];
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((r) => setTimeout(r, ms));
   }
 
   /** 0204 — lignes dont le fetch de barres n'a rien donné CE boot (délistées…) : ne pas re-brûler le budget backfill dessus. */

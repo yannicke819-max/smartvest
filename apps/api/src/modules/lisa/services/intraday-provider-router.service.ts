@@ -580,9 +580,13 @@ export class IntradayProviderRouter implements OnModuleInit {
     // l'add-on est activé côté account TD, ce path commence à renvoyer du
     // real-time sans deploy code.
     //
-    // Kill-switch : `TWELVEDATA_BCXE_ENABLED=false` (default true) — utile
-    // si TD facture un jour ou si on découvre une regression silencieuse.
-    const enableBcxe = (this.config.get<string>('TWELVEDATA_BCXE_ENABLED') ?? 'true').toLowerCase() !== 'false';
+    // ⚠️ DÉFAUT PASSÉ À `false` — CHECK-IN 06/08/2026. L'add-on BCXE n'a JAMAIS
+    // été accordé (request soumise 26/05, sans suite) : ce chemin faisait
+    // ~48 000 appels/jour à 100% HTTP 404 (≈32% du volume TwelveData) pour
+    // strictement zéro prix utilisable — pur gaspillage, et du bruit qui masque
+    // les vrais échecs. Le fallback EODHD ci-dessous a toujours pris le relais.
+    // Réactivation = `TWELVEDATA_BCXE_ENABLED=true` LE JOUR où l'add-on est actif.
+    const enableBcxe = (this.config.get<string>('TWELVEDATA_BCXE_ENABLED') ?? 'false').toLowerCase() === 'true';
     if (enableBcxe && this.td) {
       const bcxe = eodhdToCboeEuropeSymbol(eodhdTicker);
       if (bcxe) {
