@@ -1239,6 +1239,8 @@ export class MechanicalTradingService {
         tentativeQty,
         price,
         target.assetClass as string | undefined,
+        target.symbol as string | undefined,
+        'buy',
       );
       const slippageBps = 5;
       const slippageCost = notional.mul(slippageBps).div(10000);
@@ -3293,7 +3295,7 @@ Réponds JSON STRICT : {"decision": "approve" | "reject", "reason": "raison < 10
       const entryCostStored = pos.estimated_entry_cost_usd as string | null;
       entryFeeRefund = entryCostStored ? new Decimal(entryCostStored) : new Decimal(0);
     } else {
-      const feeIbkr = computeRealisticFee(qty, exitPrice, assetClass);
+      const feeIbkr = computeRealisticFee(qty, exitPrice, assetClass, pos.symbol as string, 'sell');
       const slippageBps = 5;
       const slippageCost = notional.mul(slippageBps).div(10000);
       exitCost = feeIbkr.plus(slippageCost);
